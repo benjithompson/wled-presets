@@ -42,9 +42,12 @@ const els = {
 };
 
 let currentPresets = [];
+let presetStatus = {}; // Map of preset ID to online status
+let currentPresetId = null; // Track currently selected preset
 let busy = false;
 let lastApplyTime = 0;
 const RATE_LIMIT_MS = 1000; // 1 second between selections
+const POLL_INTERVAL_MS = 10000; // Poll device status every 10 seconds
 
 function renderPresets() {
   if (!els.presetButtons) return;
@@ -57,7 +60,10 @@ function renderPresets() {
   els.presetButtons.innerHTML = currentPresets
     .map((p) => {
       const name = escapeHtml(p.name || 'Preset');
-      return `<button class="presetButton" type="button" data-id="${escapeHtml(p.id)}">${name}</button>`;
+      const isOffline = presetStatus[p.id] === false;
+      const offlineLabel = isOffline ? '<span class="offline-label">OFFLINE</span> ' : '';
+      const disabledClass = isOffline ? ' offline' : '';
+      return `<button class="presetButton${disabledClass}" type="button" data-id="${escapeHtml(p.id)}" ${isOffline ? 'disabled' : ''}>${offlineLabel}${name}</button>`;
     })
     .join('');
 }
@@ -74,11 +80,12 @@ async function load() {
   try {
     const cfg = await api('/api/config/public');
     currentPresets = Array.isArray(cfg.publicPresets) ? cfg.publicPresets : [];
+    currentPresetId = cfg.currentPresetId || null;
     renderPresets();
     
     // Show glow on currently selected preset (if any)
-    if (cfg.currentPresetId) {
-      const btn = document.querySelector(`.presetButton[data-id="${cfg.currentPresetId}"]`);
+    if (currentPresetId) {
+      const btn = document.querySelector(`.presetButton[data-id="${currentPresetId}"]`);
       if (btn) {
         btn.classList.add('glow-animate');
       }
@@ -89,6 +96,35 @@ async function load() {
     renderPresets();
     setStatus(els.status, e.message);
   }
+}
+
+async function checkDeviceStatus() {
+  try {
+    const data = await api('/api/device-status');
+    if (data && data.presetStatus) {
+      presetStatus = data.presetStatus;
+      renderPresets();
+      
+      // Re-apply glow to current preset if it exists
+      if (currentPresetId) {
+        const btn = document.querySelector(`.presetButton[data-id="${currentPresetId}"]`);
+        if (btn && !btn.disabled) {
+          btn.classList.add('glow-animate');
+        }
+      }
+    }
+  } catch (e) {
+    // Silently fail - don't show errors for background polling
+    console.error('Failed to check device status:', e);
+  }
+}
+
+async function startPolling() {
+  // Initial check
+  await checkDeviceStatus();
+  
+  // Poll every 10 seconds
+  setInterval(checkDeviceStatus, POLL_INTERVAL_MS);
 }
 
 async function applyPublicPreset(publicPresetId) {
@@ -178,3 +214,4 @@ document.addEventListener('click', (e) => {
 });
 
 await load();
+await startPolling();
