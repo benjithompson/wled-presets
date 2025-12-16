@@ -534,7 +534,8 @@ async function discoverWledDevices({
     }
 
     if (debug) {
-      console.log(`  Scanning ${net.ifname}: ${intToIp(start)} - ${intToIp(end)} (${count} hosts)`);
+      const actualCount = Math.max(0, (end - start + 1) >>> 0);
+      console.log(`  Scanning ${net.ifname}: ${intToIp(start)} - ${intToIp(end)} (${actualCount} hosts)`);
     }
 
     for (let ip = start; ip <= end; ip++) {

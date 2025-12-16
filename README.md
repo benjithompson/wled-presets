@@ -65,3 +65,34 @@ If discovery only finds some of your WLED devices:
 3. Verify all WLED devices are on the same subnet or specify multiple subnets via `DISCOVERY_SUBNETS`
 4. Ensure WLED devices are powered on and accessible from the Docker host
 5. Test manual discovery via the Admin interface after container starts
+
+## Docker/Unraid: Why discovery might miss devices
+
+When running in Docker with host network mode, discovery issues can occur due to:
+
+1. **Database persistence**: The SQLite database is stored in `/app/data` (mounted volume). When you restart the container, the database persists and may contain outdated device information. Automatic discovery on startup helps refresh this data.
+
+2. **Network interface selection**: In host network mode, the container sees all network interfaces. If your Unraid server has multiple networks (e.g., management network, IoT network), discovery needs to know which subnet(s) to scan. Use `DISCOVERY_SUBNETS` to specify the correct network(s).
+
+3. **ARP table limitations**: Discovery first checks the ARP table for "known" IPs, then performs a full subnet scan. If your WLED devices haven't been recently contacted by the host, they won't be in the ARP table and will only be found during the subnet scan.
+
+**Recommended Docker setup for Unraid:**
+```bash
+# In Unraid template or docker-compose:
+Environment Variables:
+  DISCOVERY_ON_STARTUP=1          # Auto-discover on every restart
+  DISCOVERY_AUTO_SAVE=1           # Save discovered devices automatically
+  DISCOVERY_DEBUG=1               # Enable for first-time setup/troubleshooting
+  DISCOVERY_SUBNETS=192.168.1.0/24  # Specify your IoT/WLED network
+  ADMIN_USERNAME=admin
+  ADMIN_PASSWORD=your-secure-password-here
+
+Volume Mappings:
+  /mnt/user/appdata/wled-presets -> /app/data
+```
+
+**To completely reset and re-discover all devices:**
+1. Stop the container
+2. Delete or rename the appdata folder (backup first!)
+3. Restart the container with `DISCOVERY_ON_STARTUP=1` and `DISCOVERY_AUTO_SAVE=1`
+4. Check the logs to verify all devices were found
