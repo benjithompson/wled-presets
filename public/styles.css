@@ -147,6 +147,27 @@ button:disabled{opacity:.55; cursor:not-allowed}
   overflow: hidden;
 }
 
+.presetButton.offline {
+  opacity: 0.4;
+  background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
+  border-color: rgba(255,255,255,.05);
+  cursor: not-allowed;
+}
+
+.offline-label {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-right: 8px;
+  background: rgba(255,59,59,.25);
+  border: 1px solid rgba(255,59,59,.4);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ff6b6b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .presetButton.glow-animate {
   animation: border-glow 2.5s linear;
   border-width: 3px;

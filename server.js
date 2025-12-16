@@ -777,6 +777,66 @@ app.get('/api/config/public', publicApiLimiter, async (req, res) => {
   okJson(res, { publicPresets, currentPresetId });
 });
 
+app.get('/api/device-status', publicApiLimiter, async (req, res) => {
+  const config = await readConfig();
+  
+  // Get all devices used by public presets
+  const devicesUsedByPresets = new Set();
+  for (const preset of config.publicPresets) {
+    if (preset.devicePresets && typeof preset.devicePresets === 'object') {
+      for (const deviceId of Object.keys(preset.devicePresets)) {
+        devicesUsedByPresets.add(deviceId);
+      }
+    }
+  }
+  
+  // Check status of each device
+  const enabledDevices = config.devices.filter((d) => d && d.enabled && devicesUsedByPresets.has(d.id));
+  
+  const statusChecks = await Promise.allSettled(
+    enabledDevices.map(async (device) => {
+      const host = normalizeHost(device.host);
+      const port = device.port ?? 80;
+      const out = await fetchJsonWithTimeoutDetailed(`http://${host}:${port}/json/info`, {
+        method: 'GET',
+        timeoutMs: 1000
+      });
+      return { deviceId: device.id, online: out.ok };
+    })
+  );
+  
+  // Build device status map
+  const deviceStatus = {};
+  statusChecks.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      deviceStatus[result.value.deviceId] = result.value.online;
+    } else {
+      deviceStatus[enabledDevices[i].id] = false;
+    }
+  });
+  
+  // Map preset IDs to their online status
+  const presetStatus = {};
+  for (const preset of config.publicPresets) {
+    if (!preset.devicePresets || typeof preset.devicePresets !== 'object') {
+      presetStatus[preset.id] = true; // No devices mapped = always "online"
+      continue;
+    }
+    
+    // Preset is online if at least one of its devices is online
+    let hasAnyOnline = false;
+    for (const deviceId of Object.keys(preset.devicePresets)) {
+      if (deviceStatus[deviceId]) {
+        hasAnyOnline = true;
+        break;
+      }
+    }
+    presetStatus[preset.id] = hasAnyOnline;
+  }
+  
+  okJson(res, { presetStatus });
+});
+
 app.post('/api/apply', applyLimiter, async (req, res) => {
   const config = await readConfig();
   const { publicPresetId } = req.body || {};
