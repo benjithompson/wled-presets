@@ -807,14 +807,13 @@ app.get('/api/device-status', publicApiLimiter, async (req, res) => {
   
   // Build device status map
   const deviceStatus = {};
-  for (let i = 0; i < statusChecks.length; i++) {
-    const result = statusChecks[i];
+  statusChecks.forEach((result, i) => {
     if (result.status === 'fulfilled') {
       deviceStatus[result.value.deviceId] = result.value.online;
     } else {
       deviceStatus[enabledDevices[i].id] = false;
     }
-  }
+  });
   
   // Map preset IDs to their online status
   const presetStatus = {};

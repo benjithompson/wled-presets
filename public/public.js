@@ -119,12 +119,14 @@ async function checkDeviceStatus() {
   }
 }
 
+let pollIntervalId = null;
+
 async function startPolling() {
   // Initial check
   await checkDeviceStatus();
   
   // Poll every 10 seconds
-  setInterval(checkDeviceStatus, POLL_INTERVAL_MS);
+  pollIntervalId = setInterval(checkDeviceStatus, POLL_INTERVAL_MS);
 }
 
 async function applyPublicPreset(publicPresetId) {
