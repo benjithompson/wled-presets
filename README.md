@@ -55,7 +55,7 @@ docker run -d \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD=your-secure-password \
   -v /path/to/appdata:/app/data \
-  benjitimate/wled-presets:latest
+  ghcr.io/benjithompson/wled-presets:latest
 ```
 
 **Troubleshooting discovery issues:**
@@ -96,3 +96,36 @@ Volume Mappings:
 2. Delete or rename the appdata folder (backup first!)
 3. Restart the container with `DISCOVERY_ON_STARTUP=1` and `DISCOVERY_AUTO_SAVE=1`
 4. Check the logs to verify all devices were found
+
+## Docker Images
+
+Docker images are automatically built and published to GitHub Container Registry (ghcr.io) on every release.
+
+**Available at:** `ghcr.io/benjithompson/wled-presets`
+
+**Tags:**
+- `latest` - Latest stable release
+- `1.2.0` - Specific version
+- `1.2` - Latest patch version of 1.2
+- `1` - Latest minor version of 1.x
+
+**Multi-architecture support:**
+- `linux/amd64` - x86_64 systems
+- `linux/arm64` - ARM64 systems (Raspberry Pi, etc.)
+
+## Development
+
+### Creating a Release
+
+To create a new release:
+
+1. Update the version in `package.json`
+2. Commit the changes
+3. Create and push a git tag:
+   ```bash
+   git tag v1.2.0
+   git push origin v1.2.0
+   ```
+4. The GitHub Actions workflow will automatically build and push the Docker image to ghcr.io
+
+The workflow builds multi-architecture images (amd64, arm64) and publishes them with appropriate tags.
