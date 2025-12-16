@@ -1,0 +1,14 @@
+node_modules/
+data/
+*.sqlite
+.env
+.env.*
+npm-debug.log
+.DS_Store
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+README.md
+*.md
+.vscode/

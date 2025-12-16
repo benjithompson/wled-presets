@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>wled-presets</Name>
+  <Repository>benjitimate/wled-presets:latest</Repository>
+  <Registry>https://hub.docker.com/r/benjitimate/wled-presets</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>WLED Preset Picker - A mobile-friendly web interface for selecting and applying presets across multiple WLED devices. Features admin authentication, device discovery, and preset management.</Overview>
+  <Category>HomeAutomation:</Category>
+  <WebUI>http://[IP]:[PORT:8787]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/Aircoookie/WLED/main/images/wled_logo_akemi.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled></DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web UI Port" Target="8787" Default="8787" Mode="tcp" Description="Port for the web interface" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Session Secret" Target="SESSION_SECRET" Default="" Mode="" Description="Secret key for session encryption. Use a long random string for security." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Admin Username" Target="ADMIN_USERNAME" Default="admin" Mode="" Description="Username for the admin account" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="Admin Password" Target="ADMIN_PASSWORD" Default="" Mode="" Description="Password for the admin account (minimum 12 characters)" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Data Storage" Target="/app/data" Default="/mnt/user/appdata/wled-presets" Mode="rw" Description="Path to store database and settings" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/wled-presets</Config>
+  <Config Name="Secure Cookie" Target="SECURE_COOKIE" Default="0" Mode="" Description="Set to 1 if using HTTPS via reverse proxy, 0 for HTTP" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Trust Proxy" Target="TRUST_PROXY" Default="0" Mode="" Description="Set to 1 if behind a reverse proxy" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+</Container>

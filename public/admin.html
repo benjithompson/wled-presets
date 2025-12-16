@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WLED Presets Admin</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div>
+        <h1>WLED Presets</h1>
+        <p class="sub">Admin</p>
+      </div>
+      <a href="/" class="ghost" style="text-decoration:none">← Public page</a>
+    </header>
+
+    <section id="admin" class="panel is-active" aria-label="Admin configuration">
+      <div class="card">
+        <div class="row">
+          <h2>Admin</h2>
+          <div class="row-actions">
+            <button id="adminLogoutBtn" class="ghost" type="button">Sign out</button>
+          </div>
+        </div>
+        <p id="adminAuthStatus" class="status" role="status"></p>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <h3>Devices</h3>
+          <div class="row-actions">
+            <button id="discoverBtn" class="ghost" type="button">Auto-detect</button>
+            <button id="addDeviceBtn" class="primary" type="button">Add device</button>
+          </div>
+        </div>
+        <div id="devicesList" class="list"></div>
+        <p id="devicesStatus" class="status" role="status"></p>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <h3>Device presets</h3>
+          <div class="row-actions">
+            <select id="devicePresetsSelect" class="device-select">
+              <option value="">Select a device</option>
+            </select>
+            <button id="importPresetsBtn" class="ghost" type="button">Import presets (all devices)</button>
+          </div>
+        </div>
+        <div id="devicePresetsList" class="list"></div>
+        <p id="devicePresetsStatus" class="status" role="status"></p>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <h3>Public presets</h3>
+          <div class="row-actions">
+            <button id="backupPresetsBtn" class="ghost" type="button">Backup</button>
+            <button id="restorePresetsBtn" class="ghost" type="button">Restore</button>
+            <button id="addPresetBtn" class="primary" type="button">Add preset</button>
+          </div>
+        </div>
+        <input type="file" id="restoreFileInput" accept=".json" style="display:none" />
+        <div id="presetEditor" class="card soft" style="display:none"></div>
+        <div id="presetsList" class="list"></div>
+        <p id="presetsStatus" class="status" role="status"></p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span class="muted">WLED preset picker</span>
+    </footer>
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
