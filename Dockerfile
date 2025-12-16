@@ -84,16 +84,16 @@ RUN chmod +x /app/docker-entrypoint.sh && \
     chmod 777 /app/data
 
 # Expose the port
-EXPOSE 8787
+EXPOSE 8790
 
 # Set environment variables (override in production as needed)
 ENV NODE_ENV=production \
-    PORT=8787 \
+    PORT=8790 \
     DATABASE_PATH=/app/data/wled-presets.sqlite
 
-# Health check
+# Health check (uses PORT env var)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD node -e "fetch('http://localhost:8787/api/config/public').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+    CMD node -e "fetch('http://localhost:' + (process.env.PORT || 8790) + '/api/config/public').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 # Start the server
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

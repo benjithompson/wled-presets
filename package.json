@@ -6,7 +6,7 @@
   "description": "Single-page public preset picker + admin config for WLED devices",
   "scripts": {
     "start": "node server.js",
-    "stop": "pids=$(lsof -ti tcp:${PORT:-8787} 2>/dev/null || true); if [ -n \"$pids\" ]; then kill $pids; fi; true",
+    "stop": "pids=$(lsof -ti tcp:${PORT:-8790} 2>/dev/null || true); if [ -n \"$pids\" ]; then kill $pids; fi; true",
     "restart": "npm run stop && npm run start"
   },
   "dependencies": {

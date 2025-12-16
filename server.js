@@ -30,7 +30,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 const app = express();
-const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8790;
 const ROOT = process.cwd();
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const CONFIG_PATH = path.join(ROOT, 'config.json');

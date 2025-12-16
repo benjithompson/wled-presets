@@ -11,7 +11,7 @@
   <Project/>
   <Overview>WLED Preset Picker - A mobile-friendly web interface for selecting and applying presets across multiple WLED devices. Features admin authentication, device discovery, and preset management.</Overview>
   <Category>HomeAutomation:</Category>
-  <WebUI>http://[IP]:[PORT:8787]/</WebUI>
+  <WebUI>http://[IP]:[PORT:8790]/</WebUI>
   <TemplateURL/>
   <Icon>https://raw.githubusercontent.com/Aircoookie/WLED/main/images/wled_logo_akemi.png</Icon>
   <ExtraParams/>
@@ -21,7 +21,7 @@
   <DonateText/>
   <DonateLink/>
   <Requires/>
-  <Config Name="Web UI Port" Target="8787" Default="8787" Mode="tcp" Description="Port for the web interface" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Web UI Port" Target="PORT" Default="8790" Mode="" Description="Port for the web interface (set via PORT env var with host networking)" Type="Variable" Display="always" Required="true" Mask="false">8790</Config>
   <Config Name="Session Secret" Target="SESSION_SECRET" Default="" Mode="" Description="Secret key for session encryption. Use a long random string for security." Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="Admin Username" Target="ADMIN_USERNAME" Default="admin" Mode="" Description="Username for the admin account" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
   <Config Name="Admin Password" Target="ADMIN_PASSWORD" Default="" Mode="" Description="Password for the admin account (minimum 12 characters)" Type="Variable" Display="always" Required="true" Mask="true"></Config>

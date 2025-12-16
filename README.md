@@ -13,7 +13,7 @@ Browser-only HTML can’t reliably auto-discover devices on your LAN and usually
 2. Start:
    - `npm start`
 3. Open:
-   - http://localhost:8787
+   - http://localhost:8790
 
 ## Admin access
 Set an admin token (recommended) and restart:
