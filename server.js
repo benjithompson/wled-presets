@@ -310,7 +310,7 @@ function ipInAnyNetwork(ip, networks) {
   return networks.some((n) => ipInt >= n.network && ipInt <= n.broadcast);
 }
 
-async function getArpTableIps() {
+async function getArpTableIps(debug = false) {
   const ips = new Set();
 
   const commands = [
@@ -336,8 +336,16 @@ async function getArpTableIps() {
         ips.add(match[1]);
       }
 
-      if (ips.size) break;
-    } catch {
+      if (ips.size) {
+        if (debug) {
+          console.log(`ARP table queried via '${c.cmd} ${c.args.join(' ')}': found ${ips.size} IPs`);
+        }
+        break;
+      }
+    } catch (err) {
+      if (debug) {
+        console.log(`Failed to query ARP table via '${c.cmd}': ${err.message}`);
+      }
       // ignore and try next
     }
   }
@@ -418,9 +426,26 @@ async function discoverWledDevices({
     failures: {}
   };
 
+  if (debug) {
+    console.log('=== WLED Discovery Debug ===');
+    console.log(`Local networks found: ${networks.length}`);
+    for (const net of networks) {
+      console.log(`  ${net.ifname}: ${net.address}/${net.prefix} (${intToIp(net.network)} - ${intToIp(net.broadcast)})`);
+    }
+  }
+
   // 0) Explicit subnet sweep (when provided)
   const explicit = (Array.isArray(subnets) ? subnets : []).map(parseCidr).filter(Boolean);
   const explicitMode = explicit.length > 0;
+  
+  if (debug) {
+    if (explicitMode) {
+      console.log(`Explicit subnets mode: ${explicit.map(c => c.cidr).join(', ')}`);
+    } else {
+      console.log('Auto-detect mode: scanning all local networks');
+    }
+  }
+
   for (const cidr of explicit) {
     let start = cidr.network;
     let end = cidr.broadcast;
@@ -441,9 +466,16 @@ async function discoverWledDevices({
     }
   }
 
+  if (debug && explicitMode) {
+    console.log(`Explicit subnet sweep added ${candidates.length} candidates`);
+  }
+
   // 1) Prefer ARP table IPs (usually much smaller set and already "known active")
   try {
-    const arpIps = await getArpTableIps();
+    const arpIps = await getArpTableIps(debug);
+    if (debug) {
+      console.log(`ARP table returned ${arpIps.length} IPs`);
+    }
     for (const ip of arpIps) {
       if (explicitMode) {
         const ipInt = ipToInt(ip);
@@ -458,7 +490,13 @@ async function discoverWledDevices({
         candidates.push(ip);
       }
     }
-  } catch {
+    if (debug) {
+      console.log(`After ARP filtering: ${candidates.length} candidate IPs`);
+    }
+  } catch (err) {
+    if (debug) {
+      console.log(`ARP table query failed: ${err.message}`);
+    }
     // ignore
   }
 
@@ -484,12 +522,20 @@ async function discoverWledDevices({
           end = base + 254;
         }
       }
+      if (debug) {
+        console.log(`  Large subnet on ${net.ifname} (/${net.prefix}), limiting to /24 scan`);
+      }
     }
 
     // Hard cap even if we didn't shrink above
     const count = Math.max(0, (end - start + 1) >>> 0);
     if (count > maxHosts) {
       end = start + (maxHosts - 1);
+    }
+
+    if (debug) {
+      const actualCount = Math.max(0, (end - start + 1) >>> 0);
+      console.log(`  Scanning ${net.ifname}: ${intToIp(start)} - ${intToIp(end)} (${actualCount} hosts)`);
     }
 
     for (let ip = start; ip <= end; ip++) {
@@ -500,6 +546,11 @@ async function discoverWledDevices({
       }
     }
   }
+  }
+
+  if (debug) {
+    console.log(`Total candidates to probe: ${candidates.length}`);
+    console.log(`Starting discovery with ${Math.min(concurrency, candidates.length || 1)} workers, ${timeoutMs}ms timeout...`);
   }
 
   const results = [];
@@ -559,6 +610,83 @@ async function ensureBootstrapAdminUser() {
 }
 
 await ensureBootstrapAdminUser();
+
+// Run automatic discovery on startup if enabled
+async function runStartupDiscovery() {
+  const enabled = process.env.DISCOVERY_ON_STARTUP === '1';
+  if (!enabled) return;
+
+  console.log('=== Startup Discovery Enabled ===');
+  
+  const config = await readConfig();
+  const envSubnets = String(process.env.DISCOVERY_SUBNETS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const configSubnets = Array.isArray(config.discoverySubnets) ? config.discoverySubnets : [];
+  const subnets = envSubnets.length ? envSubnets : configSubnets;
+
+  console.log('Discovery subnets:', subnets.length ? subnets : 'auto (all local networks)');
+  
+  // Get network info for logging
+  const networks = getLocalIPv4Networks();
+  console.log('Local IPv4 networks detected:');
+  for (const net of networks) {
+    console.log(`  - ${net.ifname}: ${net.address}/${net.prefix} (${intToIp(net.network)} - ${intToIp(net.broadcast)})`);
+  }
+
+  const wantDebug = process.env.DISCOVERY_DEBUG === '1';
+  const out = await discoverWledDevices({
+    concurrency: 128,
+    timeoutMs: 650,
+    maxHosts: 2048,
+    preferScanPrefix: 24,
+    subnets,
+    debug: wantDebug
+  });
+
+  console.log(`Discovery found ${out.results.length} WLED device(s):`);
+  for (const device of out.results) {
+    console.log(`  - ${device.name} (${device.host}:${device.port})`);
+  }
+
+  if (wantDebug && out.debug) {
+    console.log('Discovery debug info:', JSON.stringify(out.debug, null, 2));
+  }
+
+  // Auto-save discovered devices if configured
+  if (process.env.DISCOVERY_AUTO_SAVE === '1' && out.results.length > 0) {
+    console.log('Auto-saving discovered devices to database...');
+    const existingDevices = config.devices;
+    const existingHosts = new Set(existingDevices.map(d => `${normalizeHost(d.host)}:${d.port ?? 80}`));
+    
+    const newDevices = [];
+    for (const device of out.results) {
+      const hostKey = `${device.host}:${device.port}`;
+      if (!existingHosts.has(hostKey)) {
+        newDevices.push({
+          id: safeId(),
+          name: device.name,
+          host: device.host,
+          port: device.port,
+          enabled: true
+        });
+      }
+    }
+
+    if (newDevices.length > 0) {
+      const allDevices = [...existingDevices, ...newDevices];
+      await writeConfig({ devices: allDevices });
+      console.log(`Added ${newDevices.length} new device(s) to configuration`);
+    } else {
+      console.log('No new devices to add (all already configured)');
+    }
+  }
+
+  console.log('=== Startup Discovery Complete ===');
+}
+
+await runStartupDiscovery();
 
 // Protect cookie-auth endpoints from cross-site requests (CSRF hardening)
 app.use('/api/auth', requireSameOrigin);
