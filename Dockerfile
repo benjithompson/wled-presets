@@ -78,12 +78,10 @@ COPY package.json package-lock.json* ./
 # Copy the rest of the app
 COPY . .
 
-# Create data directory and set permissions
-RUN mkdir -p /app/data && \
-    chown -R nodejs:nodejs /app
-
-# Switch to non-root user
-USER nodejs
+# Make entrypoint executable and create data directory
+RUN chmod +x /app/docker-entrypoint.sh && \
+    mkdir -p /app/data && \
+    chmod 777 /app/data
 
 # Expose the port
 EXPOSE 8787
@@ -98,4 +96,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD node -e "fetch('http://localhost:8787/api/config/public').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 # Start the server
-CMD ["node", "server.js"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
