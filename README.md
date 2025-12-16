@@ -36,3 +36,32 @@ If your WLED devices are on a known subnet (example: `192.168.20.0/24`), pin dis
 - Option B (config file): set `discoverySubnets` in [config.json](config.json)
 
 This avoids scanning the wrong interface/subnet on machines with multiple networks.
+
+## Automatic discovery on startup (Docker/Unraid)
+When running in Docker, especially with host network mode on Unraid, you can enable automatic discovery on container startup:
+
+- `DISCOVERY_ON_STARTUP=1` - Enable automatic discovery when container starts (default: disabled)
+- `DISCOVERY_AUTO_SAVE=1` - Automatically add newly discovered devices to configuration (default: disabled)
+- `DISCOVERY_DEBUG=1` - Enable verbose discovery logging for troubleshooting (default: disabled)
+
+**Example Docker run:**
+```bash
+docker run -d \
+  --name wled-presets \
+  --network host \
+  -e DISCOVERY_ON_STARTUP=1 \
+  -e DISCOVERY_AUTO_SAVE=1 \
+  -e DISCOVERY_SUBNETS=192.168.1.0/24 \
+  -e ADMIN_USERNAME=admin \
+  -e ADMIN_PASSWORD=your-secure-password \
+  -v /path/to/appdata:/app/data \
+  benjitimate/wled-presets:latest
+```
+
+**Troubleshooting discovery issues:**
+If discovery only finds some of your WLED devices:
+1. Enable debug logging: `DISCOVERY_DEBUG=1`
+2. Check the container logs to see which networks are being scanned
+3. Verify all WLED devices are on the same subnet or specify multiple subnets via `DISCOVERY_SUBNETS`
+4. Ensure WLED devices are powered on and accessible from the Docker host
+5. Test manual discovery via the Admin interface after container starts
