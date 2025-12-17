@@ -139,6 +139,9 @@ async function applyPublicPreset(publicPresetId) {
   }
   lastApplyTime = now;
 
+  // Update current preset ID immediately so polling doesn't reset it
+  currentPresetId = publicPresetId;
+
   setBusy(true);
   setStatus(els.status, 'Applying…');
 
