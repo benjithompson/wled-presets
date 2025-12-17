@@ -80,6 +80,7 @@ async function load() {
   try {
     const cfg = await api('/api/config/public');
     currentPresets = Array.isArray(cfg.publicPresets) ? cfg.publicPresets : [];
+    console.log('load: server returned currentPresetId =', cfg.currentPresetId);
     currentPresetId = cfg.currentPresetId || null;
     renderPresets();
     
@@ -103,11 +104,13 @@ async function checkDeviceStatus() {
     const data = await api('/api/device-status');
     if (data && data.presetStatus) {
       presetStatus = data.presetStatus;
+      console.log('checkDeviceStatus: before render, currentPresetId =', currentPresetId);
       renderPresets();
       
       // Re-apply glow to current preset if it exists
       if (currentPresetId) {
         const btn = document.querySelector(`.presetButton[data-id="${currentPresetId}"]`);
+        console.log('checkDeviceStatus: re-applying glow to', currentPresetId, 'btn found:', !!btn);
         if (btn && !btn.disabled) {
           btn.classList.add('glow-animate');
         }
@@ -140,6 +143,7 @@ async function applyPublicPreset(publicPresetId) {
   lastApplyTime = now;
 
   // Update current preset ID immediately so polling doesn't reset it
+  console.log('applyPublicPreset: setting currentPresetId from', currentPresetId, 'to', publicPresetId);
   currentPresetId = publicPresetId;
 
   setBusy(true);
@@ -204,12 +208,115 @@ function setButtonGlow(btn) {
   for (const b of document.querySelectorAll('.presetButton.glow-animate')) {
     b.classList.remove('glow-animate');
   }
+  // Remove glow from color wheel
+  const colorWheel = document.getElementById('colorWheel');
+  if (colorWheel) {
+    colorWheel.classList.remove('glow-animate');
+    colorWheel.style.removeProperty('--glow-color');
+  }
+  // Remove active from color wheel segments
+  for (const seg of document.querySelectorAll('.color-wheel-segment.active-color')) {
+    seg.classList.remove('active-color');
+  }
   // Add glow to the selected button
   btn.classList.add('glow-animate');
 }
 
+function setColorActive(segment, color) {
+  // Remove glow from all preset buttons
+  for (const b of document.querySelectorAll('.presetButton.glow-animate')) {
+    b.classList.remove('glow-animate');
+  }
+  // Remove active from all color segments
+  for (const seg of document.querySelectorAll('.color-wheel-segment.active-color')) {
+    seg.classList.remove('active-color');
+  }
+  // Add active to selected segment
+  segment.classList.add('active-color');
+  // Add glow to color wheel with the selected color
+  const colorWheel = document.getElementById('colorWheel');
+  if (colorWheel) {
+    colorWheel.style.setProperty('--glow-color', color);
+    colorWheel.classList.add('glow-animate');
+  }
+  // Clear saved preset since we're using solid color
+  currentPresetId = null;
+}
+
+function createColorWheelFirework(color) {
+  const colorWheel = document.getElementById('colorWheel');
+  if (!colorWheel) return;
+  
+  const rect = colorWheel.getBoundingClientRect();
+  const container = document.createElement('div');
+  container.className = 'firework-container';
+  container.style.position = 'fixed';
+  container.style.left = rect.left + 'px';
+  container.style.top = rect.top + 'px';
+  container.style.width = rect.width + 'px';
+  container.style.height = rect.height + 'px';
+  container.style.pointerEvents = 'none';
+  container.style.zIndex = 9999;
+
+  const numParticles = 18 + Math.floor(Math.random() * 10);
+  for (let i = 0; i < numParticles; i++) {
+    const particle = document.createElement('div');
+    particle.className = 'firework-particle';
+    const angle = (2 * Math.PI * i) / numParticles + Math.random() * 0.2;
+    const distance = rect.width * (0.5 + Math.random() * 0.7);
+    const x = Math.cos(angle) * distance;
+    const y = Math.sin(angle) * distance;
+    particle.style.background = color;
+    particle.style.left = rect.width / 2 + 'px';
+    particle.style.top = rect.height / 2 + 'px';
+    particle.style.setProperty('--x', x + 'px');
+    particle.style.setProperty('--y', y + 'px');
+    particle.style.opacity = 0.7 + Math.random() * 0.3;
+    container.appendChild(particle);
+  }
+  document.body.appendChild(container);
+  setTimeout(() => {
+    container.remove();
+  }, 1200 + Math.random() * 800);
+}
+
+async function applyColor(hexColor) {
+  if (busy) return;
+
+  // Rate limit
+  const now = Date.now();
+  if (now - lastApplyTime < RATE_LIMIT_MS) {
+    return;
+  }
+  lastApplyTime = now;
+
+  setBusy(true);
+  setStatus(els.status, 'Applying…');
+
+  try {
+    await api('/api/color', { method: 'POST', body: { color: hexColor } });
+    setStatus(els.status, '');
+  } catch (e) {
+    setStatus(els.status, e.message);
+  } finally {
+    setBusy(false);
+  }
+}
 
 document.addEventListener('click', (e) => {
+  // Handle color wheel clicks
+  const segment = e.target.closest('.color-wheel-segment');
+  if (segment) {
+    const color = segment.dataset.color;
+    if (color) {
+      createColorWheelFirework(color);
+      setColorActive(segment, color);
+      applyColor(color);
+    }
+    return;
+  }
+
+  // Handle preset button clicks
   const btn = e.target.closest('.presetButton');
   if (!btn) return;
   // Firework and persistent glow

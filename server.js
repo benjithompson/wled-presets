@@ -127,8 +127,6 @@ async function readConfig() {
   const devices = await getDevices(db);
   const publicPresets = await getPublicPresetsWithMappings(db);
   const devicePresets = await getDevicePresets(db);
-  
-  console.log('readConfig: loaded', devices.length, 'devices and', Object.keys(devicePresets).length, 'device preset groups');
 
   return {
     adminToken,
@@ -835,6 +833,71 @@ app.get('/api/device-status', publicApiLimiter, async (req, res) => {
   }
   
   okJson(res, { presetStatus });
+});
+
+// Set all devices to a solid color
+app.post('/api/color', applyLimiter, async (req, res) => {
+  const config = await readConfig();
+  const { color } = req.body || {};
+
+  if (!color || typeof color !== 'string') {
+    return res.status(400).json({ error: 'Missing color' });
+  }
+
+  // Parse hex color to RGB
+  const hex = color.replace('#', '');
+  if (!/^[0-9A-Fa-f]{6}$/.test(hex)) {
+    return res.status(400).json({ error: 'Invalid color format' });
+  }
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+
+  const enabledDevices = config.devices.filter((d) => d && d.enabled);
+  const applied = [];
+  const errors = [];
+
+  const results = await Promise.allSettled(
+    enabledDevices.map(async (device) => {
+      const host = normalizeHost(device.host);
+      const port = device.port ?? 80;
+      // Set solid color using WLED JSON API
+      // Create array of segments 0-15 to ensure ALL segments get updated
+      // WLED ignores segment IDs that don't exist
+      const segmentUpdates = [];
+      for (let i = 0; i < 16; i++) {
+        segmentUpdates.push({ id: i, col: [[r, g, b]], fx: 0 });
+      }
+      const out = await fetchJsonWithTimeoutDetailed(`http://${host}:${port}/json/state`, {
+        method: 'POST',
+        body: {
+          on: true,
+          seg: segmentUpdates
+        },
+        timeoutMs: 1500
+      });
+      if (!out.ok) throw new Error('Failed to contact WLED device');
+      return { deviceId: device.id };
+    })
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const device = enabledDevices[i];
+    if (result.status === 'fulfilled') {
+      applied.push(result.value);
+    } else {
+      const msg = result.reason && result.reason.message ? result.reason.message : 'Failed to apply';
+      errors.push({ deviceId: device.id, error: msg });
+    }
+  }
+
+  // Clear current preset since we're using solid color
+  if (applied.length > 0) {
+    await setSetting(db, 'currentPresetId', '');
+  }
+
+  okJson(res, { ok: true, applied, errors });
 });
 
 app.post('/api/apply', applyLimiter, async (req, res) => {

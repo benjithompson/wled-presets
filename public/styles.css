@@ -234,3 +234,63 @@ button:disabled{opacity:.55; cursor:not-allowed}
     transform: translate(calc(-50% + var(--x)), calc(-50% + var(--y))) scale(0.7);
   }
 }
+
+/* Color Wheel */
+.color-wheel {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  margin: 0 auto 24px;
+}
+
+.color-wheel-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.color-wheel-segment {
+  cursor: pointer;
+  transition: filter 0.15s, stroke 0.15s, stroke-width 0.15s;
+  stroke: transparent;
+  stroke-width: 0;
+}
+
+.color-wheel-segment:hover {
+  filter: brightness(1.3) drop-shadow(0 0 3px currentColor);
+  stroke: rgba(255,255,255,0.6);
+  stroke-width: 2;
+}
+
+.color-wheel-segment:active {
+  filter: brightness(0.9);
+}
+
+.color-wheel-segment.active-color {
+  filter: brightness(1.2);
+}
+
+.color-wheel-center {
+  position: absolute;
+  width: 50%;
+  height: 50%;
+  left: 25%;
+  top: 25%;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  pointer-events: none;
+  z-index: 10;
+}
+
+.color-wheel.glow-animate {
+  animation: color-wheel-glow 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes color-wheel-glow {
+  0% {
+    box-shadow: 0 0 12px 4px var(--glow-color, #ffb300);
+  }
+  100% {
+    box-shadow: 0 0 20px 8px var(--glow-color, #ffb300);
+  }
+}

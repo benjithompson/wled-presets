@@ -11,16 +11,34 @@
     <header class="header header-public">
       <div>
         <h1>Christmas Lights</h1>
-        <p class="sub">Tap a preset.</p>
+        <p class="sub">Tap a color or preset.</p>
       </div>
     </header>
 
     <section class="panel is-active" aria-label="Preset picker">
+      <div id="colorWheel" class="color-wheel">
+        <svg class="color-wheel-svg" viewBox="0 0 100 100">
+          <!-- 12 segments, 30 degrees each, starting from top (12 o'clock) going clockwise -->
+          <path class="color-wheel-segment" data-color="#FF0000" d="M50,50 L50,5 A45,45 0 0,1 72.5,11.03 Z" fill="#FF0000"/>
+          <path class="color-wheel-segment" data-color="#FF8000" d="M50,50 L72.5,11.03 A45,45 0 0,1 88.97,27.5 Z" fill="#FF8000"/>
+          <path class="color-wheel-segment" data-color="#FFFF00" d="M50,50 L88.97,27.5 A45,45 0 0,1 95,50 Z" fill="#FFFF00"/>
+          <path class="color-wheel-segment" data-color="#80FF00" d="M50,50 L95,50 A45,45 0 0,1 88.97,72.5 Z" fill="#80FF00"/>
+          <path class="color-wheel-segment" data-color="#00FF00" d="M50,50 L88.97,72.5 A45,45 0 0,1 72.5,88.97 Z" fill="#00FF00"/>
+          <path class="color-wheel-segment" data-color="#00FF80" d="M50,50 L72.5,88.97 A45,45 0 0,1 50,95 Z" fill="#00FF80"/>
+          <path class="color-wheel-segment" data-color="#00FFFF" d="M50,50 L50,95 A45,45 0 0,1 27.5,88.97 Z" fill="#00FFFF"/>
+          <path class="color-wheel-segment" data-color="#0080FF" d="M50,50 L27.5,88.97 A45,45 0 0,1 11.03,72.5 Z" fill="#0080FF"/>
+          <path class="color-wheel-segment" data-color="#0000FF" d="M50,50 L11.03,72.5 A45,45 0 0,1 5,50 Z" fill="#0000FF"/>
+          <path class="color-wheel-segment" data-color="#8000FF" d="M50,50 L5,50 A45,45 0 0,1 11.03,27.5 Z" fill="#8000FF"/>
+          <path class="color-wheel-segment" data-color="#FF00FF" d="M50,50 L11.03,27.5 A45,45 0 0,1 27.5,11.03 Z" fill="#FF00FF"/>
+          <path class="color-wheel-segment" data-color="#FF0080" d="M50,50 L27.5,11.03 A45,45 0 0,1 50,5 Z" fill="#FF0080"/>
+        </svg>
+        <div class="color-wheel-center"></div>
+      </div>
       <div id="presetButtons" class="presetButtons"></div>
       <p id="status" class="status" role="status"></p>
     </section>
   </main>
 
-  <script src="/public.js" type="module"></script>
+  <script src="/public.js?v=1.2.7" type="module"></script>
 </body>
 </html>
