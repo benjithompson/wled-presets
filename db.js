@@ -127,10 +127,24 @@ export async function getDevices(db) {
 export async function replaceDevices(db, devices) {
   await db.exec('BEGIN');
   try {
-    await db.exec('DELETE FROM devices');
+    // Get existing device IDs
+    const existingRows = await db.all('SELECT id FROM devices');
+    const existingIds = new Set(existingRows.map(r => r.id));
+    const newIds = new Set(devices.map(d => d.id));
+    
+    // Delete devices that are no longer in the list
+    // (ON DELETE CASCADE will clean up device_presets for removed devices only)
+    for (const existingId of existingIds) {
+      if (!newIds.has(existingId)) {
+        await db.run('DELETE FROM devices WHERE id = ?', [existingId]);
+      }
+    }
+    
+    // Upsert devices
     for (const d of devices) {
       await db.run(
-        'INSERT INTO devices(id, name, host, port, enabled) VALUES(?, ?, ?, ?, ?)',
+        `INSERT INTO devices(id, name, host, port, enabled) VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, host=excluded.host, port=excluded.port, enabled=excluded.enabled`,
         [d.id, d.name, d.host, d.port ?? 80, d.enabled ? 1 : 0]
       );
     }
