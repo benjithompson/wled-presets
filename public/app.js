@@ -104,7 +104,7 @@ function setActiveTab(tabName) {
   }
 }
 
-async function api(path, { method = 'GET', body, admin = false } = {}) {
+async function api(path, { method = 'GET', body } = {}) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
 
@@ -132,7 +132,6 @@ async function authMe() {
   try {
     await api('/api/auth/me');
     state.admin.unlocked = true;
-    setStatus(els.adminAuthStatus, '');
     return true;
   } catch {
     // If not authenticated, server will redirect to /login via middleware
@@ -251,9 +250,6 @@ function renderDevicePresetsDropdown() {
 function renderDevicePresets() {
   const selectedDeviceId = els.devicePresetsSelect.value;
   
-  console.log('renderDevicePresets called, selectedDeviceId:', selectedDeviceId);
-  console.log('importedPresetsByDeviceId:', state.admin.importedPresetsByDeviceId);
-  
   if (!selectedDeviceId) {
     els.devicePresetsList.innerHTML = '<div class="muted">Select a device to view its presets.</div>';
     setStatus(els.devicePresetsStatus, '');
@@ -261,8 +257,6 @@ function renderDevicePresets() {
   }
   
   const presets = state.admin.importedPresetsByDeviceId[selectedDeviceId];
-  
-  console.log('Presets for device:', presets);
   
   if (!presets || !Array.isArray(presets) || presets.length === 0) {
     els.devicePresetsList.innerHTML = '<div class="muted">No presets imported for this device. Use "Import presets" button.</div>';
@@ -286,16 +280,11 @@ async function loadAdminConfig() {
   setStatus(els.devicesStatus, 'Loading…');
   setStatus(els.presetsStatus, 'Loading…');
   try {
-    state.admin.config = await api('/api/admin/config', { admin: true });
-    
-    console.log('Loaded config:', state.admin.config);
+    state.admin.config = await api('/api/admin/config');
     
     // Load device presets from config if available
     if (state.admin.config.devicePresets) {
       state.admin.importedPresetsByDeviceId = state.admin.config.devicePresets;
-      console.log('Device presets loaded:', state.admin.importedPresetsByDeviceId);
-    } else {
-      console.warn('No devicePresets in config');
     }
     
     renderDevices();
@@ -332,7 +321,6 @@ async function saveSettings() {
   try {
     await api('/api/admin/settings', {
       method: 'POST',
-      admin: true,
       body: { defaultPresetId, revertTimeout }
     });
     state.admin.config.defaultPresetId = defaultPresetId;
@@ -352,7 +340,7 @@ async function loadLogs() {
   if (!els.logsList) return;
   setStatus(els.logsStatus, 'Loading…');
   try {
-    const data = await api('/api/admin/logs?limit=100', { admin: true });
+    const data = await api('/api/admin/logs?limit=100');
     allLogs = data.logs || [];
     renderLogs();
     setStatus(els.logsStatus, '');
@@ -448,7 +436,6 @@ function setAdminTab(tabName) {
 async function saveAdminConfig() {
   await api('/api/admin/config', {
     method: 'POST',
-    admin: true,
     body: {
       devices: state.admin.config.devices,
       publicPresets: state.admin.config.publicPresets
@@ -481,7 +468,7 @@ function getEnabledDevices() {
 async function discoverDevices() {
   setStatus(els.devicesStatus, 'Scanning your network…');
   try {
-    const out = await api('/api/admin/discover', { method: 'POST', admin: true });
+    const out = await api('/api/admin/discover', { method: 'POST' });
     const found = out.found || [];
     if (!found.length) {
       setStatus(els.devicesStatus, 'No WLED devices found.');
@@ -632,7 +619,7 @@ async function importPresetsAllDevices() {
 
   setStatus(els.devicePresetsStatus, 'Importing presets from all devices…');
   try {
-    const out = await api('/api/admin/presets/importAll', { method: 'POST', admin: true });
+    const out = await api('/api/admin/presets/importAll', { method: 'POST' });
     const byId = {};
     for (const d of out.devices || []) {
       byId[d.deviceId] = d.presets || [];
@@ -792,7 +779,6 @@ function bindListActions() {
       try {
         await api('/api/admin/settings', {
           method: 'POST',
-          admin: true,
           body: { 
             defaultPresetId: presetId, 
             revertTimeout: state.admin.config.revertTimeout ?? 0 
@@ -877,7 +863,7 @@ function bindUI() {
     els.adminLogoutBtn.addEventListener('click', () => {
       (async () => {
         try {
-          await api('/api/auth/logout', { method: 'POST', admin: true });
+          await api('/api/auth/logout', { method: 'POST' });
         } catch {
           // ignore
         }

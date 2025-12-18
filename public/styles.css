@@ -189,12 +189,12 @@ body{
 .theme-toggle .icon-sun,
 .theme-toggle .icon-moon{display:none}
 :root .theme-toggle .icon-moon,
-[data-theme=\"dark\"] .theme-toggle .icon-moon{display:block}
-[data-theme=\"light\"] .theme-toggle .icon-sun{display:block}
-[data-theme=\"light\"] .theme-toggle .icon-moon{display:none}
+[data-theme="dark"] .theme-toggle .icon-moon{display:block}
+[data-theme="light"] .theme-toggle .icon-sun{display:block}
+[data-theme="light"] .theme-toggle .icon-moon{display:none}
 @media (prefers-color-scheme: light) {
-  [data-theme=\"system\"] .theme-toggle .icon-sun{display:block}
-  [data-theme=\"system\"] .theme-toggle .icon-moon{display:none}
+  [data-theme="system"] .theme-toggle .icon-sun{display:block}
+  [data-theme="system"] .theme-toggle .icon-moon{display:none}
 }
 
 /* Admin tabs */
@@ -386,14 +386,6 @@ button:disabled{opacity:.55; cursor:not-allowed}
   border:1px solid var(--border);
   background:rgba(255,255,255,.02);
   color:var(--muted);
-}
-
-.pill.default-pill{
-  background:rgba(126,224,184,.2);
-  border-color:rgba(126,224,184,.4);
-  color:#7ee0b8;
-  font-weight:600;
-  margin-left:8px;
 }
 
 .default-btn{

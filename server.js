@@ -68,6 +68,7 @@ function notifyLogClients() {
 }
 
 const isProd = process.env.NODE_ENV === 'production';
+const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Allow disabling secure cookies for local testing in production mode (e.g., Docker without HTTPS)
 const secureCookie = process.env.SECURE_COOKIE === '0' ? false : isProd;
 
@@ -718,7 +719,7 @@ async function runStartupDiscovery() {
   const enabled = process.env.DISCOVERY_ON_STARTUP === '1';
   if (!enabled) return;
 
-  console.log('=== Startup Discovery Enabled ===');
+  if (DEBUG) console.log('=== Startup Discovery Enabled ===');
   
   const config = await readConfig();
   const envSubnets = String(process.env.DISCOVERY_SUBNETS || '')
@@ -728,28 +729,31 @@ async function runStartupDiscovery() {
   const configSubnets = Array.isArray(config.discoverySubnets) ? config.discoverySubnets : [];
   const subnets = envSubnets.length ? envSubnets : configSubnets;
 
-  console.log('Discovery subnets:', subnets.length ? subnets : 'auto (all local networks)');
-  
-  // Get network info for logging
-  const networks = getLocalIPv4Networks();
-  console.log('Local IPv4 networks detected:');
-  for (const net of networks) {
-    console.log(`  - ${net.ifname}: ${net.address}/${net.prefix} (${intToIp(net.network)} - ${intToIp(net.broadcast)})`);
+  if (DEBUG) {
+    console.log('Discovery subnets:', subnets.length ? subnets : 'auto (all local networks)');
+    
+    // Get network info for logging
+    const networks = getLocalIPv4Networks();
+    console.log('Local IPv4 networks detected:');
+    for (const net of networks) {
+      console.log(`  - ${net.ifname}: ${net.address}/${net.prefix} (${intToIp(net.network)} - ${intToIp(net.broadcast)})`);
+    }
   }
 
-  const wantDebug = process.env.DISCOVERY_DEBUG === '1';
   const out = await discoverWledDevices({
     concurrency: 128,
     timeoutMs: 650,
     maxHosts: 2048,
     preferScanPrefix: 24,
     subnets,
-    debug: wantDebug
+    debug: DEBUG
   });
 
-  console.log(`Discovery found ${out.results.length} WLED device(s):`);
-  for (const device of out.results) {
-    console.log(`  - ${device.name} (${device.host}:${device.port})`);
+  if (DEBUG) {
+    console.log(`Discovery found ${out.results.length} WLED device(s):`);
+    for (const device of out.results) {
+      console.log(`  - ${device.name} (${device.host}:${device.port})`);
+    }
   }
 
   if (wantDebug && out.debug) {
@@ -1322,7 +1326,7 @@ app.post('/api/admin/discover', async (req, res) => {
 
   const subnets = bodySubnets.length ? bodySubnets : (envSubnets.length ? envSubnets : configSubnets);
 
-  const wantDebug = Boolean(req.body?.debug) || process.env.DISCOVERY_DEBUG === '1';
+  const wantDebug = Boolean(req.body?.debug) || DEBUG;
 
   const out = await discoverWledDevices({
     concurrency: 128,

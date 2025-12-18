@@ -88,7 +88,6 @@ async function load() {
   try {
     const cfg = await api('/api/config/public');
     currentPresets = Array.isArray(cfg.publicPresets) ? cfg.publicPresets : [];
-    console.log('load: server returned currentPresetId =', cfg.currentPresetId);
     currentPresetId = cfg.currentPresetId || null;
     renderPresets();
     
@@ -132,14 +131,12 @@ async function checkDeviceStatus() {
     if (data && data.presetStatus) {
       presetStatus = data.presetStatus;
       deviceStatusChecked = true;
-      console.log('checkDeviceStatus: before render, currentPresetId =', currentPresetId);
       renderPresets();
       updateColorWheelState();
       
       // Re-apply glow to current preset if it exists
       if (currentPresetId) {
         const btn = document.querySelector(`.presetButton[data-id="${currentPresetId}"]`);
-        console.log('checkDeviceStatus: re-applying glow to', currentPresetId, 'btn found:', !!btn);
         if (btn && !btn.disabled) {
           btn.classList.add('glow-animate');
         }
@@ -147,7 +144,6 @@ async function checkDeviceStatus() {
     }
   } catch (e) {
     // Silently fail - don't show errors for background polling
-    console.error('Failed to check device status:', e);
   }
 }
 
@@ -172,7 +168,6 @@ async function applyPublicPreset(publicPresetId) {
   lastApplyTime = now;
 
   // Update current preset ID immediately so polling doesn't reset it
-  console.log('applyPublicPreset: setting currentPresetId from', currentPresetId, 'to', publicPresetId);
   currentPresetId = publicPresetId;
 
   setBusy(true);
