@@ -68,7 +68,7 @@ function notifyLogClients() {
 }
 
 const isProd = process.env.NODE_ENV === 'production';
-const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
+
 // Allow disabling secure cookies for local testing in production mode (e.g., Docker without HTTPS)
 const secureCookie = process.env.SECURE_COOKIE === '0' ? false : isProd;
 
@@ -745,20 +745,8 @@ async function runStartupDiscovery() {
     timeoutMs: 650,
     maxHosts: 2048,
     preferScanPrefix: 24,
-    subnets,
-    debug: DEBUG
+    subnets
   });
-
-  if (DEBUG) {
-    console.log(`Discovery found ${out.results.length} WLED device(s):`);
-    for (const device of out.results) {
-      console.log(`  - ${device.name} (${device.host}:${device.port})`);
-    }
-  }
-
-  if (wantDebug && out.debug) {
-    console.log('Discovery debug info:', JSON.stringify(out.debug, null, 2));
-  }
 
   // Auto-save discovered devices if configured
   if (process.env.DISCOVERY_AUTO_SAVE === '1' && out.results.length > 0) {
@@ -1326,20 +1314,16 @@ app.post('/api/admin/discover', async (req, res) => {
 
   const subnets = bodySubnets.length ? bodySubnets : (envSubnets.length ? envSubnets : configSubnets);
 
-  const wantDebug = Boolean(req.body?.debug) || DEBUG;
-
   const out = await discoverWledDevices({
     concurrency: 128,
     timeoutMs: 650,
     maxHosts: 2048,
     preferScanPrefix: 24,
-    subnets,
-    debug: wantDebug
+    subnets
   });
 
   okJson(res, {
-    found: out.results.map((d) => ({ host: d.host, port: d.port, name: d.name })),
-    ...(wantDebug ? { debug: out.debug } : {})
+    found: out.results.map((d) => ({ host: d.host, port: d.port, name: d.name }))
   });
 });
 
