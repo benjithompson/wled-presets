@@ -65,6 +65,17 @@ export async function openDatabase({ rootDir }) {
       PRIMARY KEY (deviceId, presetId),
       FOREIGN KEY (deviceId) REFERENCES devices(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS activity_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      level TEXT NOT NULL DEFAULT 'info',
+      action TEXT NOT NULL,
+      message TEXT NOT NULL,
+      client_ip TEXT,
+      user_agent TEXT,
+      details TEXT
+    );
   `);
 
   return db;
@@ -250,4 +261,31 @@ export async function replaceDevicePresets(db, deviceId, presets) {
     await db.exec('ROLLBACK');
     throw e;
   }
+}
+
+export async function addLog(db, { level = 'info', action, message, clientIp, userAgent, details }) {
+  await db.run(
+    `INSERT INTO activity_logs(level, action, message, client_ip, user_agent, details) VALUES(?, ?, ?, ?, ?, ?)`,
+    [level, action, message, clientIp || null, userAgent || null, details ? JSON.stringify(details) : null]
+  );
+  
+  // Prune old logs (keep last 500)
+  await db.run(`DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 500)`);
+}
+
+export async function getLogs(db, limit = 100) {
+  const rows = await db.all(
+    'SELECT id, timestamp, level, action, message, client_ip, user_agent, details FROM activity_logs ORDER BY id DESC LIMIT ?',
+    [limit]
+  );
+  return rows.map(r => ({
+    id: r.id,
+    timestamp: r.timestamp,
+    level: r.level,
+    action: r.action,
+    message: r.message,
+    clientIp: r.client_ip,
+    userAgent: r.user_agent,
+    details: r.details ? JSON.parse(r.details) : null
+  }));
 }

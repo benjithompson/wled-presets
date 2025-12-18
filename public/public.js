@@ -49,11 +49,19 @@ let lastApplyTime = 0;
 const RATE_LIMIT_MS = 1000; // 1 second between selections
 const POLL_INTERVAL_MS = 10000; // Poll device status every 10 seconds
 
+let deviceStatusChecked = false;
+
 function renderPresets() {
   if (!els.presetButtons) return;
 
   if (!currentPresets.length) {
     els.presetButtons.innerHTML = `<div class="muted">No presets available.</div>`;
+    return;
+  }
+
+  // Don't render until device status is known (prevents flash of enabled state)
+  if (!deviceStatusChecked) {
+    els.presetButtons.innerHTML = `<div class="muted">Loading...</div>`;
     return;
   }
 
@@ -99,13 +107,34 @@ async function load() {
   }
 }
 
+function updateColorWheelState() {
+  const colorWheel = document.getElementById('colorWheel');
+  if (!colorWheel) return;
+  
+  // Check if any device is online
+  const anyOnline = Object.values(presetStatus).some(status => status === true);
+  
+  if (anyOnline) {
+    colorWheel.classList.remove('disabled');
+  } else {
+    colorWheel.classList.add('disabled');
+    // Remove any active color glow when disabled
+    for (const seg of document.querySelectorAll('.color-wheel-segment.active-color')) {
+      seg.classList.remove('active-color');
+      seg.style.removeProperty('--segment-color');
+    }
+  }
+}
+
 async function checkDeviceStatus() {
   try {
     const data = await api('/api/device-status');
     if (data && data.presetStatus) {
       presetStatus = data.presetStatus;
+      deviceStatusChecked = true;
       console.log('checkDeviceStatus: before render, currentPresetId =', currentPresetId);
       renderPresets();
+      updateColorWheelState();
       
       // Re-apply glow to current preset if it exists
       if (currentPresetId) {
@@ -208,15 +237,10 @@ function setButtonGlow(btn) {
   for (const b of document.querySelectorAll('.presetButton.glow-animate')) {
     b.classList.remove('glow-animate');
   }
-  // Remove glow from color wheel
-  const colorWheel = document.getElementById('colorWheel');
-  if (colorWheel) {
-    colorWheel.classList.remove('glow-animate');
-    colorWheel.style.removeProperty('--glow-color');
-  }
   // Remove active from color wheel segments
   for (const seg of document.querySelectorAll('.color-wheel-segment.active-color')) {
     seg.classList.remove('active-color');
+    seg.style.removeProperty('--segment-color');
   }
   // Add glow to the selected button
   btn.classList.add('glow-animate');
@@ -230,15 +254,11 @@ function setColorActive(segment, color) {
   // Remove active from all color segments
   for (const seg of document.querySelectorAll('.color-wheel-segment.active-color')) {
     seg.classList.remove('active-color');
+    seg.style.removeProperty('--segment-color');
   }
-  // Add active to selected segment
+  // Add active to selected segment with its color for glow
   segment.classList.add('active-color');
-  // Add glow to color wheel with the selected color
-  const colorWheel = document.getElementById('colorWheel');
-  if (colorWheel) {
-    colorWheel.style.setProperty('--glow-color', color);
-    colorWheel.classList.add('glow-animate');
-  }
+  segment.style.setProperty('--segment-color', color);
   // Clear saved preset since we're using solid color
   currentPresetId = null;
 }
@@ -307,6 +327,12 @@ document.addEventListener('click', (e) => {
   // Handle color wheel clicks
   const segment = e.target.closest('.color-wheel-segment');
   if (segment) {
+    // Check if color wheel is disabled (no devices online)
+    const colorWheel = document.getElementById('colorWheel');
+    if (colorWheel && colorWheel.classList.contains('disabled')) {
+      return;
+    }
+    
     const color = segment.dataset.color;
     if (color) {
       createColorWheelFirework(color);
@@ -324,6 +350,31 @@ document.addEventListener('click', (e) => {
   setButtonGlow(btn);
   applyPublicPreset(btn.dataset.id);
 });
+
+// Theme handling
+function getTheme() {
+  return localStorage.getItem('theme') || 'system';
+}
+
+function setTheme(theme) {
+  localStorage.setItem('theme', theme);
+  document.documentElement.dataset.theme = theme;
+}
+
+function cycleTheme() {
+  const current = getTheme();
+  const next = current === 'system' ? 'light' : current === 'light' ? 'dark' : 'system';
+  setTheme(next);
+}
+
+// Initialize theme
+setTheme(getTheme());
+
+// Theme toggle button
+const themeToggle = document.getElementById('themeToggle');
+if (themeToggle) {
+  themeToggle.addEventListener('click', cycleTheme);
+}
 
 await load();
 await startPolling();

@@ -8,64 +8,134 @@
 </head>
 <body>
   <main class="shell">
-    <header class="header">
+    <header class="header header-admin">
       <div>
         <h1>WLED Presets</h1>
         <p class="sub">Admin</p>
       </div>
-      <a href="/" class="btn ghost">← Public page</a>
+      <div class="header-actions">
+        <a href="/" class="btn ghost">← Public page</a>
+        <div class="profile-menu">
+          <button id="profileBtn" class="profile-btn" type="button" aria-label="Account menu">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="8" r="4"/>
+              <path d="M4 20c0-4 4-6 8-6s8 2 8 6"/>
+            </svg>
+          </button>
+          <div id="profileDropdown" class="profile-dropdown hidden">
+            <div class="theme-section">Theme</div>
+            <div class="theme-options">
+              <button class="theme-option" data-theme="light" type="button">Light</button>
+              <button class="theme-option" data-theme="dark" type="button">Dark</button>
+              <button class="theme-option" data-theme="system" type="button">Auto</button>
+            </div>
+            <div class="divider"></div>
+            <button id="adminLogoutBtn" type="button">Sign out</button>
+          </div>
+        </div>
+      </div>
     </header>
 
+    <nav class="admin-tabs">
+      <button class="admin-tab is-active" data-tab="presets">Presets</button>
+      <button class="admin-tab" data-tab="devices">Devices</button>
+      <button class="admin-tab" data-tab="logs">Logs</button>
+    </nav>
+
     <section id="admin" class="panel is-active" aria-label="Admin configuration">
-      <div class="card">
-        <div class="row">
-          <h2>Admin</h2>
-          <div class="row-actions">
-            <button id="adminLogoutBtn" class="ghost" type="button">Sign out</button>
+      <!-- Presets Tab -->
+      <div id="presetsTab" class="tab-panel is-active">
+        <div class="card">
+          <div class="row">
+            <h3>Public presets</h3>
+            <div class="row-actions">
+              <button id="backupPresetsBtn" class="ghost" type="button">Backup</button>
+              <button id="restorePresetsBtn" class="ghost" type="button">Restore</button>
+              <button id="addPresetBtn" class="primary" type="button">Add preset</button>
+            </div>
           </div>
+          <input type="file" id="restoreFileInput" accept=".json" style="display:none" />
+          <div id="presetEditor" class="card soft" style="display:none"></div>
+          <div id="presetsList" class="list"></div>
+          <p id="presetsStatus" class="status" role="status"></p>
         </div>
-        <p id="adminAuthStatus" class="status" role="status"></p>
+
+        <div class="card">
+          <div class="row">
+            <h3>Preset Settings</h3>
+          </div>
+          <div class="grid">
+            <label class="field">
+              <span>Default preset</span>
+              <select id="defaultPresetSelect">
+                <option value="">(None)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Auto-revert after (minutes)</span>
+              <input id="revertTimeoutInput" type="number" min="0" step="1" placeholder="0 = disabled" />
+            </label>
+          </div>
+          <p class="muted">When a preset or color is selected, it will automatically revert to the default preset after the specified time. Set to 0 to disable.</p>
+          <div class="actions">
+            <button id="saveSettingsBtn" class="primary" type="button">Save settings</button>
+          </div>
+          <p id="settingsStatus" class="status" role="status"></p>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="row">
-          <h3>Devices</h3>
-          <div class="row-actions">
-            <button id="discoverBtn" class="ghost" type="button">Auto-detect</button>
-            <button id="addDeviceBtn" class="primary" type="button">Add device</button>
+      <!-- Devices Tab -->
+      <div id="devicesTab" class="tab-panel">
+        <div class="card">
+          <div class="row">
+            <h3>Devices</h3>
+            <div class="row-actions">
+              <button id="discoverBtn" class="ghost" type="button">Auto-detect</button>
+              <button id="addDeviceBtn" class="primary" type="button">Add device</button>
+            </div>
           </div>
+          <div id="devicesList" class="list"></div>
+          <p id="devicesStatus" class="status" role="status"></p>
         </div>
-        <div id="devicesList" class="list"></div>
-        <p id="devicesStatus" class="status" role="status"></p>
+
+        <div class="card">
+          <div class="row">
+            <h3>Device presets</h3>
+            <div class="row-actions">
+              <select id="devicePresetsSelect" class="device-select">
+                <option value="">Select a device</option>
+              </select>
+              <button id="importPresetsBtn" class="ghost" type="button">Import presets (all devices)</button>
+            </div>
+          </div>
+          <div id="devicePresetsList" class="list"></div>
+          <p id="devicePresetsStatus" class="status" role="status"></p>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="row">
-          <h3>Device presets</h3>
-          <div class="row-actions">
-            <select id="devicePresetsSelect" class="device-select">
-              <option value="">Select a device</option>
-            </select>
-            <button id="importPresetsBtn" class="ghost" type="button">Import presets (all devices)</button>
+      <!-- Logs Tab -->
+      <div id="logsTab" class="tab-panel">
+        <div class="card">
+          <div class="row">
+            <h3>Activity Log</h3>
+            <div class="row-actions">
+              <select id="logsFilter" class="logs-filter">
+                <option value="">All types</option>
+                <option value="applied">Applied</option>
+                <option value="auto_revert">Auto revert</option>
+                <option value="settings">Settings</option>
+                <option value="config">Config</option>
+                <option value="import">Import</option>
+                <option value="admin">Admin</option>
+                <option value="startup">Startup</option>
+                <option value="error">Errors</option>
+              </select>
+              <button id="refreshLogsBtn" class="ghost" type="button">Refresh</button>
+            </div>
           </div>
+          <div id="logsList" class="logs-container"></div>
+          <p id="logsStatus" class="status" role="status"></p>
         </div>
-        <div id="devicePresetsList" class="list"></div>
-        <p id="devicePresetsStatus" class="status" role="status"></p>
-      </div>
-
-      <div class="card">
-        <div class="row">
-          <h3>Public presets</h3>
-          <div class="row-actions">
-            <button id="backupPresetsBtn" class="ghost" type="button">Backup</button>
-            <button id="restorePresetsBtn" class="ghost" type="button">Restore</button>
-            <button id="addPresetBtn" class="primary" type="button">Add preset</button>
-          </div>
-        </div>
-        <input type="file" id="restoreFileInput" accept=".json" style="display:none" />
-        <div id="presetEditor" class="card soft" style="display:none"></div>
-        <div id="presetsList" class="list"></div>
-        <p id="presetsStatus" class="status" role="status"></p>
       </div>
     </section>
 

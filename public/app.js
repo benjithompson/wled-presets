@@ -10,8 +10,16 @@ const els = {
   refreshBtn: document.getElementById('refreshBtn'),
   publicStatus: document.getElementById('publicStatus'),
 
+  // Profile menu
+  profileBtn: document.getElementById('profileBtn'),
+  profileDropdown: document.getElementById('profileDropdown'),
   adminLogoutBtn: document.getElementById('adminLogoutBtn'),
-  adminAuthStatus: document.getElementById('adminAuthStatus'),
+
+  // Admin tabs
+  adminTabs: Array.from(document.querySelectorAll('.admin-tab')),
+  presetsTab: document.getElementById('presetsTab'),
+  devicesTab: document.getElementById('devicesTab'),
+  logsTab: document.getElementById('logsTab'),
 
   discoverBtn: document.getElementById('discoverBtn'),
   addDeviceBtn: document.getElementById('addDeviceBtn'),
@@ -29,7 +37,18 @@ const els = {
   restoreFileInput: document.getElementById('restoreFileInput'),
   presetEditor: document.getElementById('presetEditor'),
   presetsList: document.getElementById('presetsList'),
-  presetsStatus: document.getElementById('presetsStatus')
+  presetsStatus: document.getElementById('presetsStatus'),
+
+  defaultPresetSelect: document.getElementById('defaultPresetSelect'),
+  revertTimeoutInput: document.getElementById('revertTimeoutInput'),
+  saveSettingsBtn: document.getElementById('saveSettingsBtn'),
+  settingsStatus: document.getElementById('settingsStatus'),
+
+  // Logs
+  logsList: document.getElementById('logsList'),
+  logsStatus: document.getElementById('logsStatus'),
+  logsFilter: document.getElementById('logsFilter'),
+  refreshLogsBtn: document.getElementById('refreshLogsBtn')
 };
 
 const hasPublicUi = Boolean(els.presetSelect && els.applyBtn && els.refreshBtn && els.publicStatus);
@@ -46,7 +65,11 @@ const hasAdminUi = Boolean(
   els.discoverBtn &&
   els.addPresetBtn &&
   els.importPresetsBtn &&
-  els.presetEditor
+  els.presetEditor &&
+  els.defaultPresetSelect &&
+  els.revertTimeoutInput &&
+  els.saveSettingsBtn &&
+  els.logsList
 );
 
 const state = {
@@ -182,6 +205,8 @@ function renderDevices() {
 
 function renderPresets() {
   const presets = state.admin.config.publicPresets || [];
+  const defaultPresetId = state.admin.config.defaultPresetId || '';
+  const currentPresetId = state.admin.config.currentPresetId || '';
 
   function mappedCount(p) {
     const m = p && typeof p.devicePresets === 'object' && p.devicePresets ? p.devicePresets : {};
@@ -189,19 +214,27 @@ function renderPresets() {
   }
 
   els.presetsList.innerHTML = presets.length
-    ? presets.map((p) => `
-        <div class="item">
+    ? presets.map((p) => {
+        const isDefault = p.id === defaultPresetId;
+        const isCurrent = p.id === currentPresetId;
+        const defaultBtnClass = isDefault ? 'default-btn is-default' : 'default-btn ghost';
+        const defaultBtnText = isDefault ? 'Default' : 'Set default';
+        const itemClass = isCurrent ? 'item is-active' : 'item';
+        return `
+        <div class="${itemClass}">
           <div class="meta">
             <div class="title">${escapeHtml(p.name || 'Untitled')}</div>
             <div class="subtitle">Mapped devices: ${escapeHtml(mappedCount(p))}</div>
           </div>
           <div class="controls">
+            <button class="${defaultBtnClass}" data-action="setDefault" data-id="${escapeHtml(p.id)}" type="button"${isDefault ? ' disabled' : ''}>${defaultBtnText}</button>
             <button class="primary" data-action="applyPreset" data-id="${escapeHtml(p.id)}" type="button">Apply</button>
             <button class="ghost" data-action="editPreset" data-id="${escapeHtml(p.id)}" type="button">Edit</button>
             <button class="ghost" data-action="deletePreset" data-id="${escapeHtml(p.id)}" type="button">Remove</button>
           </div>
         </div>
-      `).join('')
+      `;
+      }).join('')
     : `<div class="muted">No public presets yet.</div>`;
 }
 
@@ -269,11 +302,146 @@ async function loadAdminConfig() {
     renderDevicePresetsDropdown();
     renderDevicePresets();
     renderPresets();
+    renderSettings();
     setStatus(els.devicesStatus, '');
     setStatus(els.presetsStatus, '');
   } catch (e) {
     setStatus(els.devicesStatus, e.message);
     setStatus(els.presetsStatus, e.message);
+  }
+}
+
+function renderSettings() {
+  const presets = state.admin.config.publicPresets || [];
+  const defaultPresetId = state.admin.config.defaultPresetId || '';
+  const revertTimeout = state.admin.config.revertTimeout ?? 0;
+
+  // Populate default preset dropdown
+  els.defaultPresetSelect.innerHTML = '<option value="">(None)</option>' +
+    presets.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === defaultPresetId ? 'selected' : ''}>${escapeHtml(p.name || 'Untitled')}</option>`).join('');
+
+  // Set revert timeout input
+  els.revertTimeoutInput.value = revertTimeout > 0 ? revertTimeout : '';
+}
+
+async function saveSettings() {
+  const defaultPresetId = els.defaultPresetSelect.value || null;
+  const revertTimeout = Math.max(0, parseInt(els.revertTimeoutInput.value, 10) || 0);
+
+  setStatus(els.settingsStatus, 'Saving…');
+  try {
+    await api('/api/admin/settings', {
+      method: 'POST',
+      admin: true,
+      body: { defaultPresetId, revertTimeout }
+    });
+    state.admin.config.defaultPresetId = defaultPresetId;
+    state.admin.config.revertTimeout = revertTimeout;
+    setStatus(els.settingsStatus, 'Saved.');
+    setTimeout(() => setStatus(els.settingsStatus, ''), 2000);
+  } catch (e) {
+    setStatus(els.settingsStatus, e.message);
+  }
+}
+
+// Logs
+let allLogs = [];
+let logsEventSource = null;
+
+async function loadLogs() {
+  if (!els.logsList) return;
+  setStatus(els.logsStatus, 'Loading…');
+  try {
+    const data = await api('/api/admin/logs?limit=100', { admin: true });
+    allLogs = data.logs || [];
+    renderLogs();
+    setStatus(els.logsStatus, '');
+  } catch (e) {
+    setStatus(els.logsStatus, e.message);
+  }
+}
+
+function renderLogs() {
+  if (!els.logsList) return;
+  
+  const filter = els.logsFilter?.value || '';
+  let logs = allLogs;
+  
+  if (filter === 'error') {
+    logs = allLogs.filter(log => log.level === 'error' || log.level === 'warn');
+  } else if (filter) {
+    logs = allLogs.filter(log => log.action === filter);
+  }
+  
+  if (!logs.length) {
+    els.logsList.innerHTML = filter 
+      ? '<div class="logs-empty">No logs matching filter.</div>'
+      : '<div class="logs-empty">No activity logged yet.</div>';
+    return;
+  }
+
+  els.logsList.innerHTML = logs.map(log => {
+    const time = new Date(log.timestamp + 'Z').toLocaleString();
+    const details = log.clientIp && log.clientIp !== 'system' && log.clientIp !== 'server'
+      ? `<div class="log-details">IP: ${escapeHtml(log.clientIp)} · ${escapeHtml(log.userAgent || 'Unknown client')}</div>`
+      : '';
+    const levelClass = log.level === 'error' || log.level === 'warn' ? ' log-error' : '';
+    return `
+      <div class="log-entry${levelClass}">
+        <span class="log-time">${escapeHtml(time)}</span>
+        <span class="log-action ${escapeHtml(log.action)}">${escapeHtml(log.action.replace(/_/g, ' '))}</span>
+        <span class="log-message">${escapeHtml(log.message)}</span>
+        ${details}
+      </div>
+    `;
+  }).join('');
+}
+
+function connectLogsStream() {
+  if (logsEventSource) {
+    logsEventSource.close();
+  }
+  
+  logsEventSource = new EventSource('/api/admin/logs/stream');
+  
+  logsEventSource.onmessage = (event) => {
+    if (event.data === 'update') {
+      loadLogs();
+    }
+  };
+  
+  logsEventSource.onerror = () => {
+    // Reconnect after 5 seconds on error
+    logsEventSource.close();
+    logsEventSource = null;
+    setTimeout(connectLogsStream, 5000);
+  };
+}
+
+function disconnectLogsStream() {
+  if (logsEventSource) {
+    logsEventSource.close();
+    logsEventSource = null;
+  }
+}
+
+// Admin tab switching
+function setAdminTab(tabName) {
+  for (const tab of els.adminTabs) {
+    tab.classList.toggle('is-active', tab.dataset.tab === tabName);
+  }
+  
+  const tabPanels = { presets: els.presetsTab, devices: els.devicesTab, logs: els.logsTab };
+  for (const [name, panel] of Object.entries(tabPanels)) {
+    if (panel) panel.classList.toggle('is-active', name === tabName);
+  }
+  
+  // Connect/disconnect SSE stream and load logs when switching tabs
+  if (tabName === 'logs') {
+    loadLogs();
+    connectLogsStream();
+  } else {
+    disconnectLogsStream();
   }
 }
 
@@ -618,6 +786,29 @@ function bindListActions() {
       return;
     }
 
+    if (action === 'setDefault') {
+      const presetId = presets[idx].id;
+      setStatus(els.presetsStatus, 'Setting default…');
+      try {
+        await api('/api/admin/settings', {
+          method: 'POST',
+          admin: true,
+          body: { 
+            defaultPresetId: presetId, 
+            revertTimeout: state.admin.config.revertTimeout ?? 0 
+          }
+        });
+        state.admin.config.defaultPresetId = presetId;
+        renderPresets();
+        renderSettings();
+        setStatus(els.presetsStatus, 'Default preset updated.');
+        setTimeout(() => setStatus(els.presetsStatus, ''), 2000);
+      } catch (e) {
+        setStatus(els.presetsStatus, e.message);
+      }
+      return;
+    }
+
     if (action === 'deletePreset') {
       const ok = confirm('Remove this preset from the public list?');
       if (!ok) return;
@@ -641,6 +832,48 @@ function bindUI() {
   }
 
   if (hasAdminUi) {
+    // Theme handling
+    function getTheme() {
+      return localStorage.getItem('theme') || 'system';
+    }
+
+    function setTheme(theme) {
+      localStorage.setItem('theme', theme);
+      document.documentElement.dataset.theme = theme;
+      updateThemeButtons();
+    }
+
+    function updateThemeButtons() {
+      const current = getTheme();
+      document.querySelectorAll('.theme-option').forEach(btn => {
+        btn.classList.toggle('is-active', btn.dataset.theme === current);
+      });
+    }
+
+    // Initialize theme
+    setTheme(getTheme());
+
+    // Theme option buttons
+    document.querySelectorAll('.theme-option').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setTheme(btn.dataset.theme);
+      });
+    });
+
+    // Profile menu toggle
+    if (els.profileBtn && els.profileDropdown) {
+      els.profileBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        els.profileDropdown.classList.toggle('hidden');
+      });
+      
+      // Close dropdown when clicking outside
+      document.addEventListener('click', () => {
+        els.profileDropdown.classList.add('hidden');
+      });
+    }
+
     els.adminLogoutBtn.addEventListener('click', () => {
       (async () => {
         try {
@@ -651,6 +884,19 @@ function bindUI() {
         window.location.href = '/login';
       })();
     });
+
+    // Admin tab switching
+    for (const tab of els.adminTabs) {
+      tab.addEventListener('click', () => setAdminTab(tab.dataset.tab));
+    }
+
+    // Logs refresh and filter
+    if (els.refreshLogsBtn) {
+      els.refreshLogsBtn.addEventListener('click', loadLogs);
+    }
+    if (els.logsFilter) {
+      els.logsFilter.addEventListener('change', renderLogs);
+    }
 
     els.addDeviceBtn.addEventListener('click', async () => {
       const created = promptDevice(null);
@@ -688,6 +934,8 @@ function bindUI() {
         els.restoreFileInput.value = '';
       }
     });
+
+    els.saveSettingsBtn.addEventListener('click', saveSettings);
   }
 }
 

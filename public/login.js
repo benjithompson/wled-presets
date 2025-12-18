@@ -44,6 +44,12 @@ const els = {
   bootstrapCard: document.getElementById('bootstrapCard')
 };
 
+// Initialize theme from localStorage
+(function initTheme() {
+  const theme = localStorage.getItem('theme') || 'system';
+  document.documentElement.dataset.theme = theme;
+})();
+
 async function loadBootstrapIfNeeded() {
   if (!els.bootstrapCard) return;
   try {

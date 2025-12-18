@@ -24,7 +24,9 @@ import {
   countAdminUsers,
   getAdminUserByUsername,
   getAdminUserById,
-  createAdminUser
+  createAdminUser,
+  addLog,
+  getLogs
 } from './db.js';
 
 const execFileAsync = promisify(execFile);
@@ -36,6 +38,34 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
 
 const db = await openDatabase({ rootDir: ROOT });
+
+// Helper to log to both console and database
+async function serverLog(level, action, message, details = null) {
+  const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] [${level.toUpperCase()}] ${action}: ${message}`;
+  if (level === 'error') {
+    console.error(logLine);
+  } else {
+    console.log(logLine);
+  }
+  try {
+    await addLog(db, { level, action, message, clientIp: 'server', userAgent: 'system', details });
+    notifyLogClients();
+  } catch (e) {
+    console.error('Failed to write log to database:', e.message);
+  }
+}
+
+// Auto-revert timer for returning to default preset
+let revertTimer = null;
+
+// SSE clients for log updates
+const logClients = new Set();
+function notifyLogClients() {
+  for (const client of logClients) {
+    client.write('data: update\n\n');
+  }
+}
 
 const isProd = process.env.NODE_ENV === 'production';
 // Allow disabling secure cookies for local testing in production mode (e.g., Docker without HTTPS)
@@ -152,6 +182,80 @@ async function writeConfig(config) {
   if (Object.prototype.hasOwnProperty.call(config, 'publicPresets')) {
     await replacePublicPresets(db, Array.isArray(config.publicPresets) ? config.publicPresets : []);
   }
+}
+
+// Apply the default preset to all devices
+async function applyDefaultPreset() {
+  const defaultPresetId = await getSetting(db, 'defaultPresetId', '');
+  if (!defaultPresetId) {
+    await serverLog('info', 'auto_revert', 'No default preset configured');
+    return;
+  }
+
+  await serverLog('info', 'auto_revert', `Applying default preset ${defaultPresetId}`);
+
+  const config = await readConfig();
+  const preset = config.publicPresets.find((p) => p && p.id === defaultPresetId);
+  if (!preset) {
+    await serverLog('warn', 'auto_revert', 'Default preset not found');
+    return;
+  }
+
+  const enabledDevices = config.devices.filter((d) => d && d.enabled);
+  const work = [];
+  for (const device of enabledDevices) {
+    const mapped = preset.devicePresets ? preset.devicePresets[device.id] : undefined;
+    const mappedId = Number(mapped);
+    if (!Number.isFinite(mappedId) || mappedId < 1) continue;
+    work.push({ device, mappedId });
+  }
+
+  const results = await Promise.allSettled(
+    work.map(async ({ device, mappedId }) => {
+      const host = normalizeHost(device.host);
+      const port = device.port ?? 80;
+      return await fetchJsonWithTimeoutDetailed(`http://${host}:${port}/json/state`, {
+        method: 'POST',
+        body: { ps: mappedId },
+        timeoutMs: 1500
+      });
+    })
+  );
+
+  const successCount = results.filter(r => r.status === 'fulfilled' && r.value?.ok).length;
+
+  // Update the current preset
+  if (successCount > 0) {
+    await setSetting(db, 'currentPresetId', defaultPresetId);
+    
+    // Log the auto-revert
+    await serverLog('info', 'auto_revert', `Applied to ${successCount}/${work.length} devices - preset "${preset.name}"`, { presetId: defaultPresetId, presetName: preset.name, successCount, totalDevices: work.length });
+  }
+}
+
+// Schedule auto-revert to default preset
+async function scheduleRevert() {
+  // Clear any existing timer
+  if (revertTimer) {
+    clearTimeout(revertTimer);
+    revertTimer = null;
+  }
+
+  const revertTimeout = parseInt(await getSetting(db, 'revertTimeout', '0'), 10) || 0;
+  const defaultPresetId = await getSetting(db, 'defaultPresetId', '');
+
+  // Only schedule if both timeout and default preset are configured
+  if (revertTimeout <= 0 || !defaultPresetId) {
+    return;
+  }
+
+  const ms = revertTimeout * 60 * 1000;
+  await serverLog('info', 'auto_revert', `Scheduled in ${revertTimeout} minute(s)`);
+
+  revertTimer = setTimeout(async () => {
+    revertTimer = null;
+    await applyDefaultPreset();
+  }, ms);
 }
 
 async function migrateConfigJsonToDbIfEmpty() {
@@ -604,7 +708,7 @@ async function ensureBootstrapAdminUser() {
 
   const passwordHash = await bcrypt.hash(password, 12);
   await createAdminUser(db, { id: safeId(), username, passwordHash });
-  console.log(`Admin user created for username: ${username}`);
+  await serverLog('info', 'admin', `Admin user created for username: ${username}`);
 }
 
 await ensureBootstrapAdminUser();
@@ -895,6 +999,20 @@ app.post('/api/color', applyLimiter, async (req, res) => {
   // Clear current preset since we're using solid color
   if (applied.length > 0) {
     await setSetting(db, 'currentPresetId', '');
+    // Schedule auto-revert to default preset
+    await scheduleRevert();
+    
+    // Log the color change
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    await addLog(db, {
+      level: 'info',
+      action: 'applied',
+      message: `Color ${color} applied to ${applied.length} device(s)`,
+      clientIp,
+      userAgent,
+      details: { color, appliedCount: applied.length, errorCount: errors.length }
+    });
   }
 
   okJson(res, { ok: true, applied, errors });
@@ -956,6 +1074,31 @@ app.post('/api/apply', applyLimiter, async (req, res) => {
   // Save the current preset selection if at least one device was successfully updated
   if (applied.length > 0) {
     await setSetting(db, 'currentPresetId', String(publicPresetId));
+    
+    // Schedule auto-revert to default preset (unless this IS the default)
+    const defaultPresetId = await getSetting(db, 'defaultPresetId', '');
+    if (String(publicPresetId) !== defaultPresetId) {
+      await scheduleRevert();
+    } else {
+      // Clear any pending revert since we're already on default
+      if (revertTimer) {
+        clearTimeout(revertTimer);
+        revertTimer = null;
+        console.log('Auto-revert: Cleared (applied default preset)');
+      }
+    }
+    
+    // Log the preset change
+    const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    await addLog(db, {
+      level: 'info',
+      action: 'applied',
+      message: `Preset "${preset.name}" applied to ${applied.length} device(s)`,
+      clientIp,
+      userAgent,
+      details: { presetId: publicPresetId, presetName: preset.name, appliedCount: applied.length, skippedCount: skipped.length, errorCount: errors.length }
+    });
   }
 
   okJson(res, { ok: true, applied, skipped, errors });
@@ -990,10 +1133,53 @@ app.post('/api/admin/apply', async (req, res) => {
   return okJson(res, { ok: true, applied: [{ deviceId: device.id, presetId: idNum }], skipped: [], errors: [] });
 });
 
+app.get('/api/admin/logs', async (req, res) => {
+  if (!requireAdminSession(req)) return res.status(401).json({ error: 'Unauthorized' });
+  
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
+  const logs = await getLogs(db, limit);
+  okJson(res, { logs });
+});
+
+// SSE endpoint for log updates
+app.get('/api/admin/logs/stream', (req, res) => {
+  if (!requireAdminSession(req)) return res.status(401).json({ error: 'Unauthorized' });
+  
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  
+  logClients.add(res);
+  
+  // Send heartbeat every 30s to keep connection alive
+  const heartbeat = setInterval(() => {
+    res.write(':heartbeat\n\n');
+  }, 30000);
+  
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    logClients.delete(res);
+  });
+});
+
 app.get('/api/admin/config', async (req, res) => {
   const config = await readConfig();
   if (!requireAdminSession(req)) return res.status(401).json({ error: 'Unauthorized' });
-  okJson(res, { devices: config.devices, publicPresets: config.publicPresets, devicePresets: config.devicePresets });
+  
+  // Get settings
+  const defaultPresetId = await getSetting(db, 'defaultPresetId', null);
+  const revertTimeout = parseInt(await getSetting(db, 'revertTimeout', '0'), 10) || 0;
+  const currentPresetId = await getSetting(db, 'currentPresetId', null);
+  
+  okJson(res, { 
+    devices: config.devices, 
+    publicPresets: config.publicPresets, 
+    devicePresets: config.devicePresets,
+    defaultPresetId,
+    revertTimeout,
+    currentPresetId
+  });
 });
 
 app.post('/api/admin/config', async (req, res) => {
@@ -1019,12 +1205,60 @@ app.post('/api/admin/config', async (req, res) => {
 
     const normalizedPresets = normalizePublicPresets(publicPresets);
 
-    console.log('Saving config with', normalizedDevices.length, 'devices');
+    await serverLog('info', 'config', `Saving config with ${normalizedDevices.length} devices, ${normalizedPresets.length} presets`);
     await writeConfig({ ...config, devices: normalizedDevices, publicPresets: normalizedPresets });
-    console.log('Config saved successfully');
     okJson(res, { ok: true });
   } catch (err) {
-    console.error('Error saving config:', err);
+    await serverLog('error', 'config', `Error saving config: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/settings', async (req, res) => {
+  if (!requireAdminSession(req)) return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const { defaultPresetId, revertTimeout } = req.body || {};
+    
+    // Get old values before saving
+    const oldTimeout = parseInt(await getSetting(db, 'revertTimeout', '0'), 10) || 0;
+    const oldDefaultPresetId = await getSetting(db, 'defaultPresetId', '');
+    
+    // Save default preset ID (can be null/empty to clear)
+    await setSetting(db, 'defaultPresetId', defaultPresetId || '');
+    
+    // Save revert timeout (in minutes, 0 = disabled)
+    const timeout = Math.max(0, parseInt(revertTimeout, 10) || 0);
+    await setSetting(db, 'revertTimeout', String(timeout));
+    
+    // Log changes
+    if (timeout !== oldTimeout) {
+      if (timeout === 0) {
+        await serverLog('info', 'settings', 'Auto-revert timer disabled');
+      } else {
+        await serverLog('info', 'settings', `Auto-revert timer changed from ${oldTimeout} to ${timeout} minute(s)`);
+      }
+    }
+    if (defaultPresetId !== oldDefaultPresetId) {
+      await serverLog('info', 'settings', `Default preset changed to: ${defaultPresetId || '(none)'}`);
+    }
+    
+    // Reset the revert timer if there's one running, or if settings changed and timer should be active
+    if (revertTimer || (timeout > 0 && defaultPresetId)) {
+      // Clear existing timer
+      if (revertTimer) {
+        clearTimeout(revertTimer);
+        revertTimer = null;
+      }
+      // Re-schedule with new values if enabled
+      if (timeout > 0 && defaultPresetId) {
+        await scheduleRevert();
+      }
+    }
+    
+    okJson(res, { ok: true });
+  } catch (err) {
+    await serverLog('error', 'settings', `Error saving settings: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1061,11 +1295,8 @@ app.post('/api/admin/presets/importAll', async (req, res) => {
       results.push({ deviceId: device.id, presets: imported });
       
       // Save to database
-      console.log(`Saving ${imported.length} presets for device ${device.id}`);
       await replaceDevicePresets(db, device.id, imported);
-      console.log(`Saved presets for device ${device.id}`);
     } catch (e) {
-      console.error(`Error importing presets for device ${device.id}:`, e);
       errors.push({ deviceId: device.id, error: e?.message || 'Failed to contact WLED device' });
       results.push({ deviceId: device.id, presets: [] });
     } finally {
@@ -1073,7 +1304,8 @@ app.post('/api/admin/presets/importAll', async (req, res) => {
     }
   }
 
-  console.log('Import complete. Results:', results.length, 'Errors:', errors.length);
+  const totalImported = results.reduce((sum, r) => sum + r.presets.length, 0);
+  await serverLog('info', 'import', `Import complete: ${totalImported} presets from ${results.length} devices, ${errors.length} errors`);
   okJson(res, { ok: true, devices: results, errors });
 });
 
@@ -1185,6 +1417,6 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`WLED Presets Site running on http://localhost:${PORT}`);
+app.listen(PORT, async () => {
+  await serverLog('info', 'startup', `Server running on http://localhost:${PORT}`);
 });
