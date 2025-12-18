@@ -719,7 +719,7 @@ async function runStartupDiscovery() {
   const enabled = process.env.DISCOVERY_ON_STARTUP === '1';
   if (!enabled) return;
 
-  if (DEBUG) console.log('=== Startup Discovery Enabled ===');
+  console.log('Running startup discovery...');
   
   const config = await readConfig();
   const envSubnets = String(process.env.DISCOVERY_SUBNETS || '')
@@ -728,17 +728,6 @@ async function runStartupDiscovery() {
     .filter(Boolean);
   const configSubnets = Array.isArray(config.discoverySubnets) ? config.discoverySubnets : [];
   const subnets = envSubnets.length ? envSubnets : configSubnets;
-
-  if (DEBUG) {
-    console.log('Discovery subnets:', subnets.length ? subnets : 'auto (all local networks)');
-    
-    // Get network info for logging
-    const networks = getLocalIPv4Networks();
-    console.log('Local IPv4 networks detected:');
-    for (const net of networks) {
-      console.log(`  - ${net.ifname}: ${net.address}/${net.prefix} (${intToIp(net.network)} - ${intToIp(net.broadcast)})`);
-    }
-  }
 
   const out = await discoverWledDevices({
     concurrency: 128,
