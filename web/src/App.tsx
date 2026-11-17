@@ -1,0 +1,42 @@
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router';
+import { Toaster } from 'sonner';
+import { useTheme } from './lib/theme.ts';
+import { PublicPage } from './pages/PublicPage.tsx';
+import { LoginPage } from './pages/LoginPage.tsx';
+import { AdminLayout } from './pages/admin/AdminLayout.tsx';
+import { ScenesPage } from './pages/admin/ScenesPage.tsx';
+import { DevicesPage } from './pages/admin/DevicesPage.tsx';
+import { ActivityPage } from './pages/admin/ActivityPage.tsx';
+import { SettingsPage } from './pages/admin/SettingsPage.tsx';
+import { LayoutPage } from './pages/admin/LayoutPage.tsx';
+import { PlayPage } from './pages/PlayPage.tsx';
+
+const router = createBrowserRouter([
+  { path: '/', element: <PublicPage /> },
+  { path: '/login', element: <LoginPage /> },
+  { path: '/play', element: <PlayPage /> },
+  {
+    path: '/admin',
+    element: <AdminLayout />,
+    children: [
+      { index: true, element: <Navigate to="scenes" replace /> },
+      { path: 'scenes', element: <ScenesPage /> },
+      { path: 'devices', element: <DevicesPage /> },
+      { path: 'layout', element: <LayoutPage /> },
+      { path: 'activity', element: <ActivityPage /> },
+      { path: 'settings', element: <SettingsPage /> }
+    ]
+  },
+  { path: '*', element: <Navigate to="/" replace /> }
+]);
+
+export function App() {
+  const theme = useTheme();
+  const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  return (
+    <>
+      <RouterProvider router={router} />
+      <Toaster theme={dark ? 'dark' : 'light'} position="bottom-center" richColors closeButton />
+    </>
+  );
+}

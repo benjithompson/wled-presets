@@ -1,22 +1,54 @@
 {
-  "name": "wled-presets-site",
-  "version": "1.2.9",
+  "name": "wled-presets",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Single-page public preset picker + admin config for WLED devices",
+  "description": "Public preset picker and admin console for WLED devices",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "start": "node server.js",
-    "stop": "pids=$(lsof -ti tcp:${PORT:-8790} 2>/dev/null || true); if [ -n \"$pids\" ]; then kill $pids; fi; true",
-    "restart": "npm run stop && npm run start"
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:all": "concurrently -k -n mock,server,web -c yellow,blue,magenta \"npm:mock\" \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node --watch --env-file-if-exists=.env server/src/index.ts",
+    "dev:web": "vite",
+    "mock": "node scripts/mock-wled.ts 4",
+    "build": "vite build",
+    "start": "node server/src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.8",
     "bcryptjs": "^3.0.3",
-    "connect-sqlite3": "^0.9.16",
-    "express": "^4.19.2",
-    "express-rate-limit": "^8.2.1",
-    "express-session": "^1.18.2",
-    "helmet": "^8.1.0",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7"
+    "better-sqlite3": "^13.2.0",
+    "hono": "^4.13.19",
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/react-query": "^5.107.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.3.0",
+    "clsx": "^2.1.1",
+    "concurrently": "^10.0.7",
+    "lucide-react": "^1.73.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^8.5.1",
+    "sonner": "^2.0.8",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  },
+  "allowScripts": {
+    "better-sqlite3": false
   }
 }
