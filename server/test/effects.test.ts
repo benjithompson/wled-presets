@@ -43,6 +43,42 @@ describe('effects', () => {
     expect([...r2.render(30, defaultSettings('plasma'))].every(Number.isFinite)).toBe(true);
   });
 
+  it('play the basics with exactly the colors picked', () => {
+    const red = [1, 0, 0];
+    const own = (id: Parameters<typeof defaultSettings>[0], colors: string[], patch: Partial<EffectSettings> = {}): EffectSettings => ({ ...defaultSettings(id), palette: 'custom', colors, brightness: 1, ...patch });
+    // Solid: one color everywhere; several colors split the string in equal parts.
+    expect(rgb(new EffectRunner('solid', 10, 1).render(1 / 60, own('solid', ['#ff0000'])), 9)).toEqual(red);
+    const split = new EffectRunner('solid', 10, 1).render(1 / 60, own('solid', ['#ff0000', '#0000ff']));
+    expect([rgb(split, 4), rgb(split, 5)]).toEqual([red, [0, 0, 1]]);
+    // Blocks alternate; a gradient runs from the first color to the last.
+    const b = new EffectRunner('blocks', 12, 1).render(1 / 60, own('blocks', ['#ff0000', '#00ff00']));
+    expect([rgb(b, 0), rgb(b, 3)]).toEqual([red, [0, 1, 0]]);
+    const g = new EffectRunner('gradient', 11, 1).render(1 / 60, own('gradient', ['#ff0000', '#0000ff']));
+    expect(rgb(g, 0)).toEqual(red);
+    expect(rgb(g, 10).map((v) => +v.toFixed(3))).toEqual([0, 0, 1]);
+    // Blink: on, then off; a wipe fills the string from the start.
+    const blink = new EffectRunner('blink', 5, 1);
+    const s = own('blink', ['#ff0000'], { speed: 0.5, intensity: 0.5 });
+    expect(rgb(blink.render(0.1, s), 2)).toEqual(red);
+    for (let k = 0; k < 7; k++) blink.render(0.1, s);
+    expect(lit(blink.render(0.05, s), 2)).toBe(false);
+    const wipe = new EffectRunner('wipe', 100, 1);
+    let w = wipe.render(0, own('wipe', ['#ff0000']));
+    for (let k = 0; k < 60; k++) w = wipe.render(1 / 30, own('wipe', ['#ff0000']));
+    expect(lit(w, 2)).toBe(true);
+    expect(lit(w, 95)).toBe(false);
+  });
+
+  it('start the basics with their own colors, and say which controls they have', () => {
+    expect(defaultSettings('solid')).toMatchObject({ palette: 'custom', colors: ['#ffb46e'] });
+    expect(defaultSettings('aurora').colors).toBeUndefined();
+    const solid = EFFECTS.find((e) => e.id === 'solid')!;
+    expect([solid.speed, solid.intensity, solid.size]).toEqual([false, undefined, undefined]);
+    expect(EFFECTS.filter((e) => e.basic).length).toBeGreaterThanOrEqual(12);
+    // A dark color of its own still shows on the public page.
+    expect(effectsLook([{ ...defaultSettings('solid'), colors: ['#000080'] }])[0].colors).toEqual(['#000080']);
+  });
+
   it('describe a scene for the public page', () => {
     const look = effectsLook([defaultSettings('inferno'), { ...defaultSettings('aurora'), palette: 'custom', colors: ['#ff00ff', '#000000'] }]);
     // The fire palette starts at black: dark colors do not make a scene's swatch.
@@ -266,7 +302,12 @@ describe('3-D effects and the whole yard', () => {
   it('keep the yard effect in the layout and validate it', () => {
     const withYard = { ...layout, effect: wash };
     expect(layoutEffects(withYard)[YARD]).toEqual(wash);
-    expect(layoutSchema.safeParse(withYard).success).toBe(true);
+    const kept = layoutSchema.safeParse(withYard);
+    expect(kept.success && kept.data.effect).toEqual(wash);
+    // The direction is saved (it used to be dropped).
+    const up = layoutSchema.safeParse({ ...layout, effect: { ...wash, direction: 'up' } });
+    expect(up.success && up.data.effect?.direction).toBe('up');
+    expect(layoutSchema.safeParse({ ...layout, effect: { ...wash, direction: 'sideways' } }).success).toBe(false);
     expect(effectDirection({ effect: 'wash', direction: 'in' })).toBe('in');
     expect(effectDirection({ effect: 'wash', direction: undefined })).toBe('right');
     expect(effectDirection({ effect: 'scanner', direction: 'left' })).toBe('right');

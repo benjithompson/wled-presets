@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { EFFECTS, PALETTES, type EffectId, type PaletteId } from '../../shared/effects.ts';
+import { DIRECTIONS, EFFECTS, PALETTES, type Direction, type EffectId, type PaletteId } from '../../shared/effects.ts';
 import { deviceRuns, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, sampleLayout, type Layout } from '../../shared/layout.ts';
 import type { Db } from './db.ts';
 
@@ -24,7 +24,8 @@ export const effectSettingsSchema = z.object({
   intensity: unit,
   size: unit,
   brightness: unit,
-  reverse: z.boolean().optional()
+  reverse: z.boolean().optional(),
+  direction: z.enum(Object.keys(DIRECTIONS) as [Direction, ...Direction[]]).optional()
 });
 
 /** Effects by layout object id, or "<object id>#<segment>" for one segment of a line. */
@@ -39,6 +40,8 @@ export const layoutShape = z.object({
   scale: z.number().min(1).max(10_000).optional(),
   units: z.enum(['ft', 'm']).optional(),
   groundY: coord.optional(),
+  /** The whole yard's effect. */
+  effect: effectSettingsSchema.optional(),
   fixtures: z
     .array(
       z.object({

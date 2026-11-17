@@ -2,7 +2,7 @@
 // left) and the inspector (properties of what is selected, on the right).
 import { useState, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Box, Circle, Copy, Crosshair, House, Scissors, Spline, Trash2, TreePine } from 'lucide-react';
-import { EFFECTS, effectInfo, paletteColors, YARD, type EffectId, type EffectSettings } from '../../../../../shared/effects.ts';
+import { EFFECTS, effectInfo, paletteColors, YARD, type EffectId, type EffectInfo, type EffectSettings } from '../../../../../shared/effects.ts';
 import type { FixtureKind, Layout } from '../../../../../shared/layout.ts';
 import { BLEND_MODES, clipEnd, neighbours, overlapOf, TRANSITIONS, transitionInfo, type BlendMode, type SeqClip, type Sequence, type TransitionId } from '../../../../../shared/sequence.ts';
 import { cn } from '../../../lib/utils.ts';
@@ -14,6 +14,13 @@ import { allTargets, findAudioClip, findClip, fmtTime, MIN_CLIP, round, targetNa
 const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine };
 
 type BrowserTab = 'effects' | 'transitions' | 'objects';
+
+/** The effects tab: the basics first, then the effects in space, then along a string. */
+const BROWSER_GROUPS: { label: string; has: (e: EffectInfo) => boolean }[] = [
+  { label: 'Basics', has: (e) => !!e.basic },
+  { label: 'In space (3-D)', has: (e) => e.space === '3d' },
+  { label: 'Along the string (1-D)', has: (e) => e.space === '1d' && !e.basic }
+];
 
 export function Browser({
   layout,
@@ -81,11 +88,11 @@ export function Browser({
             <p className="px-1 pb-2 text-[11px] leading-snug text-stone-500">
               Drag an effect onto a layer, or double-click a layer. It plays on <b className="text-stone-700 dark:text-stone-300">{targetsLabel(layout, picked.length ? picked : [YARD])}</b> (pick objects in the Objects tab or the preview).
             </p>
-            {(['3d', '1d'] as const).map((space) => (
-              <div key={space} className="mb-3">
-                <p className="px-1 pb-1 text-[10px] font-semibold tracking-wide text-stone-500 uppercase">{space === '3d' ? 'In space (3-D)' : 'Along the string (1-D)'}</p>
+            {BROWSER_GROUPS.map((group) => (
+              <div key={group.label} className="mb-3">
+                <p className="px-1 pb-1 text-[10px] font-semibold tracking-wide text-stone-500 uppercase">{group.label}</p>
                 <div className="grid grid-cols-2 gap-1.5">
-                  {EFFECTS.filter((e) => e.space === space).map((e) => (
+                  {EFFECTS.filter(group.has).map((e) => (
                     <button
                       key={e.id}
                       type="button"
@@ -103,7 +110,7 @@ export function Browser({
                         brush === e.id ? 'bg-sky-50 ring-sky-400 dark:bg-sky-950/50' : 'bg-white ring-stone-200 hover:ring-stone-300 dark:bg-stone-900 dark:ring-stone-800 dark:hover:ring-stone-700'
                       )}
                     >
-                      <PaletteSwatch colors={paletteColors({ palette: e.palette })} className="block h-5 w-full rounded" />
+                      <PaletteSwatch colors={paletteColors({ palette: e.palette, colors: e.colors })} className="block h-5 w-full rounded" />
                       <span className="truncate text-[11px] font-medium">{e.name}</span>
                     </button>
                   ))}
