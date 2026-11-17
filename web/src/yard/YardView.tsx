@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type React from 'react';
-import { buildStage, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
+import { buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
 
@@ -195,12 +195,13 @@ export function YardView({
         const c = view(f.points[0] ?? { x: 0, y: 0 });
         const r = f.radius ?? 60;
         ctx.beginPath();
-        if (isLine(f)) {
-          f.points.forEach((p, i) => {
-            const q = view(p);
-            if (i) ctx.lineTo(X(q.u), Y(q.v));
-            else ctx.moveTo(X(q.u), Y(q.v));
-          });
+        if (isLine(f) || f.kind === 'custom') {
+          for (const path of isLine(f) ? [f.points] : designPaths(f, layoutScale(layout)))
+            path.forEach((p, i) => {
+              const q = view(p);
+              if (i) ctx.lineTo(X(q.u), Y(q.v));
+              else ctx.moveTo(X(q.u), Y(q.v));
+            });
         } else if (top) {
           // From above, bushes and trees are circles.
           ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);

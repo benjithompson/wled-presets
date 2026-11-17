@@ -31,6 +31,33 @@ export const effectSettingsSchema = z.object({
 /** Effects by layout object id, or "<object id>#<segment>" for one segment of a line. */
 export const effectsSchema = z.record(z.string().min(1).max(72), effectSettingsSchema).refine((r) => Object.keys(r).length <= 512, 'Too many effects');
 const point = z.object({ x: coord, y: coord, z: coord.optional() });
+const id = z.string().min(1).max(64);
+
+/** A light string type of your own (see shared/lights.ts). */
+const lightTypeSchema = z.object({
+  id,
+  name: z.string().trim().min(1).max(80),
+  chip: z.string().trim().min(1).max(40),
+  volts: z.number().min(1).max(60),
+  style: z.enum(['bullet', 'bulb', 'strip', 'module', 'other']),
+  spacing: z.number().min(0.001).max(10),
+  perStrand: z.number().int().min(1).max(MAX_FIXTURE_PIXELS).nullable(),
+  milliamps: z.number().min(0).max(1000)
+});
+
+/** A custom object's strokes, in meters (at most 100 m from its anchor). */
+const meters = z.number().finite().min(-100).max(100);
+const strokesSchema = z
+  .array(z.object({ points: z.array(z.object({ x: meters, y: meters })).min(1).max(500), closed: z.boolean().optional() }))
+  .max(64);
+
+const designSchema = z.object({
+  id,
+  name: z.string().trim().min(1).max(60),
+  strokes: strokesSchema,
+  pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
+  lights: id.optional()
+});
 
 /** The shape only. `layoutSchema` adds the checks a saved layout must pass. */
 export const layoutShape = z.object({
@@ -42,12 +69,15 @@ export const layoutShape = z.object({
   groundY: coord.optional(),
   /** The whole yard's effect. */
   effect: effectSettingsSchema.optional(),
+  lightTypes: z.array(lightTypeSchema).max(100).optional(),
+  lights: id.optional(),
+  designs: z.array(designSchema).max(200).optional(),
   fixtures: z
     .array(
       z.object({
         id: z.string().min(1).max(64),
         name: z.string().trim().min(1).max(60),
-        kind: z.enum(['roof', 'line', 'bush', 'tree']),
+        kind: z.enum(['roof', 'line', 'bush', 'tree', 'custom']),
         points: z.array(point).min(1).max(64),
         radius: z.number().min(5).max(4000).optional(),
         height: z.number().min(5).max(8000).optional(),
@@ -55,6 +85,12 @@ export const layoutShape = z.object({
         turns: z.number().min(0.5).max(100).optional(),
         strands: z.number().int().min(1).max(64).optional(),
         pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
+        lights: id.optional(),
+        design: strokesSchema.optional(),
+        designId: id.optional(),
+        size: z.number().min(0.01).max(100).optional(),
+        rotation: z.number().finite().min(-3600).max(3600).optional(),
+        facing: z.number().finite().min(-3600).max(3600).optional(),
         deviceId: z.string().nullable(),
         startPixel: z.number().int().min(0).max(10_000),
         reversed: z.boolean(),

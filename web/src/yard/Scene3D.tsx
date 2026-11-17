@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildStage, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Stage } from '../../../shared/layout.ts';
+import { buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Stage } from '../../../shared/layout.ts';
 import { cn } from '../lib/utils.ts';
 
 type CameraPreset = 'street' | 'front' | 'top' | 'side';
@@ -204,13 +204,16 @@ export function Scene3D({
 
     // Wires of the lines, so their shape shows even where the LEDs are off.
     layout.fixtures.forEach((f) => {
-      if (!isLine(f) || f.points.length < 2) return;
+      const paths = isLine(f) ? [f.points] : f.kind === 'custom' ? designPaths(f, scale) : [];
       const hl = Array.isArray(selected) ? selected.includes(f.id) : f.id === selected;
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(f.points.map((p) => world(p.x, p.y, p.z ?? 0))),
-        new THREE.LineBasicMaterial({ color: hl ? 0x28aaff : 0xffffff, transparent: true, opacity: hl ? 0.9 : 0.12 })
-      );
-      c.content.add(line);
+      for (const path of paths) {
+        if (path.length < 2) continue;
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(path.map((p) => world(p.x, p.y, p.z ?? 0))),
+          new THREE.LineBasicMaterial({ color: hl ? 0x28aaff : 0xffffff, transparent: true, opacity: hl ? 0.9 : 0.12 })
+        );
+        c.content.add(line);
+      }
     });
 
     // LEDs: a small bright bulb and a wide soft glow, both in the frame's colors.

@@ -3,14 +3,17 @@
 // web client (editor and simulator), so both agree on every pixel's position.
 
 import type { EffectSettings } from './effects.ts';
+import type { LightType } from './lights.ts';
 
 /**
  * roof: the roofline, a line of LEDs that games use as "the roof".
  * line: any other line of LEDs (windows, doors, a fence, a path); edited like a roof line.
  * bush: LEDs spread over a dome.
  * tree: a cone, with LEDs in a spiral or in strands from the base to the top.
+ * custom: your own shape (a star, a wreath, an arch…), drawn in the object designer. Its
+ *   design can be saved to the library and placed many times.
  */
-export type FixtureKind = 'roof' | 'line' | 'bush' | 'tree';
+export type FixtureKind = 'roof' | 'line' | 'bush' | 'tree' | 'custom';
 /** Bush: fill, ring, spiral. Tree: spiral, strands. */
 export type FixturePattern = 'fill' | 'ring' | 'spiral' | 'strands';
 export type Units = 'ft' | 'm';
@@ -36,6 +39,27 @@ export interface Point3 {
 /** True for objects that are a line of LEDs with points and segments (roof and line). */
 export const isLine = (f: { kind: FixtureKind }) => f.kind === 'roof' || f.kind === 'line';
 
+/**
+ * One run of LEDs in a custom object's design, in meters, as seen from the front: x to the
+ * right, y up, (0, 0) is the object's anchor (the point you place). The LEDs run from the first
+ * point to the last; a closed stroke goes back to its first point. Between strokes, the wire
+ * jumps without LEDs.
+ */
+export interface DesignStroke {
+  points: { x: number; y: number }[];
+  closed?: boolean;
+}
+
+/** A custom object in the library, to place as many times as you like. */
+export interface Design {
+  id: string;
+  name: string;
+  strokes: DesignStroke[];
+  pixels: number;
+  /** The light string it is made of (a LightType id). */
+  lights?: string;
+}
+
 export interface Fixture {
   id: string;
   name: string;
@@ -54,6 +78,18 @@ export interface Fixture {
   strands?: number;
   /** Number of LEDs. */
   pixels: number;
+  /** What the LEDs are: a LightType id (see shared/lights.ts). Not set: unknown. */
+  lights?: string;
+  /** Custom: its design, a copy of the library's (designId) so the object draws on its own. */
+  design?: DesignStroke[];
+  /** Custom: the library design it was placed from. Editing that design changes this object too. */
+  designId?: string;
+  /** Custom: size as a factor of the design (1: as designed). */
+  size?: number;
+  /** Custom: turned clockwise, in degrees, as seen from the front. */
+  rotation?: number;
+  /** Custom: which way it faces, in degrees: 0 faces the street, 90 faces right (as seen from the street). */
+  facing?: number;
   /** The WLED device that drives these LEDs. Null: simulation only. */
   deviceId: string | null;
   /** Index of the first LED of this object on that device. */
@@ -102,6 +138,12 @@ export interface Layout {
    * effect). Objects and segments with their own effect play theirs instead.
    */
   effect?: EffectSettings;
+  /** Your own light types (the built-in ones are in shared/lights.ts). */
+  lightTypes?: LightType[];
+  /** The light type new objects are made of. */
+  lights?: string;
+  /** The library of custom objects. */
+  designs?: Design[];
 }
 
 export const LAYOUT_WIDTH = 1600;
@@ -166,11 +208,18 @@ export const fixtureColor = (index: number, v = 1) => hsvBytes(FIXTURE_HUES[inde
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-/** Positions of the LEDs of one object, in LED order (LED 0 first), in 3D. */
-export function fixturePixels(f: Fixture): Point3[] {
+/**
+ * Positions of the LEDs of one object, in LED order (LED 0 first), in 3D. `scale` (layout units
+ * per meter) sizes custom objects, which are designed in meters.
+ */
+export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
   const n = Math.max(0, Math.floor(f.pixels));
   if (n === 0) return [];
   if (f.kind === 'tree') return treePixels(f, n);
+  if (f.kind === 'custom') {
+    const at = designTransform(f, scale);
+    return designLeds(f.design ?? [], n).map(at);
+  }
   if (f.kind === 'bush') {
     const c = f.points[0] ?? { x: 0, y: 0 };
     const cz = pz(c);
@@ -255,6 +304,88 @@ function treePixels(f: Fixture, n: number): Point3[] {
   return out;
 }
 
+// ---------- Custom objects ----------
+
+const strokePath = (s: DesignStroke) => (s.closed && s.points.length > 2 ? [...s.points, s.points[0]] : s.points);
+const pathLength = (pts: { x: number; y: number }[]) => pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0);
+
+/** The length of wire with LEDs in a design, in meters. */
+export const designLength = (strokes: DesignStroke[]) => strokes.reduce((a, s) => a + pathLength(strokePath(s)), 0);
+
+/**
+ * Where the n LEDs of a design sit (in meters, LED order). They are spread evenly along all the
+ * strokes, at one spacing: an open stroke has an LED at each end, a closed one goes all round.
+ */
+export function designLeds(strokes: DesignStroke[], n: number): { x: number; y: number }[] {
+  const live = strokes.filter((s) => s.points.length > 0);
+  if (n <= 0) return [];
+  if (!live.length) return Array.from({ length: n }, () => ({ x: 0, y: 0 }));
+  const closed = live.map((s) => !!s.closed && s.points.length > 2);
+  const counts = designCounts(live, n);
+  const out: { x: number; y: number }[] = [];
+  live.forEach((s, j) => {
+    const c = counts[j];
+    const path = strokePath(s);
+    for (let i = 0; i < c; i++) {
+      const t = closed[j] ? i / c : c > 1 ? i / (c - 1) : 0.5;
+      const p = along(path, t);
+      out.push({ x: p.x, y: p.y });
+    }
+  });
+  return out;
+}
+
+/** How many of the n LEDs each stroke (with points) of a design gets. */
+export function designCounts(strokes: DesignStroke[], n: number): number[] {
+  const live = strokes.filter((s) => s.points.length > 0);
+  if (!live.length || n <= 0) return live.map(() => 0);
+  const closed = live.map((s) => !!s.closed && s.points.length > 2);
+  const lens = live.map((s) => pathLength(strokePath(s)));
+  const total = lens.reduce((a, b) => a + b, 0);
+  // One spacing for the whole design: open strokes have one more LED than gaps.
+  const gaps = n - closed.filter((c) => !c).length;
+  const ideal = gaps > 0 && total > 0 ? lens.map((l, j) => (l * gaps) / total + (closed[j] ? 0 : 1)) : lens.map((l) => (total > 0 ? (l * n) / total : n / live.length));
+  // Whole numbers that add up to n: round down, then give the rest to the biggest remainders.
+  const counts = ideal.map(Math.floor);
+  let left = n - counts.reduce((a, b) => a + b, 0);
+  const order = ideal.map((v, j) => [v - Math.floor(v), j] as const).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) counts[order[k][1]]++;
+  return counts;
+}
+
+/** From a design's meters to the yard: sized, turned and facing as the object is, at its point. */
+export function designTransform(f: Pick<Fixture, 'points' | 'size' | 'rotation' | 'facing'>, scale = DEFAULT_SCALE): (p: { x: number; y: number }) => Point3 {
+  const c = f.points[0] ?? { x: 0, y: 0 };
+  const cz = pz(c);
+  const k = scale * (f.size && f.size > 0 ? f.size : 1);
+  const r = ((f.rotation ?? 0) * Math.PI) / 180;
+  const fa = ((f.facing ?? 0) * Math.PI) / 180;
+  const cr = Math.cos(r);
+  const sr = Math.sin(r);
+  const cf = Math.cos(fa);
+  const sf = Math.sin(fa);
+  return (p) => {
+    // Turned clockwise as seen from the front; y is up in the design, down in the yard.
+    const u = (p.x * cr + p.y * sr) * k;
+    const v = (-p.x * sr + p.y * cr) * k;
+    return { x: c.x + u * cf, y: c.y - v, z: cz - u * sf };
+  };
+}
+
+/** The wire of a custom object in the yard, one path per stroke, for drawing its shape. */
+export function designPaths(f: Fixture, scale = DEFAULT_SCALE): Point3[][] {
+  const at = designTransform(f, scale);
+  return (f.design ?? []).filter((s) => s.points.length).map((s) => strokePath(s).map(at));
+}
+
+/** How far the design reaches from its anchor, in layout units. */
+export function designReach(f: Fixture, scale = DEFAULT_SCALE): number {
+  const k = scale * (f.size && f.size > 0 ? f.size : 1);
+  let r = 0;
+  for (const s of f.design ?? []) for (const p of s.points) r = Math.max(r, Math.hypot(p.x, p.y));
+  return r * k;
+}
+
 function segLengths(pts: Point[]) {
   return pts.slice(1).map((p, i) => Math.hypot(p.x - pts[i].x, p.y - pts[i].y, pz(p) - pz(pts[i])));
 }
@@ -305,6 +436,25 @@ export function segmentLeds(f: Fixture, k: number): { lo: number; hi: number } {
   const n = Math.max(1, Math.floor(f.pixels));
   const last = f.points.length - 2;
   return { lo: offs[k], hi: k >= last ? n - 1 : Math.max(offs[k], offs[k + 1] - 1) };
+}
+
+/** The length of each segment of a line, in layout units. */
+export const lineLengths = (f: Pick<Fixture, 'points'>) => segLengths(f.points);
+
+/**
+ * Gives segment k of a line `count` LEDs, as when that stretch of the real string has more or
+ * fewer LEDs than the drawing guessed. The LEDs after it move along (the line gets longer or
+ * shorter); every corner keeps the LEDs it has now, so the other segments do not change.
+ */
+export function resizeSegment(f: Fixture, k: number, count: number): Pick<Fixture, 'pixels' | 'pointLeds'> {
+  const last = f.points.length - 1;
+  const { lo, hi } = segmentLeds(f, k);
+  const delta = Math.max(1, Math.round(count)) - (hi - lo + 1);
+  const pixels = Math.max(f.points.length - 1, Math.min(MAX_FIXTURE_PIXELS, f.pixels + delta));
+  const d = pixels - f.pixels;
+  const offs = pointOffsets(f);
+  const pins = f.points.map((_, i) => (i === 0 || i === last ? null : i > k ? offs[i] + d : offs[i]));
+  return { pixels, pointLeds: pins.some((p) => p != null) ? pins : undefined };
 }
 
 /**
@@ -587,8 +737,9 @@ export function buildStage(layout: Layout): Stage {
   const pos: number[] = [];
   const pos3: number[] = [];
   const active: number[] = [];
+  const scale = layoutScale(layout);
   for (const f of layout.fixtures) {
-    const pts = fixturePixels(f);
+    const pts = fixturePixels(f, scale);
     const offset = pos.length / 2;
     for (const p of pts) {
       pos.push(p.x, p.y);
