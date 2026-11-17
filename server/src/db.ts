@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type { Device, DevicePreset, LogEntry, LogLevel, Scene } from '../../shared/types.ts';
+import type { AudioFile, Device, DevicePreset, LogEntry, LogLevel, Scene } from '../../shared/types.ts';
+import type { Sequence } from '../../shared/sequence.ts';
 
 // The schema keeps the table names of v1, so an existing data volume works unchanged.
 // "public_presets" holds scenes; "device_presets" holds presets imported from WLED.
@@ -48,6 +49,19 @@ const SCHEMA = `
     PRIMARY KEY (deviceId, presetId),
     FOREIGN KEY (deviceId) REFERENCES devices(id) ON DELETE CASCADE
   );
+  CREATE TABLE IF NOT EXISTS sequences (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS audio_files (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS activity_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL DEFAULT (datetime('now')),
@@ -87,6 +101,14 @@ export function openDatabase(file: string) {
   if (!hasColumn(db, 'device_presets', 'look')) {
     db.exec('ALTER TABLE device_presets ADD COLUMN look TEXT');
   }
+  // v2.2: effects a scene plays on layout objects, as JSON (object id -> settings).
+  if (!hasColumn(db, 'public_presets', 'effects')) {
+    db.exec('ALTER TABLE public_presets ADD COLUMN effects TEXT');
+  }
+  // v2.3: a scene can play a sequence.
+  if (!hasColumn(db, 'public_presets', 'sequence_id')) {
+    db.exec('ALTER TABLE public_presets ADD COLUMN sequence_id TEXT');
+  }
   // v1 stored the default scene under "defaultPresetId" and minutes under "revertTimeout".
   // Same keys are used here, so no settings migration is needed.
 
@@ -102,11 +124,11 @@ export function openDatabase(file: string) {
        ON CONFLICT(id) DO UPDATE SET name=excluded.name, host=excluded.host, port=excluded.port, enabled=excluded.enabled`
     ),
     deleteDevice: db.prepare('DELETE FROM devices WHERE id = ?'),
-    listScenes: db.prepare('SELECT id, name, sort_order AS sortOrder FROM public_presets ORDER BY sort_order, name COLLATE NOCASE'),
+    listScenes: db.prepare('SELECT id, name, sort_order AS sortOrder, effects, sequence_id AS sequenceId FROM public_presets ORDER BY sort_order, name COLLATE NOCASE'),
     listMappings: db.prepare('SELECT publicPresetId, deviceId, presetId FROM public_preset_mappings'),
     upsertScene: db.prepare(
-      `INSERT INTO public_presets(id, name, sort_order) VALUES(@id, @name, @sortOrder)
-       ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order`
+      `INSERT INTO public_presets(id, name, sort_order, effects, sequence_id) VALUES(@id, @name, @sortOrder, @effects, @sequenceId)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order, effects=excluded.effects, sequence_id=excluded.sequence_id`
     ),
     deleteScene: db.prepare('DELETE FROM public_presets WHERE id = ?'),
     deleteSceneMappings: db.prepare('DELETE FROM public_preset_mappings WHERE publicPresetId = ?'),
@@ -139,13 +161,29 @@ export function openDatabase(file: string) {
        FROM activity_logs WHERE (@action IS NULL OR action = @action OR (@action = 'error' AND level = 'error'))
        ORDER BY id DESC LIMIT @limit`
     ),
+    listSequences: db.prepare<[], { id: string; data: string; updatedAt: string }>('SELECT id, data, updated_at AS updatedAt FROM sequences ORDER BY name COLLATE NOCASE'),
+    getSequence: db.prepare<[string], { id: string; data: string; updatedAt: string }>('SELECT id, data, updated_at AS updatedAt FROM sequences WHERE id = ?'),
+    upsertSequence: db.prepare(
+      `INSERT INTO sequences(id, name, data, updated_at) VALUES(@id, @name, @data, @updatedAt)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, data=excluded.data, updated_at=excluded.updated_at`
+    ),
+    deleteSequence: db.prepare('DELETE FROM sequences WHERE id = ?'),
+    clearSceneSequence: db.prepare('UPDATE public_presets SET sequence_id = NULL WHERE sequence_id = ?'),
+    listAudio: db.prepare('SELECT id, name, type, size, created_at AS createdAt FROM audio_files ORDER BY created_at DESC'),
+    getAudio: db.prepare<[string], AudioFile>('SELECT id, name, type, size, created_at AS createdAt FROM audio_files WHERE id = ?'),
+    insertAudio: db.prepare('INSERT INTO audio_files(id, name, type, size) VALUES(?, ?, ?, ?)'),
+    deleteAudio: db.prepare('DELETE FROM audio_files WHERE id = ?'),
     isEmpty: db.prepare<[], { n: number }>('SELECT (SELECT COUNT(*) FROM devices) + (SELECT COUNT(*) FROM public_presets) AS n')
   };
 
   const rowToDevice = (r: any): Device => ({ id: r.id, name: r.name, host: r.host, port: r.port, enabled: Boolean(r.enabled) });
 
   function listScenes(): Scene[] {
-    const scenes = (stmt.listScenes.all() as Omit<Scene, 'devicePresets'>[]).map((s) => ({ ...s, devicePresets: {} as Record<string, number> }));
+    const rows = stmt.listScenes.all() as (Omit<Scene, 'devicePresets' | 'effects' | 'sequenceId'> & { effects: string | null; sequenceId: string | null })[];
+    const scenes: Scene[] = rows.map(({ effects, sequenceId, ...s }) => {
+      const fx = effects ? (safeJson(effects) as Scene['effects']) : null;
+      return { ...s, devicePresets: {}, ...(fx && typeof fx === 'object' && Object.keys(fx).length ? { effects: fx } : {}), ...(sequenceId ? { sequenceId } : {}) };
+    });
     const byId = new Map(scenes.map((s) => [s.id, s]));
     for (const m of stmt.listMappings.all() as { publicPresetId: string; deviceId: string; presetId: number }[]) {
       const scene = byId.get(m.publicPresetId);
@@ -155,7 +193,8 @@ export function openDatabase(file: string) {
   }
 
   const saveSceneTx = db.transaction((scene: Scene) => {
-    stmt.upsertScene.run({ id: scene.id, name: scene.name, sortOrder: scene.sortOrder });
+    const effects = scene.effects && Object.keys(scene.effects).length ? JSON.stringify(scene.effects) : null;
+    stmt.upsertScene.run({ id: scene.id, name: scene.name, sortOrder: scene.sortOrder, effects, sequenceId: scene.sequenceId ?? null });
     stmt.deleteSceneMappings.run(scene.id);
     const deviceIds = new Set((stmt.listDevices.all() as { id: string }[]).map((d) => d.id));
     for (const [deviceId, presetId] of Object.entries(scene.devicePresets)) {
@@ -199,6 +238,34 @@ export function openDatabase(file: string) {
       db.exec('DELETE FROM public_preset_mappings; DELETE FROM public_presets;');
       for (const s of scenes) saveSceneTx(s);
     }),
+
+    listSequences(): Sequence[] {
+      return stmt.listSequences.all().flatMap((r) => {
+        const seq = safeJson(r.data) as Sequence | null;
+        return seq && typeof seq === 'object' ? [{ ...seq, id: r.id, updatedAt: r.updatedAt }] : [];
+      });
+    },
+    getSequence(id: string): Sequence | null {
+      const r = stmt.getSequence.get(id);
+      const seq = r ? (safeJson(r.data) as Sequence | null) : null;
+      return r && seq && typeof seq === 'object' ? { ...seq, id: r.id, updatedAt: r.updatedAt } : null;
+    },
+    saveSequence(seq: Sequence): Sequence {
+      const updatedAt = new Date().toISOString();
+      const { updatedAt: _u, ...data } = seq;
+      stmt.upsertSequence.run({ id: seq.id, name: seq.name, data: JSON.stringify(data), updatedAt });
+      return { ...seq, updatedAt };
+    },
+    /** Deletes a sequence; scenes that played it play nothing from it any more. */
+    deleteSequence: db.transaction((id: string) => {
+      stmt.clearSceneSequence.run(id);
+      return stmt.deleteSequence.run(id).changes > 0;
+    }),
+
+    listAudio: (): AudioFile[] => stmt.listAudio.all() as AudioFile[],
+    getAudio: (id: string): AudioFile | null => stmt.getAudio.get(id) ?? null,
+    addAudio: (f: Omit<AudioFile, 'createdAt'>) => stmt.insertAudio.run(f.id, f.name, f.type, f.size),
+    deleteAudio: (id: string) => stmt.deleteAudio.run(id).changes > 0,
 
     listDevicePresets(): Record<string, DevicePreset[]> {
       const out: Record<string, DevicePreset[]> = {};

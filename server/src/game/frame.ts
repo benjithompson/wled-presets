@@ -1,6 +1,8 @@
 // A frame of light for every LED on the stage, in linear 0..1 RGB. Games draw into it
 // additively; the host converts it to bytes for the simulator and, later, the real lights.
 
+import { toBytes } from '../../../shared/effects.ts';
+
 export type Rgb = [number, number, number];
 
 export class Frame {
@@ -49,11 +51,7 @@ export class Frame {
 
   /** Bytes for output, with a gentle tone curve so bright additive colors do not clip harshly. */
   toBytes<T extends Uint8Array>(out: T): T {
-    for (let i = 0; i < this.data.length; i++) {
-      const v = this.data[i];
-      out[i] = Math.round(255 * (v <= 0 ? 0 : v >= 1.5 ? 1 : v < 0.8 ? v : 0.8 + (v - 0.8) * 0.2857));
-    }
-    return out;
+    return toBytes(this.data, out);
   }
 }
 

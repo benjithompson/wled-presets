@@ -1,5 +1,7 @@
 import type { Layout, OutputInfo } from '../../../shared/layout.ts';
+import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type {
+  AudioFile,
   ApplyResult,
   DevicePreset,
   DeviceWithStatus,
@@ -107,8 +109,26 @@ export const api = {
   applyDevicePreset: (id: string, presetId: number) => request(`/api/admin/devices/${id}/apply`, { body: { presetId } }),
   discover: (subnets?: string[]) => request<{ found: DiscoveredDevice[]; subnets: string[] }>('/api/admin/discover', { body: { subnets } }),
 
-  createScene: (s: Pick<Scene, 'name' | 'devicePresets'>) => request<Scene>('/api/admin/scenes', { body: s }),
-  updateScene: (id: string, s: Pick<Scene, 'name' | 'devicePresets'>) => request<Scene>(`/api/admin/scenes/${id}`, { method: 'PUT', body: s }),
+  createScene: (s: Pick<Scene, 'name' | 'devicePresets' | 'effects' | 'sequenceId'>) => request<Scene>('/api/admin/scenes', { body: s }),
+  /** Leave `effects` (or `sequenceId`) out to keep the scene's. */
+  updateScene: (id: string, s: Pick<Scene, 'name' | 'devicePresets' | 'effects' | 'sequenceId'>) => request<Scene>(`/api/admin/scenes/${id}`, { method: 'PUT', body: s }),
+
+  sequences: () => request<{ sequences: SequenceSummary[] }>('/api/admin/sequences'),
+  sequence: (id: string) => request<Sequence>(`/api/admin/sequences/${encodeURIComponent(id)}`),
+  createSequence: (s: Omit<Sequence, 'id' | 'updatedAt'>) => request<Sequence>('/api/admin/sequences', { body: s }),
+  saveSequence: ({ id, updatedAt: _u, ...s }: Sequence) => request<Sequence>(`/api/admin/sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: s }),
+  deleteSequence: (id: string) => request(`/api/admin/sequences/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  previewSequence: (body: string) => request<{ devices: string[] }>('/api/admin/sequence-preview', { method: 'POST', body: JSON.parse(body) }),
+  stopSequencePreview: () => fetch('/api/admin/sequence-preview', { method: 'DELETE', credentials: 'same-origin', keepalive: true }),
+  audioFiles: () => request<{ files: AudioFile[] }>('/api/admin/audio'),
+  audioUrl: (id: string) => `/api/admin/audio/${encodeURIComponent(id)}`,
+  async uploadAudio(file: File): Promise<AudioFile> {
+    const type = file.type && file.type.startsWith('audio/') ? file.type : guessAudioType(file.name);
+    const res = await fetch('/api/admin/audio', { method: 'POST', headers: { 'Content-Type': type, 'X-File-Name': encodeURIComponent(file.name) }, body: file, credentials: 'same-origin' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) throw new ApiError(res.status, json?.error ?? `Upload failed (${res.status})`);
+    return json as AudioFile;
+  },
   deleteScene: (id: string) => request(`/api/admin/scenes/${id}`, { method: 'DELETE' }),
   reorderScenes: (ids: string[]) => request('/api/admin/scenes/order', { method: 'PUT', body: { ids } }),
   exportScenes: () => request<unknown>('/api/admin/scenes/export'),
@@ -120,3 +140,8 @@ export const api = {
   logs: (action: string | null, limit = 300) =>
     request<{ logs: LogEntry[] }>(`/api/admin/logs?limit=${limit}${action ? `&action=${encodeURIComponent(action)}` : ''}`)
 };
+
+function guessAudioType(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase();
+  return ext === 'wav' ? 'audio/wav' : ext === 'ogg' || ext === 'oga' ? 'audio/ogg' : ext === 'm4a' || ext === 'aac' ? 'audio/mp4' : ext === 'flac' ? 'audio/flac' : 'audio/mpeg';
+}

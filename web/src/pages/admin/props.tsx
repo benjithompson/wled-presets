@@ -261,7 +261,22 @@ export function PropText({ label, value, onChange, maxLength }: { label: ReactNo
   );
 }
 
-export function PropSelect<T extends string>({ label, value, onChange, options, hint }: { label: ReactNode; value: T; onChange: (v: T) => void; options: [T, string][]; hint?: string }) {
+export function PropSelect<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+  groups,
+  hint
+}: {
+  label: ReactNode;
+  value: T;
+  onChange: (v: T) => void;
+  options: [T, string][];
+  /** More options, under headings. */
+  groups?: { label: string; options: [T, string][] }[];
+  hint?: string;
+}) {
   const id = useId();
   return (
     <PropRow label={label} htmlFor={id} hint={hint}>
@@ -276,6 +291,15 @@ export function PropSelect<T extends string>({ label, value, onChange, options, 
           <option key={v} value={v}>
             {l}
           </option>
+        ))}
+        {groups?.map((g) => (
+          <optgroup key={g.label} label={g.label}>
+            {g.options.map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
     </PropRow>
@@ -297,5 +321,27 @@ export function PropButton({ children, onClick, disabled, title, danger }: { chi
     >
       {children}
     </button>
+  );
+}
+
+/** A 0..1 property as a slider, with the value in percent beside it. */
+export function PropSlider({ label, value, onChange, hint }: { label: ReactNode; value: number; onChange: (v: number) => void; hint?: string }) {
+  const id = useId();
+  return (
+    <PropRow label={label} htmlFor={id} hint={hint}>
+      <div className="flex items-center gap-2">
+        <input
+          id={id}
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="h-7 min-w-0 flex-1 cursor-pointer accent-sky-600 dark:accent-sky-400"
+        />
+        <span className="w-7 shrink-0 text-right text-[11px] text-stone-500 tabular-nums">{Math.round(value * 100)}</span>
+      </div>
+    </PropRow>
   );
 }

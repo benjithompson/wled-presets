@@ -18,9 +18,11 @@ import { isValidCidr } from './net.ts';
 import { rateLimit } from './rateLimit.ts';
 import { readSettings, writeSettings } from './settings.ts';
 import type { GameHost } from './game/host.ts';
-import type { LayoutPreview } from './layoutPreview.ts';
-import { deleteBackground, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
+import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
+import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
+import { readAudio, removeAudio, sequenceInput, writeAudio } from './sequenceStore.ts';
+import { summarize, type Sequence } from '../../shared/sequence.ts';
 
 export interface AppDeps {
   config: AppConfig;
@@ -41,7 +43,11 @@ const deviceInput = z.object({
 
 const sceneInput = z.object({
   name: z.string().trim().min(1, 'Name is required').max(100),
-  devicePresets: z.record(z.string(), z.coerce.number().int().min(1).max(250)).default({})
+  devicePresets: z.record(z.string(), z.coerce.number().int().min(1).max(250)).default({}),
+  /** Left out: an update keeps the scene's effects. An empty object removes them. */
+  effects: effectsSchema.optional(),
+  /** Left out: an update keeps the scene's sequence. Null removes it. */
+  sequenceId: z.string().max(64).nullable().optional()
 });
 
 const settingsInput = z.object({
@@ -61,7 +67,9 @@ const backupInput = z.object({
       id: z.string().min(1),
       name: z.string().trim().min(1),
       sortOrder: z.number().optional(),
-      devicePresets: z.record(z.string(), z.coerce.number()).default({})
+      devicePresets: z.record(z.string(), z.coerce.number()).default({}),
+      effects: effectsSchema.optional().catch(undefined),
+      sequenceId: z.string().max(64).nullable().optional().catch(undefined)
     })
   )
 });
@@ -126,6 +134,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
         imgSrc: ["'self'", 'data:'],
         styleSrc: ["'self'", "'unsafe-inline'"],
         connectSrc: ["'self'"],
+        mediaSrc: ["'self'", 'blob:'],
         frameAncestors: ["'none'"]
       },
       // The app is usually served over plain HTTP on a LAN.
@@ -181,7 +190,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     takeLights('a scene');
     const result = await lights.applyScene(c.req.param('id'), actor(c));
     if (!result) throw new HttpError(404, 'Unknown scene');
-    if (result.applied.length === 0) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
+    if (result.applied.length === 0 && !result.effects) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
   });
 
@@ -381,9 +390,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   admin.post('/scenes', async (c) => {
     const input = await body(c, sceneInput);
+    if (input.sequenceId && !db.getSequence(input.sequenceId)) throw new HttpError(400, 'That sequence does not exist');
     const scene: Scene = { id: crypto.randomUUID(), sortOrder: db.nextSortOrder(), ...input };
     db.saveScene(scene);
-    lights.log('info', 'config', `Scene "${scene.name}" created`, null, actor(c));
+    const fx = Object.keys(scene.effects ?? {}).length;
+    lights.log('info', 'config', `Scene "${scene.name}" created${fx ? ` with effects on ${fx} object(s)` : ''}`, null, actor(c));
     sceneChanged();
     return c.json(db.getScene(scene.id), 201);
   });
@@ -399,8 +410,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const prev = db.getScene(c.req.param('id'));
     if (!prev) throw new HttpError(404, 'Unknown scene');
     const input = await body(c, sceneInput);
-    db.saveScene({ ...prev, ...input });
+    if (input.sequenceId && !db.getSequence(input.sequenceId)) throw new HttpError(400, 'That sequence does not exist');
+    db.saveScene({ ...prev, ...input, effects: input.effects ?? prev.effects, sequenceId: input.sequenceId === undefined ? prev.sequenceId : input.sequenceId });
     lights.log('info', 'config', `Scene "${input.name}" updated`, null, actor(c));
+    // A scene that is playing now shows its new effects at once.
+    lights.sceneChanged(prev.id);
     sceneChanged();
     return c.json(db.getScene(prev.id));
   });
@@ -410,6 +424,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     if (!prev || !db.deleteScene(prev.id)) throw new HttpError(404, 'Unknown scene');
     const s = readSettings(db);
     if (s.defaultSceneId === prev.id) writeSettings(db, { ...s, defaultSceneId: null });
+    lights.sceneDeleted(prev.id);
     lights.log('info', 'config', `Scene "${prev.name}" deleted`, null, actor(c));
     sceneChanged();
     return c.json({ ok: true });
@@ -447,12 +462,96 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
         const target = remap.get(devId) ?? (byId.has(devId) ? devId : null);
         if (target && Number.isInteger(presetId) && presetId >= 1) devicePresets[target] = presetId;
       }
-      return { id: p.id, name: p.name, sortOrder: p.sortOrder ?? i, devicePresets };
+      const sequenceId = p.sequenceId && db.getSequence(p.sequenceId) ? p.sequenceId : null;
+      return { id: p.id, name: p.name, sortOrder: p.sortOrder ?? i, devicePresets, ...(p.effects ? { effects: p.effects } : {}), ...(sequenceId ? { sequenceId } : {}) };
     });
     db.replaceScenes(scenes);
     lights.log('info', 'config', `Restored ${scenes.length} scene(s) from backup`, null, actor(c));
     sceneChanged();
     return c.json({ restored: scenes.length });
+  });
+
+  // Sequences
+  admin.get('/sequences', (c) => c.json({ sequences: db.listSequences().map(summarize) }));
+
+  admin.get('/sequences/:id', (c) => {
+    const seq = db.getSequence(c.req.param('id'));
+    if (!seq) throw new HttpError(404, 'Unknown sequence');
+    return c.json(seq);
+  });
+
+  admin.post('/sequences', async (c) => {
+    const input = await body(c, sequenceInput);
+    const seq = db.saveSequence({ ...input, id: crypto.randomUUID() } as Sequence);
+    lights.log('info', 'config', `Sequence "${seq.name}" created`, null, actor(c));
+    return c.json(seq, 201);
+  });
+
+  admin.put('/sequences/:id', async (c) => {
+    const prev = db.getSequence(c.req.param('id'));
+    if (!prev) throw new HttpError(404, 'Unknown sequence');
+    const input = await body(c, sequenceInput);
+    const seq = db.saveSequence({ ...input, id: prev.id } as Sequence);
+    lights.log('info', 'config', `Sequence "${seq.name}" saved`, null, actor(c));
+    // A scene that plays it now plays the new version.
+    lights.sequenceChanged(prev.id);
+    bus.emit('state');
+    return c.json(seq);
+  });
+
+  admin.delete('/sequences/:id', (c) => {
+    const prev = db.getSequence(c.req.param('id'));
+    if (!prev || !db.deleteSequence(prev.id)) throw new HttpError(404, 'Unknown sequence');
+    lights.sequenceChanged(prev.id);
+    lights.log('info', 'config', `Sequence "${prev.name}" deleted`, null, actor(c));
+    bus.emit('state');
+    return c.json({ ok: true });
+  });
+
+  // The sequence editor's preview on the real lights.
+  const seqPreviewSchema = z.object({ active: z.literal(true), sequence: sequenceInput.extend({ id: z.string().max(64).default('') }), time: z.number().min(0), playing: z.boolean() });
+  admin.post('/sequence-preview', async (c) => {
+    const req = await body(c, seqPreviewSchema);
+    return c.json({ devices: preview?.showSequence(req as SequencePreviewRequest, readLayout(db)) ?? [] });
+  });
+  admin.delete('/sequence-preview', (c) => {
+    preview?.stop();
+    return c.json({ ok: true });
+  });
+
+  // Audio for sequences
+  admin.get('/audio', (c) => c.json({ files: db.listAudio() }));
+
+  admin.post('/audio', async (c) => {
+    const type = (c.req.header('content-type') ?? '').split(';')[0].trim();
+    if (!/^audio\/[\w.+-]+$/.test(type)) throw new HttpError(400, 'Use an audio file (MP3, WAV, OGG, M4A or FLAC)');
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    if (!bytes.length) throw new HttpError(400, 'The file is empty');
+    if (bytes.length > 80 * 1024 * 1024) throw new HttpError(400, 'The file is larger than 80 MB');
+    let name = 'Audio';
+    try {
+      name = decodeURIComponent(c.req.header('x-file-name') ?? 'Audio').slice(0, 200) || 'Audio';
+    } catch {}
+    const file = { id: crypto.randomUUID(), name, type, size: bytes.length };
+    writeAudio(config.databasePath, file.id, bytes);
+    db.addAudio(file);
+    lights.log('info', 'config', `Audio "${name}" uploaded (${Math.round(bytes.length / 1024)} KB)`, null, actor(c));
+    return c.json(db.getAudio(file.id), 201);
+  });
+
+  admin.get('/audio/:id', (c) => {
+    const file = db.getAudio(c.req.param('id'));
+    const bytes = file ? readAudio(config.databasePath, file.id) : null;
+    if (!file || !bytes) throw new HttpError(404, 'Unknown audio file');
+    return new Response(new Uint8Array(bytes), { headers: { 'Content-Type': file.type, 'Cache-Control': 'private, max-age=31536000, immutable' } });
+  });
+
+  admin.delete('/audio/:id', (c) => {
+    const file = db.getAudio(c.req.param('id'));
+    if (!file) throw new HttpError(404, 'Unknown audio file');
+    db.deleteAudio(file.id);
+    removeAudio(config.databasePath, file.id);
+    return c.json({ ok: true });
   });
 
   // Settings
@@ -475,7 +574,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   // Yard layout
   // active: sent only by an editor window that is in front (an older page that does not send it is ignored).
-  const previewSchema = z.object({ active: z.literal(true), layout: layoutShape, selected: z.string().nullable(), corner: z.number().int().nullable(), segment: z.number().int().nullable().optional() });
+  // play: show the objects' effects (the editor's working copy) instead of the editor's colors.
+  const previewSchema = z.object({ active: z.literal(true), layout: layoutShape, selected: z.string().nullable(), corner: z.number().int().nullable(), segment: z.number().int().nullable().optional(), play: z.boolean().optional() });
   admin.post('/layout/preview', async (c) => {
     const req = await body(c, previewSchema);
     return c.json({ devices: preview?.show(req) ?? [] });

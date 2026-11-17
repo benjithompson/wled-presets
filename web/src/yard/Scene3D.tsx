@@ -59,8 +59,9 @@ export function Scene3D({
 }: {
   layout: Layout;
   getFrame: (t: number) => Uint8Array | null;
-  selected: string | null;
-  onSelect: (id: string | null) => void;
+  selected: string | string[] | null;
+  /** `add`: Ctrl, ⌘ or Shift was down: add to (or remove from) the selection. */
+  onSelect: (id: string | null, add?: boolean) => void;
   className?: string;
   /** Fill the parent (which must be positioned) instead of a 16:9 box. */
   fill?: boolean;
@@ -129,7 +130,7 @@ export function Scene3D({
       const hit = ray.intersectObject(c.bulbs).sort((a, b) => (a.distanceToRay ?? 0) - (b.distanceToRay ?? 0))[0];
       const i = hit?.index;
       const f = i == null ? undefined : c.stage.fixtures.find((s) => i >= s.offset && i < s.offset + s.count);
-      onSelectRef.current(f?.id ?? null);
+      onSelectRef.current(f?.id ?? null, e.ctrlKey || e.metaKey || e.shiftKey);
     };
     renderer.domElement.addEventListener('pointerdown', onDown);
     renderer.domElement.addEventListener('pointerup', onUp);
@@ -204,7 +205,7 @@ export function Scene3D({
     // Wires of the lines, so their shape shows even where the LEDs are off.
     layout.fixtures.forEach((f) => {
       if (!isLine(f) || f.points.length < 2) return;
-      const hl = f.id === selected;
+      const hl = Array.isArray(selected) ? selected.includes(f.id) : f.id === selected;
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(f.points.map((p) => world(p.x, p.y, p.z ?? 0))),
         new THREE.LineBasicMaterial({ color: hl ? 0x28aaff : 0xffffff, transparent: true, opacity: hl ? 0.9 : 0.12 })
@@ -241,7 +242,7 @@ export function Scene3D({
         flyTo(c, 'street', true);
       }
     }
-  }, [layout, selected, showPicture]);
+  }, [layout, Array.isArray(selected) ? selected.join('\n') : selected, showPicture]);
 
   if (failed) {
     return (

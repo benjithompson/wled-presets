@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { EFFECTS, PALETTES, type EffectId, type PaletteId } from '../../shared/effects.ts';
 import { deviceRuns, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, sampleLayout, type Layout } from '../../shared/layout.ts';
 import type { Db } from './db.ts';
 
@@ -8,6 +9,26 @@ const KEY = 'layout';
 const BG_TYPE_KEY = 'layoutBackgroundType';
 
 const coord = z.number().finite().min(-20_000).max(20_000);
+const unit = z.number().finite().min(0).max(1);
+
+/** One object's effect, in a layout or a scene. */
+export const effectSettingsSchema = z.object({
+  effect: z.enum(EFFECTS.map((e) => e.id) as [EffectId, ...EffectId[]]),
+  palette: z.enum(PALETTES.map((p) => p.id) as [PaletteId, ...PaletteId[]]),
+  colors: z
+    .array(z.string().regex(/^#[0-9a-fA-F]{6}$/))
+    .min(1)
+    .max(6)
+    .optional(),
+  speed: unit,
+  intensity: unit,
+  size: unit,
+  brightness: unit,
+  reverse: z.boolean().optional()
+});
+
+/** Effects by layout object id, or "<object id>#<segment>" for one segment of a line. */
+export const effectsSchema = z.record(z.string().min(1).max(72), effectSettingsSchema).refine((r) => Object.keys(r).length <= 512, 'Too many effects');
 const point = z.object({ x: coord, y: coord, z: coord.optional() });
 
 /** The shape only. `layoutSchema` adds the checks a saved layout must pass. */
@@ -35,7 +56,9 @@ export const layoutShape = z.object({
         startPixel: z.number().int().min(0).max(10_000),
         reversed: z.boolean(),
         pointLeds: z.array(z.number().int().min(0).max(MAX_FIXTURE_PIXELS).nullable()).max(64).optional(),
-        skip: z.array(z.number().int().min(0).max(64)).max(64).optional()
+        skip: z.array(z.number().int().min(0).max(64)).max(64).optional(),
+        effect: effectSettingsSchema.optional(),
+        segmentEffects: z.record(z.string().regex(/^\d{1,2}$/, 'Segment index'), effectSettingsSchema).optional()
       })
     )
     .max(64)
