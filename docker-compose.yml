@@ -1,0 +1,19 @@
+services:
+  wled-presets:
+    image: ghcr.io/benjithompson/wled-presets:latest
+    # build: .   # use this line instead of "image" to build from source
+    container_name: wled-presets
+    restart: unless-stopped
+    # Host networking lets discovery scan your LAN and reach WLED devices directly.
+    network_mode: host
+    environment:
+      PORT: 8790
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: change-me-to-something-long
+      DISCOVERY_ON_STARTUP: 1
+      DISCOVERY_AUTO_SAVE: 1
+      # DISCOVERY_SUBNETS: 192.168.1.0/24
+      # PUID: 1000
+      # PGID: 1000
+    volumes:
+      - ./data:/app/data

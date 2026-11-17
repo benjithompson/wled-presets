@@ -1,0 +1,53 @@
+import type { Settings } from '../../shared/types.ts';
+import type { Db } from './db.ts';
+
+// Keys match v1 where the concept existed.
+export const KEY = {
+  title: 'siteTitle',
+  subtitle: 'siteSubtitle',
+  showColors: 'showColors',
+  defaultScene: 'defaultPresetId',
+  revertMinutes: 'revertTimeout',
+  subnets: 'discoverySubnets',
+  currentScene: 'currentPresetId',
+  currentColor: 'currentColor',
+  revertAt: 'revertAt'
+} as const;
+
+export const DEFAULT_TITLE = 'Lights';
+export const DEFAULT_SUBTITLE = 'Tap a color or a scene.';
+
+export function readSettings(db: Db): Settings {
+  let subnets: string[] = [];
+  try {
+    const parsed = JSON.parse(db.getSetting(KEY.subnets) || '[]');
+    if (Array.isArray(parsed)) subnets = parsed.map(String);
+  } catch {
+    /* ignore */
+  }
+  return {
+    siteTitle: db.getSetting(KEY.title) || DEFAULT_TITLE,
+    siteSubtitle: db.getSetting(KEY.subtitle) ?? DEFAULT_SUBTITLE,
+    showColors: db.getSetting(KEY.showColors) !== '0',
+    defaultSceneId: db.getSetting(KEY.defaultScene) || null,
+    revertMinutes: Math.max(0, parseInt(db.getSetting(KEY.revertMinutes) || '0', 10) || 0),
+    discoverySubnets: subnets
+  };
+}
+
+export function writeSettings(db: Db, s: Settings) {
+  db.setSetting(KEY.title, s.siteTitle);
+  db.setSetting(KEY.subtitle, s.siteSubtitle);
+  db.setSetting(KEY.showColors, s.showColors ? '1' : '0');
+  db.setSetting(KEY.defaultScene, s.defaultSceneId ?? '');
+  db.setSetting(KEY.revertMinutes, s.revertMinutes);
+  db.setSetting(KEY.subnets, JSON.stringify(s.discoverySubnets));
+}
+
+/** A v1 install had a hard-coded page title. Keep it, so the public page looks the same after upgrade. */
+export function migrateV1Settings(db: Db) {
+  if (db.getSetting(KEY.title) == null && !db.isEmpty()) {
+    db.setSetting(KEY.title, 'Christmas Lights');
+    db.setSetting(KEY.subtitle, 'Tap a color or preset.');
+  }
+}

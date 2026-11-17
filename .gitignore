@@ -11,6 +11,7 @@ data/
 # Environment files
 .env
 .env.*
+!.env.example
 .env.local
 .env.production
 
@@ -35,3 +36,9 @@ build/
 
 # Config file (contains sensitive data when used)
 config.json
+
+# Playwright MCP output
+.playwright-mcp/
+
+# Local secrets
+unifi-key.txt

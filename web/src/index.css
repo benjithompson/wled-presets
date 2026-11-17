@@ -1,0 +1,47 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --color-accent-50: oklch(98.7% 0.022 95.277);
+  --color-accent-100: oklch(96.2% 0.059 95.617);
+  --color-accent-300: oklch(87.9% 0.169 91.605);
+  --color-accent-400: oklch(82.8% 0.189 84.429);
+  --color-accent-500: oklch(76.9% 0.188 70.08);
+  --color-accent-600: oklch(66.6% 0.179 58.318);
+  --color-accent-700: oklch(55.5% 0.163 48.998);
+  --animate-burst: burst 900ms cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  --animate-glow: glow 2.8s ease-in-out infinite;
+
+  @keyframes burst {
+    0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.2); opacity: 0; }
+  }
+  @keyframes glow {
+    0%, 100% { box-shadow: 0 0 0 1px var(--glow), 0 0 18px -2px var(--glow); }
+    50% { box-shadow: 0 0 0 1px var(--glow), 0 0 34px 2px var(--glow); }
+  }
+}
+
+@layer base {
+  html { -webkit-tap-highlight-color: transparent; }
+  body {
+    @apply bg-stone-50 text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-100;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-accent-500; }
+  ::selection { @apply bg-accent-300/60; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}
+
+/* The editor's end markers: bright for 0.5 s, dim for 0.5 s, like the LEDs. The page sets a
+   negative animation-delay from the clock, so the markers pulse together with the real lights. */
+@keyframes led-pulse {
+  0%, 49.99% { opacity: 1; }
+  50%, 100% { opacity: 0.35; }
+}
+.led-pulse { animation: led-pulse 1s linear infinite; }
