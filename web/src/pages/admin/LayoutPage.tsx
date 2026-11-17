@@ -24,12 +24,14 @@ import {
   Redo2,
   Pin,
   PinOff,
+  Plus,
   RotateCcw,
   Rows2,
   Ruler,
   Save,
   Scan,
   Scissors,
+  Shapes,
   Spline,
   Square,
   Trash2,
@@ -66,6 +68,11 @@ import {
   ledRange,
   MAX_FIXTURE_PIXELS,
   pointOffsets,
+  designPaths,
+  designReach,
+  lineLengths,
+  resizeSegment,
+  type Design,
   type Fixture,
   type FixtureKind,
   type Layout,
@@ -77,6 +84,9 @@ import type { Stage } from '../../../../shared/layout.ts';
 import type { Scene } from '../../../../shared/types.ts';
 import { Badge, Button, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { EffectProps } from './effectProps.tsx';
+import { DesignEditor } from './DesignEditor.tsx';
+import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
+import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
 import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropText } from './props.tsx';
@@ -132,10 +142,10 @@ const DRAFTING_KEY = 'layout.drafting';
 const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
 const VIEW_NOTES: Record<ViewName, string> = { front: 'as seen from the street', top: 'from above, the street at the bottom', '3d': 'drag to turn, right-drag to pan' };
 const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', measure: 'Measure' };
-const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine };
+const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, custom: Shapes };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
 const BASE_K = 1.6;
-const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree' };
+const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree', custom: 'Custom object' };
 
 function readShowOnLights() {
   try {
@@ -265,6 +275,11 @@ export function LayoutPage() {
     });
   /** The object being renamed in the object list. */
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** The design open in the object designer, and the library dialog. */
+  const [designing, setDesigning] = useState<Design | null>(null);
+  const [library, setLibrary] = useState(false);
+  /** The light type being made or changed; `forObject`: give it to that object when saved. */
+  const [lightEdit, setLightEdit] = useState<{ type: LightType | null; forObject?: string } | null>(null);
 
   useEffect(() => {
     if (saved && !layout) setLayout(saved);
@@ -322,7 +337,7 @@ export function LayoutPage() {
     }
     for (const f of layout.fixtures)
       for (const p of f.points) {
-        const r = isLine(f) ? 0 : (f.radius ?? 60);
+        const r = isLine(f) ? 0 : f.kind === 'custom' ? designReach(f, s) : (f.radius ?? 60);
         lo = Math.min(lo, (p.z ?? 0) - r - 1.5 * s);
         hi = Math.max(hi, (p.z ?? 0) + r + 1.5 * s);
       }
@@ -534,6 +549,82 @@ export function LayoutPage() {
   /** The first LED after every object on the device. */
   const nextFree = (deviceId: string | null) => (deviceId ? Math.max(0, ...(layout?.fixtures ?? []).filter((f) => f.deviceId === deviceId).map((f) => f.startPixel + f.pixels)) : 0);
 
+  // ----- Custom objects and their library -----
+
+  /** Opens the designer on a new, empty design. */
+  const newDesign = () => setDesigning({ id: uid(), name: 'My object', strokes: [], pixels: 50, lights: layout?.lights });
+  /** Saves a design to the library; every object placed from it changes with it. */
+  const saveDesign = (d: Design) => {
+    const isNew = !layout?.designs?.some((x) => x.id === d.id);
+    edit((l) => ({
+      ...l,
+      designs: isNew ? [...(l.designs ?? []), d] : (l.designs ?? []).map((x) => (x.id === d.id ? d : x)),
+      fixtures: l.fixtures.map((f) => (f.designId === d.id ? { ...f, design: d.strokes, pixels: d.pixels, lights: d.lights } : f))
+    }));
+    setDesigning(null);
+    if (isNew) {
+      placeDesign(d, true);
+      toast.success(`${d.name} is in the library, and one is placed in the yard. Drag it into place.`);
+    }
+  };
+  /** Places a copy of a design in the yard: in the middle, standing on the ground. */
+  const placeDesign = (d: Design, withDesign = false) => {
+    if (!layout) return;
+    const s = layoutScale(layout);
+    const low = Math.min(0, ...d.strokes.flatMap((st) => st.points.map((p) => p.y)));
+    const count = layout.fixtures.filter((f) => f.designId === d.id).length;
+    const prev = layout.fixtures.at(-1);
+    const deviceId = prev?.deviceId ?? null;
+    const f: Fixture = {
+      id: uid(),
+      name: count ? `${d.name} ${count + 1}` : d.name,
+      kind: 'custom',
+      points: [{ x: Math.round(layout.width / 2), y: Math.round(layoutGround(layout) + low * s), z: Math.round(0.3 * s) }],
+      design: d.strokes,
+      designId: d.id,
+      pixels: d.pixels,
+      ...(d.lights ? { lights: d.lights } : {}),
+      deviceId,
+      startPixel: nextFree(deviceId),
+      reversed: false
+    };
+    // Saving a new design adds it to the library in the same step.
+    edit((l) => ({ ...l, designs: withDesign && !l.designs?.some((x) => x.id === d.id) ? [...(l.designs ?? []), d] : l.designs, fixtures: [...l.fixtures, f] }));
+    setSelected(f.id);
+    setTool('select');
+    setLibrary(false);
+  };
+  const duplicateDesign = (d: Design) => {
+    const copy = { ...d, id: uid(), name: `${d.name} copy` };
+    edit((l) => ({ ...l, designs: [...(l.designs ?? []), copy] }));
+    setDesigning(copy);
+  };
+  const deleteDesign = (d: Design) => edit((l) => ({ ...l, designs: (l.designs ?? []).filter((x) => x.id !== d.id) }));
+
+  // ----- What the lights are made of -----
+
+  /** Gives an object a light type; the first one picked is also used for new objects. */
+  const pickLights = (id: string, lights: string | undefined) =>
+    edit((l) => ({ ...l, lights: l.lights ?? lights, fixtures: l.fixtures.map((f) => (f.id === id ? { ...f, lights } : f)) }));
+  const saveLightType = (lt: LightType, forObject?: string) => {
+    edit((l) => {
+      const mine = l.lightTypes ?? [];
+      const lightTypes = mine.some((x) => x.id === lt.id) ? mine.map((x) => (x.id === lt.id ? lt : x)) : [...mine, lt];
+      return { ...l, lightTypes, lights: l.lights ?? (forObject ? lt.id : undefined), fixtures: forObject ? l.fixtures.map((f) => (f.id === forObject ? { ...f, lights: lt.id } : f)) : l.fixtures };
+    });
+    setLightEdit(null);
+  };
+  const deleteLightType = (id: string) => {
+    edit((l) => ({
+      ...l,
+      lightTypes: (l.lightTypes ?? []).filter((x) => x.id !== id),
+      lights: l.lights === id ? undefined : l.lights,
+      designs: l.designs?.map((d) => (d.lights === id ? { ...d, lights: undefined } : d)),
+      fixtures: l.fixtures.map((f) => (f.lights === id ? { ...f, lights: undefined } : f))
+    }));
+    setLightEdit(null);
+  };
+
   /** A point from a position in one view. The coordinate that the view does not show comes from `base`. */
   const fromView = (side: ViewSide, p: UV, base: Point): Point => (side === 'front' ? { ...base, x: p.u, y: p.v } : { ...base, x: p.u, z: Math.round(p.v + zMin) });
 
@@ -591,7 +682,13 @@ export function LayoutPage() {
       name: lines.length ? `${KIND_LABELS[kind]} ${lines.length + 1}` : KIND_LABELS[kind],
       kind,
       points: to3d(base),
-      pixels: kind === 'roof' && !roofs.length ? 450 : 100,
+      // With a light string set, as many LEDs as fit the line; else a guess to adjust.
+      ...(() => {
+        const lt = lightsOf(layout, layout.lights);
+        const pts = to3d(base);
+        const len = lineLengths({ points: pts }).reduce((a, b) => a + b, 0);
+        return { pixels: lt ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(len / layoutScale(layout), lt.spacing)) : kind === 'roof' && !roofs.length ? 450 : 100, ...(lt ? { lights: lt.id } : {}) };
+      })(),
       deviceId,
       startPixel: nextFree(deviceId),
       reversed: false
@@ -622,7 +719,8 @@ export function LayoutPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest('input, select, textarea');
-      if (typing) return;
+      // A dialog (the object designer) has its own keys.
+      if (typing || document.querySelector('dialog[open]')) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if (mod && key === 'z') {
@@ -691,6 +789,8 @@ export function LayoutPage() {
         setCams({});
       } else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
         zoomViews(e.key === '+' || e.key === '=' ? 1.25 : 0.8);
+      } else if (key === 'o' && !e.shiftKey) {
+        setLibrary(true);
       } else if (!e.shiftKey && TOOL_KEYS[key]) {
         chooseTool(TOOL_KEYS[key]);
       }
@@ -833,9 +933,11 @@ export function LayoutPage() {
   /** The box around an object in a view, in view units. */
   const boxOf = (f: Fixture, side: ViewSide): Box => {
     const V = (p: Point) => toView(p, side, zMin);
-    if (isLine(f)) {
-      const us = f.points.map((p) => V(p).u);
-      const vs = f.points.map((p) => V(p).v);
+    if (isLine(f) || f.kind === 'custom') {
+      const pts = isLine(f) ? f.points : designPaths(f, layout ? layoutScale(layout) : undefined).flat();
+      if (!pts.length) pts.push(f.points[0]);
+      const us = pts.map((p) => V(p).u);
+      const vs = pts.map((p) => V(p).v);
       return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
     }
     const c = V(f.points[0]);
@@ -1127,7 +1229,9 @@ export function LayoutPage() {
         const c = drag.center;
         // From the front: the bush touches the front wall. From above: it sits on the ground.
         const center: Point = drag.side === 'front' ? { x: c.u, y: c.v, z: r } : { x: c.u, y: Math.round(ground - r * 0.72), z: Math.round(c.v + zMin) };
-        addFixture({ id: uid(), name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: 60, deviceId: null, startPixel: 0, reversed: false });
+        const lt = lightsOf(layout, layout.lights);
+        // One strand of lights per bush, when the strands are known.
+        addFixture({ id: uid(), name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: lt?.perStrand ?? 60, ...(lt ? { lights: lt.id } : {}), deviceId: null, startPixel: 0, reversed: false });
       } else {
         const b = drag.base;
         // From the front you drag the height; from above, the radius of the base.
@@ -1143,7 +1247,8 @@ export function LayoutPage() {
           height: Math.round(height),
           pattern: 'spiral',
           turns: 8,
-          pixels: 200,
+          pixels: lightsOf(layout, layout.lights)?.perStrand ? lightsOf(layout, layout.lights)!.perStrand! * 4 : 200,
+          ...(layout.lights && lightsOf(layout, layout.lights) ? { lights: layout.lights } : {}),
           deviceId: null,
           startPixel: 0,
           reversed: false
@@ -1289,6 +1394,9 @@ export function LayoutPage() {
   const devices = overview?.devices ?? [];
   const totals = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
   const m = measureOf(layout);
+  const scale = layoutScale(layout);
+  /** The light string new objects are made of. */
+  const newLights = lightsOf(layout, layout.lights);
   const ground = layoutGround(layout);
   const has2d = shown.some((v) => v !== '3d');
   const drawing = isLineTool(tool) && draft.pts.length > 0;
@@ -1554,10 +1662,10 @@ export function LayoutPage() {
                         );
                       })
                     : null}
-                  {isSel ? <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} k={k} /> : null}
+                  {isSel ? <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} k={k} scale={scale} /> : null}
                   {isSel ? (
                     segment != null && f.points[segment + 1] ? (
-                      <EndMarkers a={fixturePixels(f)[segmentLeds(f, segment).lo]} b={fixturePixels(f)[segmentLeds(f, segment).hi]} V={V} k={k} />
+                      <EndMarkers a={fixturePixels(f, scale)[segmentLeds(f, segment).lo]} b={fixturePixels(f, scale)[segmentLeds(f, segment).hi]} V={V} k={k} />
                     ) : (
                       <EndMarkers a={f.points[0]} b={f.points[f.points.length - 1]} V={V} k={k} />
                     )
@@ -1578,6 +1686,26 @@ export function LayoutPage() {
               startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
             };
             const hitClass = tool === 'select' && !panMode ? 'cursor-move' : '';
+            if (f.kind === 'custom') {
+              const paths = designPaths(f, scale).map((path) => path.map(V));
+              const b = boxOf(f, side);
+              const pad = 10 * k;
+              return (
+                <g key={f.id}>
+                  <rect x={b.x - pad} y={b.y - pad} width={b.w + 2 * pad} height={b.h + 2 * pad} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                  {isSel || multi.includes(f.id)
+                    ? paths.map((path, j) => (
+                        <polyline key={j} points={path.map((q) => `${q.u},${q.v}`).join(' ')} fill="none" stroke="rgb(40,170,255)" strokeOpacity={0.85} strokeWidth={2.5 * k} strokeLinejoin="round" pointerEvents="none" />
+                      ))
+                    : null}
+                  {isSel || multi.includes(f.id) ? (
+                    <rect x={b.x - pad} y={b.y - pad} width={b.w + 2 * pad} height={b.h + 2 * pad} fill={multi.includes(f.id) ? 'rgba(40,170,255,0.08)' : 'none'} stroke="rgb(40,170,255)" strokeOpacity={0.6} strokeWidth={1.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                  ) : null}
+                  {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
+                  {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
+                </g>
+              );
+            }
             return (
               <g key={f.id}>
                 {f.kind === 'tree' && front ? (
@@ -1592,13 +1720,16 @@ export function LayoutPage() {
                     <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(front ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   )
                 ) : null}
-                {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} /> : null}
-                {isSel ? <EndMarkers a={fixturePixels(f)[0]} b={fixturePixels(f).at(-1)} V={V} k={k} /> : null}
+                {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
+                {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
                 {isSel ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
                 {isSel && f.kind === 'tree' && front ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
               </g>
             );
           })}
+
+          {/* Where each new strand of the selected object starts */}
+          {sel && !playing ? <StrandMarks f={sel} perStrand={lightsOf(layout, sel.lights)?.perStrand ?? null} scale={scale} V={V} k={k} labels={front} /> : null}
 
           {/* Line being drawn, with the length of the segment under the pointer */}
           {isLineTool(tool) && draft.side === side && draft.pts.length ? (
@@ -1621,6 +1752,7 @@ export function LayoutPage() {
                         pointerEvents="none"
                       >
                         {m.text(len)}
+                        {newLights ? ` · ${ledsForLength(len / scale, newLights.spacing, false)} LEDs` : ''}
                       </text>
                     ) : null;
                   })()
@@ -1929,6 +2061,17 @@ export function LayoutPage() {
           {toolButton('line', Spline)}
           {toolButton('bush', Circle)}
           {toolButton('tree', TreePine)}
+          <button
+            type="button"
+            onClick={() => setLibrary(true)}
+            title="Custom object: a star, a wreath, an arch… (O)"
+            aria-label="Custom object"
+            aria-keyshortcuts="O"
+            className="relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]"
+          >
+            <Shapes />
+            <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">O</kbd>
+          </button>
           {toolSep}
           {toolButton('measure', Ruler)}
           {toolSep}
@@ -2145,6 +2288,11 @@ export function LayoutPage() {
                         })
                       }
                       onClose={() => setSegment(null)}
+                      lights={lightsOf(layout, sel.lights)}
+                      length={lineLengths(sel)[segment] ?? 0}
+                      scale={scale}
+                      m={m}
+                      onResize={(count) => update(sel.id, resizeSegment(sel, segment, count))}
                     />
                   </PropSection>
                 ) : null}
@@ -2231,6 +2379,33 @@ export function LayoutPage() {
                   />
                 </PropSection>
 
+                {sel.kind === 'custom' ? (
+                  <PropSection key="design" id="design" title="Design">
+                    <CustomProps
+                      layout={layout}
+                      f={sel}
+                      lenText={m.text}
+                      onChange={(patch) => update(sel.id, patch)}
+                      onEditDesign={() => {
+                        const d = layout.designs?.find((x) => x.id === sel.designId);
+                        setDesigning(d ?? { id: uid(), name: sel.name, strokes: sel.design ?? [], pixels: sel.pixels, lights: sel.lights });
+                      }}
+                    />
+                  </PropSection>
+                ) : null}
+
+                <PropSection key="lights" id="lights" title={`Made of${lightsOf(layout, sel.lights) ? ` · ${lightsOf(layout, sel.lights)!.name}` : ''}`}>
+                  <LightsProps
+                    layout={layout}
+                    f={sel}
+                    lenText={m.text}
+                    onPick={(id) => pickLights(sel.id, id)}
+                    onNew={() => setLightEdit({ type: null, forObject: sel.id })}
+                    onEdit={(lt) => setLightEdit({ type: lt })}
+                    onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
+                  />
+                </PropSection>
+
                 <PropSection key="leds" id="leds" title="LEDs">
                   <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} />
                 </PropSection>
@@ -2239,7 +2414,7 @@ export function LayoutPage() {
                   <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
                 </PropSection>
 
-                {!isLine(sel) ? (
+                {!isLine(sel) && sel.kind !== 'custom' ? (
                   <PropSection key="shape" id="shape" title="Shape">
                     <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
                     {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
@@ -2406,6 +2581,48 @@ export function LayoutPage() {
                   <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
                 </PropSection>
                 <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+                <PropSection key="lightstrings" id="lightstrings" title="Light strings">
+                  <LightSelect
+                    layout={layout}
+                    label="New objects"
+                    value={layout.lights}
+                    hint="What new lines, bushes, trees and custom objects are made of"
+                    onChange={(lights) => updateLayout({ lights })}
+                    onNew={() => setLightEdit({ type: null })}
+                  />
+                  {newLights ? (
+                    <PropNote>
+                      New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart; while you draw, each segment shows its length and LEDs.
+                    </PropNote>
+                  ) : (
+                    <PropNote>Pick the light string you use most. New objects are made of it, and lines you draw get the right number of LEDs.</PropNote>
+                  )}
+                  {layout.lightTypes?.length ? (
+                    <ul className="space-y-0.5 pt-1">
+                      {layout.lightTypes.map((lt) => (
+                        <li key={lt.id}>
+                          <button type="button" onClick={() => setLightEdit({ type: lt })} className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
+                            <span className="min-w-0 flex-1 truncate">{lt.name}</span>
+                            <span className="text-stone-500">{layout.fixtures.filter((f) => f.lights === lt.id).length} objects</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <div className="pt-1">
+                    <PropButton onClick={() => setLightEdit({ type: null })}>
+                      <Plus /> New light type
+                    </PropButton>
+                  </div>
+                </PropSection>
+                <PropSection key="library" id="library" title="Custom objects">
+                  <LibraryList layout={layout} onPlace={(d) => placeDesign(d)} onEdit={setDesigning} onDuplicate={duplicateDesign} onDelete={deleteDesign} />
+                  <div className="pt-1">
+                    <PropButton onClick={newDesign}>
+                      <Plus /> New custom object
+                    </PropButton>
+                  </div>
+                </PropSection>
                 {runs.size ? (
                   <PropSection key="devices" id="devices" title="LEDs per device">
                     <div className="space-y-4">
@@ -2467,6 +2684,49 @@ export function LayoutPage() {
         </span>
       </div>
       {menu ? <ContextMenu menu={menu} onClose={() => setMenu(null)} /> : null}
+      <Dialog
+        open={library}
+        onClose={() => setLibrary(false)}
+        title="Custom objects"
+        description="Your own shapes, laid out the way the light string really runs. Place one in the yard as often as you like; changing a design changes every copy."
+        footer={
+          <>
+            <Button onClick={() => setLibrary(false)}>Close</Button>
+            <Button variant="primary" onClick={() => (setLibrary(false), newDesign())}>
+              <Plus /> New custom object
+            </Button>
+          </>
+        }
+      >
+        <div className="pb-2">
+          <LibraryList
+            layout={layout}
+            onPlace={(d) => placeDesign(d)}
+            onEdit={(d) => (setLibrary(false), setDesigning(d))}
+            onDuplicate={(d) => (setLibrary(false), duplicateDesign(d))}
+            onDelete={deleteDesign}
+          />
+        </div>
+      </Dialog>
+      {designing ? (
+        <DesignEditor
+          open
+          initial={designing}
+          layout={layout}
+          usedBy={layout.fixtures.filter((f) => f.designId === designing.id).length}
+          onSave={saveDesign}
+          onClose={() => setDesigning(null)}
+        />
+      ) : null}
+      <LightTypeDialog
+        open={lightEdit != null}
+        initial={lightEdit?.type ?? null}
+        units={m.units}
+        usedBy={lightEdit?.type ? layout.fixtures.filter((f) => f.lights === lightEdit.type!.id).length : 0}
+        onSave={(lt) => saveLightType(lt, lightEdit?.forObject)}
+        onDelete={deleteLightType}
+        onClose={() => setLightEdit(null)}
+      />
       <Dialog
         open={newScene != null}
         onClose={() => setNewScene(null)}
@@ -2627,17 +2887,36 @@ function tidyPins(pins: (number | null)[] | undefined) {
 
 function LedProps({ f, onRange }: { f: Fixture; onRange: (first: number, last: number) => void }) {
   const { first, last } = ledRange(f);
+  // A custom object has as many LEDs as its design: moving the first LED moves them all.
+  const fixed = f.kind === 'custom';
   return (
     <>
-      <PropNumber label="First LED" tone="green" steppers value={first} onChange={(n) => onRange(Math.round(n), last)} hint="The device LED number at the start (the first point you drew)" />
-      <PropNumber label="Last LED" tone="red" steppers value={last} onChange={(n) => onRange(first, Math.round(n))} hint="The device LED number at the end" />
       <PropNumber
-        label="Number of LEDs"
-        value={f.pixels}
-        min={1}
-        max={MAX_FIXTURE_PIXELS}
-        onChange={(n) => onRange(first, last >= first ? first + Math.round(n) - 1 : Math.max(0, first - Math.round(n) + 1))}
+        label="First LED"
+        tone="green"
+        steppers
+        value={first}
+        onChange={(n) => (fixed ? onRange(Math.round(n), Math.max(0, Math.round(n) + last - first)) : onRange(Math.round(n), last))}
+        hint="The device LED number at the start (the first point you drew)"
       />
+      {fixed ? (
+        <PropRow label="Last LED">
+          <span className="block text-xs tabular-nums">
+            {last} ({f.pixels} LEDs, set in the design)
+          </span>
+        </PropRow>
+      ) : (
+        <>
+          <PropNumber label="Last LED" tone="red" steppers value={last} onChange={(n) => onRange(first, Math.round(n))} hint="The device LED number at the end" />
+          <PropNumber
+            label="Number of LEDs"
+            value={f.pixels}
+            min={1}
+            max={MAX_FIXTURE_PIXELS}
+            onChange={(n) => onRange(first, last >= first ? first + Math.round(n) - 1 : Math.max(0, first - Math.round(n) + 1))}
+          />
+        </>
+      )}
       <PropRow label="Direction">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-xs">{f.pixels === 1 ? 'One LED' : last >= first ? 'Counts up' : 'Counts down'}</span>
@@ -2681,7 +2960,7 @@ function CornerProps({ f, index, onPin, onSplit }: { f: Fixture; index: number; 
 }
 
 /** Device LED numbers at the points of the selected object, drawn on the map. */
-function LedLabels({ f, corner, segment, V, side, k }: { f: Fixture; corner: number | null; segment: number | null; V: (p: Point) => { u: number; v: number }; side: ViewSide; k: number }) {
+function LedLabels({ f, corner, segment, V, side, k, scale }: { f: Fixture; corner: number | null; segment: number | null; V: (p: Point) => { u: number; v: number }; side: ViewSide; k: number; scale: number }) {
   const label = (x: number, y: number, text: string, strong: boolean, key: string | number) => (
     <text
       key={key}
@@ -2700,6 +2979,13 @@ function LedLabels({ f, corner, segment, V, side, k }: { f: Fixture; corner: num
       {text}
     </text>
   );
+  if (f.kind === 'custom') {
+    const pts = designPaths(f, scale).flat().map(V);
+    const { first, last } = ledRange(f);
+    if (!pts.length) return null;
+    const u = (Math.min(...pts.map((q) => q.u)) + Math.max(...pts.map((q) => q.u))) / 2;
+    return label(u, Math.min(...pts.map((q) => q.v)) - 10 * k, `LEDs ${first}–${last}`, true, 'c');
+  }
   if (!isLine(f)) {
     const c = V(f.points[0]);
     const r = f.radius ?? 60;
@@ -2821,7 +3107,32 @@ function StripMap({
 }
 
 /** Edits one straight segment of a line: only it glows on the lights, with green and red ends. */
-function SegmentProps({ f, index, onPoint, onToggle, onClose }: { f: Fixture; index: number; onPoint: (point: number, led: number) => void; onToggle: (on: boolean) => void; onClose: () => void }) {
+function SegmentProps({
+  f,
+  index,
+  onPoint,
+  onToggle,
+  onClose,
+  lights,
+  length,
+  scale,
+  m,
+  onResize
+}: {
+  f: Fixture;
+  index: number;
+  onPoint: (point: number, led: number) => void;
+  onToggle: (on: boolean) => void;
+  onClose: () => void;
+  /** What the line is made of, if known. */
+  lights: LightType | null;
+  /** The segment's drawn length, in layout units. */
+  length: number;
+  scale: number;
+  m: Measure;
+  /** Gives the segment this many LEDs; the LEDs after it move along. */
+  onResize: (count: number) => void;
+}) {
   const on = !f.skip?.includes(index);
   const count = f.points.length - 1;
   // Segments do not share LEDs: this one ends on the LED just before the next one starts.
@@ -2852,10 +3163,63 @@ function SegmentProps({ f, index, onPoint, onToggle, onClose }: { f: Fixture; in
         {Math.abs(end - start) + 1} LEDs{on ? '' : ', off'}.{!isLast ? ` The next segment starts at LED ${end + dir}.` : ''} Only this segment glows on the lights. Move its ends until the green and
         red LEDs sit at the real corners; these numbers stay fixed when you edit other segments.
       </PropNote>
+      <PropRow label="Length">
+        <span className="block text-xs tabular-nums">
+          {m.text(length)}
+          {lights ? ` · one LED every ${spacingText(length / scale / Math.max(1, Math.abs(end - start) + (isLast ? 0 : 1)), m.units)}` : ''}
+        </span>
+      </PropRow>
+      {lights
+        ? (() => {
+            // A segment ends where the next begins; the last one has an LED at each end.
+            const fit = ledsForLength(length / scale, lights.spacing, isLast);
+            const now = Math.abs(end - start) + 1;
+            return fit !== now ? (
+              <>
+                <PropNote>
+                  Made of {lights.name}: {spacingText(lights.spacing, m.units)} apart, this segment holds {fit} LEDs; it has {now}.
+                </PropNote>
+                <PropRow label="">
+                  <PropButton onClick={() => onResize(fit)} title="The LEDs after this segment move along; the other segments keep their LEDs">
+                    Use {fit} LEDs here
+                  </PropButton>
+                </PropRow>
+              </>
+            ) : (
+              <PropNote>Made of {lights.name}: {now} LEDs fit this segment as drawn.</PropNote>
+            );
+          })()
+        : null}
       <PropRow label="">
         <PropButton onClick={onClose}>Show the whole line</PropButton>
       </PropRow>
     </>
+  );
+}
+
+/** Orange marks where each new strand of lights starts on the selected object, with the device LED number there. */
+function StrandMarks({ f, perStrand, scale, V, k, labels }: { f: Fixture; perStrand: number | null; scale: number; V: (p: Point) => { u: number; v: number }; k: number; labels: boolean }) {
+  const starts = strandStarts(f.pixels, perStrand);
+  if (!starts.length) return null;
+  const px = fixturePixels(f, scale);
+  return (
+    <g pointerEvents="none">
+      {starts.map((i, n) => {
+        const p = px[i];
+        if (!p) return null;
+        const q = V(p);
+        return (
+          <g key={i}>
+            <rect x={q.u - 6 * k} y={q.v - 6 * k} width={12 * k} height={12 * k} transform={`rotate(45 ${q.u} ${q.v})`} fill="#fb923c" stroke="#0c0a09" strokeWidth={2 * k} />
+            {labels ? (
+              <text x={q.u} y={q.v + 24 * k} textAnchor="middle" fontSize={12 * k} fontWeight={600} fill="#fdba74" stroke="#0c0a09" strokeWidth={3.5 * k} paintOrder="stroke" className="tabular-nums">
+                strand {n + 2} · #{deviceLed(f, i)}
+              </text>
+            ) : null}
+          </g>
+        );
+      })}
+    </g>
   );
 }
 

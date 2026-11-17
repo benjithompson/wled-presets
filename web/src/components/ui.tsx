@@ -178,7 +178,7 @@ export function Dialog({
   description?: ReactNode;
   children?: ReactNode;
   footer?: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -201,7 +201,7 @@ export function Dialog({
       }}
       className={cn(
         'm-auto w-[calc(100%-2rem)] rounded-2xl bg-white p-0 text-stone-900 shadow-2xl ring-1 ring-stone-200 backdrop:bg-stone-950/40 backdrop:backdrop-blur-sm dark:bg-stone-900 dark:text-stone-100 dark:ring-stone-800',
-        size === 'sm' ? 'max-w-sm' : size === 'lg' ? 'max-w-2xl' : 'max-w-lg'
+        size === 'sm' ? 'max-w-sm' : size === 'lg' ? 'max-w-2xl' : size === 'xl' ? 'max-w-6xl' : 'max-w-lg'
       )}
     >
       {open ? (
