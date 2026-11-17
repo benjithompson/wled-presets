@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Stage } from '../../../shared/layout.ts';
+import { AERIAL_OPACITY, buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Stage } from '../../../shared/layout.ts';
 import { cn } from '../lib/utils.ts';
 
 type CameraPreset = 'street' | 'front' | 'top' | 'side';
@@ -202,6 +202,23 @@ export function Scene3D({
       c.content.add(plane);
     }
 
+    // The picture from above, on the ground.
+    const aerial = layout.aerial;
+    if (aerial && showPicture && (aerial.opacity ?? AERIAL_OPACITY) > 0) {
+      const tex = new THREE.TextureLoader().load(aerial.url);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const geo = new THREE.PlaneGeometry(aerial.width / scale, (aerial.width * aerial.aspect) / scale);
+      // Flat on the ground, the top of the picture toward the back of the house.
+      geo.rotateX(-Math.PI / 2);
+      const plane = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: (aerial.opacity ?? AERIAL_OPACITY) * 0.75, depthWrite: false }));
+      plane.position.copy(world(aerial.x, ground, aerial.z));
+      plane.position.y = -0.01;
+      // Clockwise from above is a negative turn about the up axis.
+      plane.rotation.y = (-aerial.rotation * Math.PI) / 180;
+      plane.renderOrder = -1;
+      c.content.add(plane);
+    }
+
     // Wires of the lines, so their shape shows even where the LEDs are off.
     layout.fixtures.forEach((f) => {
       const paths = isLine(f) ? [f.points] : f.kind === 'custom' ? designPaths(f, scale) : [];
@@ -269,14 +286,14 @@ export function Scene3D({
             {p.label}
           </button>
         ))}
-        {layout.background ? (
+        {layout.background || layout.aerial ? (
           <button
             type="button"
             aria-pressed={showPicture}
             onClick={() => setShowPicture((v) => !v)}
             className={cn('rounded-lg px-2.5 py-1 text-xs font-medium ring-1 ring-white/10 backdrop-blur', showPicture ? 'bg-white/80 text-stone-900' : 'bg-black/50 text-white/80 hover:bg-black/70')}
           >
-            Picture
+            {layout.background && layout.aerial ? 'Pictures' : 'Picture'}
           </button>
         ) : null}
       </div>

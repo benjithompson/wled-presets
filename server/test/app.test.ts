@@ -267,6 +267,30 @@ describe('automatic preset import', () => {
   });
 });
 
+describe('layout pictures', () => {
+  it('keeps the picture from above for signed-in users only', async () => {
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    expect((await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'image/png' })).status).toBe(401);
+    await login();
+    expect((await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'text/plain' })).status).toBe(400);
+    const up = await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'image/png' });
+    expect(up.status).toBe(200);
+    const { url } = JSON.parse(await up.text());
+    expect(url).toMatch(/^\/api\/admin\/layout\/aerial\?v=\d+$/);
+    const back = await t.raw('GET', url);
+    expect(back.headers.get('content-type')).toBe('image/png');
+    expect(new Uint8Array(await back.arrayBuffer())).toEqual(png);
+    // The editor places it and saves the layout.
+    const layout = (await t.call('GET', '/api/layout')).json;
+    const aerial = { url, x: 800, z: 0, width: 3200, aspect: 0.5, rotation: 12 };
+    expect((await t.call('PUT', '/api/admin/layout', { ...layout, aerial })).status).toBe(200);
+    expect((await t.call('GET', '/api/layout')).json.aerial).toEqual(aerial);
+    const gone = await t.call('DELETE', '/api/admin/layout/aerial');
+    expect(gone.json.aerial).toBeNull();
+    expect((await t.raw('GET', url)).status).toBe(404);
+  });
+});
+
 describe('backup', () => {
   it('restores onto a new install by matching device addresses', async () => {
     await login();

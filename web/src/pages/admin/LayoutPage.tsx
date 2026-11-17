@@ -14,6 +14,8 @@ import {
   Hand,
   House,
   ImagePlus,
+  Images,
+  Move,
   LayoutPanelLeft,
   Lightbulb,
   LightbulbOff,
@@ -72,6 +74,12 @@ import {
   designReach,
   lineLengths,
   resizeSegment,
+  AERIAL_OPACITY,
+  aerialCorners,
+  alignAerial,
+  placeAerial,
+  scaleAerial,
+  type AerialPicture,
   type Design,
   type Fixture,
   type FixtureKind,
@@ -89,7 +97,7 @@ import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } f
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
 import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
-import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropText } from './props.tsx';
+import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, snapPoint, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
@@ -98,7 +106,8 @@ import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 // three.js is large: load the 3D view only when it is opened.
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
 
-type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'measure';
+/** align: lines the picture from above up with the yard (no button: the Pictures menu starts it). */
+type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'measure' | 'align';
 type LineTool = 'roof' | 'line';
 const isLineTool = (t: Tool): t is LineTool => t === 'roof' || t === 'line';
 /** One-key shortcuts, as in most drawing programs. */
@@ -141,7 +150,7 @@ const VIEWPORT_KEY = 'layout.viewport';
 const DRAFTING_KEY = 'layout.drafting';
 const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
 const VIEW_NOTES: Record<ViewName, string> = { front: 'as seen from the street', top: 'from above, the street at the bottom', '3d': 'drag to turn, right-drag to pan' };
-const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', measure: 'Measure' };
+const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', measure: 'Measure', align: 'Align picture' };
 const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, custom: Shapes };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
 const BASE_K = 1.6;
@@ -237,6 +246,9 @@ export function LayoutPage() {
   const [busy, setBusy] = useState(false);
   const svgs = useRef<Partial<Record<ViewSide, SVGSVGElement | null>>>({});
   const fileInput = useRef<HTMLInputElement>(null);
+  const aerialInput = useRef<HTMLInputElement>(null);
+  /** Align tool: a spot on the picture from above, where it goes, then a second spot and where it goes (top view). */
+  const [alignPts, setAlignPts] = useState<UV[]>([]);
 
   // Viewports: how they share the space, which view each one shows, and one view made big.
   const [viewport, setViewportState] = useState(readViewport);
@@ -699,6 +711,7 @@ export function LayoutPage() {
     setTool(t);
     setDraft((d) => ({ side: d.side, pts: [] }));
     setTape(null);
+    setAlignPts([]);
     setSnapHint(null);
     setMenu(null);
   };
@@ -765,6 +778,11 @@ export function LayoutPage() {
         setDrag(null);
       } else if (e.key === 'Enter' && drawing && isLineTool(tool)) {
         finishLine(tool);
+      } else if (e.key === 'Enter' && tool === 'align' && alignPts.length === 2) {
+        finishAlign(alignPts);
+      } else if (e.key === 'Backspace' && tool === 'align' && alignPts.length) {
+        e.preventDefault();
+        setAlignPts((a) => a.slice(0, -1));
       } else if (e.key === 'Backspace' && drawing) {
         e.preventDefault();
         setDraft((d) => ({ ...d, pts: d.pts.slice(0, -1) }));
@@ -1129,6 +1147,15 @@ export function LayoutPage() {
       setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : { kind: 'newTree', side, base: p, size: 0 });
       return;
     }
+    if (tool === 'align') {
+      if (side !== 'top') return void toast('Line the picture up in the top view.');
+      // A spot on the picture is where you click; where it goes snaps to the objects.
+      const p = alignPts.length % 2 ? snapAt(e, side, alignPts[alignPts.length - 1]).at : viewPoint(e, side);
+      const next = [...alignPts, p];
+      if (next.length === 4) finishAlign(next);
+      else setAlignPts(next);
+      return;
+    }
     if (tool === 'measure') {
       const open = tape && !tape.b && tape.side === side;
       const p = snapAt(e, side, open ? tape.a : null).at;
@@ -1172,6 +1199,8 @@ export function LayoutPage() {
         if (!from && !e.altKey && lineEndAt(side, p)) hint = { ...hint, label: 'Click to continue this line' };
       } else if (tool === 'measure') {
         hint = snapAt(e, side, tape && !tape.b && tape.side === side ? tape.a : null);
+      } else if (tool === 'align' && side === 'top' && alignPts.length % 2) {
+        hint = snapAt(e, side, alignPts[alignPts.length - 1]);
       } else if (tool === 'bush' || tool === 'tree') {
         hint = snapAt(e, side);
       } else if (tool === 'edit' || tool === 'split') {
@@ -1370,6 +1399,86 @@ export function LayoutPage() {
     }
   }
 
+  /** The view position in the top view as a spot seen from above. */
+  const toXZ = (p: UV) => ({ x: p.u, z: p.v + zMin });
+  /** Applies the Align tool: two pairs move, turn and size the picture; one pair only moves it. */
+  function finishAlign(pts: UV[]) {
+    const a = layout?.aerial;
+    chooseTool('select');
+    if (!a || pts.length < 2) return;
+    const [f1, t1, f2, t2] = pts.map(toXZ);
+    const next = alignAerial(a, f1, t1, f2, t2);
+    updateLayout({ aerial: next });
+    toast.success(f2 ? `Picture lined up: ${m.text(next.width)} wide, turned ${Math.round(next.rotation * 10) / 10}°.` : 'Picture moved.');
+  }
+  const startAlign = (a: AerialPicture | null | undefined = layoutRef.current?.aerial) => {
+    chooseTool('align');
+    // The top view must be on the screen, zoomed out to show the whole picture and the yard.
+    if (!shown.includes('top')) {
+      setMaximized(null);
+      if (!visible.includes('top')) setPaneView(0, 'top');
+    }
+    if (a) {
+      const c = contentBox('top');
+      const us = [c.x, c.x + c.w, ...aerialCorners(a).map((q) => q.x)];
+      const vs = [c.y, c.y + c.h, ...aerialCorners(a).map((q) => q.z - zMin)];
+      const box = { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
+      setCams((cs) => ({ ...cs, top: fitCam(box, sizeOf('top'), offOf('top')) }));
+    }
+  };
+
+  async function uploadAerial(file: File | undefined) {
+    if (!file || !layout) return;
+    setBusy(true);
+    try {
+      const { url } = await api.uploadAerial(file);
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const first = !layout.aerial;
+      const next = { ...layout, aerial: placeAerial(layout, url, img.naturalHeight / img.naturalWidth, layout.aerial) };
+      const out = await api.saveLayout(next);
+      qc.setQueryData(LAYOUT_KEY, out);
+      setLayout(out);
+      if (first) {
+        toast.success('Picture added under the top view. Now line it up: click a corner of the house on the picture, then where that corner is in the yard; then a second corner.');
+        startAlign(out.aerial);
+      } else toast.success('Picture replaced. It keeps the place of the old one.');
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAerial() {
+    setBusy(true);
+    try {
+      const out = await api.removeAerial();
+      qc.setQueryData(LAYOUT_KEY, out);
+      setLayout((l) => (l ? { ...l, aerial: null } : out));
+      if (tool === 'align') chooseTool('select');
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** The Pictures menu: the front of the house, and the yard from above. */
+  function picturesMenu(e: RMouseEvent<HTMLElement>) {
+    if (!layout) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const items: MenuItem[] = [
+      { label: layout.background ? 'Change the house picture (front view)…' : 'Add a house picture (front view)…', run: () => fileInput.current?.click() },
+      { label: layout.aerial ? 'Change the picture from above (top view)…' : 'Add a picture from above (top view)…', run: () => aerialInput.current?.click() }
+    ];
+    if (layout.aerial) items.push({ label: 'Line up the picture from above', run: () => startAlign() });
+    if (layout.background) items.push({ label: 'Remove the house picture', danger: true, run: () => void removeBg() });
+    if (layout.aerial) items.push({ label: 'Remove the picture from above', danger: true, run: () => void removeAerial() });
+    setMenu({ x: r.left, y: r.bottom + 4, title: 'Pictures to trace over', items });
+  }
+
   async function removeBg() {
     setBusy(true);
     try {
@@ -1442,7 +1551,9 @@ export function LayoutPage() {
               : tool === 'tree'
                 ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
                 : tool === 'measure'
-                  ? 'Click two points to measure the distance between them. Then type the real distance to set the scale.'
+                  ? 'Click two points to measure the distance between them. Then type the real distance to set the scale (or, in the top view, the scale of the picture from above).'
+                  : tool === 'align'
+                    ? ALIGN_STEPS[alignPts.length]
                   : 'Click to select; drag to move (Shift: straight). Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
 
   const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
@@ -1830,6 +1941,28 @@ export function LayoutPage() {
               {tape.b ? <circle cx={tape.b.u} cy={tape.b.v} r={6 * k} fill="#f0abfc" /> : null}
             </g>
           ) : null}
+
+          {/* Align tool: the edge of the picture, and each spot with an arrow to where it goes. */}
+          {!front && tool === 'align' && layout.aerial ? (
+            <g pointerEvents="none">
+              <polygon points={aerialCorners(layout.aerial).map((q) => `${q.x},${q.z - zMin}`).join(' ')} fill="none" stroke="#5eead4" strokeWidth={1.5 * k} strokeDasharray={dash(8, 6)} />
+              {[0, 2].map((i) => {
+                const a = alignPts[i];
+                if (!a) return null;
+                const b = alignPts[i + 1] ?? (i + 1 === alignPts.length && cursor?.side === side ? cursor : null);
+                return (
+                  <g key={i}>
+                    {b ? <line x1={a.u} y1={a.v} x2={b.u} y2={b.v} stroke="#5eead4" strokeWidth={2.5 * k} strokeDasharray={alignPts[i + 1] ? undefined : dash(6, 4)} /> : null}
+                    <circle cx={a.u} cy={a.v} r={6 * k} fill="none" stroke="#5eead4" strokeWidth={2.5 * k} />
+                    {alignPts[i + 1] ? <circle cx={alignPts[i + 1].u} cy={alignPts[i + 1].v} r={6 * k} fill="#5eead4" /> : null}
+                    <text x={a.u + 10 * k} y={a.v - 10 * k} fontSize={14 * k} fontWeight={700} fill="#99f6e4" stroke="#0c0a09" strokeWidth={4 * k} paintOrder="stroke">
+                      {i / 2 + 1}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          ) : null}
         </svg>
       </YardView>
     );
@@ -2027,15 +2160,18 @@ export function LayoutPage() {
           <span className="max-w-40 truncate">{editingScene ? editingScene.name : 'Scenes'}</span>
           <ChevronDown />
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => fileInput.current?.click()} disabled={busy} title="A photo of the front of the house, to trace the lights over">
-          <ImagePlus /> {layout.background ? 'Change picture' : 'Add house picture'}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={picturesMenu}
+          disabled={busy}
+          title="Pictures to trace over: the front of the house (a photo or a Street View screenshot), and the yard from above (a satellite view screenshot)"
+        >
+          {layout.background || layout.aerial ? <Images /> : <ImagePlus />} Pictures
+          <ChevronDown />
         </Button>
-        {layout.background ? (
-          <Button size="sm" variant="ghost" onClick={removeBg} disabled={busy} title="Remove the house picture" aria-label="Remove the house picture" className="px-2">
-            <X />
-          </Button>
-        ) : null}
         <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
+        <input ref={aerialInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (uploadAerial(e.target.files?.[0]), (e.target.value = ''))} />
         <span className="ml-auto" />
         <Button size="sm" variant="ghost" onClick={() => (edit(() => saved!), setSelected(null))} disabled={!dirty || busy} title="Go back to the saved layout">
           <RotateCcw /> Revert
@@ -2125,7 +2261,7 @@ export function LayoutPage() {
           </div>
 
           {/* The command line: what the line tool or the measure tool needs next. */}
-          {drawing || (tool === 'measure' && tapeLength != null) ? (
+          {drawing || (tool === 'measure' && tapeLength != null) || tool === 'align' ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-3">
               <div className="pointer-events-auto">
                 {drawing && isLineTool(tool) ? (
@@ -2146,10 +2282,37 @@ export function LayoutPage() {
                       </button>
                     ) : null}
                   </div>
+                ) : tool === 'align' ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-900/90 px-3 py-1.5 text-xs text-white shadow-lg ring-1 ring-white/10 backdrop-blur">
+                    <span className="max-w-[34rem]">{layout.aerial ? ALIGN_STEPS[alignPts.length] : 'Add a picture from above first (Pictures menu).'}</span>
+                    {alignPts.length ? (
+                      <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => setAlignPts((a) => a.slice(0, -1))} title="Backspace">
+                        Undo last click
+                      </button>
+                    ) : null}
+                    {alignPts.length === 2 ? (
+                      <button type="button" className="rounded-md bg-teal-600 px-2.5 py-1 font-semibold hover:bg-teal-500" onClick={() => finishAlign(alignPts)} title="Enter">
+                        Just move it
+                      </button>
+                    ) : null}
+                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => chooseTool('select')} title="Esc">
+                      Done
+                    </button>
+                  </div>
                 ) : tapeLength != null ? (
                   <MeasureBar
                     length={tapeLength}
                     m={m}
+                    onPicture={
+                      tape?.side === 'top' && layout.aerial
+                        ? (meters) => {
+                            const a = layout.aerial!;
+                            updateLayout({ aerial: scaleAerial(a, toXZ(tape.a), (meters * scale) / tapeLength) });
+                            setTape(null);
+                            toast.success(`Picture scaled: what you measured is now ${meters * (m.units === 'm' ? 1 : FEET_PER_METER)} ${m.units}.`);
+                          }
+                        : undefined
+                    }
                     onScale={(meters) => {
                       updateLayout({ scale: Math.round((tapeLength / meters) * 1000) / 1000 });
                       setTape(null);
@@ -2581,6 +2744,16 @@ export function LayoutPage() {
                   <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
                 </PropSection>
                 <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+                {layout.aerial ? (
+                  <AerialProps
+                    aerial={layout.aerial}
+                    m={m}
+                    onChange={(patch) => updateLayout({ aerial: { ...layout.aerial!, ...patch } })}
+                    onAlign={() => startAlign()}
+                    onMeasure={() => (chooseTool('measure'), setTape(null))}
+                    onRemove={() => void removeAerial()}
+                  />
+                ) : null}
                 <PropSection key="lightstrings" id="lightstrings" title="Light strings">
                   <LightSelect
                     layout={layout}
@@ -2769,7 +2942,7 @@ function setSegmentEffect(fx: Fixture['segmentEffects'], k: number, effect: Effe
 const EFFECT_NAMES = Object.fromEntries(EFFECTS.map((e) => [e.id, e.name])) as Record<EffectId, string>;
 
 /** After two points are measured: type the real distance between them to set the scale. */
-function MeasureBar({ length, m, onScale }: { length: number; m: Measure; onScale: (meters: number) => void }) {
+function MeasureBar({ length, m, onScale, onPicture }: { length: number; m: Measure; onScale: (meters: number) => void; onPicture?: (meters: number) => void }) {
   const [real, setReal] = useState('');
   const n = Number(real);
   const ok = real !== '' && Number.isFinite(n) && n > 0;
@@ -2784,12 +2957,74 @@ function MeasureBar({ length, m, onScale }: { length: number; m: Measure; onScal
       <span>
         Measured: <span className="font-semibold tabular-nums">{m.text(length)}</span>. Real distance:
       </span>
-      <Input inputMode="decimal" value={real} onChange={(e) => setReal(e.target.value.replace(/[^\d.]/g, ''))} className="h-8 w-20 px-2" aria-label={`Real distance in ${m.units}`} />
+      {/* Input is full width and 2.5rem high: the wrapper and the style size it. */}
+      <div className="w-20 shrink-0">
+        <Input inputMode="decimal" value={real} onChange={(e) => setReal(e.target.value.replace(/[^\d.]/g, ''))} style={{ height: '2rem' }} className="px-2" aria-label={`Real distance in ${m.units}`} />
+      </div>
       <span>{m.units}</span>
-      <Button size="sm" type="submit" variant="primary" disabled={!ok}>
+      <Button size="sm" type="submit" variant="primary" disabled={!ok} title="Make the whole yard this size">
         Set scale
       </Button>
+      {onPicture ? (
+        <Button size="sm" type="button" disabled={!ok} onClick={() => onPicture(m.units === 'm' ? n : n / FEET_PER_METER)} title="Scale only the picture from above, about the first point">
+          Scale the picture
+        </Button>
+      ) : null}
     </form>
+  );
+}
+
+/** What the Align tool needs next, by the number of clicks so far. */
+const ALIGN_STEPS = [
+  'Step 1 of 4: click a spot on the picture, for example a front corner of the house.',
+  'Step 2 of 4: click where that spot really is in the yard, for example the end of the roofline. Snapping helps.',
+  'Step 3 of 4: click a second spot on the picture, far from the first: the other front corner. Or press Enter to just move it.',
+  'Step 4 of 4: click where that second spot really is. The picture moves, turns and resizes to fit both.'
+];
+
+/** The picture from above: where it lies, how big, turned how far, and how strong. */
+function AerialProps({
+  aerial,
+  m,
+  onChange,
+  onAlign,
+  onMeasure,
+  onRemove
+}: {
+  aerial: AerialPicture;
+  m: Measure;
+  onChange: (patch: Partial<AerialPicture>) => void;
+  onAlign: () => void;
+  onMeasure: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <PropSection key="aerial" id="aerial" title="Picture from above">
+      <PropRow label="Line up">
+        <div className="flex flex-wrap gap-1.5">
+          <PropButton onClick={onAlign} title="Click two spots on the picture and where each one really is">
+            <Move /> Align
+          </PropButton>
+          <PropButton onClick={onMeasure} title="Measure something on the picture in the top view, then type its real size">
+            <Ruler /> Measure
+          </PropButton>
+        </div>
+      </PropRow>
+      <PropSlider label="Strength" value={aerial.opacity ?? AERIAL_OPACITY} onChange={(opacity) => onChange({ opacity: Math.round(opacity * 100) / 100 })} hint="0 hides it" />
+      <PropDistance label="Width" value={aerial.width} m={m} min={0.1} onChange={(width) => onChange({ width: Math.max(10, Math.round(width * 100) / 100) })} />
+      <PropNumber label="Turned" value={aerial.rotation} decimal min={-360} max={360} step={0.5} unit="°" onChange={(rotation) => onChange({ rotation })} hint="Clockwise, seen from above" />
+      <PropDistance label="Middle, across" value={aerial.x} m={m} onChange={(x) => onChange({ x: Math.round(x * 100) / 100 })} />
+      <PropDistance label="Middle, depth" value={aerial.z} m={m} onChange={(z) => onChange({ z: Math.round(z * 100) / 100 })} hint="From the front wall; toward the street is more" />
+      <PropRow label="">
+        <PropButton danger onClick={onRemove}>
+          <Trash2 /> Remove picture
+        </PropButton>
+      </PropRow>
+      <PropNote>
+        A satellite view screenshot works well (Google Maps: Satellite, zoomed in, the street at the bottom). Align it to the roofline: a front corner of the house on the picture, then the end of the
+        roofline in the top view, and the same for the other corner.
+      </PropNote>
+    </PropSection>
   );
 }
 

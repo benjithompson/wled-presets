@@ -72,6 +72,18 @@ export const layoutShape = z.object({
   lightTypes: z.array(lightTypeSchema).max(100).optional(),
   lights: id.optional(),
   designs: z.array(designSchema).max(200).optional(),
+  aerial: z
+    .object({
+      url: z.string().max(200),
+      x: coord,
+      z: coord,
+      width: z.number().min(10).max(200_000),
+      aspect: z.number().min(0.02).max(50),
+      rotation: z.number().finite().min(-3600).max(3600),
+      opacity: unit.optional()
+    })
+    .nullable()
+    .optional(),
   fixtures: z
     .array(
       z.object({
@@ -129,24 +141,28 @@ export function writeLayout(db: Db, layout: Layout) {
   db.setSetting(KEY, JSON.stringify(layout));
 }
 
-// The background picture is a file next to the database, not a database row.
-export function backgroundFile(databasePath: string) {
-  return path.join(databasePath === ':memory:' ? process.cwd() : path.dirname(databasePath), 'layout-background');
+// The pictures are files next to the database, not database rows. background: the front of the
+// house. aerial: the yard from above.
+export type LayoutPicture = 'background' | 'aerial';
+const TYPE_KEYS: Record<LayoutPicture, string> = { background: BG_TYPE_KEY, aerial: 'layoutAerialType' };
+
+export function backgroundFile(databasePath: string, kind: LayoutPicture = 'background') {
+  return path.join(databasePath === ':memory:' ? process.cwd() : path.dirname(databasePath), `layout-${kind}`);
 }
 
-export function saveBackground(db: Db, databasePath: string, bytes: Uint8Array, type: string) {
-  fs.writeFileSync(backgroundFile(databasePath), bytes);
-  db.setSetting(BG_TYPE_KEY, type);
+export function saveBackground(db: Db, databasePath: string, bytes: Uint8Array, type: string, kind: LayoutPicture = 'background') {
+  fs.writeFileSync(backgroundFile(databasePath, kind), bytes);
+  db.setSetting(TYPE_KEYS[kind], type);
 }
 
-export function readBackground(db: Db, databasePath: string): { bytes: Buffer; type: string } | null {
+export function readBackground(db: Db, databasePath: string, kind: LayoutPicture = 'background'): { bytes: Buffer; type: string } | null {
   try {
-    return { bytes: fs.readFileSync(backgroundFile(databasePath)), type: db.getSetting(BG_TYPE_KEY) || 'image/jpeg' };
+    return { bytes: fs.readFileSync(backgroundFile(databasePath, kind)), type: db.getSetting(TYPE_KEYS[kind]) || 'image/jpeg' };
   } catch {
     return null;
   }
 }
 
-export function deleteBackground(databasePath: string) {
-  fs.rmSync(backgroundFile(databasePath), { force: true });
+export function deleteBackground(databasePath: string, kind: LayoutPicture = 'background') {
+  fs.rmSync(backgroundFile(databasePath, kind), { force: true });
 }
