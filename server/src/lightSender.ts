@@ -2,6 +2,29 @@ import type { Device, DeviceInfo } from '../../shared/types.ts';
 import { DDP_PORT, RealtimeOut } from './realtime.ts';
 import { baseUrl, requestJson } from './wled.ts';
 
+/** A pixel whose brightest channel is below this is sent as off. */
+export const MIN_PIXEL = 16;
+/** In a pixel that stays on, a channel below this is sent as 0. */
+const MIN_CHANNEL = 4;
+
+/**
+ * Real LEDs cannot show very dim colors. At values of a few steps (less still after the
+ * device's own brightness), each LED lights a different channel or flickers, so a "faint
+ * glow" shows as scattered red, green and blue dots. Such pixels go out as off, and a tiny
+ * channel in a brighter pixel goes out as 0, so it does not tint the color.
+ */
+export function blackLevel(rgb: Uint8Array): Uint8Array {
+  const out = new Uint8Array(rgb.length);
+  for (let i = 0; i + 2 < rgb.length; i += 3) {
+    const r = rgb[i], g = rgb[i + 1], b = rgb[i + 2];
+    if (Math.max(r, g, b) < MIN_PIXEL) continue;
+    out[i] = r < MIN_CHANNEL ? 0 : r;
+    out[i + 1] = g < MIN_CHANNEL ? 0 : g;
+    out[i + 2] = b < MIN_CHANNEL ? 0 : b;
+  }
+  return out;
+}
+
 export type DeviceTarget = Device & { info: DeviceInfo | null };
 
 /** How frames reach one device. */
@@ -58,7 +81,8 @@ export class LightSender {
   }
 
   /** `rgb`: one byte triple per LED, from device LED 0. */
-  send(d: DeviceTarget, rgb: Uint8Array) {
+  send(d: DeviceTarget, input: Uint8Array) {
+    const rgb = blackLevel(input);
     const now = Date.now();
     let link = this.links.get(d.id);
     if (!link) {

@@ -139,3 +139,11 @@ describe('DDP', () => {
     await mock.close();
   });
 });
+
+describe('black level for real LEDs', () => {
+  it('turns pixels too dim for real LEDs off, and drops tiny channels', async () => {
+    const { blackLevel } = await import('../src/lightSender.ts');
+    // (7,4,2) is the game's faint roof glow at 50%: real LEDs show it as scattered dots.
+    expect(Array.from(blackLevel(Uint8Array.from([7, 4, 2, 11, 25, 12, 40, 20, 2])))).toEqual([0, 0, 0, 11, 25, 12, 40, 20, 0]);
+  });
+});
