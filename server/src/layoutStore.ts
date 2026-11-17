@@ -151,7 +151,9 @@ export function backgroundFile(databasePath: string, kind: LayoutPicture = 'back
 }
 
 export function saveBackground(db: Db, databasePath: string, bytes: Uint8Array, type: string, kind: LayoutPicture = 'background') {
-  fs.writeFileSync(backgroundFile(databasePath, kind), bytes);
+  const file = backgroundFile(databasePath, kind);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, bytes);
   db.setSetting(TYPE_KEYS[kind], type);
 }
 

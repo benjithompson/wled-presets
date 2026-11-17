@@ -26,7 +26,8 @@ async function setup() {
   const db = openDatabase(':memory:');
   const bus = new Bus();
   const lights = new Lights(db, bus);
-  const config = { ...loadConfig({}), webDir: '/nonexistent' };
+  // Files (pictures, audio) go to a temporary folder, not the repository's data folder.
+  const config = { ...loadConfig({}), webDir: '/nonexistent', databasePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wled-test-')), 'db.sqlite') };
   const app = createApp({ config, db, bus, lights, discover: async () => [] });
   await createAuth(db, { secureCookie: false }).createUser('admin', 'correct horse battery');
   let cookie = '';
