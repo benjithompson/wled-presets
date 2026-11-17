@@ -1,26 +1,35 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeftRight,
-  Box,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Circle,
+  Columns2,
+  Hand,
   House,
   ImagePlus,
+  LayoutPanelLeft,
   Lightbulb,
   LightbulbOff,
+  Maximize2,
+  Minimize2,
   MousePointer2,
+  PenTool,
+  Redo2,
   Pin,
   PinOff,
   RotateCcw,
+  Rows2,
   Ruler,
   Save,
+  Scan,
   Scissors,
   Spline,
+  Square,
   Trash2,
   TreePine,
+  Undo2,
   X
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -39,9 +48,11 @@ import {
   clampPointLed,
   segmentLeds,
   setPointLed,
-  skipAfterInsert,
   skipAfterRemove,
   deviceRuns,
+  extendLine,
+  insertPoint,
+  pointOnSegment,
   fromLedRange,
   isPinned,
   LAYOUT_WIDTH,
@@ -54,8 +65,11 @@ import {
   type Point,
   type Units
 } from '../../../../shared/layout.ts';
-import { Badge, Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
+import { Badge, Button, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
+import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
+import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropText } from './props.tsx';
+import { closestOnSegment, emptyTargets, snapPoint, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { useOverview } from './AdminLayout.tsx';
@@ -63,7 +77,18 @@ import { useOverview } from './AdminLayout.tsx';
 // three.js is large: load the 3D view only when it is opened.
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
 
-type Tool = 'select' | 'roof' | 'line' | 'bush' | 'tree' | 'measure';
+type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'measure';
+type LineTool = 'roof' | 'line';
+const isLineTool = (t: Tool): t is LineTool => t === 'roof' || t === 'line';
+/** One-key shortcuts, as in most drawing programs. */
+const TOOL_KEYS: Record<string, Tool> = { v: 'select', a: 'edit', c: 'split', h: 'pan', r: 'roof', l: 'line', b: 'bush', t: 'tree', m: 'measure' };
+/** A line being drawn. `cont`: it continues an existing line from one of its ends. */
+type Draft = { side: ViewSide; pts: UV[]; cont?: { id: string; at: 'first' | 'last' } };
+type MenuItem = { label: string; keys?: string; danger?: boolean; run: () => void };
+/** How far back Undo goes. */
+const UNDO_STEPS = 100;
+/** Changes closer together than this are one step for Undo (for example, one drag). */
+const UNDO_GROUP_MS = 600;
 /** A position in one view, in layout units: u to the right, v down. */
 type UV = { u: number; v: number };
 type Drag =
@@ -73,14 +98,32 @@ type Drag =
   | { kind: 'treeHeight'; id: string }
   | { kind: 'ground' }
   | { kind: 'newBush'; side: ViewSide; center: UV; radius: number }
-  | { kind: 'newTree'; side: ViewSide; base: UV; size: number };
+  | { kind: 'newTree'; side: ViewSide; base: UV; size: number }
+  | { kind: 'pan'; side: ViewSide; x: number; y: number; cam: Cam };
 type ViewName = ViewSide | '3d';
+/** How the viewports share the space, as in CAD programs. */
+type VpMode = 'single' | 'columns' | 'rows' | 'three';
+const VP_COUNT: Record<VpMode, number> = { single: 1, columns: 2, rows: 2, three: 3 };
+const VP_MODES: { mode: VpMode; label: string; icon: typeof House }[] = [
+  { mode: 'single', label: 'One view', icon: Square },
+  { mode: 'columns', label: 'Two views, side by side', icon: Columns2 },
+  { mode: 'rows', label: 'Two views, one above the other', icon: Rows2 },
+  { mode: 'three', label: 'Three views', icon: LayoutPanelLeft }
+];
+/** Snapping, the 90° lock and the grid: switches in the status bar. */
+type Drafting = { snap: boolean; ortho: boolean; grid: boolean };
 
 const LAYOUT_KEY = ['layout'];
 const HUES = FIXTURE_HUES;
 const SHOW_KEY = 'layout.showOnLights';
-const VIEWS_KEY = 'layout.views';
+const VIEWPORT_KEY = 'layout.viewport';
+const DRAFTING_KEY = 'layout.drafting';
 const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
+const VIEW_NOTES: Record<ViewName, string> = { front: 'as seen from the street', top: 'from above, the street at the bottom', '3d': 'drag to turn, right-drag to pan' };
+const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', measure: 'Measure' };
+const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine };
+/** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
+const BASE_K = 1.6;
 const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree' };
 
 function readShowOnLights() {
@@ -91,122 +134,21 @@ function readShowOnLights() {
   }
 }
 
-function readViews(): ViewName[] {
+function readViewport(): { mode: VpMode; panes: ViewName[] } {
   try {
-    const v = JSON.parse(localStorage.getItem(VIEWS_KEY) ?? '') as ViewName[];
-    const ok = v.filter((x) => x in VIEW_LABELS);
-    if (ok.length) return ok;
+    const v = JSON.parse(localStorage.getItem(VIEWPORT_KEY) ?? '') as { mode: VpMode; panes: ViewName[] };
+    const all: ViewName[] = ['front', 'top', '3d'];
+    if (v.mode in VP_COUNT && v.panes.length === 3 && all.every((x) => v.panes.includes(x))) return v;
   } catch {}
-  return ['front', 'top'];
+  return { mode: 'three', panes: ['front', 'top', '3d'] };
 }
 
-/**
- * A number field. A typed number applies 0.7 s after the last key, or at once with Enter or
- * when the field loses focus; Escape puts the old number back. The arrow keys step the number
- * by `step` (Shift: 10 steps) and apply at once. `decimal` allows a sign and a decimal point.
- */
-function NumberInput({
-  id,
-  value,
-  min = 0,
-  max = 100_000,
-  step = 1,
-  decimal = false,
-  onCommit,
-  placeholder,
-  className
-}: {
-  id?: string;
-  value: number | null;
-  min?: number;
-  max?: number;
-  step?: number;
-  decimal?: boolean;
-  onCommit: (n: number) => void;
-  placeholder?: string;
-  className?: string;
-}) {
-  const [text, setText] = useState(value == null ? '' : String(value));
-  /** True while you are typing a number that is not applied yet. */
-  const typing = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Show the applied value (it can be limited, for example so segments do not cross),
-  // except while you are in the middle of typing.
-  useEffect(() => {
-    if (!typing.current) setText(value == null ? '' : String(value));
-  }, [value]);
-  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
-  const clamp = (n: number) => Math.min(max, Math.max(min, n));
-  const parse = (t: string) => (t === '' || t === '-' || t === '.' || t === '-.' ? NaN : Number(t));
-  const commit = (t = text) => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = null;
-    typing.current = false;
-    const n = parse(t);
-    if (Number.isFinite(n) && clamp(n) !== value) onCommit(clamp(n));
-    else setText(value == null ? '' : String(value));
-  };
-  return (
-    <Input
-      id={id}
-      inputMode={decimal ? 'decimal' : 'numeric'}
-      value={text}
-      placeholder={placeholder}
-      className={className}
-      onBlur={() => commit()}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') commit();
-        if (e.key === 'Escape') {
-          typing.current = false;
-          if (timer.current) clearTimeout(timer.current);
-          setText(value == null ? '' : String(value));
-        }
-        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-          e.preventDefault();
-          const base = Number.isFinite(parse(text)) ? parse(text) : (value ?? 0);
-          const next = base + (e.key === 'ArrowUp' ? 1 : -1) * step * (e.shiftKey ? 10 : 1);
-          commit(String(clamp(Math.round(next * 1000) / 1000)));
-        }
-      }}
-      onChange={(e) => {
-        // A typed number applies when you stop typing for a moment, or press Enter. Half-typed
-        // numbers (and an empty field) are never applied, so they cannot upset other segments.
-        const t = decimal ? e.target.value.replace(/[^\d.-]/g, '') : e.target.value.replace(/\D/g, '');
-        setText(t);
-        typing.current = true;
-        if (timer.current) clearTimeout(timer.current);
-        if (Number.isFinite(parse(t))) timer.current = setTimeout(() => commit(t), 700);
-      }}
-    />
-  );
-}
-
-/** A number field with large step buttons, for adjusting while you look at the lights. */
-function StepField({ label, value, min = 0, max = 100_000, onChange, tone }: { label: string; value: number; min?: number; max?: number; onChange: (n: number) => void; tone?: 'green' | 'red' }) {
-  const step = (d: number) => onChange(Math.min(max, Math.max(min, value + d)));
-  const btn =
-    'h-8 flex-1 rounded-lg bg-stone-100 text-xs font-semibold tabular-nums text-stone-700 transition hover:bg-stone-200 active:scale-95 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700';
-  return (
-    <Field label={label}>
-      {(id) => (
-        <div className="space-y-1.5">
-          <div className="relative">
-            {tone ? <span className={cn('absolute top-1/2 left-3 size-2.5 -translate-y-1/2 rounded-full', tone === 'green' ? 'bg-green-500' : 'bg-red-500')} /> : null}
-            <div className={tone ? '[&_input]:pl-8' : ''}>
-              <NumberInput id={id} value={value} min={min} max={max} onCommit={onChange} />
-            </div>
-          </div>
-          <div className="flex gap-1">
-            {[-10, -1, 1, 10].map((d) => (
-              <button key={d} type="button" className={btn} onClick={() => step(d)} aria-label={`${label} ${d > 0 ? 'plus' : 'minus'} ${Math.abs(d)}`}>
-                {d > 0 ? `+${d}` : `−${-d}`}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </Field>
-  );
+function readDrafting(): Drafting {
+  try {
+    return { snap: true, ortho: false, grid: true, ...(JSON.parse(localStorage.getItem(DRAFTING_KEY) ?? '{}') as Partial<Drafting>) };
+  } catch {
+    return { snap: true, ortho: false, grid: true };
+  }
 }
 
 /** Real distances in the editor: layout units shown in feet or meters. */
@@ -227,45 +169,10 @@ function measureOf(layout: Layout): Measure {
   return { units, per, show, text: (lu) => `${show(lu)} ${units}` };
 }
 
-/**
- * A distance field in feet or meters, with − and + buttons (0.5 ft or 0.1 m; Shift-click: 10
- * times that). `value` and `onChange` use layout units.
- */
-function DistanceField({ label, value, m, onChange, min = -100_000 }: { label: string; value: number | null; m: Measure; onChange: (layoutUnits: number) => void; min?: number }) {
-  const step = m.units === 'm' ? 0.1 : 0.5;
-  const btn = 'h-7 flex-1 rounded-md bg-stone-100 text-sm font-semibold text-stone-700 transition hover:bg-stone-200 active:scale-95 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700';
-  const shown = value == null ? null : m.show(value);
-  const bump = (d: number, big: boolean) => shown != null && onChange((Math.round((shown + d * step * (big ? 10 : 1)) * 100) / 100) * m.per);
+/** A distance property in feet or meters. Arrow keys and dragging the label step 0.5 ft or 0.1 m. `value` and `onChange` use layout units. */
+function PropDistance({ label, value, m, onChange, min = -100_000, hint }: { label: string; value: number | null; m: Measure; onChange: (layoutUnits: number) => void; min?: number; hint?: string }) {
   return (
-    <Field label={`${label} (${m.units})`}>
-      {(id) => (
-        <div className="space-y-1">
-          <NumberInput id={id} decimal value={shown} min={min} step={step} placeholder="varies" onCommit={(n) => onChange(n * m.per)} className="h-9 px-2 tabular-nums" />
-          <div className="flex gap-1">
-            <button
-              type="button"
-              className={btn}
-              disabled={shown == null}
-              onClick={(e) => bump(-1, e.shiftKey)}
-              aria-label={`${label} minus ${step} ${m.units}`}
-              title={`−${step} ${m.units} (Shift: −${step * 10})`}
-            >
-              −
-            </button>
-            <button
-              type="button"
-              className={btn}
-              disabled={shown == null}
-              onClick={(e) => bump(1, e.shiftKey)}
-              aria-label={`${label} plus ${step} ${m.units}`}
-              title={`+${step} ${m.units} (Shift: +${step * 10})`}
-            >
-              +
-            </button>
-          </div>
-        </div>
-      )}
-    </Field>
+    <PropNumber label={label} hint={hint} decimal value={value == null ? null : m.show(value)} min={min} step={m.units === 'm' ? 0.1 : 0.5} unit={m.units} onChange={(n) => onChange(n * m.per)} />
   );
 }
 
@@ -288,36 +195,65 @@ export function LayoutPage() {
   const keepPart = useRef(false);
   const [tool, setTool] = useState<Tool>('select');
   /** The line being drawn, in the view it is drawn in. */
-  const [draft, setDraft] = useState<{ side: ViewSide; pts: UV[] }>({ side: 'front', pts: [] });
+  const [draft, setDraft] = useState<Draft>({ side: 'front', pts: [] });
+  /** What the pointer snaps to now, shown as a marker and guides. */
+  const [snapHint, setSnapHint] = useState<(Snapped & { side: ViewSide; label?: string }) | null>(null);
+  /** The right-click menu. */
+  const [menu, setMenu] = useState<{ x: number; y: number; title: string; items: MenuItem[] } | null>(null);
+  /** Set when Ctrl-click started a line, so the context menu that a Mac also opens is skipped. */
+  const suppressMenu = useRef(false);
+  // Undo and redo: whole layouts. Changes in quick succession (a drag) are one step.
+  const layoutRef = useRef<Layout | null>(null);
+  layoutRef.current = layout;
+  const past = useRef<Layout[]>([]);
+  const future = useRef<Layout[]>([]);
+  const lastEdit = useRef(0);
+  const [, setHistoryTick] = useState(0);
   const [cursor, setCursor] = useState<(UV & { side: ViewSide }) | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   /** Measure tool: two points in one view. */
   const [tape, setTape] = useState<{ side: ViewSide; a: UV; b?: UV } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [views, setViews] = useState<ViewName[]>(readViews);
   const svgs = useRef<Partial<Record<ViewSide, SVGSVGElement | null>>>({});
   const fileInput = useRef<HTMLInputElement>(null);
-  const pane = useRef<HTMLDivElement>(null);
-  const propsCard = useRef<HTMLDivElement>(null);
 
-  const toggleView = (v: ViewName) =>
-    setViews((cur) => {
-      const next = cur.includes(v) ? cur.filter((x) => x !== v) : (['front', 'top', '3d'] as ViewName[]).filter((x) => x === v || cur.includes(x));
-      if (!next.length) return cur;
+  // Viewports: how they share the space, which view each one shows, and one view made big.
+  const [viewport, setViewportState] = useState(readViewport);
+  const [maximized, setMaximized] = useState<ViewName | null>(null);
+  const setViewport = (next: { mode: VpMode; panes: ViewName[] }) => {
+    setViewportState(next);
+    try {
+      localStorage.setItem(VIEWPORT_KEY, JSON.stringify(next));
+    } catch {}
+  };
+  /** Shows view `v` in viewport `i`. A view shows in one viewport only: the two viewports swap views. */
+  const setPaneView = (i: number, v: ViewName) => {
+    const panes = [...viewport.panes];
+    const j = panes.indexOf(v);
+    [panes[i], panes[j]] = [v, panes[i]];
+    setViewport({ ...viewport, panes });
+    if (maximized === panes[j]) setMaximized(null);
+  };
+  const visible = viewport.panes.slice(0, VP_COUNT[viewport.mode]);
+  const shown = maximized && visible.includes(maximized) ? [maximized] : visible;
+
+  // The camera of each 2D view. No camera: the view shows the whole yard (zoom to fit).
+  const [cams, setCams] = useState<Partial<Record<ViewSide, Cam>>>({});
+  const [paneSize, setPaneSize] = useState<Partial<Record<ViewSide, PaneSize>>>({});
+  const [spaceDown, setSpaceDown] = useState(false);
+  const panMode = tool === 'pan' || spaceDown;
+
+  const [drafting, setDraftingState] = useState(readDrafting);
+  const setDrafting = (patch: Partial<Drafting>) =>
+    setDraftingState((d) => {
+      const next = { ...d, ...patch };
       try {
-        localStorage.setItem(VIEWS_KEY, JSON.stringify(next));
+        localStorage.setItem(DRAFTING_KEY, JSON.stringify(next));
       } catch {}
       return next;
     });
-
-  // A new selection scrolls only the side panel (never the page) to show the object's panel.
-  useEffect(() => {
-    const p = pane.current;
-    const c = propsCard.current;
-    if (!p || !c || p.scrollHeight <= p.clientHeight) return;
-    const top = c.offsetTop - p.offsetTop;
-    if (top < p.scrollTop || top > p.scrollTop + p.clientHeight - 120) p.scrollTo({ top, behavior: 'smooth' });
-  }, [selected, segment, corner]);
+  /** The object being renamed in the object list. */
+  const [renaming, setRenaming] = useState<string | null>(null);
 
   useEffect(() => {
     if (saved && !layout) setLayout(saved);
@@ -379,16 +315,37 @@ export function LayoutPage() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
-  const update = (id: string, patch: Partial<Fixture>) =>
-    setLayout((l) =>
-      l
-        ? {
-            ...l,
-            fixtures: l.fixtures.map((f) => (f.id === id ? { ...f, ...patch } : f))
-          }
-        : l
-    );
-  const updateLayout = (patch: Partial<Layout>) => setLayout((l) => (l ? { ...l, ...patch } : l));
+  /** Changes the layout, and keeps the state before it for Undo. */
+  const edit = (fn: (l: Layout) => Layout) => {
+    const cur = layoutRef.current;
+    if (!cur) return;
+    const now = Date.now();
+    if (now - lastEdit.current > UNDO_GROUP_MS) {
+      past.current = [...past.current.slice(1 - UNDO_STEPS), cur];
+      future.current = [];
+      setHistoryTick((n) => n + 1);
+    }
+    lastEdit.current = now;
+    setLayout((l) => (l ? fn(l) : l));
+  };
+  const undo = () => {
+    const prev = past.current.pop();
+    if (!prev || !layoutRef.current) return;
+    future.current.push(layoutRef.current);
+    lastEdit.current = 0;
+    setLayout(prev);
+    setHistoryTick((n) => n + 1);
+  };
+  const redo = () => {
+    const next = future.current.pop();
+    if (!next || !layoutRef.current) return;
+    past.current.push(layoutRef.current);
+    lastEdit.current = 0;
+    setLayout(next);
+    setHistoryTick((n) => n + 1);
+  };
+  const update = (id: string, patch: Partial<Fixture>) => edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
+  const updateLayout = (patch: Partial<Layout>) => edit((l) => ({ ...l, ...patch }));
 
   /** Sets the device LED numbers at the first and the last point. */
   const setRange = (f: Fixture, first: number, last: number) => {
@@ -442,26 +399,52 @@ export function LayoutPage() {
       pointLeds: tidyPins(pins.slice(k).map((p) => (p == null ? null : p - off - 1))),
       skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k))
     };
-    setLayout((l) =>
-      l
-        ? {
-            ...l,
-            fixtures: l.fixtures.flatMap((x) => (x.id === f.id ? [a, b] : [x]))
-          }
-        : l
-    );
+    edit((l) => ({ ...l, fixtures: l.fixtures.flatMap((x) => (x.id === f.id ? [a, b] : [x])) }));
     setSelected(b.id);
     toast.success(`Split into ${a.name} and ${b.name}. Set the first LED of ${b.name} to leave a gap.`);
   };
 
   const remove = (id: string) => {
-    setLayout((l) => (l ? { ...l, fixtures: l.fixtures.filter((f) => f.id !== id) } : l));
+    edit((l) => ({ ...l, fixtures: l.fixtures.filter((f) => f.id !== id) }));
     setSelected(null);
   };
+  /** Adds an object and selects it. Bushes and trees go back to the Select tool; line tools stay on, as in CAD programs. */
   const addFixture = (f: Fixture) => {
-    setLayout((l) => (l ? { ...l, fixtures: [...l.fixtures, f] } : l));
+    edit((l) => ({ ...l, fixtures: [...l.fixtures, f] }));
     setSelected(f.id);
-    setTool('select');
+    if (!isLine(f)) setTool('select');
+  };
+  /** Removes one point of a line (a line keeps at least two). */
+  const deletePoint = (f: Fixture, i: number) => {
+    if (f.points.length <= 2) {
+      toast.error('A line needs at least two points. Delete the whole line instead.');
+      return;
+    }
+    const last = f.points.length - 1;
+    const offs = pointOffsets(f);
+    const pins = f.points.map((_, j) => f.pointLeds?.[j] ?? null);
+    if (i === 0) {
+      // The first segment goes, with its LEDs: the line now starts at the LED of point 1.
+      const off = offs[1];
+      update(f.id, {
+        points: f.points.slice(1),
+        ...fromLedRange(deviceLed(f, off), deviceLed(f, f.pixels - 1)),
+        pointLeds: tidyPins(pins.slice(1).map((p) => (p == null ? null : p - off))),
+        skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1))
+      });
+    } else if (i === last) {
+      // The last segment goes, with its LEDs: the line now ends at the LED of the point before.
+      update(f.id, {
+        points: f.points.slice(0, last),
+        ...fromLedRange(deviceLed(f, 0), deviceLed(f, offs[last - 1])),
+        pointLeds: tidyPins(pins.slice(0, last)),
+        skip: nonEmpty(f.skip?.filter((k) => k < last - 1))
+      });
+    } else {
+      update(f.id, { points: f.points.filter((_, j) => j !== i), pointLeds: tidyPins(pins.filter((_, j) => j !== i)), skip: skipAfterRemove(f.skip, i) });
+    }
+    setSegment(null);
+    setCorner(null);
   };
 
   /** The first LED after every object on the device. */
@@ -470,12 +453,45 @@ export function LayoutPage() {
   /** A point from a position in one view. The coordinate that the view does not show comes from `base`. */
   const fromView = (side: ViewSide, p: UV, base: Point): Point => (side === 'front' ? { ...base, x: p.u, y: p.v } : { ...base, x: p.u, z: Math.round(p.v + zMin) });
 
-  function finishLine(kind: 'roof' | 'line', d = draft) {
+  /** The 3D point of a line that sits at this spot in a view, if any. */
+  const pointAtView = (side: ViewSide, at: UV, exclude?: { id: string; index: number }): Point | undefined => {
+    for (const f of layout?.fixtures ?? []) {
+      if (!isLine(f)) continue;
+      for (let i = 0; i < f.points.length; i++) {
+        if (exclude?.id === f.id && exclude.index === i) continue;
+        const q = toView(f.points[i], side, zMin);
+        if (Math.abs(q.u - at.u) < 1 && Math.abs(q.v - at.v) < 1) return f.points[i];
+      }
+    }
+    return undefined;
+  };
+
+  function finishLine(kind: LineTool, d = draft) {
     // A double-click adds the same point twice; drop near-duplicates.
     const uv = d.pts.filter((p, i) => i === 0 || Math.hypot(p.u - d.pts[i - 1].u, p.v - d.pts[i - 1].v) > 4);
     setDraft({ side: d.side, pts: [] });
-    if (!layout || uv.length < 2) {
-      setTool('select');
+    setSnapHint(null);
+    if (!layout || uv.length < 2) return;
+    // Each point takes the coordinate that this view does not show from the point it snapped
+    // onto; otherwise from the point before it. So a line drawn from the end of a side roofline
+    // stays at that roofline's depth.
+    const to3d = (start: Point) => {
+      let prev = start;
+      return uv.map((p) => {
+        const hit = pointAtView(d.side, p);
+        prev = hit ? { ...hit } : fromView(d.side, p, prev);
+        return prev;
+      });
+    };
+    const cont = d.cont && layout.fixtures.find((x) => x.id === d.cont!.id);
+    if (d.cont && cont) {
+      const join = d.cont.at === 'last' ? cont.points[cont.points.length - 1] : cont.points[0];
+      const { patch, shifted } = extendLine(cont, d.cont.at, to3d(join).slice(1));
+      update(cont.id, patch);
+      setSelected(cont.id);
+      toast.success(
+        `${cont.name}: ${uv.length - 1} segment(s) and ${patch.pixels - cont.pixels} LEDs added, at the same spacing.${shifted ? ' The LED numbers now start at 0: check the first and last LED.' : ''}`
+      );
       return;
     }
     const lines = layout.fixtures.filter((f) => f.kind === kind);
@@ -490,7 +506,7 @@ export function LayoutPage() {
       id: uid(),
       name: lines.length ? `${KIND_LABELS[kind]} ${lines.length + 1}` : KIND_LABELS[kind],
       kind,
-      points: uv.map((p) => fromView(d.side, p, base)),
+      points: to3d(base),
       pixels: kind === 'roof' && !roofs.length ? 450 : 100,
       deviceId,
       startPixel: nextFree(deviceId),
@@ -498,47 +514,127 @@ export function LayoutPage() {
     });
   }
 
-  // Keyboard: Enter finishes a line, Escape cancels, Delete removes the selected object.
+  const chooseTool = (t: Tool) => {
+    setTool(t);
+    setDraft((d) => ({ side: d.side, pts: [] }));
+    setTape(null);
+    setSnapHint(null);
+    setMenu(null);
+  };
+
+  /** Starts drawing from one end of a line: the new points are added to that line. */
+  const startContinue = (f: Fixture, at: 'first' | 'last', side: ViewSide) => {
+    const end = f.points[at === 'first' ? 0 : f.points.length - 1];
+    setTool(f.kind === 'roof' ? 'roof' : 'line');
+    setTape(null);
+    setMenu(null);
+    setSelected(f.id);
+    setDraft({ side, pts: [toView(end, side, zMin)], cont: { id: f.id, at } });
+  };
+
+  // Keyboard, as in CAD and drawing programs. V A C R L B T M: tools. Enter, Esc or a
+  // double-click: finish the line. Backspace while drawing: remove the last point. Delete: the
+  // selected point, or else the selected object. Ctrl/⌘+Z: undo; Ctrl/⌘+Shift+Z or Ctrl+Y: redo.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest('input, select, textarea');
       if (typing) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (mod && key === 'y') {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (mod && key === 's') {
+        e.preventDefault();
+        if (dirty && !overlapCount && !busy) void save();
+        return;
+      }
+      if (e.key === ' ') {
+        // Hold Space and drag to pan, as in drawing programs.
+        e.preventDefault();
+        setSpaceDown(true);
+        return;
+      }
+      if (mod || e.altKey) return;
+      const drawing = isLineTool(tool) && draft.pts.length > 0;
       if (e.key === 'Escape') {
+        if (menu) return setMenu(null);
+        if (drawing) {
+          // As in CAD: Esc ends the line and keeps the segments drawn so far.
+          if (isLineTool(tool)) finishLine(tool);
+          return;
+        }
+        if (tape) return setTape(null);
         if (segment != null || corner != null) {
           setSegment(null);
           setCorner(null);
           return;
         }
-        setDraft((d) => ({ ...d, pts: [] }));
-        setTape(null);
-        setTool('select');
+        chooseTool('select');
         setDrag(null);
-      } else if (e.key === 'Enter' && (tool === 'roof' || tool === 'line')) finishLine(tool);
-      else if ((e.key === 'Delete' || e.key === 'Backspace') && selected) remove(selected);
+      } else if (e.key === 'Enter' && drawing && isLineTool(tool)) {
+        finishLine(tool);
+      } else if (e.key === 'Backspace' && drawing) {
+        e.preventDefault();
+        setDraft((d) => ({ ...d, pts: d.pts.slice(0, -1) }));
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (sel && isLine(sel) && corner != null && sel.points[corner]) deletePoint(sel, corner);
+        else if (selected) remove(selected);
+      } else if (e.key === 'F2' && selected) {
+        e.preventDefault();
+        setRenaming(selected);
+      } else if (key === 'f' && !e.shiftKey) {
+        frameSelection();
+      } else if (e.key === 'Home') {
+        setCams({});
+      } else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
+        zoomViews(e.key === '+' || e.key === '=' ? 1.25 : 0.8);
+      } else if (!e.shiftKey && TOOL_KEYS[key]) {
+        chooseTool(TOOL_KEYS[key]);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
+  useEffect(() => {
+    const up = (e: KeyboardEvent) => e.key === ' ' && setSpaceDown(false);
+    const off = () => setSpaceDown(false);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', off);
+    return () => {
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', off);
+    };
+  }, []);
+
+  // The right-click menu closes on a click elsewhere, or when the page scrolls.
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (!(e.target as HTMLElement)?.closest?.('[data-layout-menu]')) setMenu(null);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('blur', close);
+    };
+  }, [menu]);
 
   // Show the layout being edited on the real lights: the selected object lights up, with its
   // first LED blinking green and its last LED blinking red. The devices go back to normal by
   // themselves about 2 seconds after the editor stops asking.
   const [showOnLights, setShowOnLights] = useState(readShowOnLights);
-  // The object's settings fold away, so the segment editor and the drawing fit on screen together.
-  const [settingsOpen, setSettingsOpen] = useState(() => {
-    try {
-      return localStorage.getItem('layout.settingsOpen') !== 'closed';
-    } catch {
-      return true;
-    }
-  });
-  const toggleSettings = () =>
-    setSettingsOpen((v) => {
-      try {
-        localStorage.setItem('layout.settingsOpen', v ? 'closed' : 'open');
-      } catch {}
-      return !v;
-    });
   const [previewDevices, setPreviewDevices] = useState<string[]>([]);
   const mapped = !!layout?.fixtures.some((f) => f.deviceId);
   // Only while this window has focus: a layout editor left open behind other windows or in a
@@ -605,6 +701,74 @@ export function LayoutPage() {
     return out;
   };
 
+  /** v minus the world coordinate in a view: the top view counts v from the back edge (zMin). */
+  const offOf = (side: ViewSide) => (side === 'top' ? -zMin : 0);
+  /** Everything a view shows when it is zoomed to fit, in view units. */
+  const contentBox = (side: ViewSide): Box => {
+    // The picture (or the depth range), and every object, as "zoom extents" does in CAD programs.
+    let x0 = 0;
+    let y0 = 0;
+    let x1 = layout?.width ?? LAYOUT_WIDTH;
+    let y1 = side === 'front' ? (layout?.height ?? 900) : zRange[1] - zRange[0];
+    for (const f of layout?.fixtures ?? []) {
+      const b = boxOf(f, side);
+      x0 = Math.min(x0, b.x);
+      y0 = Math.min(y0, b.y);
+      x1 = Math.max(x1, b.x + b.w);
+      y1 = Math.max(y1, b.y + b.h);
+    }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
+  const sizeOf = (side: ViewSide): PaneSize => paneSize[side] ?? { w: 1000, h: 600 };
+  function camFor(side: ViewSide): Cam {
+    return cams[side] ?? fitCam(contentBox(side), sizeOf(side), offOf(side));
+  }
+  const viewBoxFor = (side: ViewSide) => viewBoxOf(camFor(side), sizeOf(side), offOf(side));
+
+  /** The box around an object in a view, in view units. */
+  const boxOf = (f: Fixture, side: ViewSide): Box => {
+    const V = (p: Point) => toView(p, side, zMin);
+    if (isLine(f)) {
+      const us = f.points.map((p) => V(p).u);
+      const vs = f.points.map((p) => V(p).v);
+      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
+    }
+    const c = V(f.points[0]);
+    const r = f.radius ?? 60;
+    if (side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
+    const h = f.kind === 'tree' ? (f.height ?? 240) : r * 0.72;
+    return { x: c.u - r, y: c.v - h, w: 2 * r, h: f.kind === 'tree' ? h : 2 * h };
+  };
+  /** F: zoom every 2D view to the selected object, or to the whole yard when nothing is selected. */
+  function frameSelection(id = selected) {
+    const f = layout?.fixtures.find((x) => x.id === id);
+    if (!f || !layout) return setCams({});
+    const pad = layoutScale(layout) * 0.75;
+    const next: Partial<Record<ViewSide, Cam>> = {};
+    for (const side of ['front', 'top'] as ViewSide[]) {
+      const b = boxOf(f, side);
+      next[side] = fitCam({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad }, sizeOf(side), offOf(side), 1);
+    }
+    setCams(next);
+  }
+  /** + and −: zoom the view under the pointer (or every 2D view) about its middle. */
+  function zoomViews(factor: number) {
+    const sides = cursor ? [cursor.side] : (['front', 'top'] as ViewSide[]);
+    setCams((c) => {
+      const next = { ...c };
+      for (const side of sides) next[side] = zoomAt(c[side] ?? camFor(side), sizeOf(side), { x: sizeOf(side).w / 2, y: sizeOf(side).h / 2 }, factor);
+      return next;
+    });
+  }
+  /** The wheel zooms at the pointer (as in CAD programs); a pinch on a trackpad too. A sideways swipe pans. */
+  function onWheel(side: ViewSide, e: WheelEvent, rect: DOMRect) {
+    setCams((c) => {
+      const cam = c[side] ?? camFor(side);
+      if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) return { ...c, [side]: panBy(cam, -e.deltaX, 0) };
+      return { ...c, [side]: zoomAt(cam, sizeOf(side), { x: e.clientX - rect.left, y: e.clientY - rect.top }, wheelFactor(e)) };
+    });
+  }
+
   /** The pointer position in one view, in layout units. */
   function viewPoint(e: { clientX: number; clientY: number }, side: ViewSide): UV {
     const ctm = svgs.current[side]?.getScreenCTM();
@@ -613,44 +777,221 @@ export function LayoutPage() {
     return { u: Math.round(p.x), v: Math.round(p.y) };
   }
 
+  /** The snap distance: 10 screen pixels, in layout units. */
+  const tolFor = (side: ViewSide) => {
+    const ctm = svgs.current[side]?.getScreenCTM();
+    return ctm?.a ? 10 / ctm.a : 10;
+  };
+
+  /** What can be snapped to in a view. `exclude`: a point being dragged, and its two segments. */
+  const targetsFor = (side: ViewSide, exclude?: { id: string; index: number }, linesOnly = false): SnapTargets => {
+    const t = emptyTargets();
+    for (const f of layout?.fixtures ?? []) {
+      const pts = f.points.map((p) => toView(p, side, zMin));
+      if (!isLine(f)) {
+        if (!linesOnly) t.centers.push(pts[0]);
+        continue;
+      }
+      pts.forEach((p, i) => !(exclude?.id === f.id && exclude.index === i) && t.points.push(p));
+      for (let k = 0; k < pts.length - 1; k++) if (!(exclude?.id === f.id && (exclude.index === k || exclude.index === k + 1))) t.segments.push([pts[k], pts[k + 1]]);
+    }
+    if (!linesOnly && draft.side === side) {
+      t.points.push(...draft.pts);
+      for (let k = 0; k < draft.pts.length - 1; k++) t.segments.push([draft.pts[k], draft.pts[k + 1]]);
+    }
+    return t;
+  };
+
+  /** The pointer position, snapped. Shift: 45° steps from `from`; Ortho: 90° steps. Alt turns snapping off (or on, when Snap is off). */
+  const snapAt = (e: { clientX: number; clientY: number; shiftKey: boolean; altKey: boolean }, side: ViewSide, from?: UV | null, exclude?: { id: string; index: number }) =>
+    snapPoint(viewPoint(e, side), targetsFor(side, exclude), tolFor(side), { from, angle: e.shiftKey ? 45 : drafting.ortho ? 90 : false, snap: drafting.snap !== e.altKey });
+
+  /** The end of a line near this spot, for continuing that line. */
+  const lineEndAt = (side: ViewSide, at: UV): { f: Fixture; at: 'first' | 'last' } | null => {
+    let best: { f: Fixture; at: 'first' | 'last' } | null = null;
+    let bestD = tolFor(side);
+    for (const f of layout?.fixtures ?? []) {
+      if (!isLine(f)) continue;
+      for (const end of ['first', 'last'] as const) {
+        const q = toView(f.points[end === 'first' ? 0 : f.points.length - 1], side, zMin);
+        const d = Math.hypot(q.u - at.u, q.v - at.v);
+        if (d <= bestD) {
+          best = { f, at: end };
+          bestD = d;
+        }
+      }
+    }
+    return best;
+  };
+
+  /** The 3D point on segment k of a line nearest to a spot in a view. */
+  const pointOnLine = (f: Fixture, k: number, raw: UV, side: ViewSide): Point => {
+    const V = (q: Point) => toView(q, side, zMin);
+    const { at, t } = closestOnSegment(raw, V(f.points[k]), V(f.points[k + 1]));
+    return fromView(side, { u: Math.round(at.u), v: Math.round(at.v) }, pointOnSegment(f, k, t));
+  };
+
+  /** Adds a point on segment k and selects it; with `drag`, the pointer then moves it. */
+  const addPointOn = (f: Fixture, k: number, raw: UV, side: ViewSide, drag?: RPointerEvent) => {
+    update(f.id, insertPoint(f, k, pointOnLine(f, k, raw, side)));
+    if (f.id !== selected) keepPart.current = true;
+    setSelected(f.id);
+    setCorner(k + 1);
+    setSegment(null);
+    if (drag) {
+      drag.stopPropagation();
+      svgs.current[side]?.setPointerCapture(drag.pointerId);
+      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1 });
+    }
+  };
+
+  /** Cuts a line in two at a spot on segment k. */
+  const splitOn = (f: Fixture, k: number, raw: UV, side: ViewSide) => {
+    const g = { ...f, ...insertPoint(f, k, pointOnLine(f, k, raw, side)) };
+    splitAt(g, k + 1);
+  };
+
+  const openMenu = (e: RMouseEvent, title: string, items: MenuItem[]) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (suppressMenu.current) {
+      suppressMenu.current = false;
+      return;
+    }
+    setDrag(null);
+    setMenu({ x: e.clientX, y: e.clientY, title, items });
+  };
+
+  const pointMenu = (e: RMouseEvent, f: Fixture, i: number, side: ViewSide) => {
+    const end = i === 0 ? 'first' : i === f.points.length - 1 ? 'last' : null;
+    const name = end ? `${end === 'first' ? 'First' : 'Last'} point of ${f.name}` : `Corner ${i} of ${f.name}`;
+    openMenu(e, name, [
+      ...(end ? [{ label: 'Continue the line from here', keys: 'Ctrl-click', run: () => startContinue(f, end, side) }] : [{ label: 'Split the line here', keys: 'C', run: () => splitAt(f, i) }]),
+      { label: 'Select this point', run: () => (f.id !== selected && (keepPart.current = true), setSelected(f.id), setCorner(i), setSegment(null)) },
+      { label: 'Delete this point', keys: 'Delete', danger: true, run: () => deletePoint(f, i) }
+    ]);
+  };
+
+  const objectMenu = (e: RMouseEvent, f: Fixture) =>
+    openMenu(e, f.name, [
+      { label: 'Select', run: () => setSelected(f.id) },
+      { label: 'Zoom to this object', keys: 'F', run: () => (setSelected(f.id), frameSelection(f.id)) },
+      { label: 'Rename', keys: 'F2', run: () => (setSelected(f.id), setRenaming(f.id)) },
+      { label: `Delete ${f.name}`, keys: 'Delete', danger: true, run: () => remove(f.id) }
+    ]);
+
+  const segmentMenu = (e: RMouseEvent, f: Fixture, k: number, side: ViewSide) => {
+    const raw = viewPoint(e, side);
+    const off = f.skip?.includes(k);
+    openMenu(e, `Segment ${k + 1} of ${f.name}`, [
+      { label: 'Add a point here', keys: 'A, click', run: () => addPointOn(f, k, raw, side) },
+      { label: 'Split the line here', keys: 'C, click', run: () => splitOn(f, k, raw, side) },
+      { label: 'Edit this segment', run: () => selectSegment(f.id, k) },
+      {
+        label: off ? 'Turn this segment on' : 'Turn this segment off (skip)',
+        run: () => update(f.id, { skip: nonEmpty(off ? f.skip?.filter((x) => x !== k) : [...(f.skip ?? []), k].sort((a, b) => a - b)) })
+      },
+      { label: `Delete ${f.name}`, danger: true, run: () => remove(f.id) }
+    ]);
+  };
+
   function onPointerDown(e: RPointerEvent<SVGSVGElement>, side: ViewSide) {
-    const p = viewPoint(e, side);
-    if (tool === 'roof' || tool === 'line') {
+    // Pan: the middle button, Space-drag, or the Hand tool.
+    if (e.button === 1 || (e.button === 0 && panMode)) {
+      e.preventDefault();
+      svgs.current[side]?.setPointerCapture(e.pointerId);
+      setDrag({ kind: 'pan', side, x: e.clientX, y: e.clientY, cam: camFor(side) });
+      return;
+    }
+    if (e.button !== 0) return;
+    if (isLineTool(tool)) {
+      const drawingHere = draft.side === side && draft.pts.length > 0;
+      // The first click on the end of a line continues that line (Alt: start a new line there).
+      if (!drawingHere && !e.altKey) {
+        const end = lineEndAt(side, viewPoint(e, side));
+        if (end) return startContinue(end.f, end.at, side);
+      }
       // A line is drawn in one view; a click in the other view starts again there.
-      setDraft((d) => ({ side, pts: d.side === side ? [...d.pts, p] : [p] }));
+      const s = snapAt(e, side, drawingHere ? draft.pts[draft.pts.length - 1] : null);
+      setDraft((d) => (d.side === side && d.pts.length ? { ...d, pts: [...d.pts, s.at] } : { side, pts: [s.at] }));
       return;
     }
     if (tool === 'bush' || tool === 'tree') {
+      const p = snapAt(e, side).at;
       svgs.current[side]?.setPointerCapture(e.pointerId);
       setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : { kind: 'newTree', side, base: p, size: 0 });
       return;
     }
     if (tool === 'measure') {
+      const open = tape && !tape.b && tape.side === side;
+      const p = snapAt(e, side, open ? tape.a : null).at;
       setTape((t) => (!t || t.b || t.side !== side ? { side, a: p } : { ...t, b: p }));
       return;
     }
-    // Select tool: a press on empty space clears the selection.
+    // Select, edit and split: a press on empty space clears the selection.
     if (e.target === e.currentTarget) setSelected(null);
   }
 
   function startDrag(e: RPointerEvent, d: Drag, id: string | null, side: ViewSide) {
-    if (tool !== 'select') return;
+    if ((tool !== 'select' && tool !== 'edit') || panMode || e.button !== 0) return;
     e.stopPropagation();
     if (id) setSelected(id);
     svgs.current[side]?.setPointerCapture(e.pointerId);
+    // A new drag is a new step for Undo.
+    lastEdit.current = 0;
     setDrag(d);
   }
 
   function onPointerMove(e: RPointerEvent<SVGSVGElement>, side: ViewSide) {
+    if (drag?.kind === 'pan') {
+      setCams((c) => ({ ...c, [drag.side]: panBy(drag.cam, e.clientX - drag.x, e.clientY - drag.y) }));
+      return;
+    }
     const p = viewPoint(e, side);
+    if (!drag || !layout) {
+      if (panMode) {
+        setSnapHint(null);
+        setCursor({ ...p, side });
+        return;
+      }
+      // Show what a click would snap to.
+      let hint: (Snapped & { label?: string }) | null = null;
+      if (isLineTool(tool)) {
+        const from = draft.side === side && draft.pts.length ? draft.pts[draft.pts.length - 1] : null;
+        hint = snapAt(e, side, from);
+        if (!from && !e.altKey && lineEndAt(side, p)) hint = { ...hint, label: 'Click to continue this line' };
+      } else if (tool === 'measure') {
+        hint = snapAt(e, side, tape && !tape.b && tape.side === side ? tape.a : null);
+      } else if (tool === 'bush' || tool === 'tree') {
+        hint = snapAt(e, side);
+      } else if (tool === 'edit' || tool === 'split') {
+        const s = snapPoint(p, targetsFor(side, undefined, true), tolFor(side), { snap: drafting.snap !== e.altKey });
+        hint = s.kind === 'point' || s.kind === 'mid' || s.kind === 'on' ? { ...s, label: tool === 'split' ? 'Click to split here' : s.kind === 'point' ? undefined : 'Click to add a point' } : null;
+      }
+      setSnapHint(hint ? { ...hint, side } : null);
+      setCursor(hint ? { ...hint.at, side } : { ...p, side });
+      return;
+    }
     setCursor({ ...p, side });
-    if (!drag || !layout) return;
     const f = 'id' in drag ? layout.fixtures.find((x) => x.id === drag.id) : undefined;
     if (drag.kind === 'vertex' && f) {
-      update(drag.id, { points: f.points.map((q, i) => (i === drag.index ? fromView(side, p, q) : q)) });
+      const i = drag.index;
+      const V = (q: Point) => toView(q, side, zMin);
+      // Shift keeps the segment to the point before (or after, for the first point) at 45° steps.
+      const neighbour = f.points[i - 1] ?? f.points[i + 1];
+      const s = snapAt(e, side, neighbour ? V(neighbour) : null, { id: f.id, index: i });
+      setSnapHint({ ...s, side });
+      // On another point: take that point's position in 3D, so the two points join.
+      const hit = s.kind === 'point' ? pointAtView(side, s.at, { id: f.id, index: i }) : undefined;
+      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(side, s.at, q)) : q)) });
     } else if (drag.kind === 'move') {
-      const du = p.u - drag.from.u;
-      const dv = p.v - drag.from.v;
+      let du = p.u - drag.from.u;
+      let dv = p.v - drag.from.v;
+      // Shift: move straight across, or straight up and down (toward the street in the top view).
+      if (e.shiftKey) {
+        if (Math.abs(du) >= Math.abs(dv)) dv = 0;
+        else du = 0;
+      }
       update(drag.id, {
         points: drag.original.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : { ...q, x: q.x + du, z: (q.z ?? 0) + dv }))
       });
@@ -668,6 +1009,7 @@ export function LayoutPage() {
   }
 
   function onPointerUp() {
+    setSnapHint(null);
     if (layout && (drag?.kind === 'newBush' || drag?.kind === 'newTree')) {
       const s = layoutScale(layout);
       const ground = layoutGround(layout);
@@ -703,38 +1045,9 @@ export function LayoutPage() {
     setDrag(null);
   }
 
-  function insertVertex(f: Fixture, e: RMouseEvent, side: ViewSide) {
-    // Double-click on a line adds a corner on the nearest segment. The coordinate that this
-    // view does not show is taken from the line, between the two points.
-    const p = viewPoint(e, side);
-    const V = (q: Point) => toView(q, side, zMin);
-    let best = 0;
-    let bestT = 0;
-    let bestD = Infinity;
-    for (let i = 0; i < f.points.length - 1; i++) {
-      const a = V(f.points[i]);
-      const b = V(f.points[i + 1]);
-      const l2 = (b.u - a.u) ** 2 + (b.v - a.v) ** 2 || 1;
-      const t = Math.max(0, Math.min(1, ((p.u - a.u) * (b.u - a.u) + (p.v - a.v) * (b.v - a.v)) / l2));
-      const d = Math.hypot(p.u - (a.u + t * (b.u - a.u)), p.v - (a.v + t * (b.v - a.v)));
-      if (d < bestD) {
-        bestD = d;
-        best = i;
-        bestT = t;
-      }
-    }
-    const a = f.points[best];
-    const b = f.points[best + 1];
-    const mid: Point = { x: a.x + (b.x - a.x) * bestT, y: Math.round(a.y + (b.y - a.y) * bestT), z: Math.round((a.z ?? 0) + ((b.z ?? 0) - (a.z ?? 0)) * bestT) };
-    const pts = [...f.points];
-    pts.splice(best + 1, 0, fromView(side, p, mid));
-    const pins = f.pointLeds ? [...f.pointLeds] : undefined;
-    pins?.splice(best + 1, 0, null);
-    update(f.id, {
-      points: pts,
-      pointLeds: pins,
-      skip: skipAfterInsert(f.skip, best)
-    });
+  /** Double-click on a line (Select tool): adds a point on the nearest segment. */
+  function insertVertex(f: Fixture, k: number, e: RMouseEvent, side: ViewSide) {
+    update(f.id, insertPoint(f, k, pointOnLine(f, k, viewPoint(e, side), side)));
   }
 
   async function save() {
@@ -803,451 +1116,742 @@ export function LayoutPage() {
   const totals = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
   const m = measureOf(layout);
   const ground = layoutGround(layout);
-  const has2d = views.includes('front') || views.includes('top');
+  const has2d = shown.some((v) => v !== '3d');
+  const drawing = isLineTool(tool) && draft.pts.length > 0;
 
-  const toolButton = (t: Tool, label: string, Icon: typeof House) => (
+  const toolKey = (t: Tool) =>
+    Object.keys(TOOL_KEYS)
+      .find((k) => TOOL_KEYS[k] === t)!
+      .toUpperCase();
+  const toolButton = (t: Tool, Icon: typeof House) => (
     <button
       type="button"
-      onClick={() => {
-        setTool(t);
-        setDraft((d) => ({ ...d, pts: [] }));
-        setTape(null);
-      }}
+      onClick={() => chooseTool(t)}
+      title={`${TOOL_LABELS[t]} (${toolKey(t)})`}
+      aria-label={TOOL_LABELS[t]}
+      aria-keyshortcuts={toolKey(t)}
       aria-pressed={tool === t}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition',
-        tool === t ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800'
+        'relative grid size-9 shrink-0 place-items-center rounded-lg transition [&_svg]:size-[18px]',
+        tool === t ? 'bg-sky-600 text-white shadow-sm' : 'text-stone-600 hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white'
       )}
     >
-      <Icon className="size-4" /> {label}
+      <Icon />
+      <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">{toolKey(t)}</kbd>
     </button>
   );
+  const toolSep = <span className="h-6 w-px shrink-0 bg-stone-200 lg:h-px lg:w-6 dark:bg-stone-700" />;
+  const barSep = <span className="mx-1 h-5 w-px shrink-0 bg-stone-200 dark:bg-stone-700" />;
 
   const hint = !has2d
-    ? 'Open the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
-    : tool === 'roof' || tool === 'line'
-      ? draft.pts.length
-        ? 'Click to add each corner. Double-click, or press Enter, on the last point to finish.'
-        : `Click where the first LED of the ${tool === 'roof' ? 'roofline' : 'line'} is. In the front view the line starts on the front wall; in the top view it starts ${tool === 'roof' ? 'at roof height' : 'on the ground'}.`
-      : tool === 'bush'
-        ? 'Press on the middle of a bush and drag out to its edge.'
-        : tool === 'tree'
-          ? 'Front view: press at the base of the tree and drag up to its top. Top view: press at the middle and drag out to the edge of the base.'
-          : tool === 'measure'
-            ? 'Click two points in the front or the top view to measure the distance between them. Type the real distance to set the scale.'
-            : 'Click a straight segment of a line to light up only that segment. Drag points to move them: the front view moves them across and up, the top view across and toward the street. Double-click a line to add a corner; double-click a corner to remove it. Drag the dashed ground line to the bottom of the front wall.';
+    ? 'Show the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
+    : panMode
+      ? 'Drag to pan the view. Wheel: zoom at the pointer. Home: zoom to fit.'
+      : isLineTool(tool)
+        ? draft.pts.length
+          ? 'Click the next corner. Enter, Esc or a double-click finishes the line. Backspace removes the last point. Shift: 45° steps. Alt: no snapping.'
+          : `Click the first point of the ${tool === 'roof' ? 'roofline' : 'line'}, or click the end of a line to continue it (Alt-click: a new line from there).`
+        : tool === 'edit'
+          ? 'Click a line to add a point, then drag it into place. Drag a point to move it. Delete removes the selected point. Ctrl-click (⌘-click) an end to continue the line.'
+          : tool === 'split'
+            ? 'Click a corner, or a spot on a line, to cut the line in two there.'
+            : tool === 'bush'
+              ? 'Press on the middle of the bush and drag out to its edge.'
+              : tool === 'tree'
+                ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
+                : tool === 'measure'
+                  ? 'Click two points to measure the distance between them. Then type the real distance to set the scale.'
+                  : 'Click to select; drag to move (Shift: straight). Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
 
   const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
+  const coords: [string, string][] | null = cursor
+    ? cursor.side === 'front'
+      ? [
+          ['X', m.text(cursor.u)],
+          ['Height', m.text(ground - cursor.v)]
+        ]
+      : [
+          ['X', m.text(cursor.u)],
+          ['Depth', m.text(cursor.v + zMin)]
+        ]
+    : null;
 
-  /** One editable view: the drawing (YardView) and the handles over it. */
+  /** One editable view: the drawing (YardView) and the handles over it, seen through the view's camera. */
   const renderView = (side: ViewSide) => {
     const V = (p: Point) => toView(p, side, zMin);
     const front = side === 'front';
-    const size = { w: layout.width, h: front ? layout.height : zRange[1] - zRange[0] };
+    const vb = viewBoxFor(side);
+    // Handles and labels keep the same size on the screen at every zoom.
+    const k = camFor(side).k / BASE_K;
+    const dash = (a: number, b: number) => `${a * k} ${b * k}`;
     const handle = (key: string | number, at: UV, className: string, onDown: (e: RPointerEvent<SVGCircleElement>) => void, onDouble?: (e: RMouseEvent) => void) => (
-      <circle key={key} cx={at.u} cy={at.v} r={9} className={cn('stroke-stone-950', className)} strokeWidth={3} onPointerDown={onDown} onDoubleClick={onDouble} />
+      <circle key={key} cx={at.u} cy={at.v} r={9 * k} className={cn('stroke-stone-950', className)} strokeWidth={3 * k} onPointerDown={onDown} onDoubleClick={onDouble} />
     );
     return (
-      <div key={side} className="space-y-1">
-        <p className="flex items-baseline justify-between gap-2 text-xs font-medium tracking-wide text-stone-500 uppercase dark:text-stone-400">
-          <span>{front ? 'Front view: as seen from the street' : 'Top view: from above, the street at the bottom'}</span>
-          {!front ? <span className="normal-case">Grid: {m.units === 'm' ? '1 m' : '5 ft'}</span> : null}
-        </p>
-        <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null ? null : selected}>
-          <svg
-            ref={(el) => void (svgs.current[side] = el)}
-            viewBox={`0 0 ${size.w} ${size.h}`}
-            preserveAspectRatio="none"
-            className={cn('absolute inset-0 h-full w-full touch-none select-none', tool !== 'select' ? 'cursor-crosshair' : '')}
-            onPointerDown={(e) => onPointerDown(e, side)}
-            onPointerMove={(e) => onPointerMove(e, side)}
-            onPointerUp={onPointerUp}
-            onPointerLeave={() => setCursor(null)}
-            onDoubleClick={() => (tool === 'roof' || tool === 'line') && draft.side === side && finishLine(tool)}
-          >
-            {!front ? (
-              <>
-                <text x={12} y={-zMin - 10} fontSize={20} fill="rgba(251,191,36,0.7)" pointerEvents="none">
-                  Front wall of the house
-                </text>
-                <text x={12} y={size.h - 12} fontSize={20} fill="rgba(255,255,255,0.4)" pointerEvents="none">
-                  ↓ Street
-                </text>
-              </>
-            ) : null}
+      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null ? null : selected} fill viewBox={vb} grid={drafting.grid}>
+        <svg
+          ref={(el) => void (svgs.current[side] = el)}
+          viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+          preserveAspectRatio="none"
+          className={cn(
+            'absolute inset-0 h-full w-full touch-none select-none',
+            drag?.kind === 'pan' ? 'cursor-grabbing' : panMode ? 'cursor-grab' : tool !== 'select' && tool !== 'edit' ? 'cursor-crosshair' : ''
+          )}
+          onPointerDown={(e) => onPointerDown(e, side)}
+          onPointerMove={(e) => onPointerMove(e, side)}
+          onPointerUp={onPointerUp}
+          onPointerLeave={() => (setCursor(null), drag == null && setSnapHint(null))}
+          onMouseDown={(e) => e.button === 1 && e.preventDefault()}
+          onDoubleClick={() => isLineTool(tool) && draft.side === side && finishLine(tool)}
+        >
+          {!front ? (
+            <>
+              <text x={vb.x + 12 * k} y={-zMin - 10 * k} fontSize={14 * k} fill="rgba(251,191,36,0.7)" pointerEvents="none">
+                Front wall of the house
+              </text>
+              <text x={vb.x + 12 * k} y={vb.y + vb.h - 12 * k} fontSize={14 * k} fill="rgba(255,255,255,0.4)" pointerEvents="none">
+                ↓ Street
+              </text>
+            </>
+          ) : null}
 
-            {/* The ground: drag it to the bottom of the front wall. Heights count from here. */}
-            {front ? (
-              <g>
-                <line x1={0} x2={size.w} y1={ground} y2={ground} stroke="rgba(52,211,153,0.6)" strokeWidth={2} strokeDasharray="12 10" pointerEvents="none" />
-                <g className={tool === 'select' ? 'cursor-ns-resize' : ''} onPointerDown={(e) => startDrag(e, { kind: 'ground' }, null, side)}>
-                  <rect x={8} y={ground - 36} width={92} height={30} rx={8} fill="rgba(6,78,59,0.85)" stroke="rgba(52,211,153,0.8)" strokeWidth={2} />
-                  <text x={54} y={ground - 14} textAnchor="middle" fontSize={18} fontWeight={600} fill="#a7f3d0" pointerEvents="none">
-                    Ground
-                  </text>
-                </g>
+          {/* The ground: drag it to the bottom of the front wall. Heights count from here. */}
+          {front ? (
+            <g>
+              <line x1={vb.x} x2={vb.x + vb.w} y1={ground} y2={ground} stroke="rgba(52,211,153,0.6)" strokeWidth={2 * k} strokeDasharray={dash(12, 10)} pointerEvents="none" />
+              <g className={tool === 'select' && !panMode ? 'cursor-ns-resize' : ''} onPointerDown={(e) => startDrag(e, { kind: 'ground' }, null, side)}>
+                <rect x={vb.x + 8 * k} y={ground - 30 * k} width={70 * k} height={24 * k} rx={6 * k} fill="rgba(6,78,59,0.85)" stroke="rgba(52,211,153,0.8)" strokeWidth={1.5 * k} />
+                <text x={vb.x + 43 * k} y={ground - 13 * k} textAnchor="middle" fontSize={14 * k} fontWeight={600} fill="#a7f3d0" pointerEvents="none">
+                  Ground
+                </text>
               </g>
-            ) : null}
+            </g>
+          ) : null}
 
-            {layout.fixtures.map((f) => {
-              const isSel = selected === f.id;
-              if (isLine(f)) {
-                const pts = f.points.map(V);
-                return (
-                  <g key={f.id}>
-                    {/* The selected segment, drawn wide so it is easy to see. */}
-                    {isSel && segment != null && pts[segment + 1] ? (
+          {layout.fixtures.map((f) => {
+            const isSel = selected === f.id;
+            if (isLine(f)) {
+              const pts = f.points.map(V);
+              return (
+                <g key={f.id}>
+                  {/* The selected segment, drawn wide so it is easy to see. */}
+                  {isSel && segment != null && pts[segment + 1] ? (
+                    <line
+                      x1={pts[segment].u}
+                      y1={pts[segment].v}
+                      x2={pts[segment + 1].u}
+                      y2={pts[segment + 1].v}
+                      stroke="rgb(40,170,255)"
+                      strokeOpacity={0.45}
+                      strokeWidth={14 * k}
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {/* Skipped segments: a dashed line, so they show as "off". */}
+                  {f.skip?.map((s) =>
+                    pts[s + 1] ? (
                       <line
-                        x1={pts[segment].u}
-                        y1={pts[segment].v}
-                        x2={pts[segment + 1].u}
-                        y2={pts[segment + 1].v}
-                        stroke="rgb(40,170,255)"
-                        strokeOpacity={0.45}
-                        strokeWidth={14}
-                        strokeLinecap="round"
+                        key={`skip${s}`}
+                        x1={pts[s].u}
+                        y1={pts[s].v}
+                        x2={pts[s + 1].u}
+                        y2={pts[s + 1].v}
+                        stroke="rgba(255,255,255,0.45)"
+                        strokeWidth={3 * k}
+                        strokeDasharray={dash(6, 9)}
                         pointerEvents="none"
                       />
-                    ) : null}
-                    {/* Skipped segments: a dashed line, so they show as "off". */}
-                    {f.skip?.map((k) =>
-                      pts[k + 1] ? (
-                        <line
-                          key={`skip${k}`}
-                          x1={pts[k].u}
-                          y1={pts[k].v}
-                          x2={pts[k + 1].u}
-                          y2={pts[k + 1].v}
-                          stroke="rgba(255,255,255,0.45)"
-                          strokeWidth={3}
-                          strokeDasharray="6 9"
-                          pointerEvents="none"
-                        />
-                      ) : null
-                    )}
-                    {/* One hit area per segment: a click selects that segment. */}
-                    {pts.slice(1).map((b, k) => {
-                      const a = pts[k];
-                      return (
-                        <line
-                          key={k}
-                          x1={a.u}
-                          y1={a.v}
-                          x2={b.u}
-                          y2={b.v}
-                          stroke="transparent"
-                          strokeWidth={26}
-                          strokeLinecap="round"
-                          className={tool === 'select' ? 'cursor-pointer' : ''}
-                          onPointerDown={(e) => {
-                            if (tool !== 'select') return;
+                    ) : null
+                  )}
+                  {/* One hit area per segment: a click selects that segment. */}
+                  {pts.slice(1).map((b, s) => {
+                    const a = pts[s];
+                    return (
+                      <line
+                        key={s}
+                        x1={a.u}
+                        y1={a.v}
+                        x2={b.u}
+                        y2={b.v}
+                        stroke="transparent"
+                        strokeWidth={26 * k}
+                        strokeLinecap="round"
+                        className={panMode ? '' : tool === 'select' ? 'cursor-pointer' : tool === 'edit' ? 'cursor-copy' : ''}
+                        onPointerDown={(e) => {
+                          if (e.button !== 0 || panMode) return;
+                          if (tool === 'select') {
                             startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
-                            selectSegment(f.id, k);
-                          }}
-                          onDoubleClick={(e) => {
+                            selectSegment(f.id, s);
+                          } else if (tool === 'edit') {
+                            lastEdit.current = 0;
+                            addPointOn(f, s, snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side), side, e);
+                          } else if (tool === 'split') {
                             e.stopPropagation();
-                            if (tool === 'select') insertVertex(f, e, side);
-                          }}
-                        />
-                      );
-                    })}
-                    {isSel
-                      ? pts.map((p, i) =>
-                          handle(
-                            i,
-                            p,
-                            cn(
-                              'cursor-grab',
-                              i === (segment ?? 0) ? 'fill-green-500' : i === (segment != null ? segment + 1 : f.points.length - 1) ? 'fill-red-500' : 'fill-amber-400',
-                              corner === i && 'stroke-white'
-                            ),
-                            (e) => {
+                            splitOn(f, s, snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side), side);
+                          }
+                        }}
+                        onContextMenu={(e) => segmentMenu(e, f, s, side)}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          if (tool === 'select') insertVertex(f, s, e, side);
+                        }}
+                      />
+                    );
+                  })}
+                  {isSel || tool === 'edit' || tool === 'split'
+                    ? pts.map((p, i) => {
+                        const end = i === 0 ? 'first' : i === f.points.length - 1 ? 'last' : null;
+                        return (
+                          <circle
+                            key={i}
+                            cx={p.u}
+                            cy={p.v}
+                            r={(isSel ? 9 : 7) * k}
+                            strokeWidth={3 * k}
+                            className={cn(
+                              'stroke-stone-950',
+                              panMode ? '' : tool === 'split' ? (end ? '' : 'cursor-crosshair') : 'cursor-grab',
+                              tool === 'split' && (end ? 'fill-stone-500' : 'fill-rose-400'),
+                              tool !== 'split' &&
+                                (!isSel
+                                  ? 'fill-amber-400/80'
+                                  : i === (segment ?? 0)
+                                    ? 'fill-green-500'
+                                    : i === (segment != null ? segment + 1 : f.points.length - 1)
+                                      ? 'fill-red-500'
+                                      : 'fill-amber-400'),
+                              isSel && corner === i && 'stroke-white'
+                            )}
+                            onPointerDown={(e) => {
+                              if (e.button !== 0 || panMode) return;
+                              // Ctrl-click (⌘-click) on an end: draw on from there.
+                              if ((e.ctrlKey || e.metaKey) && end && (tool === 'select' || tool === 'edit')) {
+                                e.stopPropagation();
+                                // On a Mac, Ctrl-click also opens the context menu; skip that one.
+                                suppressMenu.current = e.ctrlKey;
+                                setTimeout(() => (suppressMenu.current = false), 600);
+                                return startContinue(f, end, side);
+                              }
+                              if (tool === 'split') {
+                                e.stopPropagation();
+                                if (end) toast.error('Pick a corner or a spot on the line to split it. To shorten the line, delete its end point.');
+                                else splitAt(f, i);
+                                return;
+                              }
                               startDrag(e, { kind: 'vertex', side, id: f.id, index: i }, f.id, side);
-                              if (tool === 'select') {
+                              if (tool === 'select' || tool === 'edit') {
+                                if (f.id !== selected) keepPart.current = true;
                                 setCorner(i);
                                 setSegment(null);
                               }
-                            },
-                            (e) => {
+                            }}
+                            onContextMenu={(e) => pointMenu(e, f, i, side)}
+                            onDoubleClick={(e) => {
                               e.stopPropagation();
-                              if (f.points.length > 2) {
-                                update(f.id, {
-                                  points: f.points.filter((_, j) => j !== i),
-                                  pointLeds: tidyPins(f.pointLeds?.filter((_, j) => j !== i)),
-                                  skip: i > 0 && i < f.points.length - 1 ? skipAfterRemove(f.skip, i) : undefined
-                                });
-                                setSegment(null);
-                                setCorner(null);
-                              }
-                            }
-                          )
-                        )
-                      : null}
-                    {isSel ? <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} /> : null}
-                    {isSel ? (
-                      segment != null && f.points[segment + 1] ? (
-                        <EndMarkers a={fixturePixels(f)[segmentLeds(f, segment).lo]} b={fixturePixels(f)[segmentLeds(f, segment).hi]} V={V} />
-                      ) : (
-                        <EndMarkers a={f.points[0]} b={f.points[f.points.length - 1]} V={V} />
-                      )
-                    ) : null}
-                  </g>
-                );
-              }
-              // Bush or tree.
-              const c = V(f.points[0]);
-              const r = f.radius ?? 60;
-              const h = f.height ?? 240;
-              const move = (e: RPointerEvent) => startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
-              const hitClass = tool === 'select' ? 'cursor-move' : '';
-              return (
-                <g key={f.id}>
-                  {f.kind === 'tree' && front ? (
-                    <polygon points={`${c.u - r},${c.v} ${c.u},${c.v - h} ${c.u + r},${c.v}`} fill="transparent" className={hitClass} onPointerDown={move} />
-                  ) : (
-                    <ellipse cx={c.u} cy={c.v} rx={r} ry={front ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} />
-                  )}
-                  {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} /> : null}
-                  {isSel ? <EndMarkers a={fixturePixels(f)[0]} b={fixturePixels(f).at(-1)} V={V} /> : null}
-                  {isSel ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
-                  {isSel && f.kind === 'tree' && front
-                    ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side))
+                              if (tool === 'select' || tool === 'edit') deletePoint(f, i);
+                            }}
+                          />
+                        );
+                      })
                     : null}
+                  {isSel ? <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} k={k} /> : null}
+                  {isSel ? (
+                    segment != null && f.points[segment + 1] ? (
+                      <EndMarkers a={fixturePixels(f)[segmentLeds(f, segment).lo]} b={fixturePixels(f)[segmentLeds(f, segment).hi]} V={V} k={k} />
+                    ) : (
+                      <EndMarkers a={f.points[0]} b={f.points[f.points.length - 1]} V={V} k={k} />
+                    )
+                  ) : null}
                 </g>
               );
-            })}
+            }
+            // Bush or tree.
+            const c = V(f.points[0]);
+            const r = f.radius ?? 60;
+            const h = f.kind === 'tree' ? (f.height ?? 240) : 0;
+            const move = (e: RPointerEvent) => startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
+            const hitClass = tool === 'select' && !panMode ? 'cursor-move' : '';
+            return (
+              <g key={f.id}>
+                {f.kind === 'tree' && front ? (
+                  <polygon points={`${c.u - r},${c.v} ${c.u},${c.v - h} ${c.u + r},${c.v}`} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                ) : (
+                  <ellipse cx={c.u} cy={c.v} rx={r} ry={front ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                )}
+                {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} /> : null}
+                {isSel ? <EndMarkers a={fixturePixels(f)[0]} b={fixturePixels(f).at(-1)} V={V} k={k} /> : null}
+                {isSel ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
+                {isSel && f.kind === 'tree' && front ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
+              </g>
+            );
+          })}
 
-            {/* Line being drawn */}
-            {(tool === 'roof' || tool === 'line') && draft.side === side && draft.pts.length ? (
-              <>
-                <polyline
-                  points={[...draft.pts, ...(cursor?.side === side ? [cursor] : [])].map((p) => `${p.u},${p.v}`).join(' ')}
-                  fill="none"
-                  stroke="#fbbf24"
-                  strokeWidth={3}
-                  strokeDasharray="10 8"
-                  pointerEvents="none"
-                />
-                {draft.pts.map((p, i) => (
-                  <circle key={i} cx={p.u} cy={p.v} r={7} fill="#fbbf24" pointerEvents="none" />
-                ))}
-              </>
-            ) : null}
-
-            {/* Bush or tree being drawn */}
-            {drag?.kind === 'newBush' && drag.side === side ? (
-              <ellipse
-                cx={drag.center.u}
-                cy={drag.center.v}
-                rx={drag.radius}
-                ry={drag.radius * (front ? 0.72 : 1)}
-                fill="rgba(52,211,153,0.15)"
-                stroke="#34d399"
-                strokeWidth={3}
-                strokeDasharray="8 6"
+          {/* Line being drawn, with the length of the segment under the pointer */}
+          {isLineTool(tool) && draft.side === side && draft.pts.length ? (
+            <>
+              {cursor?.side === side
+                ? (() => {
+                    const a = draft.pts[draft.pts.length - 1];
+                    const len = Math.hypot(cursor.u - a.u, cursor.v - a.v);
+                    return len > 20 * k ? (
+                      <text
+                        x={(a.u + cursor.u) / 2}
+                        y={(a.v + cursor.v) / 2 - 12 * k}
+                        textAnchor="middle"
+                        fontSize={15 * k}
+                        fontWeight={700}
+                        fill="#fde68a"
+                        stroke="#0c0a09"
+                        strokeWidth={4 * k}
+                        paintOrder="stroke"
+                        pointerEvents="none"
+                      >
+                        {m.text(len)}
+                      </text>
+                    ) : null;
+                  })()
+                : null}
+              <polyline
+                points={[...draft.pts, ...(cursor?.side === side ? [cursor] : [])].map((p) => `${p.u},${p.v}`).join(' ')}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth={2.5 * k}
+                strokeDasharray={dash(10, 8)}
                 pointerEvents="none"
               />
-            ) : null}
-            {drag?.kind === 'newTree' && drag.side === side ? (
-              front ? (
-                <polygon
-                  points={`${drag.base.u - drag.size * 0.33},${drag.base.v} ${drag.base.u},${drag.base.v - drag.size} ${drag.base.u + drag.size * 0.33},${drag.base.v}`}
-                  fill="rgba(52,211,153,0.15)"
-                  stroke="#34d399"
-                  strokeWidth={3}
-                  strokeDasharray="8 6"
-                  pointerEvents="none"
-                />
-              ) : (
-                <circle cx={drag.base.u} cy={drag.base.v} r={drag.size} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={3} strokeDasharray="8 6" pointerEvents="none" />
-              )
-            ) : null}
+              {draft.pts.map((p, i) => (
+                <circle key={i} cx={p.u} cy={p.v} r={6 * k} fill="#fbbf24" pointerEvents="none" />
+              ))}
+            </>
+          ) : null}
 
-            {/* Measuring tape */}
-            {tool === 'measure' && tape?.side === side ? (
-              <g pointerEvents="none">
-                {(() => {
-                  const b = tape.b ?? (cursor?.side === side ? cursor : null);
-                  return b ? (
-                    <>
-                      <line x1={tape.a.u} y1={tape.a.v} x2={b.u} y2={b.v} stroke="#f0abfc" strokeWidth={3} />
-                      <text
-                        x={(tape.a.u + b.u) / 2}
-                        y={(tape.a.v + b.v) / 2 - 14}
-                        textAnchor="middle"
-                        fontSize={24}
-                        fontWeight={700}
-                        fill="#f5d0fe"
-                        stroke="#0c0a09"
-                        strokeWidth={5}
-                        paintOrder="stroke"
-                      >
-                        {m.text(Math.hypot(b.u - tape.a.u, b.v - tape.a.v))}
-                      </text>
-                    </>
-                  ) : null;
-                })()}
-                <circle cx={tape.a.u} cy={tape.a.v} r={7} fill="#f0abfc" />
-                {tape.b ? <circle cx={tape.b.u} cy={tape.b.v} r={7} fill="#f0abfc" /> : null}
-              </g>
-            ) : null}
-          </svg>
-        </YardView>
+          {/* Bush or tree being drawn */}
+          {drag?.kind === 'newBush' && drag.side === side ? (
+            <ellipse
+              cx={drag.center.u}
+              cy={drag.center.v}
+              rx={drag.radius}
+              ry={drag.radius * (front ? 0.72 : 1)}
+              fill="rgba(52,211,153,0.15)"
+              stroke="#34d399"
+              strokeWidth={2.5 * k}
+              strokeDasharray={dash(8, 6)}
+              pointerEvents="none"
+            />
+          ) : null}
+          {drag?.kind === 'newTree' && drag.side === side ? (
+            front ? (
+              <polygon
+                points={`${drag.base.u - drag.size * 0.33},${drag.base.v} ${drag.base.u},${drag.base.v - drag.size} ${drag.base.u + drag.size * 0.33},${drag.base.v}`}
+                fill="rgba(52,211,153,0.15)"
+                stroke="#34d399"
+                strokeWidth={2.5 * k}
+                strokeDasharray={dash(8, 6)}
+                pointerEvents="none"
+              />
+            ) : (
+              <circle cx={drag.base.u} cy={drag.base.v} r={drag.size} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+            )
+          ) : null}
+
+          {snapHint?.side === side ? <SnapMarker s={snapHint} k={k} /> : null}
+
+          {/* Measuring tape */}
+          {tool === 'measure' && tape?.side === side ? (
+            <g pointerEvents="none">
+              {(() => {
+                const b = tape.b ?? (cursor?.side === side ? cursor : null);
+                return b ? (
+                  <>
+                    <line x1={tape.a.u} y1={tape.a.v} x2={b.u} y2={b.v} stroke="#f0abfc" strokeWidth={2.5 * k} />
+                    <text
+                      x={(tape.a.u + b.u) / 2}
+                      y={(tape.a.v + b.v) / 2 - 12 * k}
+                      textAnchor="middle"
+                      fontSize={16 * k}
+                      fontWeight={700}
+                      fill="#f5d0fe"
+                      stroke="#0c0a09"
+                      strokeWidth={4 * k}
+                      paintOrder="stroke"
+                    >
+                      {m.text(Math.hypot(b.u - tape.a.u, b.v - tape.a.v))}
+                    </text>
+                  </>
+                ) : null;
+              })()}
+              <circle cx={tape.a.u} cy={tape.a.v} r={6 * k} fill="#f0abfc" />
+              {tape.b ? <circle cx={tape.b.u} cy={tape.b.v} r={6 * k} fill="#f0abfc" /> : null}
+            </g>
+          ) : null}
+        </svg>
+      </YardView>
+    );
+  };
+
+  /** The title bar of a viewport: which view it shows, the zoom, zoom to fit, and make big. */
+  const paneHeader = (v: ViewName) => {
+    const i = viewport.panes.indexOf(v);
+    const big = maximized === v;
+    const side = v === '3d' ? null : v;
+    const zoom = side ? Math.round((fitCam(contentBox(side), sizeOf(side), offOf(side)).k / camFor(side).k) * 100) : null;
+    return (
+      <div
+        className="flex h-7 shrink-0 items-center gap-2 border-b border-white/10 bg-stone-900 px-1.5 text-[11px] text-white/55 select-none"
+        onDoubleClick={(e) => e.target === e.currentTarget && setMaximized(big ? null : v)}
+      >
+        <select
+          value={v}
+          onChange={(e) => setPaneView(i, e.target.value as ViewName)}
+          aria-label="View shown in this viewport"
+          className="h-5 cursor-pointer appearance-none rounded bg-white/10 pr-5 pl-1.5 text-[11px] font-semibold text-white hover:bg-white/15 focus:ring-1 focus:ring-sky-400 focus:outline-none"
+          style={{
+            colorScheme: 'dark',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d6d3d1' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 0.25rem center',
+            backgroundSize: '12px'
+          }}
+        >
+          {(['front', 'top', '3d'] as ViewName[]).map((x) => (
+            <option key={x} value={x}>
+              {VIEW_LABELS[x]}
+            </option>
+          ))}
+        </select>
+        <span className="pointer-events-none truncate">
+          {VIEW_NOTES[v]}
+          {v === 'top' ? ` · grid ${m.units === 'm' ? '1 m' : '5 ft'}` : ''}
+        </span>
+        <span className="ml-auto" />
+        {side ? (
+          <>
+            <span className="tabular-nums" title="Zoom: 100% shows the whole yard">
+              {zoom}%
+            </span>
+            <button
+              type="button"
+              title="Zoom to fit (Home)"
+              aria-label="Zoom to fit"
+              onClick={() =>
+                setCams((c) => {
+                  const next = { ...c };
+                  delete next[side];
+                  return next;
+                })
+              }
+              className="grid size-5 place-items-center rounded hover:bg-white/15 hover:text-white [&_svg]:size-3.5"
+            >
+              <Scan />
+            </button>
+          </>
+        ) : null}
+        <button
+          type="button"
+          title={big ? 'Show all views' : 'Make this view big (double-click the title bar)'}
+          aria-label={big ? 'Show all views' : 'Make this view big'}
+          onClick={() => setMaximized(big ? null : v)}
+          className="grid size-5 place-items-center rounded hover:bg-white/15 hover:text-white [&_svg]:size-3.5"
+        >
+          {big ? <Minimize2 /> : <Maximize2 />}
+        </button>
       </div>
     );
   };
 
+  const single = shown.length === 1;
+  const gridClass = single
+    ? 'lg:grid-cols-1 lg:grid-rows-1'
+    : viewport.mode === 'columns'
+      ? 'lg:grid-cols-2 lg:grid-rows-1'
+      : viewport.mode === 'rows'
+        ? 'lg:grid-cols-1 lg:grid-rows-2'
+        : 'lg:grid-cols-[3fr_2fr] lg:grid-rows-2';
+
+  const lightsLabel = !showOnLights ? 'Lights: off' : !mapped ? 'Lights: no device' : !inFront ? 'Lights: paused' : previewDevices.length ? `Lights: ${previewDevices.join(', ')}` : 'Lights: on';
+  const lightsTitle = !showOnLights
+    ? 'Show the layout on the real lights while you edit'
+    : !mapped
+      ? 'Choose a WLED device for an object first'
+      : !inFront
+        ? 'Paused while this window is not in front'
+        : 'The selected object glows on its WLED device. Click to stop.';
+
+  const SelIcon = sel ? KIND_ICONS[sel.kind] : null;
+
   return (
-    <>
-      <PageHeader
-        title="Yard layout"
-        description="Place every light object where it really is: the front view moves objects across and up, the top view across and toward the street, and the 3D view shows the whole yard. Give each object its first and last LED number on the device. Select an object to edit it: it glows blue here and on the real lights, with its first LED green, its last LED red and its corners amber."
-        actions={
-          <>
-            {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
-            <Button onClick={() => (setLayout(saved!), setSelected(null))} disabled={!dirty || busy}>
-              <RotateCcw /> Revert
-            </Button>
-            <Button variant="primary" onClick={save} disabled={!dirty || overlapCount > 0} loading={busy}>
-              <Save /> Save layout
-            </Button>
-          </>
-        }
-      />
-
-      {/* Two panes on wide screens: the drawing stays put, and the side panel scrolls on its own.
-          The page height then stays the same when the side panel changes, so the page never jumps.
-          overflow-anchor: none stops the browser from scrolling to keep its place. */}
-      <div className="grid gap-6 [overflow-anchor:none] lg:grid-cols-[1fr_20rem]">
-        <div className="space-y-3 lg:sticky lg:top-20 lg:self-start">
-          <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-1.5 ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
-            {toolButton('select', 'Select', MousePointer2)}
-            {toolButton('roof', 'Roofline', House)}
-            {toolButton('line', 'Line', Spline)}
-            {toolButton('bush', 'Bush', Circle)}
-            {toolButton('tree', 'Tree', TreePine)}
-            {toolButton('measure', 'Measure', Ruler)}
-            {(tool === 'roof' || tool === 'line') && draft.pts.length >= 2 ? (
-              <Button size="sm" variant="primary" onClick={() => finishLine(tool)}>
-                Finish line
-              </Button>
-            ) : null}
-            <span className="mx-1 hidden h-5 w-px bg-stone-200 sm:block dark:bg-stone-700" />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={toggleShow}
-              aria-pressed={showOnLights}
-              title={mapped ? 'Light the objects on their WLED devices while you edit' : 'Choose a WLED device for an object first'}
-              className={cn(previewing && previewDevices.length && 'text-emerald-700 dark:text-emerald-400')}
+    <div className="flex flex-col bg-stone-100 lg:h-full dark:bg-stone-950">
+      {/* The command bar: history, viewports, the real lights, the picture, and saving. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-stone-200 bg-stone-50 px-2 py-1 dark:border-stone-800 dark:bg-stone-900">
+        <h1 className="px-1.5 text-sm font-semibold tracking-tight">Yard layout</h1>
+        {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
+        {barSep}
+        <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
+          <Undo2 />
+        </Button>
+        <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
+          <Redo2 />
+        </Button>
+        {barSep}
+        <div className="inline-flex rounded-lg bg-white p-0.5 ring-1 ring-stone-200 dark:bg-stone-950 dark:ring-stone-800" role="group" aria-label="Viewports">
+          {VP_MODES.map(({ mode, label, icon: Icon }) => (
+            <button
+              key={mode}
+              type="button"
+              title={label}
+              aria-label={label}
+              aria-pressed={viewport.mode === mode && !maximized}
+              onClick={() => (setViewport({ ...viewport, mode }), setMaximized(null))}
+              className={cn(
+                'grid h-7 w-8 place-items-center rounded-md transition [&_svg]:size-4',
+                viewport.mode === mode && !maximized
+                  ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900'
+                  : 'text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white'
+              )}
             >
-              {showOnLights ? <Lightbulb /> : <LightbulbOff />}
-              {!showOnLights
-                ? 'Show on lights: off'
-                : !mapped
-                  ? 'Show on lights (no device chosen)'
-                  : !inFront
-                    ? 'Show on lights (paused: window not in front)'
-                    : previewDevices.length
-                      ? `On the lights: ${previewDevices.join(', ')}`
-                      : 'Show on lights'}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => fileInput.current?.click()} disabled={busy}>
-              <ImagePlus /> {layout.background ? 'Change picture' : 'Add house picture'}
-            </Button>
-            {layout.background ? (
-              <Button size="sm" variant="ghost" onClick={removeBg} disabled={busy}>
-                <X /> Remove picture
-              </Button>
-            ) : null}
-            <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
-          </div>
+              <Icon />
+            </button>
+          ))}
+        </div>
+        {barSep}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={toggleShow}
+          aria-pressed={showOnLights}
+          title={lightsTitle}
+          className={cn(previewing && previewDevices.length && 'text-emerald-700 dark:text-emerald-400')}
+        >
+          {showOnLights ? <Lightbulb /> : <LightbulbOff />}
+          <span className="max-w-48 truncate">{lightsLabel}</span>
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => fileInput.current?.click()} disabled={busy} title="A photo of the front of the house, to trace the lights over">
+          <ImagePlus /> {layout.background ? 'Change picture' : 'Add house picture'}
+        </Button>
+        {layout.background ? (
+          <Button size="sm" variant="ghost" onClick={removeBg} disabled={busy} title="Remove the house picture" aria-label="Remove the house picture" className="px-2">
+            <X />
+          </Button>
+        ) : null}
+        <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
+        <span className="ml-auto" />
+        <Button size="sm" variant="ghost" onClick={() => (edit(() => saved!), setSelected(null))} disabled={!dirty || busy} title="Go back to the saved layout">
+          <RotateCcw /> Revert
+        </Button>
+        <Button size="sm" variant="primary" onClick={save} disabled={!dirty || overlapCount > 0} loading={busy} title="Save the layout (Ctrl/⌘+S)">
+          <Save /> Save
+        </Button>
+      </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-stone-500">Views</span>
-            <div className="inline-flex rounded-lg bg-white p-1 ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
-              {(['front', 'top', '3d'] as ViewName[]).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  aria-pressed={views.includes(v)}
-                  onClick={() => toggleView(v)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-sm font-medium transition',
-                    views.includes(v) ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800'
-                  )}
-                >
-                  {v === '3d' ? <Box className="size-3.5" /> : null}
-                  {VIEW_LABELS[v]}
-                </button>
-              ))}
-            </div>
-            {tool === 'measure' && tapeLength != null ? (
-              <MeasureBar
-                length={tapeLength}
-                m={m}
-                onScale={(meters) => {
-                  updateLayout({ scale: Math.round((tapeLength / meters) * 1000) / 1000 });
-                  setTape(null);
-                  toast.success(`Scale set: ${m.text(tapeLength)} is now ${meters * (m.units === 'm' ? 1 : FEET_PER_METER)} ${m.units}.`);
-                }}
-              />
-            ) : null}
-          </div>
-
-          {/* All views share one width, so x lines up between them, and together they fit on the screen. */}
-          <div
-            className="mx-auto space-y-3"
-            style={{
-              maxWidth: `max(32rem, calc((100dvh - ${16 + views.length * 1.5}rem) * ${
-                layout.width / ((views.includes('front') ? layout.height : 0) + (views.includes('top') ? zRange[1] - zRange[0] : 0) + (views.includes('3d') ? (layout.width * 9) / 16 : 0))
-              }))`
-            }}
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* Tools */}
+        <div
+          role="toolbar"
+          aria-label="Tools"
+          className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-stone-200 bg-stone-50 p-1 lg:flex-col lg:overflow-visible lg:border-r lg:border-b-0 dark:border-stone-800 dark:bg-stone-900"
+        >
+          {toolButton('select', MousePointer2)}
+          {toolButton('edit', PenTool)}
+          {toolButton('split', Scissors)}
+          {toolButton('pan', Hand)}
+          {toolSep}
+          {toolButton('roof', House)}
+          {toolButton('line', Spline)}
+          {toolButton('bush', Circle)}
+          {toolButton('tree', TreePine)}
+          {toolSep}
+          {toolButton('measure', Ruler)}
+          {toolSep}
+          <button
+            type="button"
+            onClick={() => frameSelection()}
+            title={sel ? `Zoom to ${sel.name} (F)` : 'Zoom to fit (F or Home)'}
+            aria-label="Zoom to fit"
+            className="relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]"
           >
-            {views.includes('front') ? renderView('front') : null}
-            {views.includes('top') ? renderView('top') : null}
-            {views.includes('3d') ? (
-              <Suspense
-                fallback={
-                  <div className="grid aspect-video place-items-center rounded-2xl bg-[#05070f]">
-                    <Spinner />
-                  </div>
-                }
-              >
-                <Scene3D
-                  layout={layout}
-                  getFrame={getFrame}
-                  selected={selected}
-                  onSelect={(id) => {
-                    setSelected(id);
-                    setTool('select');
-                  }}
-                />
-              </Suspense>
-            ) : null}
-          </div>
-          <p className="text-sm text-stone-500 dark:text-stone-400">{hint}</p>
+            <Scan />
+            <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">F</kbd>
+          </button>
         </div>
 
-        <div ref={pane} className="space-y-4 lg:sticky lg:top-20 lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
-          {sel ? (
-            <div ref={propsCard}>
-              <Card>
-                <CardHeader
-                  title={KIND_LABELS[sel.kind]}
-                  actions={
-                    <Button size="sm" variant="ghost" onClick={() => remove(sel.id)} className="hover:text-red-600">
-                      <Trash2 /> Delete
-                    </Button>
-                  }
-                />
-                <div className="space-y-4 p-5">
-                  {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
-                    <SegmentPanel
+        {/* Viewports */}
+        <div className="relative min-h-0 min-w-0 flex-1">
+          <div className={cn('grid gap-px bg-stone-300 lg:h-full dark:bg-stone-800', gridClass)}>
+            {shown.map((v, i) => (
+              <div key={v} className={cn('flex h-[55dvh] min-h-0 min-w-0 flex-col bg-[#05070f] lg:h-auto', viewport.mode === 'three' && !single && i === 0 && 'lg:row-span-2')}>
+                {paneHeader(v)}
+                {v === '3d' ? (
+                  <div className="relative min-h-0 flex-1">
+                    <Suspense
+                      fallback={
+                        <div className="absolute inset-0 grid place-items-center bg-[#05070f]">
+                          <Spinner />
+                        </div>
+                      }
+                    >
+                      <Scene3D
+                        fill
+                        layout={layout}
+                        getFrame={getFrame}
+                        selected={selected}
+                        onSelect={(id) => {
+                          setSelected(id);
+                          setTool('select');
+                        }}
+                      />
+                    </Suspense>
+                  </div>
+                ) : (
+                  <PaneBody onSize={(w, h) => setPaneSize((p) => (p[v]?.w === w && p[v]?.h === h ? p : { ...p, [v]: { w, h } }))} onWheel={(e, r) => onWheel(v, e, r)}>
+                    {renderView(v)}
+                  </PaneBody>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* The command line: what the line tool or the measure tool needs next. */}
+          {drawing || (tool === 'measure' && tapeLength != null) ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-3">
+              <div className="pointer-events-auto">
+                {drawing && isLineTool(tool) ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-900/90 px-3 py-1.5 text-xs text-white shadow-lg ring-1 ring-white/10 backdrop-blur">
+                    <span>
+                      {draft.cont ? `Adding to ${layout.fixtures.find((f) => f.id === draft.cont!.id)?.name ?? 'the line'}` : `New ${TOOL_LABELS[tool].toLowerCase()}`}:{' '}
+                      <span className="tabular-nums">{draft.pts.length}</span> point(s)
+                    </span>
+                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => setDraft((d) => ({ ...d, pts: d.pts.slice(0, -1) }))} title="Backspace">
+                      Remove last point
+                    </button>
+                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => setDraft((d) => ({ side: d.side, pts: [] }))}>
+                      Cancel
+                    </button>
+                    {draft.pts.length >= 2 ? (
+                      <button type="button" className="rounded-md bg-sky-600 px-2.5 py-1 font-semibold hover:bg-sky-500" onClick={() => finishLine(tool)} title="Enter">
+                        Finish line
+                      </button>
+                    ) : null}
+                  </div>
+                ) : tapeLength != null ? (
+                  <MeasureBar
+                    length={tapeLength}
+                    m={m}
+                    onScale={(meters) => {
+                      updateLayout({ scale: Math.round((tapeLength / meters) * 1000) / 1000 });
+                      setTape(null);
+                      toast.success(`Scale set: ${m.text(tapeLength)} is now ${meters * (m.units === 'm' ? 1 : FEET_PER_METER)} ${m.units}.`);
+                    }}
+                  />
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {/* The side panel: the object list, and the properties of the selection. */}
+        <aside className="flex shrink-0 flex-col border-stone-200 bg-white text-sm lg:w-80 lg:border-l dark:border-stone-800 dark:bg-stone-900">
+          <div className="flex flex-col border-b border-stone-200 lg:max-h-[40%] lg:min-h-32 dark:border-stone-800">
+            <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-b border-stone-100 px-3 dark:border-stone-800">
+              <span className="text-[11px] font-semibold tracking-wide text-stone-600 uppercase dark:text-stone-400">Objects</span>
+              <span className="text-[11px] text-stone-500 tabular-nums">
+                {layout.fixtures.length} · {totals} LEDs
+              </span>
+            </div>
+            {layout.fixtures.length ? (
+              <ul role="listbox" aria-label="Objects" className="min-h-0 flex-1 overflow-y-auto py-1">
+                {layout.fixtures.map((f, i) => {
+                  const Icon = KIND_ICONS[f.kind];
+                  const on = selected === f.id;
+                  return (
+                    <li
+                      key={f.id}
+                      role="option"
+                      aria-selected={on}
+                      onClick={() => {
+                        if (tool !== 'select') chooseTool('select');
+                        setSelected(f.id);
+                      }}
+                      onDoubleClick={() => setRenaming(f.id)}
+                      onContextMenu={(e) => objectMenu(e, f)}
+                      className={cn(
+                        'mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px]',
+                        on ? 'bg-sky-600 text-white' : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
+                      )}
+                    >
+                      <Icon className="size-3.5 shrink-0" style={{ color: on ? undefined : `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
+                      {renaming === f.id ? (
+                        <RenameInput value={f.name} onDone={(name) => (setRenaming(null), name != null && name.trim() && update(f.id, { name: name.trim() }))} />
+                      ) : (
+                        <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                      )}
+                      <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
+                        {ledRange(f).first}–{ledRange(f).last}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="px-3 py-4 text-xs text-stone-500">Nothing yet. Draw the roofline first: press R, then click along the roof.</p>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {sel && SelIcon ? (
+              <>
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
+                  <SelIcon className="size-4 shrink-0 text-stone-500" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] font-semibold">{sel.name}</p>
+                    <p className="truncate text-[11px] text-stone-500">
+                      {KIND_LABELS[sel.kind]}
+                      {isLine(sel) && segment != null ? ` · segment ${segment + 1} of ${sel.points.length - 1}` : ''}
+                      {isLine(sel) && segment == null && corner != null ? ` · ${pointName(sel, corner)}` : ''}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => frameSelection()} title="Zoom to this object (F)" aria-label="Zoom to this object" className="px-2">
+                    <Scan />
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => remove(sel.id)} title="Delete this object (Delete)" aria-label="Delete this object" className="px-2 hover:text-red-600">
+                    <Trash2 />
+                  </Button>
+                </div>
+
+                {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+                  <PropSection
+                    key="segment"
+                    id="segment"
+                    title={`Segment ${segment + 1}`}
+                    actions={
+                      <div className="flex">
+                        <button
+                          type="button"
+                          className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                          onClick={() => setSegment(segment - 1)}
+                          disabled={segment === 0}
+                          aria-label="Previous segment"
+                          title="Previous segment"
+                        >
+                          <ChevronLeft />
+                        </button>
+                        <button
+                          type="button"
+                          className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                          onClick={() => setSegment(segment + 1)}
+                          disabled={segment >= sel.points.length - 2}
+                          aria-label="Next segment"
+                          title="Next segment"
+                        >
+                          <ChevronRight />
+                        </button>
+                      </div>
+                    }
+                  >
+                    <SegmentProps
                       f={sel}
                       index={segment}
                       onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
-                      onGo={(k) => setSegment(k)}
                       onToggle={(on) =>
                         update(sel.id, {
                           skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
@@ -1255,163 +1859,169 @@ export function LayoutPage() {
                       }
                       onClose={() => setSegment(null)}
                     />
-                  ) : isLine(sel) && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
-                    <CornerPanel f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} />
-                  ) : isLine(sel) && sel.points.length > 2 ? (
-                    <p className="text-xs text-stone-500">
-                      Click one straight segment of the line to light up only that segment and set its first and last LED. Click a corner to pin it, or to split the line there and leave a gap.
-                    </p>
+                  </PropSection>
+                ) : isLine(sel) && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
+                  <PropSection key="corner" id="corner" title={`Corner ${corner}`}>
+                    <CornerProps f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} />
+                  </PropSection>
+                ) : null}
+
+                <PropSection key="object" id="object" title="Object">
+                  <PropText label="Name" value={sel.name} maxLength={60} onChange={(name) => update(sel.id, { name })} />
+                  {isLine(sel) ? (
+                    <PropSelect<FixtureKind>
+                      label="Kind"
+                      hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations."
+                      value={sel.kind}
+                      options={[
+                        ['roof', 'Roofline'],
+                        ['line', 'Other line of lights']
+                      ]}
+                      onChange={(kind) => update(sel.id, { kind })}
+                    />
                   ) : null}
-
-                  <PositionPanel f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
-
-                  <button
-                    type="button"
-                    onClick={toggleSettings}
-                    aria-expanded={settingsOpen}
-                    className="flex w-full items-center justify-between gap-2 rounded-lg py-1 text-left text-sm font-medium text-stone-700 hover:text-stone-950 dark:text-stone-300 dark:hover:text-white"
-                  >
-                    <span>
-                      {isLine(sel) ? 'Line settings' : `${KIND_LABELS[sel.kind]} settings`}
-                      {!settingsOpen ? (
-                        <span className="ml-2 font-normal text-stone-500 tabular-nums">
-                          {devices.find((d) => d.id === sel.deviceId)?.name ?? 'Simulation only'} · LEDs {ledRange(sel).first}–{ledRange(sel).last}
-                        </span>
-                      ) : null}
-                    </span>
-                    <ChevronDown className={cn('size-4 shrink-0 transition', settingsOpen && 'rotate-180')} />
-                  </button>
-                  {settingsOpen ? (
-                    <>
-                      <Field label="Name">{(id) => <Input id={id} value={sel.name} maxLength={60} onChange={(e) => update(sel.id, { name: e.target.value })} />}</Field>
-                      {isLine(sel) ? (
-                        <Field label="Kind" hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations.">
-                          {(id) => (
-                            <Select id={id} value={sel.kind} onChange={(e) => update(sel.id, { kind: e.target.value as FixtureKind })}>
-                              <option value="roof">Roofline</option>
-                              <option value="line">Other line of lights</option>
-                            </Select>
-                          )}
-                        </Field>
-                      ) : null}
-                      <Field label="WLED device" hint="The device that drives these LEDs. Games show on it in debug mode (Play → Debug).">
-                        {(id) => (
-                          <Select id={id} value={sel.deviceId ?? ''} onChange={(e) => update(sel.id, { deviceId: e.target.value || null })}>
-                            <option value="">Simulation only</option>
-                            {devices.map((d) => (
-                              <option key={d.id} value={d.id}>
-                                {d.name}
-                                {d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}
-                              </option>
-                            ))}
-                          </Select>
-                        )}
-                      </Field>
-                      <LedRangeFields f={sel} onRange={(a, b) => setRange(sel, a, b)} />
-                      {sel.kind === 'bush' ? (
-                        <Field label="How the LEDs sit">
-                          {(id) => (
-                            <Select id={id} value={sel.pattern ?? 'fill'} onChange={(e) => update(sel.id, { pattern: e.target.value as Fixture['pattern'] })}>
-                              <option value="fill">Net over the whole bush</option>
-                              <option value="ring">Ring around the edge</option>
-                              <option value="spiral">Spiral from the middle</option>
-                            </Select>
-                          )}
-                        </Field>
-                      ) : null}
-                      {sel.kind === 'tree' ? (
-                        <>
-                          <Field
-                            label="How the LEDs sit"
-                            hint={
-                              sel.pattern === 'strands'
-                                ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
-                                : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
-                            }
-                          >
-                            {(id) => (
-                              <Select id={id} value={sel.pattern === 'strands' ? 'strands' : 'spiral'} onChange={(e) => update(sel.id, { pattern: e.target.value as Fixture['pattern'] })}>
-                                <option value="spiral">Spiral around the tree</option>
-                                <option value="strands">Strands from base to top</option>
-                              </Select>
-                            )}
-                          </Field>
-                          {sel.pattern === 'strands' ? (
-                            <Field label="Strands">{(id) => <NumberInput id={id} value={sel.strands ?? 12} min={1} max={64} onCommit={(n) => update(sel.id, { strands: n })} />}</Field>
-                          ) : (
-                            <Field label="Turns from base to top">
-                              {(id) => <NumberInput id={id} decimal value={sel.turns ?? 8} min={0.5} max={100} step={0.5} onCommit={(n) => update(sel.id, { turns: n })} />}
-                            </Field>
-                          )}
-                        </>
-                      ) : null}
-                    </>
-                  ) : null}
-                </div>
-              </Card>
-            </div>
-          ) : null}
-
-          <Card>
-            <CardHeader title="Objects" description={`${layout.fixtures.length} object(s), ${totals} LED(s)`} />
-            {layout.fixtures.length ? (
-              <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-                {layout.fixtures.map((f, i) => (
-                  <li key={f.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelected(f.id);
-                        setTool('select');
-                      }}
-                      className={cn(
-                        'flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-stone-50 dark:hover:bg-stone-800/60',
-                        selected === f.id && 'bg-amber-50 dark:bg-amber-400/10'
-                      )}
-                    >
-                      <span
-                        className="size-2.5 shrink-0 rounded-full"
-                        style={{
-                          background: `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})`
-                        }}
-                      />
-                      <span className="min-w-0 flex-1 truncate font-medium">{f.name}</span>
-                      <span className="text-xs text-stone-500 tabular-nums">
-                        {ledRange(f).first}–{ledRange(f).last}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="px-5 py-6 text-sm text-stone-500">Nothing yet. Draw the roofline first.</p>
-            )}
-          </Card>
-
-          <YardCard layout={layout} m={m} onChange={updateLayout} onMeasure={() => (setTool('measure'), setTape(null))} />
-
-          {runs.size ? (
-            <Card>
-              <CardHeader title="LEDs per device" description="Which LEDs each object uses. Gaps are LEDs that stay off." />
-              <div className="space-y-5 p-5">
-                {[...runs.entries()].map(([deviceId, r]) => (
-                  <StripMap
-                    key={deviceId}
-                    name={devices.find((d) => d.id === deviceId)?.name ?? 'Unknown device'}
-                    count={devices.find((d) => d.id === deviceId)?.info?.leds?.count ?? null}
-                    runs={r.runs}
-                    overlaps={r.overlaps}
-                    fixtures={layout.fixtures}
-                    selected={selected}
-                    onSelect={setSelected}
+                  <PropSelect
+                    label="WLED device"
+                    hint="The device that drives these LEDs."
+                    value={sel.deviceId ?? ''}
+                    options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
+                    onChange={(id) => update(sel.id, { deviceId: id || null })}
                   />
-                ))}
-              </div>
-            </Card>
-          ) : null}
-        </div>
+                  {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
+                    <PropNote>Click one segment of the line to set its first and last LED. Click a corner to pin it, or to split the line there.</PropNote>
+                  ) : null}
+                </PropSection>
+
+                <PropSection key="leds" id="leds" title="LEDs">
+                  <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} />
+                </PropSection>
+
+                <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
+                  <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
+                </PropSection>
+
+                {!isLine(sel) ? (
+                  <PropSection key="shape" id="shape" title="Shape">
+                    <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
+                    {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
+                    {sel.kind === 'bush' ? (
+                      <PropSelect<NonNullable<Fixture['pattern']>>
+                        label="LED pattern"
+                        value={sel.pattern ?? 'fill'}
+                        options={[
+                          ['fill', 'Net over the bush'],
+                          ['ring', 'Ring around the edge'],
+                          ['spiral', 'Spiral from the middle']
+                        ]}
+                        onChange={(pattern) => update(sel.id, { pattern })}
+                      />
+                    ) : (
+                      <>
+                        <PropSelect<NonNullable<Fixture['pattern']>>
+                          label="LED pattern"
+                          hint={
+                            sel.pattern === 'strands'
+                              ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
+                              : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
+                          }
+                          value={sel.pattern === 'strands' ? 'strands' : 'spiral'}
+                          options={[
+                            ['spiral', 'Spiral around the tree'],
+                            ['strands', 'Strands, base to top']
+                          ]}
+                          onChange={(pattern) => update(sel.id, { pattern })}
+                        />
+                        {sel.pattern === 'strands' ? (
+                          <PropNumber label="Strands" value={sel.strands ?? 12} min={1} max={64} onChange={(n) => update(sel.id, { strands: Math.round(n) })} />
+                        ) : (
+                          <PropNumber
+                            label="Turns"
+                            hint="Turns of the spiral from the base to the top"
+                            decimal
+                            value={sel.turns ?? 8}
+                            min={0.5}
+                            max={100}
+                            step={0.5}
+                            onChange={(n) => update(sel.id, { turns: n })}
+                          />
+                        )}
+                      </>
+                    )}
+                    <PropNote>{sel.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'}</PropNote>
+                  </PropSection>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] font-semibold">Yard</p>
+                    <p className="text-[11px] text-stone-500">Nothing selected. Click an object to see its properties.</p>
+                  </div>
+                </div>
+                <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+                {runs.size ? (
+                  <PropSection key="devices" id="devices" title="LEDs per device">
+                    <div className="space-y-4">
+                      {[...runs.entries()].map(([deviceId, r]) => (
+                        <StripMap
+                          key={deviceId}
+                          name={devices.find((d) => d.id === deviceId)?.name ?? 'Unknown device'}
+                          count={devices.find((d) => d.id === deviceId)?.info?.leds?.count ?? null}
+                          runs={r.runs}
+                          overlaps={r.overlaps}
+                          fixtures={layout.fixtures}
+                          selected={selected}
+                          onSelect={setSelected}
+                        />
+                      ))}
+                    </div>
+                  </PropSection>
+                ) : null}
+                <PropSection key="keys" id="keys" title="Keyboard and mouse" defaultOpen={false}>
+                  <Shortcuts />
+                </PropSection>
+              </>
+            )}
+          </div>
+        </aside>
       </div>
-    </>
+
+      {/* The status bar: the tool and what it needs, the pointer position, and the drafting switches. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-stone-200 bg-stone-50 px-3 py-1 text-[11px] text-stone-500 lg:h-7 lg:flex-nowrap lg:py-0 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
+        <span className="font-semibold text-stone-700 dark:text-stone-200">{TOOL_LABELS[tool]}</span>
+        <span className="min-w-0 flex-1 lg:truncate" title={hint}>
+          {hint}
+        </span>
+        <span className="flex w-52 shrink-0 gap-3 tabular-nums" aria-live="off">
+          {coords ? coords.map(([l, v]) => <span key={l}>{`${l} ${v}`}</span>) : <span className="opacity-60">Pointer outside the views</span>}
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          {(
+            [
+              ['snap', 'Snap', 'Snap to points, midpoints, lines and alignments (Alt: the other way)'],
+              ['ortho', 'Ortho', 'Keep lines level or upright (Shift: 45° steps)'],
+              ['grid', 'Grid', 'Show the grid']
+            ] as [keyof Drafting, string, string][]
+          ).map(([key, label, title]) => (
+            <button
+              key={key}
+              type="button"
+              title={title}
+              aria-pressed={drafting[key]}
+              onClick={() => setDrafting({ [key]: !drafting[key] })}
+              className={cn(
+                'rounded px-1.5 py-0.5 font-semibold tracking-wide uppercase transition',
+                drafting[key] ? 'bg-sky-600/15 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300' : 'text-stone-400 hover:text-stone-700 dark:text-stone-600 dark:hover:text-stone-300'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+      </div>
+      {menu ? <ContextMenu menu={menu} onClose={() => setMenu(null)} /> : null}
+    </div>
   );
 }
 
@@ -1440,97 +2050,84 @@ function MeasureBar({ length, m, onScale }: { length: number; m: Measure; onScal
   );
 }
 
-/** Units, scale and ground for the whole yard. */
-function YardCard({ layout, m, onChange, onMeasure }: { layout: Layout; m: Measure; onChange: (patch: Partial<Layout>) => void; onMeasure: () => void }) {
+/** Units, scale and ground for the whole yard: the properties when nothing is selected. */
+function YardProps({ layout, m, onChange, onMeasure }: { layout: Layout; m: Measure; onChange: (patch: Partial<Layout>) => void; onMeasure: () => void }) {
   return (
-    <Card>
-      <CardHeader title="Yard size" description="Real distances make the top and 3D views true to life, and let animations move at real speeds." />
-      <div className="space-y-4 p-5">
-        <Field label="Units">
-          {(id) => (
-            <Select id={id} value={m.units} onChange={(e) => onChange({ units: e.target.value as Units })}>
-              <option value="ft">Feet</option>
-              <option value="m">Meters</option>
-            </Select>
-          )}
-        </Field>
-        <DistanceField
-          label="Width of the front view"
-          value={layout.width}
-          m={m}
-          min={0.1}
-          onChange={(lu) => onChange({ scale: Math.round(((layoutScale(layout) * layout.width) / lu) * 1000) / 1000 })}
-        />
-        <Button size="sm" onClick={onMeasure}>
-          <Ruler /> Measure to set the scale
-        </Button>
-        <p className="text-xs text-stone-500">
-          For the best scale, measure something you know in the front view, at the front wall: for example, a garage door. Then drag the dashed ground line in the front view to the bottom of the front
-          wall: heights count from there.
-        </p>
-      </div>
-    </Card>
+    <PropSection key="yard" id="yard" title="Yard size">
+      <PropSelect<Units>
+        label="Units"
+        value={m.units}
+        options={[
+          ['ft', 'Feet'],
+          ['m', 'Meters']
+        ]}
+        onChange={(units) => onChange({ units })}
+      />
+      <PropDistance
+        label="Front view width"
+        hint="The real width of the front view. It sets the scale."
+        value={layout.width}
+        m={m}
+        min={0.1}
+        onChange={(lu) => onChange({ scale: Math.round(((layoutScale(layout) * layout.width) / lu) * 1000) / 1000 })}
+      />
+      <PropRow label="Scale">
+        <PropButton onClick={onMeasure} title="Measure something you know, then type its real size (M)">
+          <Ruler /> Measure
+        </PropButton>
+      </PropRow>
+      <PropNote>
+        Real distances make the top and 3D views true to life, and let animations move at real speeds. For the best scale, measure something you know at the front wall, for example a garage door. Then
+        drag the dashed ground line in the front view to the bottom of the front wall: heights count from there.
+      </PropNote>
+    </PropSection>
   );
 }
+
+/** The name of a point of a line. */
+const pointName = (f: Fixture, i: number) => (i === 0 ? 'first point' : i === f.points.length - 1 ? 'last point' : `corner ${i}`);
 
 /**
  * Where the selected point or object is, in feet or meters. X counts from the left edge of
  * the front view, height from the ground line, depth from the front wall (toward the street).
  */
-function PositionPanel({ f, point, m, ground, onChange }: { f: Fixture; point: number | null; m: Measure; ground: number; onChange: (patch: Partial<Fixture>) => void }) {
+function PositionProps({ f, point, m, ground, onChange }: { f: Fixture; point: number | null; m: Measure; ground: number; onChange: (patch: Partial<Fixture>) => void }) {
   const setPoint = (i: number, patch: Partial<Point>) => onChange({ points: f.points.map((p, j) => (j === i ? { ...p, ...patch } : p)) });
-  const xyz = (i: number, labels: [string, string, string]) => {
+  const depthHint = 'Depth 0 is the front wall; plus is toward the street.';
+  const xyz = (i: number, heightLabel: string) => {
     const p = f.points[i];
     return (
-      <div className="grid grid-cols-3 items-end gap-2">
-        <DistanceField label={labels[0]} value={p.x} m={m} onChange={(lu) => setPoint(i, { x: Math.round(lu) })} />
-        <DistanceField label={labels[1]} value={ground - p.y} m={m} onChange={(lu) => setPoint(i, { y: Math.round(ground - lu) })} />
-        <DistanceField label={labels[2]} value={p.z ?? 0} m={m} onChange={(lu) => setPoint(i, { z: Math.round(lu) })} />
-      </div>
+      <>
+        <PropDistance label="X (across)" hint="From the left edge of the front view" value={p.x} m={m} onChange={(lu) => setPoint(i, { x: Math.round(lu) })} />
+        <PropDistance label={heightLabel} hint="From the ground line" value={ground - p.y} m={m} onChange={(lu) => setPoint(i, { y: Math.round(ground - lu) })} />
+        <PropDistance label="Depth" hint={depthHint} value={p.z ?? 0} m={m} onChange={(lu) => setPoint(i, { z: Math.round(lu) })} />
+      </>
     );
   };
-  const box = 'space-y-3 rounded-xl bg-stone-50 p-3 ring-1 ring-stone-200 dark:bg-stone-950 dark:ring-stone-800';
   if (isLine(f)) {
     if (point != null && f.points[point]) {
       const z = f.points[point].z ?? 0;
       return (
-        <div className={box}>
-          <p className="text-sm font-medium">Position of {point === 0 ? 'the first point' : point === f.points.length - 1 ? 'the last point' : `corner ${point}`}</p>
-          {xyz(point, ['Across', 'Height', 'Depth'])}
-          <Button size="sm" onClick={() => onChange({ points: f.points.map((p) => ({ ...p, z })) })} disabled={f.points.every((p) => (p.z ?? 0) === z)}>
-            Use this depth for every point
-          </Button>
-        </div>
+        <>
+          {xyz(point, 'Height')}
+          <PropRow label="">
+            <PropButton onClick={() => onChange({ points: f.points.map((p) => ({ ...p, z })) })} disabled={f.points.every((p) => (p.z ?? 0) === z)}>
+              Use this depth for every point
+            </PropButton>
+          </PropRow>
+        </>
       );
     }
     const depths = f.points.map((p) => p.z ?? 0);
     const same = depths.every((d) => d === depths[0]);
     return (
-      <div className={box}>
-        <p className="text-sm font-medium">Position</p>
-        <div className="grid grid-cols-2 gap-2">
-          <DistanceField label="Depth of every point" value={same ? depths[0] : null} m={m} onChange={(lu) => onChange({ points: f.points.map((p) => ({ ...p, z: Math.round(lu) })) })} />
-        </div>
-        <p className="text-xs text-stone-500">
-          Depth 0 is the front wall; plus is toward the street. Click a point to place it exactly. A roofline along the side of the house runs back: give its far points a minus depth in the top view.
-        </p>
-      </div>
+      <>
+        <PropDistance label="Depth (all points)" hint={depthHint} value={same ? depths[0] : null} m={m} onChange={(lu) => onChange({ points: f.points.map((p) => ({ ...p, z: Math.round(lu) })) })} />
+        <PropNote>Click a point to place it exactly. A roofline along the side of the house runs back: give its far points a minus depth in the top view. {depthHint}</PropNote>
+      </>
     );
   }
-  const r = f.radius ?? 60;
-  return (
-    <div className={box}>
-      <p className="text-sm font-medium">Position and size</p>
-      {xyz(0, f.kind === 'tree' ? ['Across', 'Base height', 'Depth'] : ['Across', 'Height', 'Depth'])}
-      <div className="grid grid-cols-3 items-end gap-2">
-        <DistanceField label="Width" value={r * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />
-        {f.kind === 'tree' ? <DistanceField label="Tree height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} /> : null}
-      </div>
-      <p className="text-xs text-stone-500">
-        {f.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'} Depth 0 is the front wall; plus is toward the street.
-      </p>
-    </div>
-  );
+  return xyz(0, f.kind === 'tree' ? 'Base height' : 'Height');
 }
 
 /** Every point of a line, so an edit to one point leaves all the others where they are. */
@@ -1545,76 +2142,74 @@ function tidyPins(pins: (number | null)[] | undefined) {
   return out?.some((p) => p != null) ? out : undefined;
 }
 
-function LedRangeFields({ f, onRange }: { f: Fixture; onRange: (first: number, last: number) => void }) {
+function LedProps({ f, onRange }: { f: Fixture; onRange: (first: number, last: number) => void }) {
   const { first, last } = ledRange(f);
-  const firstLabel = 'First LED';
-  const lastLabel = 'Last LED';
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-3">
-        <StepField label={firstLabel} tone="green" value={first} onChange={(n) => onRange(n, last)} />
-        <StepField label={lastLabel} tone="red" value={last} onChange={(n) => onRange(first, n)} />
-      </div>
-      <div className="grid grid-cols-2 items-end gap-3">
-        <Field label="Number of LEDs">
-          {(id) => <NumberInput id={id} value={f.pixels} min={1} max={MAX_FIXTURE_PIXELS} onCommit={(n) => onRange(first, last >= first ? first + n - 1 : Math.max(0, first - n + 1))} />}
-        </Field>
-        <Button size="sm" onClick={() => onRange(last, first)} disabled={f.pixels < 2} className="mb-0.5">
-          <ArrowLeftRight /> Flip direction
-        </Button>
-      </div>
-      <p className="text-xs text-stone-500">
-        {isLine(f) ? 'The first LED sits at the first point you drew. ' : ''}
-        {f.pixels === 1 ? 'One LED. ' : last >= first ? 'The numbers count up along the line. ' : 'The numbers count down along the line. '}
-        On the lights, the selected object glows blue, its first LED is green and its last LED is red. Each change shows at once. Use the LED numbers from the WLED app; LEDs that no object uses stay
-        off.
-      </p>
-    </div>
+    <>
+      <PropNumber label="First LED" tone="green" steppers value={first} onChange={(n) => onRange(Math.round(n), last)} hint="The device LED number at the start (the first point you drew)" />
+      <PropNumber label="Last LED" tone="red" steppers value={last} onChange={(n) => onRange(first, Math.round(n))} hint="The device LED number at the end" />
+      <PropNumber
+        label="Number of LEDs"
+        value={f.pixels}
+        min={1}
+        max={MAX_FIXTURE_PIXELS}
+        onChange={(n) => onRange(first, last >= first ? first + Math.round(n) - 1 : Math.max(0, first - Math.round(n) + 1))}
+      />
+      <PropRow label="Direction">
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-xs">{f.pixels === 1 ? 'One LED' : last >= first ? 'Counts up' : 'Counts down'}</span>
+          <PropButton onClick={() => onRange(last, first)} disabled={f.pixels < 2}>
+            <ArrowLeftRight /> Flip
+          </PropButton>
+        </div>
+      </PropRow>
+      <PropNote>Use the LED numbers from the WLED app. On the lights, the selected object glows blue, its first LED is green and its last LED is red. LEDs that no object uses stay off.</PropNote>
+    </>
   );
 }
 
-function CornerPanel({ f, index, onPin, onSplit }: { f: Fixture; index: number; onPin: (led: number | null) => void; onSplit: () => void }) {
+function CornerProps({ f, index, onPin, onSplit }: { f: Fixture; index: number; onPin: (led: number | null) => void; onSplit: () => void }) {
   const led = deviceLed(f, pointOffsets(f)[index]);
   const pinned = isPinned(f, index);
   const ignored = f.pointLeds?.[index] != null && !pinned;
   return (
-    <div className="space-y-3 rounded-xl bg-stone-50 p-3 ring-1 ring-stone-200 dark:bg-stone-950 dark:ring-stone-800">
-      <p className="text-sm font-medium">Corner {index}</p>
-      <Field label="First LED after this corner" hint={`The segment before it ends on the LED just before. ${pinned ? 'Pinned.' : 'Estimated from the line length; type the real number to pin it.'}`}>
-        {(id) => <NumberInput id={id} value={led} onCommit={(n) => onPin(n)} />}
-      </Field>
-      {ignored ? <p className="text-xs text-red-600">The pinned number is not between the numbers of the points on each side, so it is not used.</p> : null}
-      <div className="flex flex-wrap gap-2">
-        {pinned || ignored ? (
-          <Button size="sm" onClick={() => onPin(null)}>
-            <PinOff /> Unpin
-          </Button>
-        ) : (
-          <Button size="sm" onClick={() => onPin(led)}>
-            <Pin /> Pin here
-          </Button>
-        )}
-        <Button size="sm" onClick={onSplit}>
-          <Scissors /> Split line here
-        </Button>
-      </div>
-    </div>
+    <>
+      <PropNumber label="LED after it" steppers value={led} onChange={(n) => onPin(Math.round(n))} hint="The first LED after this corner. The segment before it ends on the LED just before." />
+      <PropRow label="">
+        <div className="flex flex-wrap gap-1">
+          {pinned || ignored ? (
+            <PropButton onClick={() => onPin(null)}>
+              <PinOff /> Unpin
+            </PropButton>
+          ) : (
+            <PropButton onClick={() => onPin(led)}>
+              <Pin /> Pin here
+            </PropButton>
+          )}
+          <PropButton onClick={onSplit}>
+            <Scissors /> Split here
+          </PropButton>
+        </div>
+      </PropRow>
+      <PropNote>{pinned ? 'Pinned: this number stays when you edit other segments.' : 'Estimated from the line length. Type the real number to pin it.'}</PropNote>
+      {ignored ? <PropNote tone="red">The pinned number is not between the numbers of the points on each side, so it is not used.</PropNote> : null}
+    </>
   );
 }
 
 /** Device LED numbers at the points of the selected object, drawn on the map. */
-function LedLabels({ f, corner, segment, V, side }: { f: Fixture; corner: number | null; segment: number | null; V: (p: Point) => { u: number; v: number }; side: ViewSide }) {
+function LedLabels({ f, corner, segment, V, side, k }: { f: Fixture; corner: number | null; segment: number | null; V: (p: Point) => { u: number; v: number }; side: ViewSide; k: number }) {
   const label = (x: number, y: number, text: string, strong: boolean, key: string | number) => (
     <text
       key={key}
       x={x}
-      y={y - 18}
+      y={y - 14 * k}
       textAnchor="middle"
-      fontSize={22}
+      fontSize={14 * k}
       fontWeight={strong ? 700 : 500}
       fill={strong ? '#fbbf24' : '#fff'}
       stroke="#0c0a09"
-      strokeWidth={5}
+      strokeWidth={4 * k}
       paintOrder="stroke"
       pointerEvents="none"
       className="tabular-nums"
@@ -1742,22 +2337,8 @@ function StripMap({
   );
 }
 
-/** Edits one straight segment of a roof line: only it glows on the lights, with green and red ends. */
-function SegmentPanel({
-  f,
-  index,
-  onPoint,
-  onGo,
-  onToggle,
-  onClose
-}: {
-  f: Fixture;
-  index: number;
-  onPoint: (point: number, led: number) => void;
-  onGo: (k: number) => void;
-  onToggle: (on: boolean) => void;
-  onClose: () => void;
-}) {
+/** Edits one straight segment of a line: only it glows on the lights, with green and red ends. */
+function SegmentProps({ f, index, onPoint, onToggle, onClose }: { f: Fixture; index: number; onPoint: (point: number, led: number) => void; onToggle: (on: boolean) => void; onClose: () => void }) {
   const on = !f.skip?.includes(index);
   const count = f.points.length - 1;
   // Segments do not share LEDs: this one ends on the LED just before the next one starts.
@@ -1768,41 +2349,30 @@ function SegmentPanel({
   const dir = f.reversed ? -1 : 1;
   // Inner points cannot pass their neighbours; the line's own ends can move freely.
   const limit = (point: number, led: number) => clampPointLed(f, point, led);
-
   return (
-    <div className="space-y-3 rounded-xl bg-sky-50 p-3 ring-1 ring-sky-200 dark:bg-sky-400/10 dark:ring-sky-400/30">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-medium">
-          Segment {index + 1} of {count}
-        </p>
-        <div className="flex gap-1">
-          <Button size="sm" variant="ghost" onClick={() => onGo(index - 1)} disabled={index === 0} aria-label="Previous segment">
-            <ChevronLeft />
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => onGo(index + 1)} disabled={index >= count - 1} aria-label="Next segment">
-            <ChevronRight />
-          </Button>
+    <>
+      <PropRow label="Lit" hint="Turn off a stretch that only links two lit segments. Its LEDs stay dark, and games skip it.">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs">{on ? 'On' : 'Off (skipped)'}</span>
+          <Switch label="Segment on" checked={on} onChange={onToggle} />
         </div>
-      </div>
-      <label className="flex items-center justify-between gap-3 rounded-lg bg-white/70 px-3 py-2 dark:bg-stone-900/60">
-        <span>
-          <span className="block text-sm font-medium">{on ? 'Segment on' : 'Segment off (skipped)'}</span>
-          <span className="block text-xs text-stone-500">Turn off a stretch that only links two lit segments. Its LEDs stay dark, and games skip it.</span>
-        </span>
-        <Switch label="Segment on" checked={on} onChange={onToggle} />
-      </label>
-      <div className="grid grid-cols-2 gap-3">
-        <StepField label="Segment start" tone="green" value={start} onChange={(n) => onPoint(index, limit(index, n))} />
-        <StepField label="Segment end" tone="red" value={end} onChange={(n) => (isLast ? onPoint(index + 1, limit(index + 1, n)) : onPoint(index + 1, limit(index + 1, n + dir)))} />
-      </div>
-      <p className="text-xs text-stone-500">
-        {Math.abs(end - start) + 1} LEDs{on ? '' : ', off'}.{!isLast ? ` The next segment starts at LED ${end + dir}.` : ''} Only this segment glows on the lights
-        {on ? '' : ' (dimmer, because it is off)'}. Move its ends until the green and red LEDs sit at the real corners; the numbers you set here stay fixed when you edit other segments.
-      </p>
-      <Button size="sm" variant="ghost" onClick={onClose}>
-        Show the whole line
-      </Button>
-    </div>
+      </PropRow>
+      <PropNumber label="Start LED" tone="green" steppers value={start} onChange={(n) => onPoint(index, limit(index, Math.round(n)))} />
+      <PropNumber
+        label="End LED"
+        tone="red"
+        steppers
+        value={end}
+        onChange={(n) => (isLast ? onPoint(index + 1, limit(index + 1, Math.round(n))) : onPoint(index + 1, limit(index + 1, Math.round(n) + dir)))}
+      />
+      <PropNote>
+        {Math.abs(end - start) + 1} LEDs{on ? '' : ', off'}.{!isLast ? ` The next segment starts at LED ${end + dir}.` : ''} Only this segment glows on the lights. Move its ends until the green and
+        red LEDs sit at the real corners; these numbers stay fixed when you edit other segments.
+      </PropNote>
+      <PropRow label="">
+        <PropButton onClick={onClose}>Show the whole line</PropButton>
+      </PropRow>
+    </>
   );
 }
 
@@ -1810,14 +2380,174 @@ function SegmentPanel({
  * Green and red rings on the first and last LED of the selection. They pulse on the same clock
  * as the real lights (see editorPulse), so the drawing and the house blink together.
  */
-function EndMarkers({ a, b, V }: { a?: Point; b?: Point; V: (p: Point) => { u: number; v: number } }) {
+function EndMarkers({ a, b, V, k }: { a?: Point; b?: Point; V: (p: Point) => { u: number; v: number }; k: number }) {
   const delay = { animationDelay: `-${Date.now() % 1000}ms` };
   const ring = (p: Point | undefined, color: string, key: string) =>
-    p ? <circle key={key} cx={V(p).u} cy={V(p).v} r={20} fill="none" stroke={color} strokeWidth={8} className="led-pulse" style={delay} pointerEvents="none" /> : null;
+    p ? <circle key={key} cx={V(p).u} cy={V(p).v} r={16 * k} fill="none" stroke={color} strokeWidth={5 * k} className="led-pulse" style={delay} pointerEvents="none" /> : null;
   return (
     <>
       {ring(a, '#22c55e', 'a')}
       {ring(b, '#ef4444', 'b')}
     </>
+  );
+}
+
+const SNAP_LABELS: Record<Snapped['kind'], string> = { point: 'Point', center: 'Center', mid: 'Midpoint', on: 'On line', align: 'Aligned', angle: '', free: '' };
+
+/** Where the pointer snaps: a marker in the CAD style (square: point, triangle: midpoint, cross: on a line), dashed guides, and a label. */
+function SnapMarker({ s, k }: { s: Snapped & { label?: string }; k: number }) {
+  if (s.kind === 'free' && !s.label) return null;
+  const { u, v } = s.at;
+  const color = '#22d3ee';
+  const common = { fill: 'none', stroke: color, strokeWidth: 2 * k };
+  const d = 8 * k;
+  let label = s.label ?? SNAP_LABELS[s.kind];
+  if (!s.label && s.kind === 'angle' && s.guides[0]) {
+    const [a, b] = s.guides[0];
+    const deg = Math.round((Math.atan2(-(b.v - a.v), b.u - a.u) * 180) / Math.PI);
+    label = `${(deg + 360) % 180 === 0 ? 'Level' : Math.abs(deg) === 90 ? 'Upright' : '45°'}`;
+  }
+  return (
+    <g pointerEvents="none">
+      {s.guides.map(([a, b], i) => (
+        <line key={i} x1={a.u} y1={a.v} x2={b.u} y2={b.v} stroke={color} strokeOpacity={0.7} strokeWidth={1.25 * k} strokeDasharray={`${6 * k} ${6 * k}`} />
+      ))}
+      {s.kind === 'point' ? <rect x={u - d} y={v - d} width={2 * d} height={2 * d} {...common} /> : null}
+      {s.kind === 'center' ? <circle cx={u} cy={v} r={d} {...common} /> : null}
+      {s.kind === 'mid' ? <polygon points={`${u},${v - d * 1.1} ${u + d},${v + d * 0.75} ${u - d},${v + d * 0.75}`} {...common} /> : null}
+      {s.kind === 'on' ? <path d={`M${u - d},${v - d}L${u + d},${v + d}M${u + d},${v - d}L${u - d},${v + d}`} {...common} /> : null}
+      {s.kind === 'align' || s.kind === 'angle' ? <circle cx={u} cy={v} r={4 * k} fill={color} /> : null}
+      {label ? (
+        <text x={u + 12 * k} y={v - 12 * k} fontSize={13 * k} fontWeight={600} fill="#a5f3fc" stroke="#0c0a09" strokeWidth={3.5 * k} paintOrder="stroke">
+          {label}
+        </text>
+      ) : null}
+    </g>
+  );
+}
+
+/** The right-click menu: actions for the point, segment or object under the pointer. */
+function ContextMenu({ menu, onClose }: { menu: { x: number; y: number; title: string; items: MenuItem[] }; onClose: () => void }) {
+  // Keep it on screen.
+  const x = Math.min(menu.x, window.innerWidth - 260);
+  const y = Math.min(menu.y, window.innerHeight - 48 - menu.items.length * 36);
+  return (
+    <div
+      data-layout-menu
+      role="menu"
+      className="fixed z-50 w-60 rounded-xl bg-white p-1.5 text-sm shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-700"
+      style={{ left: x, top: y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <p className="truncate px-2.5 pt-1 pb-1.5 text-xs font-medium text-stone-500">{menu.title}</p>
+      {menu.items.map((it) => (
+        <button
+          key={it.label}
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onClose();
+            it.run();
+          }}
+          className={cn(
+            'flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800',
+            it.danger ? 'text-red-600 dark:text-red-400' : 'text-stone-800 dark:text-stone-200'
+          )}
+        >
+          <span>{it.label}</span>
+          {it.keys ? <kbd className="shrink-0 font-sans text-xs text-stone-400">{it.keys}</kbd> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The drawing area of a 2D viewport: reports its size, and passes wheel events (which must not scroll the page) to the camera. */
+function PaneBody({ onSize, onWheel, children }: { onSize: (w: number, h: number) => void; onWheel: (e: WheelEvent, rect: DOMRect) => void; children: ReactNode }) {
+  const el = useRef<HTMLDivElement>(null);
+  const sizeRef = useRef(onSize);
+  sizeRef.current = onSize;
+  const wheelRef = useRef(onWheel);
+  wheelRef.current = onWheel;
+  useEffect(() => {
+    const d = el.current;
+    if (!d) return;
+    const ro = new ResizeObserver(() => sizeRef.current(d.clientWidth, d.clientHeight));
+    ro.observe(d);
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      wheelRef.current(e, d.getBoundingClientRect());
+    };
+    d.addEventListener('wheel', wheel, { passive: false });
+    return () => {
+      ro.disconnect();
+      d.removeEventListener('wheel', wheel);
+    };
+  }, []);
+  return (
+    <div ref={el} className="relative min-h-0 flex-1 overflow-hidden">
+      {children}
+    </div>
+  );
+}
+
+/** Renames an object in the object list. Enter or a click elsewhere keeps the name; Esc cancels. */
+function RenameInput({ value, onDone }: { value: string; onDone: (name: string | null) => void }) {
+  const [text, setText] = useState(value);
+  const done = useRef(false);
+  const finish = (name: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(name);
+  };
+  return (
+    <input
+      autoFocus
+      value={text}
+      maxLength={60}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => setText(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={() => finish(text)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') finish(text);
+        if (e.key === 'Escape') finish(null);
+      }}
+      className="h-6 min-w-0 flex-1 rounded bg-white px-1.5 text-[13px] text-stone-900 ring-2 ring-sky-400 outline-none"
+    />
+  );
+}
+
+const SHORTCUTS: [string, string][] = [
+  ['V  A  C  H', 'Select, edit points, split, pan'],
+  ['R  L  B  T', 'Roofline, line, bush, tree'],
+  ['M', 'Measure'],
+  ['Wheel, pinch', 'Zoom at the pointer'],
+  ['Middle-drag, Space-drag', 'Pan'],
+  ['F', 'Zoom to the selection'],
+  ['Home', 'Zoom to fit'],
+  ['+  −', 'Zoom in, zoom out'],
+  ['Shift', '45° steps; move straight'],
+  ['Alt (Option)', 'Snapping the other way'],
+  ['Enter, Esc', 'Finish the line'],
+  ['Backspace', 'Remove the last point drawn'],
+  ['Delete', 'Delete the point or object'],
+  ['F2', 'Rename the object'],
+  ['Ctrl/⌘-click an end', 'Continue the line'],
+  ['Right-click', 'Actions'],
+  ['Ctrl/⌘+Z, Shift+Z', 'Undo, redo'],
+  ['Ctrl/⌘+S', 'Save']
+];
+
+function Shortcuts() {
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+      {SHORTCUTS.map(([keys, what]) => (
+        <div key={keys} className="contents">
+          <dt className="font-medium whitespace-nowrap text-stone-700 dark:text-stone-300">{keys}</dt>
+          <dd className="text-stone-500">{what}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }

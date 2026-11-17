@@ -422,6 +422,64 @@ export function clampPointLed(f: Fixture, index: number, led: number): number {
   return deviceLed(f, o);
 }
 
+/**
+ * Adds points to one end of a line, as when you continue drawing from that end. The new
+ * segments get LEDs at the same spacing as the line has now, and the LEDs already placed keep
+ * their device LED numbers: the point where the new part joins is pinned. The device numbers
+ * grow away from the old end. `shifted` is true when that would go below LED 0, so the numbers
+ * start at 0 instead.
+ */
+export function extendLine(f: Fixture, at: 'first' | 'last', added: Point[]): { patch: Pick<Fixture, 'points' | 'pixels' | 'startPixel' | 'pointLeds' | 'skip'>; shifted: boolean } {
+  const n = Math.max(1, Math.floor(f.pixels));
+  const oldLen = segLengths(f.points).reduce((a, b) => a + b, 0);
+  // LED steps per layout unit. A line with no length yet: one LED per 10 units.
+  const density = oldLen > 0 && n > 1 ? (n - 1) / oldLen : 0.1;
+  const join = at === 'last' ? f.points[f.points.length - 1] : f.points[0];
+  const chain = [join, ...added];
+  const steps = segLengths(chain).map((len) => Math.max(1, Math.round(len * density)));
+  const add = steps.reduce((a, b) => a + b, 0);
+  const offs = pointOffsets(f);
+  const oldPins = f.points.map((_, i) => (isPinned(f, i) ? offs[i] : null));
+  let points: Point[];
+  let pins: (number | null)[];
+  let skip = f.skip;
+  if (at === 'last') {
+    points = [...f.points, ...added];
+    pins = [...oldPins, ...added.map(() => null)];
+    pins[f.points.length - 1] = n - 1;
+  } else {
+    points = [...[...added].reverse(), ...f.points];
+    pins = [...added.map(() => null), ...oldPins.map((p) => (p == null ? null : p + add))];
+    pins[added.length] = add;
+    skip = f.skip?.map((k) => k + added.length);
+  }
+  const pixels = Math.min(MAX_FIXTURE_PIXELS, n + add);
+  // Keep the old LEDs' device numbers: the start moves down when the numbers grow toward it.
+  const growsDown = (at === 'last') === f.reversed;
+  let startPixel = growsDown ? f.startPixel - (pixels - n) : f.startPixel;
+  const shifted = startPixel < 0;
+  if (shifted) startPixel = 0;
+  const last = points.length - 1;
+  const pointLeds = pins.map((p, i) => (i === 0 || i === last || p == null ? null : p));
+  return { patch: { points, pixels, startPixel, pointLeds: pointLeds.some((p) => p != null) ? pointLeds : undefined, skip }, shifted };
+}
+
+/** The point on a line at a fraction t (0..1) of segment k, with depth. */
+export function pointOnSegment(f: Fixture, k: number, t: number): Point {
+  const a = f.points[k];
+  const b = f.points[k + 1] ?? a;
+  return { x: Math.round(a.x + (b.x - a.x) * t), y: Math.round(a.y + (b.y - a.y) * t), z: Math.round(pz(a) + (pz(b) - pz(a)) * t) };
+}
+
+/** Inserts a point inside segment k. Pins and skipped segments stay with their points. */
+export function insertPoint(f: Fixture, k: number, p: Point): Pick<Fixture, 'points' | 'pointLeds' | 'skip'> {
+  const points = [...f.points];
+  points.splice(k + 1, 0, p);
+  const pins = f.pointLeds ? [...f.pointLeds] : undefined;
+  pins?.splice(k + 1, 0, null);
+  return { points, pointLeds: pins, skip: skipAfterInsert(f.skip, k) };
+}
+
 export interface DeviceRun {
   fixtureId: string;
   /** Lowest and highest device LED numbers the object uses. */

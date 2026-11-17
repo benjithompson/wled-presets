@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import { buildStage, FEET_PER_METER, isLine, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
+import { buildStage, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
+import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
 
 /** Which side the yard is seen from. Front: the picture. Top: from above, the street at the bottom. */
@@ -19,7 +20,11 @@ export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: 
  * Draws the yard: the background picture (or a night sky), faint guides along each light
  * object, and every LED as a glowing bulb in the color of the current frame.
  * `getFrame` is called on every animation frame and returns RGB bytes, one triple per LED.
- * The top view shows a grid (1 m, or 5 ft) and the front wall of the house instead of the picture.
+ * The top view shows the front wall of the house instead of the picture. `grid` draws a grid
+ * (1 m, or 5 ft) from the left edge and from the ground (front) or the front wall (top).
+ *
+ * By default the view keeps the shape of the yard and shows all of it. With `fill`, it fills
+ * its parent, and `viewBox` (view units) sets what it shows: a CAD camera that pans and zooms.
  */
 export function YardView({
   layout,
@@ -29,7 +34,10 @@ export function YardView({
   highlight,
   maxHeight,
   side = 'front',
-  zRange = [-480, 480]
+  zRange = [-480, 480],
+  fill = false,
+  viewBox,
+  grid
 }: {
   layout: Layout;
   getFrame: (t: number) => Uint8Array | null;
@@ -42,6 +50,12 @@ export function YardView({
   side?: ViewSide;
   /** Top view only: the depths at the top and the bottom edge. */
   zRange?: [number, number];
+  /** Fill the parent (which must be positioned) instead of keeping the shape of the yard. */
+  fill?: boolean;
+  /** What the view shows, in view units. Default: the whole yard. */
+  viewBox?: Box;
+  /** Draw a grid. Default: in the top view only. */
+  grid?: boolean;
 }) {
   const [zMin, zMax] = zRange;
   const size = viewSize(layout, side, zRange);
@@ -50,6 +64,11 @@ export function YardView({
   getFrameRef.current = getFrame;
   const highlightRef = useRef(highlight);
   highlightRef.current = highlight;
+  // Read on every frame, so panning and zooming do not restart the drawing loop.
+  const boxRef = useRef<Box>({ x: 0, y: 0, w: size.w, h: size.h });
+  boxRef.current = viewBox ?? { x: 0, y: 0, w: size.w, h: size.h };
+  const gridRef = useRef(grid ?? side === 'top');
+  gridRef.current = grid ?? side === 'top';
 
   useEffect(() => {
     const cv = canvas.current;
@@ -68,6 +87,8 @@ export function YardView({
     const view = (p: Point) => toView(p, side, zMin);
     const scale = layoutScale(layout);
     const gridStep = layout.units === 'm' ? scale : (scale * 5) / FEET_PER_METER;
+    // Grid lines count from the left edge, and from the ground (front) or the front wall (top).
+    const gridV0 = top ? -zMin : layoutGround(layout);
     const bloom = document.createElement('canvas');
     const bctx = bloom.getContext('2d')!;
     let bg: HTMLImageElement | null = null;
@@ -95,9 +116,13 @@ export function YardView({
         bloom.width = bw;
         bloom.height = bh;
       }
-      const sx = w / size.w;
-      const sy = h / size.h;
-      const s = Math.min(sx, sy);
+      const vb = boxRef.current;
+      const sx = w / vb.w;
+      const sy = h / vb.h;
+      const X = (u: number) => (u - vb.x) * sx;
+      const Y = (v: number) => (v - vb.y) * sy;
+      // Bulbs and glow grow when you zoom in, up to a limit.
+      const s = Math.min(sx, sy, 3 * dpr);
 
       // Background: the photo, darkened so the lights read as night, or a night sky.
       ctx.globalCompositeOperation = 'source-over';
@@ -109,25 +134,44 @@ export function YardView({
       ctx.fillRect(0, 0, w, h);
       if (!top && bg?.complete && bg.naturalWidth) {
         ctx.globalAlpha = 0.42;
-        ctx.drawImage(bg, 0, 0, w, h);
+        ctx.drawImage(bg, X(0), Y(0), size.w * sx, size.h * sy);
         ctx.globalAlpha = 1;
       }
+      if (fill && !top) {
+        // The edge of the picture.
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.lineWidth = dpr;
+        ctx.strokeRect(X(0), Y(0), size.w * sx, size.h * sy);
+      }
       if (top) {
-        // Grid lines from the left edge and from the front wall of the house.
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-        ctx.beginPath();
-        for (let x = 0; x <= size.w; x += gridStep) (ctx.moveTo(x * sx, 0), ctx.lineTo(x * sx, h));
-        for (let z = Math.ceil(zMin / gridStep) * gridStep; z <= zMax; z += gridStep) (ctx.moveTo(0, (z - zMin) * sy), ctx.lineTo(w, (z - zMin) * sy));
-        ctx.stroke();
-        // The front wall of the house (depth 0), and the house behind it.
+        // The house behind the front wall (depth 0).
         ctx.fillStyle = 'rgba(255,255,255,0.025)';
-        ctx.fillRect(0, 0, w, -zMin * sy);
+        ctx.fillRect(0, 0, w, Math.max(0, Y(-zMin)));
+      }
+      if (gridRef.current) {
+        // Grid lines; every fifth line is brighter. Lines closer than 6 pixels are left out.
+        const u0 = vb.x;
+        const v0 = vb.y;
+        const lines = (major: boolean) => {
+          const step = gridStep * (major ? 5 : 1);
+          if (step * sx < 6 * dpr) return;
+          ctx.beginPath();
+          for (let u = Math.ceil(u0 / step) * step; u <= u0 + vb.w; u += step) (ctx.moveTo(X(u), 0), ctx.lineTo(X(u), h));
+          for (let v = gridV0 + Math.ceil((v0 - gridV0) / step) * step; v <= v0 + vb.h; v += step) (ctx.moveTo(0, Y(v)), ctx.lineTo(w, Y(v)));
+          ctx.stroke();
+        };
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = top ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.045)';
+        lines(false);
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        lines(true);
+      }
+      if (top) {
         ctx.strokeStyle = 'rgba(251,191,36,0.35)';
         ctx.lineWidth = 2 * dpr;
         ctx.beginPath();
-        ctx.moveTo(0, -zMin * sy);
-        ctx.lineTo(w, -zMin * sy);
+        ctx.moveTo(0, Y(-zMin));
+        ctx.lineTo(w, Y(-zMin));
         ctx.stroke();
       }
 
@@ -144,20 +188,20 @@ export function YardView({
         if (isLine(f)) {
           f.points.forEach((p, i) => {
             const q = view(p);
-            if (i) ctx.lineTo(q.u * sx, q.v * sy);
-            else ctx.moveTo(q.u * sx, q.v * sy);
+            if (i) ctx.lineTo(X(q.u), Y(q.v));
+            else ctx.moveTo(X(q.u), Y(q.v));
           });
         } else if (top) {
           // From above, bushes and trees are circles.
-          ctx.ellipse(c.u * sx, c.v * sy, r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
+          ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
         } else if (f.kind === 'tree') {
           const th = f.height ?? 240;
-          ctx.moveTo((c.u - r) * sx, c.v * sy);
-          ctx.lineTo(c.u * sx, (c.v - th) * sy);
-          ctx.lineTo((c.u + r) * sx, c.v * sy);
+          ctx.moveTo(X(c.u - r), Y(c.v));
+          ctx.lineTo(X(c.u), Y(c.v - th));
+          ctx.lineTo(X(c.u + r), Y(c.v));
           ctx.closePath();
         } else if (hl) {
-          ctx.ellipse(c.u * sx, c.v * sy, r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);
+          ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);
         }
         ctx.stroke();
       }
@@ -165,13 +209,16 @@ export function YardView({
       const frame = getFrameRef.current((performance.now() - t0) / 1000);
       const n = stage.pixelCount;
       const bulb = Math.max(1.2, 2.6 * s * dpr);
+      const onScreen = (x: number, y: number) => x > -40 && y > -40 && x < w + 40 && y < h + 40;
 
       // Unlit bulbs.
       ctx.fillStyle = 'rgba(255,255,255,0.10)';
       for (let i = 0; i < n; i++) {
         // LEDs in skipped segments are not drawn: they stay dark on the house too.
         if (!stage.active[i]) continue;
-        ctx.fillRect(pos[i * 2] * sx - bulb / 2, pos[i * 2 + 1] * sy - bulb / 2, bulb, bulb);
+        const x = X(pos[i * 2]);
+        const y = Y(pos[i * 2 + 1]);
+        if (onScreen(x, y)) ctx.fillRect(x - bulb / 2, y - bulb / 2, bulb, bulb);
       }
       if (!frame || frame.length < n * 3) return;
 
@@ -186,9 +233,12 @@ export function YardView({
           gg = frame[i * 3 + 1],
           b = frame[i * 3 + 2];
         if (r + gg + b < 12) continue;
+        const x = X(pos[i * 2]);
+        const y = Y(pos[i * 2 + 1]);
+        if (!onScreen(x, y)) continue;
         bctx.fillStyle = `rgb(${r},${gg},${b})`;
         const size = Math.max(1.5, 7 * s * dpr * bsx);
-        bctx.fillRect(pos[i * 2] * sx * bsx - size / 2, pos[i * 2 + 1] * sy * bsy - size / 2, size, size);
+        bctx.fillRect(x * bsx - size / 2, y * bsy - size / 2, size, size);
       }
       ctx.globalCompositeOperation = 'lighter';
       ctx.filter = `blur(${Math.max(2, 10 * s * dpr)}px)`;
@@ -206,8 +256,9 @@ export function YardView({
           b = frame[i * 3 + 2];
         const m = Math.max(r, gg, b);
         if (m < 6) continue;
-        const x = pos[i * 2] * sx;
-        const y = pos[i * 2 + 1] * sy;
+        const x = X(pos[i * 2]);
+        const y = Y(pos[i * 2 + 1]);
+        if (!onScreen(x, y)) continue;
         ctx.fillStyle = `rgb(${r},${gg},${b})`;
         ctx.beginPath();
         ctx.arc(x, y, bulb * 0.9, 0, Math.PI * 2);
@@ -223,8 +274,16 @@ export function YardView({
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [layout, side, zMin, zMax]);
+  }, [layout, side, zMin, zMax, fill]);
 
+  if (fill) {
+    return (
+      <div className={cn('absolute inset-0 overflow-hidden bg-[#05070f]', className)}>
+        <canvas ref={canvas} className="absolute inset-0 h-full w-full" />
+        {children}
+      </div>
+    );
+  }
   return (
     <div
       className={cn('relative mx-auto w-full overflow-hidden rounded-2xl bg-[#05070f] ring-1 ring-white/10', className)}
