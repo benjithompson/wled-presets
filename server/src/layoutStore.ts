@@ -7,22 +7,29 @@ import type { Db } from './db.ts';
 const KEY = 'layout';
 const BG_TYPE_KEY = 'layoutBackgroundType';
 
-const point = z.object({ x: z.number().finite(), y: z.number().finite() });
+const coord = z.number().finite().min(-20_000).max(20_000);
+const point = z.object({ x: coord, y: coord, z: coord.optional() });
 
 /** The shape only. `layoutSchema` adds the checks a saved layout must pass. */
 export const layoutShape = z.object({
   width: z.literal(LAYOUT_WIDTH),
   height: z.number().min(200).max(4000),
   background: z.string().max(200).nullable(),
+  scale: z.number().min(1).max(10_000).optional(),
+  units: z.enum(['ft', 'm']).optional(),
+  groundY: coord.optional(),
   fixtures: z
     .array(
       z.object({
         id: z.string().min(1).max(64),
         name: z.string().trim().min(1).max(60),
-        kind: z.enum(['roof', 'bush']),
+        kind: z.enum(['roof', 'line', 'bush', 'tree']),
         points: z.array(point).min(1).max(64),
-        radius: z.number().min(5).max(2000).optional(),
-        pattern: z.enum(['fill', 'ring', 'spiral']).optional(),
+        radius: z.number().min(5).max(4000).optional(),
+        height: z.number().min(5).max(8000).optional(),
+        pattern: z.enum(['fill', 'ring', 'spiral', 'strands']).optional(),
+        turns: z.number().min(0.5).max(100).optional(),
+        strands: z.number().int().min(1).max(64).optional(),
         pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
         deviceId: z.string().nullable(),
         startPixel: z.number().int().min(0).max(10_000),

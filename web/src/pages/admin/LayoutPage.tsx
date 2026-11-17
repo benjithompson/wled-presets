@@ -1,32 +1,40 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeftRight,
+  Box,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Circle,
+  House,
   ImagePlus,
   Lightbulb,
   LightbulbOff,
   MousePointer2,
-  Pencil,
   Pin,
   PinOff,
   RotateCcw,
+  Ruler,
   Save,
   Scissors,
+  Spline,
   Trash2,
+  TreePine,
   X
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   buildStage,
   deviceLed,
+  FEET_PER_METER,
   FIXTURE_HUES,
   hsvBytes,
   editorPulse,
   fixturePixels,
+  isLine,
+  layoutGround,
+  layoutScale,
   paintEditor,
   clampPointLed,
   segmentLeds,
@@ -41,22 +49,39 @@ import {
   MAX_FIXTURE_PIXELS,
   pointOffsets,
   type Fixture,
+  type FixtureKind,
   type Layout,
-  type Point
+  type Point,
+  type Units
 } from '../../../../shared/layout.ts';
 import { Badge, Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
-import { YardView } from '../../yard/YardView.tsx';
+import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { useOverview } from './AdminLayout.tsx';
 
-type Tool = 'select' | 'roof' | 'bush';
+// three.js is large: load the 3D view only when it is opened.
+const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
+
+type Tool = 'select' | 'roof' | 'line' | 'bush' | 'tree' | 'measure';
+/** A position in one view, in layout units: u to the right, v down. */
+type UV = { u: number; v: number };
 type Drag =
-  { kind: 'vertex'; id: string; index: number } | { kind: 'move'; id: string; from: Point; original: Point[] } | { kind: 'radius'; id: string } | { kind: 'newBush'; center: Point; radius: number };
+  | { kind: 'vertex'; side: ViewSide; id: string; index: number }
+  | { kind: 'move'; side: ViewSide; id: string; from: UV; original: Point[] }
+  | { kind: 'radius'; side: ViewSide; id: string }
+  | { kind: 'treeHeight'; id: string }
+  | { kind: 'ground' }
+  | { kind: 'newBush'; side: ViewSide; center: UV; radius: number }
+  | { kind: 'newTree'; side: ViewSide; base: UV; size: number };
+type ViewName = ViewSide | '3d';
 
 const LAYOUT_KEY = ['layout'];
 const HUES = FIXTURE_HUES;
 const SHOW_KEY = 'layout.showOnLights';
+const VIEWS_KEY = 'layout.views';
+const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
+const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree' };
 
 function readShowOnLights() {
   try {
@@ -66,25 +91,40 @@ function readShowOnLights() {
   }
 }
 
+function readViews(): ViewName[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEWS_KEY) ?? '') as ViewName[];
+    const ok = v.filter((x) => x in VIEW_LABELS);
+    if (ok.length) return ok;
+  } catch {}
+  return ['front', 'top'];
+}
+
 /**
- * A number field for LED numbers. A typed number applies 0.7 s after the last key, or at once
- * with Enter or when the field loses focus; Escape puts the old number back. The arrow keys
- * step the number by 1 (Shift: 10) and apply at once.
+ * A number field. A typed number applies 0.7 s after the last key, or at once with Enter or
+ * when the field loses focus; Escape puts the old number back. The arrow keys step the number
+ * by `step` (Shift: 10 steps) and apply at once. `decimal` allows a sign and a decimal point.
  */
 function NumberInput({
   id,
   value,
   min = 0,
   max = 100_000,
+  step = 1,
+  decimal = false,
   onCommit,
-  placeholder
+  placeholder,
+  className
 }: {
   id?: string;
   value: number | null;
   min?: number;
   max?: number;
+  step?: number;
+  decimal?: boolean;
   onCommit: (n: number) => void;
   placeholder?: string;
+  className?: string;
 }) {
   const [text, setText] = useState(value == null ? '' : String(value));
   /** True while you are typing a number that is not applied yet. */
@@ -97,19 +137,22 @@ function NumberInput({
   }, [value]);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
+  const parse = (t: string) => (t === '' || t === '-' || t === '.' || t === '-.' ? NaN : Number(t));
   const commit = (t = text) => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     typing.current = false;
-    if (t !== '' && clamp(Number(t)) !== value) onCommit(clamp(Number(t)));
+    const n = parse(t);
+    if (Number.isFinite(n) && clamp(n) !== value) onCommit(clamp(n));
     else setText(value == null ? '' : String(value));
   };
   return (
     <Input
       id={id}
-      inputMode="numeric"
+      inputMode={decimal ? 'decimal' : 'numeric'}
       value={text}
       placeholder={placeholder}
+      className={className}
       onBlur={() => commit()}
       onKeyDown={(e) => {
         if (e.key === 'Enter') commit();
@@ -120,18 +163,19 @@ function NumberInput({
         }
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           e.preventDefault();
-          const base = text === '' ? (value ?? 0) : Number(text);
-          commit(String(clamp(base + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1))));
+          const base = Number.isFinite(parse(text)) ? parse(text) : (value ?? 0);
+          const next = base + (e.key === 'ArrowUp' ? 1 : -1) * step * (e.shiftKey ? 10 : 1);
+          commit(String(clamp(Math.round(next * 1000) / 1000)));
         }
       }}
       onChange={(e) => {
         // A typed number applies when you stop typing for a moment, or press Enter. Half-typed
         // numbers (and an empty field) are never applied, so they cannot upset other segments.
-        const t = e.target.value.replace(/\D/g, '');
+        const t = decimal ? e.target.value.replace(/[^\d.-]/g, '') : e.target.value.replace(/\D/g, '');
         setText(t);
         typing.current = true;
         if (timer.current) clearTimeout(timer.current);
-        if (t !== '') timer.current = setTimeout(() => commit(t), 700);
+        if (Number.isFinite(parse(t))) timer.current = setTimeout(() => commit(t), 700);
       }}
     />
   );
@@ -165,6 +209,66 @@ function StepField({ label, value, min = 0, max = 100_000, onChange, tone }: { l
   );
 }
 
+/** Real distances in the editor: layout units shown in feet or meters. */
+interface Measure {
+  units: Units;
+  /** Layout units per shown unit (per foot or per meter). */
+  per: number;
+  /** Shown units, rounded for display. */
+  show: (layoutUnits: number) => number;
+  text: (layoutUnits: number) => string;
+}
+
+function measureOf(layout: Layout): Measure {
+  const units = layout.units ?? 'ft';
+  const per = units === 'm' ? layoutScale(layout) : layoutScale(layout) / FEET_PER_METER;
+  const dp = units === 'm' ? 100 : 10;
+  const show = (lu: number) => Math.round((lu / per) * dp) / dp;
+  return { units, per, show, text: (lu) => `${show(lu)} ${units}` };
+}
+
+/**
+ * A distance field in feet or meters, with − and + buttons (0.5 ft or 0.1 m; Shift-click: 10
+ * times that). `value` and `onChange` use layout units.
+ */
+function DistanceField({ label, value, m, onChange, min = -100_000 }: { label: string; value: number | null; m: Measure; onChange: (layoutUnits: number) => void; min?: number }) {
+  const step = m.units === 'm' ? 0.1 : 0.5;
+  const btn = 'h-7 flex-1 rounded-md bg-stone-100 text-sm font-semibold text-stone-700 transition hover:bg-stone-200 active:scale-95 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700';
+  const shown = value == null ? null : m.show(value);
+  const bump = (d: number, big: boolean) => shown != null && onChange((Math.round((shown + d * step * (big ? 10 : 1)) * 100) / 100) * m.per);
+  return (
+    <Field label={`${label} (${m.units})`}>
+      {(id) => (
+        <div className="space-y-1">
+          <NumberInput id={id} decimal value={shown} min={min} step={step} placeholder="varies" onCommit={(n) => onChange(n * m.per)} className="h-9 px-2 tabular-nums" />
+          <div className="flex gap-1">
+            <button
+              type="button"
+              className={btn}
+              disabled={shown == null}
+              onClick={(e) => bump(-1, e.shiftKey)}
+              aria-label={`${label} minus ${step} ${m.units}`}
+              title={`−${step} ${m.units} (Shift: −${step * 10})`}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              className={btn}
+              disabled={shown == null}
+              onClick={(e) => bump(1, e.shiftKey)}
+              aria-label={`${label} plus ${step} ${m.units}`}
+              title={`+${step} ${m.units} (Shift: +${step * 10})`}
+            >
+              +
+            </button>
+          </div>
+        </div>
+      )}
+    </Field>
+  );
+}
+
 const uid = () => (crypto.randomUUID?.() ?? String(Math.random())).slice(0, 8);
 
 export function LayoutPage() {
@@ -176,21 +280,35 @@ export function LayoutPage() {
   const { data: overview } = useOverview();
   const [layout, setLayout] = useState<Layout | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  /** Index of the selected corner of the selected roof line. */
+  /** Index of the selected point of the selected line (0 and the last point are its ends). */
   const [corner, setCorner] = useState<number | null>(null);
-  /** Index of the selected segment (between point k and point k + 1) of the selected roof line. */
+  /** Index of the selected segment (between point k and point k + 1) of the selected line. */
   const [segment, setSegment] = useState<number | null>(null);
   /** Set when a click selects an object and one of its segments at once. */
   const keepPart = useRef(false);
   const [tool, setTool] = useState<Tool>('select');
-  const [draft, setDraft] = useState<Point[]>([]);
-  const [cursor, setCursor] = useState<Point | null>(null);
+  /** The line being drawn, in the view it is drawn in. */
+  const [draft, setDraft] = useState<{ side: ViewSide; pts: UV[] }>({ side: 'front', pts: [] });
+  const [cursor, setCursor] = useState<(UV & { side: ViewSide }) | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
+  /** Measure tool: two points in one view. */
+  const [tape, setTape] = useState<{ side: ViewSide; a: UV; b?: UV } | null>(null);
   const [busy, setBusy] = useState(false);
-  const svg = useRef<SVGSVGElement>(null);
+  const [views, setViews] = useState<ViewName[]>(readViews);
+  const svgs = useRef<Partial<Record<ViewSide, SVGSVGElement | null>>>({});
   const fileInput = useRef<HTMLInputElement>(null);
   const pane = useRef<HTMLDivElement>(null);
   const propsCard = useRef<HTMLDivElement>(null);
+
+  const toggleView = (v: ViewName) =>
+    setViews((cur) => {
+      const next = cur.includes(v) ? cur.filter((x) => x !== v) : (['front', 'top', '3d'] as ViewName[]).filter((x) => x === v || cur.includes(x));
+      if (!next.length) return cur;
+      try {
+        localStorage.setItem(VIEWS_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
 
   // A new selection scrolls only the side panel (never the page) to show the object's panel.
   useEffect(() => {
@@ -211,6 +329,31 @@ export function LayoutPage() {
   const runs = useMemo(() => (layout ? deviceRuns(layout) : new Map()), [layout]);
   const overlapCount = [...runs.values()].reduce((n, r) => n + r.overlaps.length, 0);
 
+  // The depths the top view shows: at least 4 m behind and 5 m in front of the house front, and
+  // 1.5 m more than the objects. It stays the same while you drag, so the view does not jump.
+  const zRangeRef = useRef<[number, number]>([-480, 480]);
+  const dragging = drag != null;
+  const zRange = useMemo((): [number, number] => {
+    if (!layout || !stage || dragging) return zRangeRef.current;
+    const s = layoutScale(layout);
+    let lo = -4 * s;
+    let hi = 5 * s;
+    for (let i = 0; i < stage.pixelCount; i++) {
+      const z = stage.positions3[i * 3 + 2];
+      lo = Math.min(lo, z - 1.5 * s);
+      hi = Math.max(hi, z + 1.5 * s);
+    }
+    for (const f of layout.fixtures)
+      for (const p of f.points) {
+        const r = isLine(f) ? 0 : (f.radius ?? 60);
+        lo = Math.min(lo, (p.z ?? 0) - r - 1.5 * s);
+        hi = Math.max(hi, (p.z ?? 0) + r + 1.5 * s);
+      }
+    zRangeRef.current = [Math.floor(lo / s) * s, Math.ceil(hi / s) * s];
+    return zRangeRef.current;
+  }, [layout, stage, dragging]);
+  const zMin = zRange[0];
+
   useEffect(() => {
     if (keepPart.current) {
       keepPart.current = false;
@@ -220,7 +363,7 @@ export function LayoutPage() {
     setSegment(null);
   }, [selected]);
 
-  /** Selects one segment of a roof line (and the line itself). */
+  /** Selects one segment of a line (and the line itself). */
   const selectSegment = (id: string, k: number | null) => {
     if (id !== selected) keepPart.current = true;
     setSelected(id);
@@ -245,11 +388,13 @@ export function LayoutPage() {
           }
         : l
     );
+  const updateLayout = (patch: Partial<Layout>) => setLayout((l) => (l ? { ...l, ...patch } : l));
+
   /** Sets the device LED numbers at the first and the last point. */
   const setRange = (f: Fixture, first: number, last: number) => {
-    // One end changed on a roof line: move only that end; the corners keep their LED numbers.
+    // One end changed on a line: move only that end; the corners keep their LED numbers.
     const cur = ledRange(f);
-    if (f.kind === 'roof' && f.points.length > 2 && (first === cur.first) !== (last === cur.last)) {
+    if (isLine(f) && f.points.length > 2 && (first === cur.first) !== (last === cur.last)) {
       const lastPoint = f.points.length - 1;
       update(f.id, first !== cur.first ? setPointLed(f, 0, clampPointLed(f, 0, first), allPoints(f)) : setPointLed(f, lastPoint, clampPointLed(f, lastPoint, last), allPoints(f)));
       return;
@@ -273,7 +418,7 @@ export function LayoutPage() {
     update(f.id, { pointLeds: tidyPins(pins) });
   };
 
-  /** Cuts a roof line in two at a corner. The second part starts at the next LED; raise its first LED to leave a gap. */
+  /** Cuts a line in two at a corner. The second part starts at the next LED; raise its first LED to leave a gap. */
   const splitAt = (f: Fixture, k: number) => {
     const off = pointOffsets(f)[k];
     if (off < 1 || off >= f.pixels - 1) {
@@ -319,30 +464,41 @@ export function LayoutPage() {
     setTool('select');
   };
 
-  function finishRoof(points = draft) {
+  /** The first LED after every object on the device. */
+  const nextFree = (deviceId: string | null) => (deviceId ? Math.max(0, ...(layout?.fixtures ?? []).filter((f) => f.deviceId === deviceId).map((f) => f.startPixel + f.pixels)) : 0);
+
+  /** A point from a position in one view. The coordinate that the view does not show comes from `base`. */
+  const fromView = (side: ViewSide, p: UV, base: Point): Point => (side === 'front' ? { ...base, x: p.u, y: p.v } : { ...base, x: p.u, z: Math.round(p.v + zMin) });
+
+  function finishLine(kind: 'roof' | 'line', d = draft) {
     // A double-click adds the same point twice; drop near-duplicates.
-    const pts = points.filter((p, i) => i === 0 || Math.hypot(p.x - points[i - 1].x, p.y - points[i - 1].y) > 4);
-    setDraft([]);
-    if (pts.length < 2) {
+    const uv = d.pts.filter((p, i) => i === 0 || Math.hypot(p.u - d.pts[i - 1].u, p.v - d.pts[i - 1].v) > 4);
+    setDraft({ side: d.side, pts: [] });
+    if (!layout || uv.length < 2) {
       setTool('select');
       return;
     }
-    const roofs = layout?.fixtures.filter((f) => f.kind === 'roof') ?? [];
-    // A new roof part continues after the last roof part, on the same device.
-    const prev = roofs.at(-1);
+    const lines = layout.fixtures.filter((f) => f.kind === kind);
+    const roofs = layout.fixtures.filter((f) => f.kind === 'roof');
+    // Drawn from above: a line lies on the ground; a roofline at the height of the other rooflines.
+    const roofY = roofs.length ? roofs.flatMap((f) => f.points).reduce((a, p) => a + p.y, 0) / roofs.flatMap((f) => f.points).length : layout.height * 0.45;
+    const base: Point = d.side === 'front' ? { x: 0, y: 0, z: 0 } : { x: 0, y: Math.round(kind === 'roof' ? roofY : layoutGround(layout)), z: 0 };
+    // A new line continues after the last line on the same device.
+    const prev = layout.fixtures.filter(isLine).at(-1);
+    const deviceId = prev?.deviceId ?? null;
     addFixture({
       id: uid(),
-      name: roofs.length ? `Roofline ${roofs.length + 1}` : 'Roofline',
-      kind: 'roof',
-      points: pts,
-      pixels: roofs.length ? 100 : 450,
-      deviceId: prev?.deviceId ?? null,
-      startPixel: prev ? prev.startPixel + prev.pixels : 0,
+      name: lines.length ? `${KIND_LABELS[kind]} ${lines.length + 1}` : KIND_LABELS[kind],
+      kind,
+      points: uv.map((p) => fromView(d.side, p, base)),
+      pixels: kind === 'roof' && !roofs.length ? 450 : 100,
+      deviceId,
+      startPixel: nextFree(deviceId),
       reversed: false
     });
   }
 
-  // Keyboard: Enter finishes a roofline, Escape cancels, Delete removes the selected object.
+  // Keyboard: Enter finishes a line, Escape cancels, Delete removes the selected object.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest('input, select, textarea');
@@ -353,10 +509,11 @@ export function LayoutPage() {
           setCorner(null);
           return;
         }
-        setDraft([]);
+        setDraft((d) => ({ ...d, pts: [] }));
+        setTape(null);
         setTool('select');
         setDrag(null);
-      } else if (e.key === 'Enter' && tool === 'roof') finishRoof();
+      } else if (e.key === 'Enter' && (tool === 'roof' || tool === 'line')) finishLine(tool);
       else if ((e.key === 'Delete' || e.key === 'Backspace') && selected) remove(selected);
     };
     window.addEventListener('keydown', onKey);
@@ -436,7 +593,7 @@ export function LayoutPage() {
   };
 
   // Simulator: the same view as the real lights get (see paintEditor).
-  const getFrame = (t: number) => {
+  const getFrame = () => {
     if (!stage || !layout) return null;
     const out = new Uint8Array(stage.pixelCount * 3);
     // Same clock as the server, so the drawing pulses together with the real lights.
@@ -448,104 +605,129 @@ export function LayoutPage() {
     return out;
   };
 
-  function toPoint(e: { clientX: number; clientY: number }): Point {
-    const el = svg.current!;
-    const ctm = el.getScreenCTM();
-    if (!ctm) return { x: 0, y: 0 };
+  /** The pointer position in one view, in layout units. */
+  function viewPoint(e: { clientX: number; clientY: number }, side: ViewSide): UV {
+    const ctm = svgs.current[side]?.getScreenCTM();
+    if (!ctm) return { u: 0, v: 0 };
     const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
-    return { x: Math.round(p.x), y: Math.round(p.y) };
+    return { u: Math.round(p.x), v: Math.round(p.y) };
   }
 
-  function onPointerDown(e: RPointerEvent<SVGSVGElement>) {
-    const p = toPoint(e);
-    if (tool === 'roof') {
-      setDraft((d) => [...d, p]);
+  function onPointerDown(e: RPointerEvent<SVGSVGElement>, side: ViewSide) {
+    const p = viewPoint(e, side);
+    if (tool === 'roof' || tool === 'line') {
+      // A line is drawn in one view; a click in the other view starts again there.
+      setDraft((d) => ({ side, pts: d.side === side ? [...d.pts, p] : [p] }));
       return;
     }
-    if (tool === 'bush') {
-      svg.current?.setPointerCapture(e.pointerId);
-      setDrag({ kind: 'newBush', center: p, radius: 0 });
+    if (tool === 'bush' || tool === 'tree') {
+      svgs.current[side]?.setPointerCapture(e.pointerId);
+      setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : { kind: 'newTree', side, base: p, size: 0 });
+      return;
+    }
+    if (tool === 'measure') {
+      setTape((t) => (!t || t.b || t.side !== side ? { side, a: p } : { ...t, b: p }));
       return;
     }
     // Select tool: a press on empty space clears the selection.
-    if (e.target === svg.current) setSelected(null);
+    if (e.target === e.currentTarget) setSelected(null);
   }
 
-  function startDrag(e: RPointerEvent, d: Drag, id: string) {
+  function startDrag(e: RPointerEvent, d: Drag, id: string | null, side: ViewSide) {
     if (tool !== 'select') return;
     e.stopPropagation();
-    setSelected(id);
-    svg.current?.setPointerCapture(e.pointerId);
+    if (id) setSelected(id);
+    svgs.current[side]?.setPointerCapture(e.pointerId);
     setDrag(d);
   }
 
-  function onPointerMove(e: RPointerEvent<SVGSVGElement>) {
-    const p = toPoint(e);
-    setCursor(p);
+  function onPointerMove(e: RPointerEvent<SVGSVGElement>, side: ViewSide) {
+    const p = viewPoint(e, side);
+    setCursor({ ...p, side });
     if (!drag || !layout) return;
-    if (drag.kind === 'vertex') {
-      const f = layout.fixtures.find((x) => x.id === drag.id);
-      if (f)
-        update(drag.id, {
-          points: f.points.map((q, i) => (i === drag.index ? p : q))
-        });
+    const f = 'id' in drag ? layout.fixtures.find((x) => x.id === drag.id) : undefined;
+    if (drag.kind === 'vertex' && f) {
+      update(drag.id, { points: f.points.map((q, i) => (i === drag.index ? fromView(side, p, q) : q)) });
     } else if (drag.kind === 'move') {
-      const dx = p.x - drag.from.x;
-      const dy = p.y - drag.from.y;
+      const du = p.u - drag.from.u;
+      const dv = p.v - drag.from.v;
       update(drag.id, {
-        points: drag.original.map((q) => ({ x: q.x + dx, y: q.y + dy }))
+        points: drag.original.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : { ...q, x: q.x + du, z: (q.z ?? 0) + dv }))
       });
-    } else if (drag.kind === 'radius') {
-      const f = layout.fixtures.find((x) => x.id === drag.id);
-      if (f)
-        update(drag.id, {
-          radius: Math.max(15, Math.round(Math.abs(p.x - f.points[0].x)))
-        });
+    } else if (drag.kind === 'radius' && f) {
+      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - f.points[0].x))) });
+    } else if (drag.kind === 'treeHeight' && f) {
+      update(drag.id, { height: Math.max(20, Math.round(f.points[0].y - p.v)) });
+    } else if (drag.kind === 'ground') {
+      updateLayout({ groundY: Math.max(0, Math.min(layout.height, p.v)) });
     } else if (drag.kind === 'newBush') {
-      setDrag({
-        ...drag,
-        radius: Math.round(Math.hypot(p.x - drag.center.x, (p.y - drag.center.y) / 0.72))
-      });
+      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.center.u, (p.v - drag.center.v) / (side === 'front' ? 0.72 : 1))) });
+    } else if (drag.kind === 'newTree') {
+      setDrag({ ...drag, size: Math.round(side === 'front' ? Math.max(0, drag.base.v - p.v) : Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
     }
   }
 
   function onPointerUp() {
-    if (drag?.kind === 'newBush') {
-      const bushes = layout?.fixtures.filter((f) => f.kind === 'bush').length ?? 0;
-      addFixture({
-        id: uid(),
-        name: `Bush ${bushes + 1}`,
-        kind: 'bush',
-        points: [drag.center],
-        radius: Math.max(30, drag.radius || 70),
-        pattern: 'fill',
-        pixels: 60,
-        deviceId: null,
-        startPixel: 0,
-        reversed: false
-      });
+    if (layout && (drag?.kind === 'newBush' || drag?.kind === 'newTree')) {
+      const s = layoutScale(layout);
+      const ground = layoutGround(layout);
+      const count = layout.fixtures.filter((f) => f.kind === (drag.kind === 'newBush' ? 'bush' : 'tree')).length;
+      if (drag.kind === 'newBush') {
+        const r = Math.max(30, drag.radius || 70);
+        const c = drag.center;
+        // From the front: the bush touches the front wall. From above: it sits on the ground.
+        const center: Point = drag.side === 'front' ? { x: c.u, y: c.v, z: r } : { x: c.u, y: Math.round(ground - r * 0.72), z: Math.round(c.v + zMin) };
+        addFixture({ id: uid(), name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: 60, deviceId: null, startPixel: 0, reversed: false });
+      } else {
+        const b = drag.base;
+        // From the front you drag the height; from above, the radius of the base.
+        const height = drag.side === 'front' ? Math.max(40, drag.size || 2.5 * s) : Math.max(40, (drag.size || 0.6 * s) * 3);
+        const r = Math.round(drag.side === 'front' ? height * 0.33 : Math.max(15, drag.size || 0.6 * s));
+        const base: Point = drag.side === 'front' ? { x: b.u, y: b.v, z: Math.round(r + 0.5 * s) } : { x: b.u, y: Math.round(ground), z: Math.round(b.v + zMin) };
+        addFixture({
+          id: uid(),
+          name: `Tree ${count + 1}`,
+          kind: 'tree',
+          points: [base],
+          radius: r,
+          height: Math.round(height),
+          pattern: 'spiral',
+          turns: 8,
+          pixels: 200,
+          deviceId: null,
+          startPixel: 0,
+          reversed: false
+        });
+      }
     }
     setDrag(null);
   }
 
-  function insertVertex(f: Fixture, e: RMouseEvent) {
-    // Double-click on a roof line adds a corner on the nearest segment.
-    const p = toPoint(e);
+  function insertVertex(f: Fixture, e: RMouseEvent, side: ViewSide) {
+    // Double-click on a line adds a corner on the nearest segment. The coordinate that this
+    // view does not show is taken from the line, between the two points.
+    const p = viewPoint(e, side);
+    const V = (q: Point) => toView(q, side, zMin);
     let best = 0;
+    let bestT = 0;
     let bestD = Infinity;
     for (let i = 0; i < f.points.length - 1; i++) {
-      const a = f.points[i];
-      const b = f.points[i + 1];
-      const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
-      const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2));
-      const d = Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
+      const a = V(f.points[i]);
+      const b = V(f.points[i + 1]);
+      const l2 = (b.u - a.u) ** 2 + (b.v - a.v) ** 2 || 1;
+      const t = Math.max(0, Math.min(1, ((p.u - a.u) * (b.u - a.u) + (p.v - a.v) * (b.v - a.v)) / l2));
+      const d = Math.hypot(p.u - (a.u + t * (b.u - a.u)), p.v - (a.v + t * (b.v - a.v)));
       if (d < bestD) {
         bestD = d;
         best = i;
+        bestT = t;
       }
     }
+    const a = f.points[best];
+    const b = f.points[best + 1];
+    const mid: Point = { x: a.x + (b.x - a.x) * bestT, y: Math.round(a.y + (b.y - a.y) * bestT), z: Math.round((a.z ?? 0) + ((b.z ?? 0) - (a.z ?? 0)) * bestT) };
     const pts = [...f.points];
-    pts.splice(best + 1, 0, p);
+    pts.splice(best + 1, 0, fromView(side, p, mid));
     const pins = f.pointLeds ? [...f.pointLeds] : undefined;
     pins?.splice(best + 1, 0, null);
     update(f.id, {
@@ -619,13 +801,17 @@ export function LayoutPage() {
 
   const devices = overview?.devices ?? [];
   const totals = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
+  const m = measureOf(layout);
+  const ground = layoutGround(layout);
+  const has2d = views.includes('front') || views.includes('top');
 
-  const toolButton = (t: Tool, label: string, Icon: typeof Pencil) => (
+  const toolButton = (t: Tool, label: string, Icon: typeof House) => (
     <button
       type="button"
       onClick={() => {
         setTool(t);
-        setDraft([]);
+        setDraft((d) => ({ ...d, pts: [] }));
+        setTape(null);
       }}
       aria-pressed={tool === t}
       className={cn(
@@ -637,20 +823,285 @@ export function LayoutPage() {
     </button>
   );
 
-  const hint =
-    tool === 'roof'
-      ? draft.length
+  const hint = !has2d
+    ? 'Open the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
+    : tool === 'roof' || tool === 'line'
+      ? draft.pts.length
         ? 'Click to add each corner. Double-click, or press Enter, on the last point to finish.'
-        : 'Click where the first LED of the roofline is.'
+        : `Click where the first LED of the ${tool === 'roof' ? 'roofline' : 'line'} is. In the front view the line starts on the front wall; in the top view it starts ${tool === 'roof' ? 'at roof height' : 'on the ground'}.`
       : tool === 'bush'
         ? 'Press on the middle of a bush and drag out to its edge.'
-        : 'Click a straight segment of a roof line to light up only that segment. Drag points to move them. Double-click a roof line to add a corner; double-click a corner to remove it. Click a corner to pin it or split the line there.';
+        : tool === 'tree'
+          ? 'Front view: press at the base of the tree and drag up to its top. Top view: press at the middle and drag out to the edge of the base.'
+          : tool === 'measure'
+            ? 'Click two points in the front or the top view to measure the distance between them. Type the real distance to set the scale.'
+            : 'Click a straight segment of a line to light up only that segment. Drag points to move them: the front view moves them across and up, the top view across and toward the street. Double-click a line to add a corner; double-click a corner to remove it. Drag the dashed ground line to the bottom of the front wall.';
+
+  const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
+
+  /** One editable view: the drawing (YardView) and the handles over it. */
+  const renderView = (side: ViewSide) => {
+    const V = (p: Point) => toView(p, side, zMin);
+    const front = side === 'front';
+    const size = { w: layout.width, h: front ? layout.height : zRange[1] - zRange[0] };
+    const handle = (key: string | number, at: UV, className: string, onDown: (e: RPointerEvent<SVGCircleElement>) => void, onDouble?: (e: RMouseEvent) => void) => (
+      <circle key={key} cx={at.u} cy={at.v} r={9} className={cn('stroke-stone-950', className)} strokeWidth={3} onPointerDown={onDown} onDoubleClick={onDouble} />
+    );
+    return (
+      <div key={side} className="space-y-1">
+        <p className="flex items-baseline justify-between gap-2 text-xs font-medium tracking-wide text-stone-500 uppercase dark:text-stone-400">
+          <span>{front ? 'Front view: as seen from the street' : 'Top view: from above, the street at the bottom'}</span>
+          {!front ? <span className="normal-case">Grid: {m.units === 'm' ? '1 m' : '5 ft'}</span> : null}
+        </p>
+        <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null ? null : selected}>
+          <svg
+            ref={(el) => void (svgs.current[side] = el)}
+            viewBox={`0 0 ${size.w} ${size.h}`}
+            preserveAspectRatio="none"
+            className={cn('absolute inset-0 h-full w-full touch-none select-none', tool !== 'select' ? 'cursor-crosshair' : '')}
+            onPointerDown={(e) => onPointerDown(e, side)}
+            onPointerMove={(e) => onPointerMove(e, side)}
+            onPointerUp={onPointerUp}
+            onPointerLeave={() => setCursor(null)}
+            onDoubleClick={() => (tool === 'roof' || tool === 'line') && draft.side === side && finishLine(tool)}
+          >
+            {!front ? (
+              <>
+                <text x={12} y={-zMin - 10} fontSize={20} fill="rgba(251,191,36,0.7)" pointerEvents="none">
+                  Front wall of the house
+                </text>
+                <text x={12} y={size.h - 12} fontSize={20} fill="rgba(255,255,255,0.4)" pointerEvents="none">
+                  ↓ Street
+                </text>
+              </>
+            ) : null}
+
+            {/* The ground: drag it to the bottom of the front wall. Heights count from here. */}
+            {front ? (
+              <g>
+                <line x1={0} x2={size.w} y1={ground} y2={ground} stroke="rgba(52,211,153,0.6)" strokeWidth={2} strokeDasharray="12 10" pointerEvents="none" />
+                <g className={tool === 'select' ? 'cursor-ns-resize' : ''} onPointerDown={(e) => startDrag(e, { kind: 'ground' }, null, side)}>
+                  <rect x={8} y={ground - 36} width={92} height={30} rx={8} fill="rgba(6,78,59,0.85)" stroke="rgba(52,211,153,0.8)" strokeWidth={2} />
+                  <text x={54} y={ground - 14} textAnchor="middle" fontSize={18} fontWeight={600} fill="#a7f3d0" pointerEvents="none">
+                    Ground
+                  </text>
+                </g>
+              </g>
+            ) : null}
+
+            {layout.fixtures.map((f) => {
+              const isSel = selected === f.id;
+              if (isLine(f)) {
+                const pts = f.points.map(V);
+                return (
+                  <g key={f.id}>
+                    {/* The selected segment, drawn wide so it is easy to see. */}
+                    {isSel && segment != null && pts[segment + 1] ? (
+                      <line
+                        x1={pts[segment].u}
+                        y1={pts[segment].v}
+                        x2={pts[segment + 1].u}
+                        y2={pts[segment + 1].v}
+                        stroke="rgb(40,170,255)"
+                        strokeOpacity={0.45}
+                        strokeWidth={14}
+                        strokeLinecap="round"
+                        pointerEvents="none"
+                      />
+                    ) : null}
+                    {/* Skipped segments: a dashed line, so they show as "off". */}
+                    {f.skip?.map((k) =>
+                      pts[k + 1] ? (
+                        <line
+                          key={`skip${k}`}
+                          x1={pts[k].u}
+                          y1={pts[k].v}
+                          x2={pts[k + 1].u}
+                          y2={pts[k + 1].v}
+                          stroke="rgba(255,255,255,0.45)"
+                          strokeWidth={3}
+                          strokeDasharray="6 9"
+                          pointerEvents="none"
+                        />
+                      ) : null
+                    )}
+                    {/* One hit area per segment: a click selects that segment. */}
+                    {pts.slice(1).map((b, k) => {
+                      const a = pts[k];
+                      return (
+                        <line
+                          key={k}
+                          x1={a.u}
+                          y1={a.v}
+                          x2={b.u}
+                          y2={b.v}
+                          stroke="transparent"
+                          strokeWidth={26}
+                          strokeLinecap="round"
+                          className={tool === 'select' ? 'cursor-pointer' : ''}
+                          onPointerDown={(e) => {
+                            if (tool !== 'select') return;
+                            startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
+                            selectSegment(f.id, k);
+                          }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            if (tool === 'select') insertVertex(f, e, side);
+                          }}
+                        />
+                      );
+                    })}
+                    {isSel
+                      ? pts.map((p, i) =>
+                          handle(
+                            i,
+                            p,
+                            cn(
+                              'cursor-grab',
+                              i === (segment ?? 0) ? 'fill-green-500' : i === (segment != null ? segment + 1 : f.points.length - 1) ? 'fill-red-500' : 'fill-amber-400',
+                              corner === i && 'stroke-white'
+                            ),
+                            (e) => {
+                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i }, f.id, side);
+                              if (tool === 'select') {
+                                setCorner(i);
+                                setSegment(null);
+                              }
+                            },
+                            (e) => {
+                              e.stopPropagation();
+                              if (f.points.length > 2) {
+                                update(f.id, {
+                                  points: f.points.filter((_, j) => j !== i),
+                                  pointLeds: tidyPins(f.pointLeds?.filter((_, j) => j !== i)),
+                                  skip: i > 0 && i < f.points.length - 1 ? skipAfterRemove(f.skip, i) : undefined
+                                });
+                                setSegment(null);
+                                setCorner(null);
+                              }
+                            }
+                          )
+                        )
+                      : null}
+                    {isSel ? <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} /> : null}
+                    {isSel ? (
+                      segment != null && f.points[segment + 1] ? (
+                        <EndMarkers a={fixturePixels(f)[segmentLeds(f, segment).lo]} b={fixturePixels(f)[segmentLeds(f, segment).hi]} V={V} />
+                      ) : (
+                        <EndMarkers a={f.points[0]} b={f.points[f.points.length - 1]} V={V} />
+                      )
+                    ) : null}
+                  </g>
+                );
+              }
+              // Bush or tree.
+              const c = V(f.points[0]);
+              const r = f.radius ?? 60;
+              const h = f.height ?? 240;
+              const move = (e: RPointerEvent) => startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
+              const hitClass = tool === 'select' ? 'cursor-move' : '';
+              return (
+                <g key={f.id}>
+                  {f.kind === 'tree' && front ? (
+                    <polygon points={`${c.u - r},${c.v} ${c.u},${c.v - h} ${c.u + r},${c.v}`} fill="transparent" className={hitClass} onPointerDown={move} />
+                  ) : (
+                    <ellipse cx={c.u} cy={c.v} rx={r} ry={front ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} />
+                  )}
+                  {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} /> : null}
+                  {isSel ? <EndMarkers a={fixturePixels(f)[0]} b={fixturePixels(f).at(-1)} V={V} /> : null}
+                  {isSel ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
+                  {isSel && f.kind === 'tree' && front
+                    ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side))
+                    : null}
+                </g>
+              );
+            })}
+
+            {/* Line being drawn */}
+            {(tool === 'roof' || tool === 'line') && draft.side === side && draft.pts.length ? (
+              <>
+                <polyline
+                  points={[...draft.pts, ...(cursor?.side === side ? [cursor] : [])].map((p) => `${p.u},${p.v}`).join(' ')}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth={3}
+                  strokeDasharray="10 8"
+                  pointerEvents="none"
+                />
+                {draft.pts.map((p, i) => (
+                  <circle key={i} cx={p.u} cy={p.v} r={7} fill="#fbbf24" pointerEvents="none" />
+                ))}
+              </>
+            ) : null}
+
+            {/* Bush or tree being drawn */}
+            {drag?.kind === 'newBush' && drag.side === side ? (
+              <ellipse
+                cx={drag.center.u}
+                cy={drag.center.v}
+                rx={drag.radius}
+                ry={drag.radius * (front ? 0.72 : 1)}
+                fill="rgba(52,211,153,0.15)"
+                stroke="#34d399"
+                strokeWidth={3}
+                strokeDasharray="8 6"
+                pointerEvents="none"
+              />
+            ) : null}
+            {drag?.kind === 'newTree' && drag.side === side ? (
+              front ? (
+                <polygon
+                  points={`${drag.base.u - drag.size * 0.33},${drag.base.v} ${drag.base.u},${drag.base.v - drag.size} ${drag.base.u + drag.size * 0.33},${drag.base.v}`}
+                  fill="rgba(52,211,153,0.15)"
+                  stroke="#34d399"
+                  strokeWidth={3}
+                  strokeDasharray="8 6"
+                  pointerEvents="none"
+                />
+              ) : (
+                <circle cx={drag.base.u} cy={drag.base.v} r={drag.size} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={3} strokeDasharray="8 6" pointerEvents="none" />
+              )
+            ) : null}
+
+            {/* Measuring tape */}
+            {tool === 'measure' && tape?.side === side ? (
+              <g pointerEvents="none">
+                {(() => {
+                  const b = tape.b ?? (cursor?.side === side ? cursor : null);
+                  return b ? (
+                    <>
+                      <line x1={tape.a.u} y1={tape.a.v} x2={b.u} y2={b.v} stroke="#f0abfc" strokeWidth={3} />
+                      <text
+                        x={(tape.a.u + b.u) / 2}
+                        y={(tape.a.v + b.v) / 2 - 14}
+                        textAnchor="middle"
+                        fontSize={24}
+                        fontWeight={700}
+                        fill="#f5d0fe"
+                        stroke="#0c0a09"
+                        strokeWidth={5}
+                        paintOrder="stroke"
+                      >
+                        {m.text(Math.hypot(b.u - tape.a.u, b.v - tape.a.v))}
+                      </text>
+                    </>
+                  ) : null;
+                })()}
+                <circle cx={tape.a.u} cy={tape.a.v} r={7} fill="#f0abfc" />
+                {tape.b ? <circle cx={tape.b.u} cy={tape.b.v} r={7} fill="#f0abfc" /> : null}
+              </g>
+            ) : null}
+          </svg>
+        </YardView>
+      </div>
+    );
+  };
 
   return (
     <>
       <PageHeader
         title="Yard layout"
-        description="Draw where the lights are, and give each object its first and last LED number on the device. Games use this map. Select an object to edit it: it glows blue here and on the real lights, with its first LED green, its last LED red and its corners amber. Changes show on the lights as you make them."
+        description="Place every light object where it really is: the front view moves objects across and up, the top view across and toward the street, and the 3D view shows the whole yard. Give each object its first and last LED number on the device. Select an object to edit it: it glows blue here and on the real lights, with its first LED green, its last LED red and its corners amber."
         actions={
           <>
             {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
@@ -671,10 +1122,13 @@ export function LayoutPage() {
         <div className="space-y-3 lg:sticky lg:top-20 lg:self-start">
           <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-1.5 ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
             {toolButton('select', 'Select', MousePointer2)}
-            {toolButton('roof', 'Draw roofline', Pencil)}
-            {toolButton('bush', 'Add bush', Circle)}
-            {tool === 'roof' && draft.length >= 2 ? (
-              <Button size="sm" variant="primary" onClick={() => finishRoof()}>
+            {toolButton('roof', 'Roofline', House)}
+            {toolButton('line', 'Line', Spline)}
+            {toolButton('bush', 'Bush', Circle)}
+            {toolButton('tree', 'Tree', TreePine)}
+            {toolButton('measure', 'Measure', Ruler)}
+            {(tool === 'roof' || tool === 'line') && draft.pts.length >= 2 ? (
+              <Button size="sm" variant="primary" onClick={() => finishLine(tool)}>
                 Finish line
               </Button>
             ) : null}
@@ -709,200 +1163,69 @@ export function LayoutPage() {
             <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
           </div>
 
-          <YardView layout={layout} getFrame={getFrame} highlight={segment != null ? null : selected}>
-            <svg
-              ref={svg}
-              viewBox={`0 0 ${layout.width} ${layout.height}`}
-              preserveAspectRatio="none"
-              className={cn('absolute inset-0 h-full w-full touch-none select-none', tool !== 'select' ? 'cursor-crosshair' : '')}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerLeave={() => setCursor(null)}
-              onDoubleClick={() => tool === 'roof' && finishRoof(draft)}
-            >
-              {layout.fixtures.map((f) =>
-                f.kind === 'roof' ? (
-                  <g key={f.id}>
-                    {/* The selected segment, drawn wide so it is easy to see. */}
-                    {selected === f.id && segment != null && f.points[segment + 1] ? (
-                      <line
-                        x1={f.points[segment].x}
-                        y1={f.points[segment].y}
-                        x2={f.points[segment + 1].x}
-                        y2={f.points[segment + 1].y}
-                        stroke="rgb(40,170,255)"
-                        strokeOpacity={0.45}
-                        strokeWidth={14}
-                        strokeLinecap="round"
-                        pointerEvents="none"
-                      />
-                    ) : null}
-                    {/* Skipped segments: a dashed line, so they show as "off". */}
-                    {f.skip?.map((k) =>
-                      f.points[k + 1] ? (
-                        <line
-                          key={`skip${k}`}
-                          x1={f.points[k].x}
-                          y1={f.points[k].y}
-                          x2={f.points[k + 1].x}
-                          y2={f.points[k + 1].y}
-                          stroke="rgba(255,255,255,0.45)"
-                          strokeWidth={3}
-                          strokeDasharray="6 9"
-                          pointerEvents="none"
-                        />
-                      ) : null
-                    )}
-                    {/* One hit area per segment: a click selects that segment. */}
-                    {f.points.slice(1).map((b, k) => {
-                      const a = f.points[k];
-                      return (
-                        <line
-                          key={k}
-                          x1={a.x}
-                          y1={a.y}
-                          x2={b.x}
-                          y2={b.y}
-                          stroke="transparent"
-                          strokeWidth={26}
-                          strokeLinecap="round"
-                          className={tool === 'select' ? 'cursor-pointer' : ''}
-                          onPointerDown={(e) => {
-                            if (tool !== 'select') return;
-                            startDrag(
-                              e,
-                              {
-                                kind: 'move',
-                                id: f.id,
-                                from: toPoint(e),
-                                original: f.points
-                              },
-                              f.id
-                            );
-                            selectSegment(f.id, k);
-                          }}
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            if (tool === 'select') insertVertex(f, e);
-                          }}
-                        />
-                      );
-                    })}
-                    {selected === f.id
-                      ? f.points.map((p, i) => (
-                          <circle
-                            key={i}
-                            cx={p.x}
-                            cy={p.y}
-                            r={9}
-                            className={cn(
-                              'cursor-grab stroke-stone-950',
-                              i === (segment ?? 0) ? 'fill-green-500' : i === (segment != null ? segment + 1 : f.points.length - 1) ? 'fill-red-500' : 'fill-amber-400'
-                            )}
-                            strokeWidth={3}
-                            onPointerDown={(e) => {
-                              startDrag(e, { kind: 'vertex', id: f.id, index: i }, f.id);
-                              if (tool === 'select') {
-                                setCorner(i);
-                                setSegment(null);
-                              }
-                            }}
-                            onDoubleClick={(e) => {
-                              e.stopPropagation();
-                              if (f.points.length > 2) {
-                                update(f.id, {
-                                  points: f.points.filter((_, j) => j !== i),
-                                  pointLeds: tidyPins(f.pointLeds?.filter((_, j) => j !== i)),
-                                  skip: i > 0 && i < f.points.length - 1 ? skipAfterRemove(f.skip, i) : undefined
-                                });
-                                setSegment(null);
-                                setCorner(null);
-                              }
-                            }}
-                          />
-                        ))
-                      : null}
-                    {selected === f.id ? <LedLabels f={f} corner={corner} segment={segment} /> : null}
-                    {selected === f.id ? (
-                      segment != null && f.points[segment + 1] ? (
-                        <EndMarkers a={fixturePixels(f)[segmentLeds(f, segment).lo]} b={fixturePixels(f)[segmentLeds(f, segment).hi]} />
-                      ) : (
-                        <EndMarkers a={f.points[0]} b={f.points[f.points.length - 1]} />
-                      )
-                    ) : null}
-                  </g>
-                ) : (
-                  <g key={f.id}>
-                    <ellipse
-                      cx={f.points[0].x}
-                      cy={f.points[0].y}
-                      rx={f.radius ?? 60}
-                      ry={(f.radius ?? 60) * 0.72}
-                      fill="transparent"
-                      className={tool === 'select' ? 'cursor-move' : ''}
-                      onPointerDown={(e) =>
-                        startDrag(
-                          e,
-                          {
-                            kind: 'move',
-                            id: f.id,
-                            from: toPoint(e),
-                            original: f.points
-                          },
-                          f.id
-                        )
-                      }
-                    />
-                    {selected === f.id ? <LedLabels f={f} corner={null} segment={null} /> : null}
-                    {selected === f.id ? <EndMarkers a={fixturePixels(f)[0]} b={fixturePixels(f).at(-1)} /> : null}
-                    {selected === f.id ? (
-                      <circle
-                        cx={f.points[0].x + (f.radius ?? 60)}
-                        cy={f.points[0].y}
-                        r={9}
-                        className="cursor-ew-resize fill-amber-400 stroke-stone-950"
-                        strokeWidth={3}
-                        onPointerDown={(e) => startDrag(e, { kind: 'radius', id: f.id }, f.id)}
-                      />
-                    ) : null}
-                  </g>
-                )
-              )}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-stone-500">Views</span>
+            <div className="inline-flex rounded-lg bg-white p-1 ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
+              {(['front', 'top', '3d'] as ViewName[]).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={views.includes(v)}
+                  onClick={() => toggleView(v)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-sm font-medium transition',
+                    views.includes(v) ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800'
+                  )}
+                >
+                  {v === '3d' ? <Box className="size-3.5" /> : null}
+                  {VIEW_LABELS[v]}
+                </button>
+              ))}
+            </div>
+            {tool === 'measure' && tapeLength != null ? (
+              <MeasureBar
+                length={tapeLength}
+                m={m}
+                onScale={(meters) => {
+                  updateLayout({ scale: Math.round((tapeLength / meters) * 1000) / 1000 });
+                  setTape(null);
+                  toast.success(`Scale set: ${m.text(tapeLength)} is now ${meters * (m.units === 'm' ? 1 : FEET_PER_METER)} ${m.units}.`);
+                }}
+              />
+            ) : null}
+          </div>
 
-              {/* Roofline being drawn */}
-              {tool === 'roof' && draft.length ? (
-                <>
-                  <polyline
-                    points={[...draft, ...(cursor ? [cursor] : [])].map((p) => `${p.x},${p.y}`).join(' ')}
-                    fill="none"
-                    stroke="#fbbf24"
-                    strokeWidth={3}
-                    strokeDasharray="10 8"
-                    pointerEvents="none"
-                  />
-                  {draft.map((p, i) => (
-                    <circle key={i} cx={p.x} cy={p.y} r={7} fill="#fbbf24" pointerEvents="none" />
-                  ))}
-                </>
-              ) : null}
-
-              {/* Bush being drawn */}
-              {drag?.kind === 'newBush' ? (
-                <ellipse
-                  cx={drag.center.x}
-                  cy={drag.center.y}
-                  rx={drag.radius}
-                  ry={drag.radius * 0.72}
-                  fill="rgba(52,211,153,0.15)"
-                  stroke="#34d399"
-                  strokeWidth={3}
-                  strokeDasharray="8 6"
-                  pointerEvents="none"
+          {/* All views share one width, so x lines up between them, and together they fit on the screen. */}
+          <div
+            className="mx-auto space-y-3"
+            style={{
+              maxWidth: `max(32rem, calc((100dvh - ${16 + views.length * 1.5}rem) * ${
+                layout.width / ((views.includes('front') ? layout.height : 0) + (views.includes('top') ? zRange[1] - zRange[0] : 0) + (views.includes('3d') ? (layout.width * 9) / 16 : 0))
+              }))`
+            }}
+          >
+            {views.includes('front') ? renderView('front') : null}
+            {views.includes('top') ? renderView('top') : null}
+            {views.includes('3d') ? (
+              <Suspense
+                fallback={
+                  <div className="grid aspect-video place-items-center rounded-2xl bg-[#05070f]">
+                    <Spinner />
+                  </div>
+                }
+              >
+                <Scene3D
+                  layout={layout}
+                  getFrame={getFrame}
+                  selected={selected}
+                  onSelect={(id) => {
+                    setSelected(id);
+                    setTool('select');
+                  }}
                 />
-              ) : null}
-            </svg>
-          </YardView>
+              </Suspense>
+            ) : null}
+          </div>
           <p className="text-sm text-stone-500 dark:text-stone-400">{hint}</p>
         </div>
 
@@ -911,7 +1234,7 @@ export function LayoutPage() {
             <div ref={propsCard}>
               <Card>
                 <CardHeader
-                  title={sel.kind === 'roof' ? 'Roofline' : 'Bush'}
+                  title={KIND_LABELS[sel.kind]}
                   actions={
                     <Button size="sm" variant="ghost" onClick={() => remove(sel.id)} className="hover:text-red-600">
                       <Trash2 /> Delete
@@ -919,7 +1242,7 @@ export function LayoutPage() {
                   }
                 />
                 <div className="space-y-4 p-5">
-                  {sel.kind === 'roof' && segment != null && segment < sel.points.length - 1 ? (
+                  {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
                     <SegmentPanel
                       f={sel}
                       index={segment}
@@ -932,13 +1255,16 @@ export function LayoutPage() {
                       }
                       onClose={() => setSegment(null)}
                     />
-                  ) : sel.kind === 'roof' && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
+                  ) : isLine(sel) && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
                     <CornerPanel f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} />
-                  ) : sel.kind === 'roof' && sel.points.length > 2 ? (
+                  ) : isLine(sel) && sel.points.length > 2 ? (
                     <p className="text-xs text-stone-500">
                       Click one straight segment of the line to light up only that segment and set its first and last LED. Click a corner to pin it, or to split the line there and leave a gap.
                     </p>
                   ) : null}
+
+                  <PositionPanel f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
+
                   <button
                     type="button"
                     onClick={toggleSettings}
@@ -946,7 +1272,7 @@ export function LayoutPage() {
                     className="flex w-full items-center justify-between gap-2 rounded-lg py-1 text-left text-sm font-medium text-stone-700 hover:text-stone-950 dark:text-stone-300 dark:hover:text-white"
                   >
                     <span>
-                      {sel.kind === 'roof' ? 'Line settings' : 'Bush settings'}
+                      {isLine(sel) ? 'Line settings' : `${KIND_LABELS[sel.kind]} settings`}
                       {!settingsOpen ? (
                         <span className="ml-2 font-normal text-stone-500 tabular-nums">
                           {devices.find((d) => d.id === sel.deviceId)?.name ?? 'Simulation only'} · LEDs {ledRange(sel).first}–{ledRange(sel).last}
@@ -958,6 +1284,16 @@ export function LayoutPage() {
                   {settingsOpen ? (
                     <>
                       <Field label="Name">{(id) => <Input id={id} value={sel.name} maxLength={60} onChange={(e) => update(sel.id, { name: e.target.value })} />}</Field>
+                      {isLine(sel) ? (
+                        <Field label="Kind" hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations.">
+                          {(id) => (
+                            <Select id={id} value={sel.kind} onChange={(e) => update(sel.id, { kind: e.target.value as FixtureKind })}>
+                              <option value="roof">Roofline</option>
+                              <option value="line">Other line of lights</option>
+                            </Select>
+                          )}
+                        </Field>
+                      ) : null}
                       <Field label="WLED device" hint="The device that drives these LEDs. Games show on it in debug mode (Play → Debug).">
                         {(id) => (
                           <Select id={id} value={sel.deviceId ?? ''} onChange={(e) => update(sel.id, { deviceId: e.target.value || null })}>
@@ -975,21 +1311,39 @@ export function LayoutPage() {
                       {sel.kind === 'bush' ? (
                         <Field label="How the LEDs sit">
                           {(id) => (
-                            <Select
-                              id={id}
-                              value={sel.pattern ?? 'fill'}
-                              onChange={(e) =>
-                                update(sel.id, {
-                                  pattern: e.target.value as Fixture['pattern']
-                                })
-                              }
-                            >
+                            <Select id={id} value={sel.pattern ?? 'fill'} onChange={(e) => update(sel.id, { pattern: e.target.value as Fixture['pattern'] })}>
                               <option value="fill">Net over the whole bush</option>
                               <option value="ring">Ring around the edge</option>
                               <option value="spiral">Spiral from the middle</option>
                             </Select>
                           )}
                         </Field>
+                      ) : null}
+                      {sel.kind === 'tree' ? (
+                        <>
+                          <Field
+                            label="How the LEDs sit"
+                            hint={
+                              sel.pattern === 'strands'
+                                ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
+                                : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
+                            }
+                          >
+                            {(id) => (
+                              <Select id={id} value={sel.pattern === 'strands' ? 'strands' : 'spiral'} onChange={(e) => update(sel.id, { pattern: e.target.value as Fixture['pattern'] })}>
+                                <option value="spiral">Spiral around the tree</option>
+                                <option value="strands">Strands from base to top</option>
+                              </Select>
+                            )}
+                          </Field>
+                          {sel.pattern === 'strands' ? (
+                            <Field label="Strands">{(id) => <NumberInput id={id} value={sel.strands ?? 12} min={1} max={64} onCommit={(n) => update(sel.id, { strands: n })} />}</Field>
+                          ) : (
+                            <Field label="Turns from base to top">
+                              {(id) => <NumberInput id={id} decimal value={sel.turns ?? 8} min={0.5} max={100} step={0.5} onCommit={(n) => update(sel.id, { turns: n })} />}
+                            </Field>
+                          )}
+                        </>
                       ) : null}
                     </>
                   ) : null}
@@ -1034,6 +1388,8 @@ export function LayoutPage() {
             )}
           </Card>
 
+          <YardCard layout={layout} m={m} onChange={updateLayout} onMeasure={() => (setTool('measure'), setTape(null))} />
+
           {runs.size ? (
             <Card>
               <CardHeader title="LEDs per device" description="Which LEDs each object uses. Gaps are LEDs that stay off." />
@@ -1056,6 +1412,124 @@ export function LayoutPage() {
         </div>
       </div>
     </>
+  );
+}
+
+/** After two points are measured: type the real distance between them to set the scale. */
+function MeasureBar({ length, m, onScale }: { length: number; m: Measure; onScale: (meters: number) => void }) {
+  const [real, setReal] = useState('');
+  const n = Number(real);
+  const ok = real !== '' && Number.isFinite(n) && n > 0;
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2 rounded-lg bg-fuchsia-50 px-3 py-1.5 text-sm ring-1 ring-fuchsia-200 dark:bg-fuchsia-400/10 dark:ring-fuchsia-400/30"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (ok) onScale(m.units === 'm' ? n : n / FEET_PER_METER);
+      }}
+    >
+      <span>
+        Measured: <span className="font-semibold tabular-nums">{m.text(length)}</span>. Real distance:
+      </span>
+      <Input inputMode="decimal" value={real} onChange={(e) => setReal(e.target.value.replace(/[^\d.]/g, ''))} className="h-8 w-20 px-2" aria-label={`Real distance in ${m.units}`} />
+      <span>{m.units}</span>
+      <Button size="sm" type="submit" variant="primary" disabled={!ok}>
+        Set scale
+      </Button>
+    </form>
+  );
+}
+
+/** Units, scale and ground for the whole yard. */
+function YardCard({ layout, m, onChange, onMeasure }: { layout: Layout; m: Measure; onChange: (patch: Partial<Layout>) => void; onMeasure: () => void }) {
+  return (
+    <Card>
+      <CardHeader title="Yard size" description="Real distances make the top and 3D views true to life, and let animations move at real speeds." />
+      <div className="space-y-4 p-5">
+        <Field label="Units">
+          {(id) => (
+            <Select id={id} value={m.units} onChange={(e) => onChange({ units: e.target.value as Units })}>
+              <option value="ft">Feet</option>
+              <option value="m">Meters</option>
+            </Select>
+          )}
+        </Field>
+        <DistanceField
+          label="Width of the front view"
+          value={layout.width}
+          m={m}
+          min={0.1}
+          onChange={(lu) => onChange({ scale: Math.round(((layoutScale(layout) * layout.width) / lu) * 1000) / 1000 })}
+        />
+        <Button size="sm" onClick={onMeasure}>
+          <Ruler /> Measure to set the scale
+        </Button>
+        <p className="text-xs text-stone-500">
+          For the best scale, measure something you know in the front view, at the front wall: for example, a garage door. Then drag the dashed ground line in the front view to the bottom of the front
+          wall: heights count from there.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Where the selected point or object is, in feet or meters. X counts from the left edge of
+ * the front view, height from the ground line, depth from the front wall (toward the street).
+ */
+function PositionPanel({ f, point, m, ground, onChange }: { f: Fixture; point: number | null; m: Measure; ground: number; onChange: (patch: Partial<Fixture>) => void }) {
+  const setPoint = (i: number, patch: Partial<Point>) => onChange({ points: f.points.map((p, j) => (j === i ? { ...p, ...patch } : p)) });
+  const xyz = (i: number, labels: [string, string, string]) => {
+    const p = f.points[i];
+    return (
+      <div className="grid grid-cols-3 items-end gap-2">
+        <DistanceField label={labels[0]} value={p.x} m={m} onChange={(lu) => setPoint(i, { x: Math.round(lu) })} />
+        <DistanceField label={labels[1]} value={ground - p.y} m={m} onChange={(lu) => setPoint(i, { y: Math.round(ground - lu) })} />
+        <DistanceField label={labels[2]} value={p.z ?? 0} m={m} onChange={(lu) => setPoint(i, { z: Math.round(lu) })} />
+      </div>
+    );
+  };
+  const box = 'space-y-3 rounded-xl bg-stone-50 p-3 ring-1 ring-stone-200 dark:bg-stone-950 dark:ring-stone-800';
+  if (isLine(f)) {
+    if (point != null && f.points[point]) {
+      const z = f.points[point].z ?? 0;
+      return (
+        <div className={box}>
+          <p className="text-sm font-medium">Position of {point === 0 ? 'the first point' : point === f.points.length - 1 ? 'the last point' : `corner ${point}`}</p>
+          {xyz(point, ['Across', 'Height', 'Depth'])}
+          <Button size="sm" onClick={() => onChange({ points: f.points.map((p) => ({ ...p, z })) })} disabled={f.points.every((p) => (p.z ?? 0) === z)}>
+            Use this depth for every point
+          </Button>
+        </div>
+      );
+    }
+    const depths = f.points.map((p) => p.z ?? 0);
+    const same = depths.every((d) => d === depths[0]);
+    return (
+      <div className={box}>
+        <p className="text-sm font-medium">Position</p>
+        <div className="grid grid-cols-2 gap-2">
+          <DistanceField label="Depth of every point" value={same ? depths[0] : null} m={m} onChange={(lu) => onChange({ points: f.points.map((p) => ({ ...p, z: Math.round(lu) })) })} />
+        </div>
+        <p className="text-xs text-stone-500">
+          Depth 0 is the front wall; plus is toward the street. Click a point to place it exactly. A roofline along the side of the house runs back: give its far points a minus depth in the top view.
+        </p>
+      </div>
+    );
+  }
+  const r = f.radius ?? 60;
+  return (
+    <div className={box}>
+      <p className="text-sm font-medium">Position and size</p>
+      {xyz(0, f.kind === 'tree' ? ['Across', 'Base height', 'Depth'] : ['Across', 'Height', 'Depth'])}
+      <div className="grid grid-cols-3 items-end gap-2">
+        <DistanceField label="Width" value={r * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />
+        {f.kind === 'tree' ? <DistanceField label="Tree height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} /> : null}
+      </div>
+      <p className="text-xs text-stone-500">
+        {f.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'} Depth 0 is the front wall; plus is toward the street.
+      </p>
+    </div>
   );
 }
 
@@ -1090,7 +1564,7 @@ function LedRangeFields({ f, onRange }: { f: Fixture; onRange: (first: number, l
         </Button>
       </div>
       <p className="text-xs text-stone-500">
-        {f.kind === 'roof' ? 'The first LED sits at the first point you drew. ' : ''}
+        {isLine(f) ? 'The first LED sits at the first point you drew. ' : ''}
         {f.pixels === 1 ? 'One LED. ' : last >= first ? 'The numbers count up along the line. ' : 'The numbers count down along the line. '}
         On the lights, the selected object glows blue, its first LED is green and its last LED is red. Each change shows at once. Use the LED numbers from the WLED app; LEDs that no object uses stay
         off.
@@ -1129,7 +1603,7 @@ function CornerPanel({ f, index, onPin, onSplit }: { f: Fixture; index: number; 
 }
 
 /** Device LED numbers at the points of the selected object, drawn on the map. */
-function LedLabels({ f, corner, segment }: { f: Fixture; corner: number | null; segment: number | null }) {
+function LedLabels({ f, corner, segment, V, side }: { f: Fixture; corner: number | null; segment: number | null; V: (p: Point) => { u: number; v: number }; side: ViewSide }) {
   const label = (x: number, y: number, text: string, strong: boolean, key: string | number) => (
     <text
       key={key}
@@ -1148,13 +1622,27 @@ function LedLabels({ f, corner, segment }: { f: Fixture; corner: number | null; 
       {text}
     </text>
   );
-  if (f.kind === 'bush') {
-    const c = f.points[0];
+  if (!isLine(f)) {
+    const c = V(f.points[0]);
+    const r = f.radius ?? 60;
     const { first, last } = ledRange(f);
-    return label(c.x, c.y - (f.radius ?? 60) * 0.72, `LEDs ${first}–${last}`, true, 'b');
+    const above = side === 'top' ? r : f.kind === 'tree' ? (f.height ?? 240) : r * 0.72;
+    return label(c.u, c.v - above, `LEDs ${first}–${last}`, true, 'b');
   }
   const offs = pointOffsets(f);
-  return <>{f.points.map((p, i) => label(p.x, p.y, `${isPinned(f, i) ? '◆ ' : ''}${i > 0 && i < f.points.length - 1 ? `#${deviceLed(f, offs[i] - 1)} | ` : ''}#${deviceLed(f, offs[i])}`, segment != null ? i === segment || i === segment + 1 : i === corner || i === 0, i))}</>;
+  return (
+    <>
+      {f.points.map((p, i) =>
+        label(
+          V(p).u,
+          V(p).v,
+          `${isPinned(f, i) ? '◆ ' : ''}${i > 0 && i < f.points.length - 1 ? `#${deviceLed(f, offs[i] - 1)} | ` : ''}#${deviceLed(f, offs[i])}`,
+          segment != null ? i === segment || i === segment + 1 : i === corner || i === 0,
+          i
+        )
+      )}
+    </>
+  );
 }
 
 function StripMap({
@@ -1271,7 +1759,7 @@ function SegmentPanel({
   onClose: () => void;
 }) {
   const on = !f.skip?.includes(index);
-    const count = f.points.length - 1;
+  const count = f.points.length - 1;
   // Segments do not share LEDs: this one ends on the LED just before the next one starts.
   const leds = segmentLeds(f, index);
   const start = deviceLed(f, leds.lo);
@@ -1308,8 +1796,8 @@ function SegmentPanel({
         <StepField label="Segment end" tone="red" value={end} onChange={(n) => (isLast ? onPoint(index + 1, limit(index + 1, n)) : onPoint(index + 1, limit(index + 1, n + dir)))} />
       </div>
       <p className="text-xs text-stone-500">
-        {Math.abs(end - start) + 1} LEDs{on ? '' : ', off'}.{!isLast ? ` The next segment starts at LED ${end + dir}.` : ''} Only this segment glows on the lights{on ? '' : ' (dimmer, because it is off)'}. Move its ends until the green and red LEDs sit at the real
-        corners; the numbers you set here stay fixed when you edit other segments.
+        {Math.abs(end - start) + 1} LEDs{on ? '' : ', off'}.{!isLast ? ` The next segment starts at LED ${end + dir}.` : ''} Only this segment glows on the lights
+        {on ? '' : ' (dimmer, because it is off)'}. Move its ends until the green and red LEDs sit at the real corners; the numbers you set here stay fixed when you edit other segments.
       </p>
       <Button size="sm" variant="ghost" onClick={onClose}>
         Show the whole line
@@ -1322,10 +1810,10 @@ function SegmentPanel({
  * Green and red rings on the first and last LED of the selection. They pulse on the same clock
  * as the real lights (see editorPulse), so the drawing and the house blink together.
  */
-function EndMarkers({ a, b }: { a?: Point; b?: Point }) {
+function EndMarkers({ a, b, V }: { a?: Point; b?: Point; V: (p: Point) => { u: number; v: number } }) {
   const delay = { animationDelay: `-${Date.now() % 1000}ms` };
   const ring = (p: Point | undefined, color: string, key: string) =>
-    p ? <circle key={key} cx={p.x} cy={p.y} r={20} fill="none" stroke={color} strokeWidth={8} className="led-pulse" style={delay} pointerEvents="none" /> : null;
+    p ? <circle key={key} cx={V(p).u} cy={V(p).v} r={20} fill="none" stroke={color} strokeWidth={8} className="led-pulse" style={delay} pointerEvents="none" /> : null;
   return (
     <>
       {ring(a, '#22c55e', 'a')}
