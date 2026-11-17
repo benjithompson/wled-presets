@@ -47,10 +47,13 @@ export function AdminLayout() {
   }
   if (!signedIn) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />;
 
+  // The layout editor is a CAD workspace: on wide screens it fills the window below the header.
+  const workspace = /^\/admin\/layout\/?$/.test(location.pathname);
+
   return (
-    <div className="min-h-dvh">
-      <header className="sticky top-0 z-30 border-b border-stone-200/80 bg-stone-50/80 backdrop-blur-lg dark:border-stone-800/80 dark:bg-stone-950/80">
-        <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 sm:px-6">
+    <div className={cn('min-h-dvh', workspace && 'lg:flex lg:h-dvh lg:min-h-0 lg:flex-col')}>
+      <header className="sticky top-0 z-30 shrink-0 border-b border-stone-200/80 bg-stone-50/80 backdrop-blur-lg dark:border-stone-800/80 dark:bg-stone-950/80">
+        <div className={cn('mx-auto flex h-16 items-center gap-4 px-4 sm:px-6', !workspace && 'max-w-6xl')}>
           <NavLink to="/admin" className="flex items-center gap-2.5 font-semibold tracking-tight">
             <span className="grid size-8 place-items-center rounded-xl bg-stone-900 text-accent-400 dark:bg-accent-400 dark:text-stone-950">
               <Lightbulb className="size-[18px]" />
@@ -80,7 +83,7 @@ export function AdminLayout() {
           ))}
         </nav>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
+      <main className={workspace ? 'lg:min-h-0 lg:flex-1' : 'mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10'}>
         <Outlet />
       </main>
     </div>

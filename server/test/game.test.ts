@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { activeLeds, clampPointLed, segmentLeds, buildStage, cornerPixels, deviceLed, deviceRuns, fixturePixels, fromLedRange, paintEditor, pointOffsets, sampleLayout, setPointLed, skipAfterInsert, skipAfterRemove, type Fixture } from '../../shared/layout.ts';
+import {
+  activeLeds,
+  clampPointLed,
+  segmentLeds,
+  buildStage,
+  cornerPixels,
+  deviceLed,
+  deviceRuns,
+  fixturePixels,
+  fromLedRange,
+  paintEditor,
+  pointOffsets,
+  sampleLayout,
+  setPointLed,
+  skipAfterInsert,
+  skipAfterRemove,
+  type Fixture
+} from '../../shared/layout.ts';
 import { layoutSchema } from '../src/layoutStore.ts';
 import { catcherGame } from '../src/game/catcher.ts';
 import { Frame } from '../src/game/frame.ts';
@@ -25,7 +42,16 @@ describe('layout geometry', () => {
   });
   it('spreads LEDs by their real 3D length, so a run back along the side gets its share', () => {
     // From the front the side run (point 1 to 2) has no length; it is 400 units deep.
-    const f: Fixture = { ...sampleLayout().fixtures[0], points: [{ x: 0, y: 100 }, { x: 400, y: 100 }, { x: 400, y: 100, z: -400 }], pixels: 101, pointLeds: undefined };
+    const f: Fixture = {
+      ...sampleLayout().fixtures[0],
+      points: [
+        { x: 0, y: 100 },
+        { x: 400, y: 100 },
+        { x: 400, y: 100, z: -400 }
+      ],
+      pixels: 101,
+      pointLeds: undefined
+    };
     expect(pointOffsets(f)).toEqual([0, 50, 100]);
     const px = fixturePixels(f);
     expect(px[75]).toEqual({ x: 400, y: 100, z: -200 });
@@ -36,7 +62,20 @@ describe('layout geometry', () => {
       expect(p.z).toBeGreaterThanOrEqual(100);
       expect(p.z).toBeLessThanOrEqual(100 + 80 * 0.75 + 1e-9);
     }
-    const tree: Fixture = { id: 't', name: 'T', kind: 'tree', points: [{ x: 800, y: 900, z: 300 }], radius: 100, height: 400, pattern: 'spiral', turns: 6, pixels: 200, deviceId: null, startPixel: 0, reversed: false };
+    const tree: Fixture = {
+      id: 't',
+      name: 'T',
+      kind: 'tree',
+      points: [{ x: 800, y: 900, z: 300 }],
+      radius: 100,
+      height: 400,
+      pattern: 'spiral',
+      turns: 6,
+      pixels: 200,
+      deviceId: null,
+      startPixel: 0,
+      reversed: false
+    };
     const tp = fixturePixels(tree);
     expect(tp).toHaveLength(200);
     // LED 0 at the base, at the front; the last LED at the top, on the axis.
@@ -53,7 +92,29 @@ describe('layout geometry', () => {
   it('keeps 3D positions in the stage, and accepts layouts saved before depth existed', () => {
     const old = sampleLayout();
     expect(layoutSchema.safeParse(old).success).toBe(true);
-    const withDepth = { ...old, scale: 50, units: 'm' as const, groundY: 880, fixtures: [...old.fixtures, { id: 't', name: 'Tree', kind: 'tree' as const, points: [{ x: 1, y: 2, z: -3 }], radius: 40, height: 200, pattern: 'strands' as const, strands: 8, pixels: 80, deviceId: null, startPixel: 0, reversed: false }] };
+    const withDepth = {
+      ...old,
+      scale: 50,
+      units: 'm' as const,
+      groundY: 880,
+      fixtures: [
+        ...old.fixtures,
+        {
+          id: 't',
+          name: 'Tree',
+          kind: 'tree' as const,
+          points: [{ x: 1, y: 2, z: -3 }],
+          radius: 40,
+          height: 200,
+          pattern: 'strands' as const,
+          strands: 8,
+          pixels: 80,
+          deviceId: null,
+          startPixel: 0,
+          reversed: false
+        }
+      ]
+    };
     const parsed = layoutSchema.parse(withDepth);
     expect(parsed.fixtures.at(-1)).toMatchObject({ kind: 'tree', points: [{ z: -3 }], height: 200, strands: 8 });
     expect(parsed).toMatchObject({ scale: 50, units: 'm', groundY: 880 });
@@ -128,7 +189,11 @@ describe('LED numbers', () => {
     expect(after[4]).toBe(549);
     // Moving the first point changes the object's first LED; pinned corners keep their numbers.
     const h = { ...g, ...setPointLed(g, 0, 90) };
-    expect(pointOffsets(h).map((o) => deviceLed(h, o)).slice(0, 3)).toEqual([90, before[1], 340]);
+    expect(
+      pointOffsets(h)
+        .map((o) => deviceLed(h, o))
+        .slice(0, 3)
+    ).toEqual([90, before[1], 340]);
   });
 
   it('keeps points in order: a segment start cannot pass the segment before it', () => {
@@ -327,5 +392,75 @@ describe('game host', () => {
     expect(players()).toBe(0);
     host.stop();
     server.close();
+  });
+});
+
+describe('line editing', () => {
+  const base: Fixture = {
+    id: 'r',
+    name: 'R',
+    kind: 'roof',
+    points: [
+      { x: 0, y: 100 },
+      { x: 100, y: 100 }
+    ],
+    pixels: 11,
+    deviceId: 'd',
+    startPixel: 20,
+    reversed: false
+  };
+
+  it('continues a line from its last point at the same LED spacing, and keeps the old LED numbers', async () => {
+    const { extendLine } = await import('../../shared/layout.ts');
+    const { patch, shifted } = extendLine(base, 'last', [
+      { x: 100, y: 0 },
+      { x: 150, y: 0 }
+    ]);
+    expect(shifted).toBe(false);
+    expect(patch.points).toHaveLength(4);
+    // 10 units per LED step: 100 more units → 10 LEDs, then 50 → 5 LEDs.
+    expect(patch.pixels).toBe(26);
+    expect(patch.startPixel).toBe(20);
+    const f = { ...base, ...patch };
+    expect(pointOffsets(f)).toEqual([0, 10, 20, 25]);
+    expect(deviceLed(f, 10)).toBe(30);
+  });
+
+  it('continues a line from its first point; the start moves down so old LEDs keep their numbers', async () => {
+    const { extendLine } = await import('../../shared/layout.ts');
+    const { patch } = extendLine(base, 'first', [{ x: -50, y: 100 }]);
+    const f = { ...base, ...patch };
+    expect(f.points[0]).toEqual({ x: -50, y: 100 });
+    expect(f.pixels).toBe(16);
+    expect(f.startPixel).toBe(15);
+    // The old first point still has device LED 20.
+    expect(deviceLed(f, pointOffsets(f)[1])).toBe(20);
+    // Not enough room below LED 0: the numbers start at 0 instead.
+    expect(extendLine({ ...base, startPixel: 2 }, 'first', [{ x: -50, y: 100 }]).shifted).toBe(true);
+  });
+
+  it('snaps to points, midpoints and alignments, and keeps 45° steps with Shift', async () => {
+    const { snapPoint, constrainAngle } = await import('../../web/src/yard/snap.ts');
+    const targets = {
+      points: [
+        { u: 0, v: 0 },
+        { u: 100, v: 0 }
+      ],
+      segments: [
+        [
+          { u: 0, v: 0 },
+          { u: 100, v: 0 }
+        ]
+      ] as [{ u: number; v: number }, { u: number; v: number }][],
+      centers: []
+    };
+    expect(snapPoint({ u: 97, v: 4 }, targets, 8, {}).kind).toBe('point');
+    expect(snapPoint({ u: 52, v: 3 }, targets, 8, {})).toMatchObject({ kind: 'mid', at: { u: 50, v: 0 } });
+    expect(snapPoint({ u: 30, v: 5 }, targets, 8, {})).toMatchObject({ kind: 'on', at: { u: 30, v: 0 } });
+    expect(snapPoint({ u: 103, v: 60 }, targets, 8, {})).toMatchObject({ kind: 'align', at: { u: 100, v: 60 } });
+    expect(snapPoint({ u: 103, v: 60 }, targets, 8, { snap: false }).kind).toBe('free');
+    expect(constrainAngle({ u: 0, v: 0 }, { u: 100, v: 8 })).toEqual({ u: 100, v: 0 });
+    const diag = constrainAngle({ u: 0, v: 0 }, { u: 100, v: 90 });
+    expect(diag.u).toBeCloseTo(diag.v);
   });
 });

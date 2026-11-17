@@ -54,13 +54,16 @@ export function Scene3D({
   getFrame,
   selected,
   onSelect,
-  className
+  className,
+  fill = false
 }: {
   layout: Layout;
   getFrame: (t: number) => Uint8Array | null;
   selected: string | null;
   onSelect: (id: string | null) => void;
   className?: string;
+  /** Fill the parent (which must be positioned) instead of a 16:9 box. */
+  fill?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const ctx = useRef<Ctx | null>(null);
@@ -242,14 +245,14 @@ export function Scene3D({
 
   if (failed) {
     return (
-      <div className={cn('grid aspect-video place-items-center rounded-2xl bg-[#05070f] p-6 text-center text-sm text-white/60 ring-1 ring-white/10', className)}>
+      <div className={cn('grid place-items-center bg-[#05070f] p-6 text-center text-sm text-white/60', fill ? 'absolute inset-0' : 'aspect-video rounded-2xl ring-1 ring-white/10', className)}>
         This browser cannot show the 3D view (WebGL is off or not supported).
       </div>
     );
   }
 
   return (
-    <div className={cn('relative aspect-video max-h-[70dvh] w-full overflow-hidden rounded-2xl bg-[#05070f] ring-1 ring-white/10', className)}>
+    <div className={cn('overflow-hidden bg-[#05070f]', fill ? 'absolute inset-0' : 'relative aspect-video max-h-[70dvh] w-full rounded-2xl ring-1 ring-white/10', className)}>
       <div ref={host} className="absolute inset-0 touch-none" />
       <div className="absolute top-2 right-2 flex flex-wrap justify-end gap-1">
         {PRESETS.map((p) => (

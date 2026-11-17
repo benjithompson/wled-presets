@@ -82,7 +82,7 @@ export function PageHeader({ title, description, actions }: { title: string; des
   );
 }
 
-const inputBase =
+export const inputBase =
   'w-full rounded-xl bg-white px-3 text-sm ring-1 ring-inset ring-stone-200 placeholder:text-stone-400 transition focus:ring-2 focus:ring-accent-500 focus:outline-none dark:bg-stone-950 dark:ring-stone-800 dark:placeholder:text-stone-600 disabled:opacity-60';
 
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
