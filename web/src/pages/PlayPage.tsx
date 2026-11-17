@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bug, Heart, Loader2, Play, Radio, Square, Star, WifiOff, X } from 'lucide-react';
+import { ArrowLeft, Bomb, Bug, Droplets, Heart, Loader2, Radio, Rocket, Square, Star, Swords, Users, WifiOff, X, type LucideIcon } from 'lucide-react';
+import type { ButtonTone, GameStatus } from '../../../shared/layout.ts';
 import { api } from '../lib/api.ts';
 import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
@@ -20,33 +22,60 @@ export function PlayPage() {
     document.title = 'Play';
   }, []);
 
+  // The button is held for as long as the finger (or key) is down: some games pour while you hold.
+  const held = useRef(false);
   const press = useCallback(() => {
+    if (held.current) return;
+    held.current = true;
     send({ type: 'input', action: 'press' });
     navigator.vibrate?.(15);
     setPressed(true);
-    setTimeout(() => setPressed(false), 140);
+  }, [send]);
+  const release = useCallback(() => {
+    if (!held.current) return;
+    held.current = false;
+    send({ type: 'input', action: 'release' });
+    setPressed(false);
   }, [send]);
 
   // Space bar or Enter works as the big button on a computer.
   useEffect(() => {
     if (!playing) return;
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) {
-        e.preventDefault();
-        press();
-      }
+    const isKey = (e: KeyboardEvent) => e.code === 'Space' || e.code === 'Enter';
+    const down = (e: KeyboardEvent) => {
+      if (!isKey(e)) return;
+      e.preventDefault();
+      if (!e.repeat) press();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [playing, press]);
+    const up = (e: KeyboardEvent) => {
+      if (!isKey(e)) return;
+      e.preventDefault();
+      release();
+    };
+    // A finger that leaves the page (a notification, switching apps) lets go.
+    const blur = () => release();
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
+  }, [playing, press, release]);
 
   const phase = status?.phase ?? '';
-  const buttonLabel = phase === 'ready' || phase === 'over' || phase === 'won' ? 'GO!' : 'STOP!';
-  const buttonTone =
-    phase === 'miss' || phase === 'over' ? 'from-rose-500 to-red-600 shadow-red-500/40' : phase === 'hit' || phase === 'won' ? 'from-emerald-400 to-green-600 shadow-emerald-500/40' : 'from-amber-300 to-orange-500 shadow-orange-500/40';
+  const buttonLabel = status?.button ?? (phase === 'ready' || phase === 'over' || phase === 'won' ? 'GO!' : 'STOP!');
+  const tone: ButtonTone = status?.tone ?? (phase === 'miss' || phase === 'over' ? 'bad' : phase === 'hit' || phase === 'won' ? 'good' : 'go');
+  const you = status?.you ?? null;
+  // On your team's turn, the button is in your team's color.
+  const teamButton = you && tone === 'go';
 
   return (
-    <div className="dark min-h-dvh bg-[radial-gradient(ellipse_at_top,#1e1b4b_0%,#0c0a09_60%)] text-white">
+    <div
+      className="dark min-h-dvh bg-[radial-gradient(ellipse_at_top,var(--play-glow)_0%,#0c0a09_60%)] text-white transition-[background] duration-700"
+      style={{ '--play-glow': you ? `color-mix(in srgb, ${you.color} 35%, #0c0a09)` : '#1e1b4b' } as React.CSSProperties}
+    >
       <div className="mx-auto flex min-h-dvh max-w-4xl flex-col px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
         <header className="flex items-center justify-between py-2">
           <a href="/" className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white">
@@ -97,11 +126,19 @@ export function PlayPage() {
 
             {playing ? (
               <section className="flex flex-1 flex-col items-center justify-center gap-5 py-5">
+                {you ? (
+                  <p className="-mb-2 rounded-full px-4 py-1 text-sm font-bold tracking-widest uppercase" style={{ backgroundColor: `color-mix(in srgb, ${you.color} 25%, transparent)`, color: you.color }}>
+                    You're {you.name}
+                  </p>
+                ) : null}
+                {status?.scores?.length ? <Scores scores={status.scores} /> : null}
                 <p className="text-center text-2xl font-bold tracking-tight text-balance sm:text-3xl" aria-live="polite">
                   {status?.message}
                 </p>
-                <div className="flex items-center gap-6">
-                  {status?.goal ? (
+                <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+                  {status?.progress ? (
+                    <Progress {...status.progress} />
+                  ) : status?.goal ? (
                     <div className="flex flex-wrap justify-center gap-1" aria-label={`${status.score} of ${status.goal} caught`}>
                       {Array.from({ length: status.goal }, (_, i) => (
                         <Star key={i} className={cn('size-7 transition', i < status.score ? 'fill-amber-300 text-amber-300 drop-shadow-[0_0_8px_rgba(252,211,77,0.8)]' : 'text-white/20')} />
@@ -116,52 +153,136 @@ export function PlayPage() {
                     </div>
                   ) : null}
                 </div>
+                {status?.stats?.length ? (
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {status.stats.map((s) => (
+                      <span key={s.label} className="rounded-full bg-white/10 px-3 py-1 text-sm text-white/70">
+                        {s.label} <span className="font-semibold text-white tabular-nums">{s.value}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   onPointerDown={(e) => {
                     e.preventDefault();
+                    // Keep getting this finger's events even if it slides off the button.
+                    e.currentTarget.setPointerCapture?.(e.pointerId);
                     press();
                   }}
+                  onPointerUp={release}
+                  onPointerCancel={release}
+                  onLostPointerCapture={release}
+                  onContextMenu={(e) => e.preventDefault()}
                   onKeyDown={(e) => e.key === ' ' && e.preventDefault()}
                   disabled={phase === 'setup'}
+                  style={teamButton ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${you.color} 70%, white), ${you.color})`, boxShadow: `0 25px 50px -12px ${you.color}` } : undefined}
                   className={cn(
-                    'grid size-40 touch-manipulation place-items-center rounded-full bg-gradient-to-b text-4xl font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none sm:size-52',
-                    buttonTone,
+                    'grid size-40 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none] sm:size-52',
+                    buttonLabel.length > 6 ? 'text-2xl sm:text-3xl' : 'text-4xl',
+                    TONES[tone],
                     pressed ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
                     'disabled:opacity-40'
                   )}
                 >
                   {buttonLabel}
                 </button>
-                <p className="hidden text-sm text-white/40 sm:block">or press the space bar</p>
+                <p className="hidden text-sm text-white/40 sm:block">or press the space bar{status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}</p>
               </section>
             ) : (
               <section className="flex-1 py-6">
                 <h1 className="mb-1 text-2xl font-bold tracking-tight">Pick a game</h1>
                 <p className="mb-5 text-white/60">The lights on the house become the game.</p>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {games.map((g) => (
-                    <button
-                      key={g.id}
-                      type="button"
-                      onClick={() => send({ type: 'start', game: g.id })}
-                      className="group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]"
-                    >
-                      <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-b from-amber-300 to-orange-500 text-stone-950 shadow-lg shadow-orange-500/30">
-                        <Play className="size-6 fill-current" />
-                      </span>
-                      <span>
-                        <span className="block text-lg font-semibold">{g.name}</span>
-                        <span className="mt-0.5 block text-sm text-white/60">{g.description}</span>
-                      </span>
-                    </button>
-                  ))}
+                  {games.map((g) => {
+                    const look = GAME_LOOKS[g.id] ?? GAME_LOOKS.catcher;
+                    const Icon = look.icon;
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => send({ type: 'start', game: g.id })}
+                        className="group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]"
+                      >
+                        <span className={cn('grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white shadow-lg', look.className)}>
+                          <Icon className="size-6" />
+                        </span>
+                        <span>
+                          <span className="block text-lg font-semibold">{g.name}</span>
+                          <span className="mt-0.5 block text-sm text-white/60">{g.description}</span>
+                          {g.players ? (
+                            <span className="mt-2 inline-flex items-center gap-1 text-xs text-white/45">
+                              <Users className="size-3.5" /> {g.players}
+                            </span>
+                          ) : null}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
             )}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+const TONES: Record<ButtonTone, string> = {
+  go: 'from-amber-300 to-orange-500 shadow-orange-500/40',
+  good: 'from-emerald-400 to-green-600 shadow-emerald-500/40',
+  bad: 'from-rose-500 to-red-600 shadow-red-500/40',
+  calm: 'from-sky-400 to-indigo-600 shadow-sky-500/40',
+  wait: 'from-slate-500 to-slate-700 shadow-black/40'
+};
+
+/** Each game's icon and colors in the game picker. */
+const GAME_LOOKS: Record<string, { icon: LucideIcon; className: string }> = {
+  catcher: { icon: Rocket, className: 'from-amber-300 to-orange-500 shadow-orange-500/30' },
+  cascade: { icon: Bomb, className: 'from-fuchsia-500 via-violet-500 to-cyan-400 shadow-fuchsia-500/30' },
+  overflow: { icon: Droplets, className: 'from-sky-400 via-emerald-400 to-amber-300 shadow-sky-500/30' },
+  duel: { icon: Swords, className: 'from-orange-500 to-sky-500 shadow-orange-500/30' }
+};
+
+/** Stars for a short goal, a bar for a long one. */
+function Progress({ value, max }: { value: number; max: number }) {
+  if (max <= 10) {
+    return (
+      <div className="flex flex-wrap justify-center gap-1" aria-label={`${value} of ${max}`}>
+        {Array.from({ length: max }, (_, i) => (
+          <Star key={i} className={cn('size-7 transition', i < value ? 'fill-amber-300 text-amber-300 drop-shadow-[0_0_8px_rgba(252,211,77,0.8)]' : 'text-white/20')} />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="flex w-64 max-w-full items-center gap-3" aria-label={`${value} of ${max}`}>
+      <div className="h-3 flex-1 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-gradient-to-r from-amber-300 to-yellow-200 shadow-[0_0_12px_rgba(252,211,77,0.8)] transition-[width] duration-300" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
+      </div>
+      <span className="text-sm font-semibold tabular-nums">
+        {value}/{max}
+      </span>
+    </div>
+  );
+}
+
+/** Two big team scores, each in its team's color. */
+function Scores({ scores }: { scores: NonNullable<GameStatus['scores']> }) {
+  return (
+    <div className="flex items-center gap-5">
+      {scores.map((s, i) => (
+        <div key={s.name} className="flex items-center gap-5">
+          {i > 0 ? <span className="text-2xl text-white/30">–</span> : null}
+          <div className="text-center">
+            <div className="text-5xl font-black tabular-nums" style={{ color: s.color, textShadow: `0 0 24px ${s.color}` }}>
+              {s.value}
+            </div>
+            <div className="text-xs tracking-widest text-white/60 uppercase">{s.name}</div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
