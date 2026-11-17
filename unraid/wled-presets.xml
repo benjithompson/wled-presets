@@ -1,18 +1,18 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>wled-presets</Name>
-  <Repository>benjitimate/wled-presets:latest</Repository>
-  <Registry>https://hub.docker.com/r/benjitimate/wled-presets</Registry>
+  <Repository>ghcr.io/benjithompson/wled-presets:latest</Repository>
+  <Registry>https://github.com/benjithompson/wled-presets/pkgs/container/wled-presets</Registry>
   <Network>host</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support/>
-  <Project/>
-  <Overview>WLED Presets - a mobile-friendly page where anyone can pick a scene or a color for all your WLED lights at once, plus an admin console for devices, scenes, auto-revert, and activity.</Overview>
+  <Support>https://github.com/benjithompson/wled-presets/issues</Support>
+  <Project>https://github.com/benjithompson/wled-presets</Project>
+  <Overview>WLED Presets - a mobile-friendly page where anyone can pick a scene or a color for all your WLED lights at once, plus an admin console for devices, scenes, a 3D yard layout, light effects, a sequence editor with music, auto-revert, and activity.</Overview>
   <Category>HomeAutomation:</Category>
   <WebUI>http://[IP]:[PORT:8790]/</WebUI>
-  <TemplateURL/>
+  <TemplateURL>https://raw.githubusercontent.com/benjithompson/wled-presets/main/unraid/wled-presets.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/Aircoookie/WLED/main/images/wled_logo_akemi.png</Icon>
   <ExtraParams/>
   <PostArgs/>

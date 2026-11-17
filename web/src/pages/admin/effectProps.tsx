@@ -5,11 +5,19 @@ import { Copy, Plus, X } from 'lucide-react';
 import { defaultSettings, DIRECTIONS, effectDirection, EFFECTS, effectInfo, paletteColors, PALETTES, type Direction, type EffectId, type EffectSettings, type PaletteId } from '../../../../shared/effects.ts';
 import { PropButton, PropNote, PropRow, PropSelect, PropSlider } from './props.tsx';
 
-/** The effect menu: effects along a string, and effects in space. */
+/** The effect menu: the basics, effects along a string, and effects in space. */
 export const EFFECT_GROUPS: { label: string; options: [EffectId, string][] }[] = [
-  { label: 'Along the string (1-D)', options: EFFECTS.filter((e) => e.space === '1d').map((e) => [e.id, e.name]) },
+  { label: 'Basics', options: EFFECTS.filter((e) => e.basic).map((e) => [e.id, e.name]) },
+  { label: 'Along the string (1-D)', options: EFFECTS.filter((e) => e.space === '1d' && !e.basic).map((e) => [e.id, e.name]) },
   { label: 'In space (3-D)', options: EFFECTS.filter((e) => e.space === '3d').map((e) => [e.id, e.name]) }
 ];
+
+/** True when the effect plays colors you picked, not the ones it starts with. */
+function ownColors(s: EffectSettings): boolean {
+  if (s.palette !== 'custom') return false;
+  const start = effectInfo(s.effect).colors;
+  return !start || start.join() !== (s.colors ?? []).join();
+}
 
 /** A strip that shows a palette's colors as they blend. */
 export function PaletteSwatch({ colors, className }: { colors: string[]; className?: string }) {
@@ -53,9 +61,9 @@ export function EffectProps({
         groups={EFFECT_GROUPS}
         onChange={(id) => {
           if (!id) return onChange(undefined);
-          // A new effect starts with its own palette, unless you chose your own colors.
+          // A new effect starts with its own colors, unless you picked yours.
           const next = defaultSettings(id);
-          onChange(effect ? { ...next, palette: effect.palette === 'custom' ? 'custom' : next.palette, colors: effect.colors, brightness: effect.brightness } : next);
+          onChange(effect ? { ...next, ...(ownColors(effect) ? { palette: 'custom', colors: effect.colors } : {}), brightness: effect.brightness } : next);
         }}
       />
       {effect && info ? (
@@ -71,9 +79,9 @@ export function EffectProps({
             <PaletteSwatch colors={colors} className="block h-2.5 w-full rounded-full ring-1 ring-black/10 dark:ring-white/10" />
           </PropRow>
           {effect.palette === 'custom' ? <CustomColors colors={colors} onChange={(c) => set({ colors: c })} /> : null}
-          <PropSlider label="Speed" value={effect.speed} onChange={(speed) => set({ speed })} hint="50 is the effect's normal pace" />
-          <PropSlider label={info.intensity} value={effect.intensity} onChange={(intensity) => set({ intensity })} />
-          <PropSlider label={info.size} value={effect.size} onChange={(size) => set({ size })} />
+          {info.speed !== false ? <PropSlider label="Speed" value={effect.speed} onChange={(speed) => set({ speed })} hint="50 is the effect's normal pace" /> : null}
+          {info.intensity ? <PropSlider label={info.intensity} value={effect.intensity} onChange={(intensity) => set({ intensity })} /> : null}
+          {info.size ? <PropSlider label={info.size} value={effect.size} onChange={(size) => set({ size })} /> : null}
           <PropSlider label="Brightness" value={effect.brightness} onChange={(brightness) => set({ brightness })} />
           {info.directions ? (
             <PropSelect<Direction>
@@ -83,7 +91,7 @@ export function EffectProps({
               options={info.directions.map((d): [Direction, string] => [d, DIRECTIONS[d]])}
               onChange={(direction) => set({ direction })}
             />
-          ) : info.space === '1d' || info.reverse ? (
+          ) : (info.space === '1d' && !info.uniform) || info.reverse ? (
             <PropRow label="Direction" hint={info.space === '1d' ? 'The effect runs from the first point to the last, or back' : undefined}>
               <label className="flex h-7 cursor-pointer items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
                 <input type="checkbox" checked={!!effect.reverse} onChange={(e) => set({ reverse: e.target.checked || undefined })} className="accent-sky-600" />

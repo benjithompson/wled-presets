@@ -10,6 +10,21 @@
 import { activeLeds, isLine, segmentLeds, type Fixture, type Layout, type Stage } from './layout.ts';
 
 export type EffectId =
+  // Basics
+  | 'solid'
+  | 'gradient'
+  | 'blocks'
+  | 'rainbow'
+  | 'colorloop'
+  | 'breathe'
+  | 'blink'
+  | 'strobe'
+  | 'chase'
+  | 'wipe'
+  | 'twinkle'
+  | 'sparkle'
+  | 'bounce'
+  // 1-D
   | 'aurora'
   | 'fireworks'
   | 'inferno'
@@ -87,9 +102,17 @@ export interface EffectInfo {
   name: string;
   description: string;
   palette: PaletteId;
-  /** What the intensity and size controls do in this effect. */
-  intensity: string;
-  size: string;
+  /** What the intensity and size controls do in this effect. Left out: the effect has no such control. */
+  intensity?: string;
+  size?: string;
+  /** False: it stands still, so there is no speed control. */
+  speed?: false;
+  /** Basics: the simple, standard effects (a color, a gradient, a chase...), listed first. */
+  basic?: true;
+  /** 1-D effects that light every LED the same: running backwards changes nothing. */
+  uniform?: true;
+  /** With the palette "custom": the colors it starts with. */
+  colors?: string[];
   /** How lively it looks, 0..1, for the public page's background. */
   energy: number;
   /** 1-D: along the string. 3-D: by where each LED is in space. */
@@ -101,6 +124,19 @@ export interface EffectInfo {
 }
 
 export const EFFECTS: EffectInfo[] = [
+  { id: 'solid', name: 'Solid color', description: 'One steady color. With several colors, the string is split into equal parts, one per color.', palette: 'custom', colors: ['#ffb46e'], speed: false, energy: 0, space: '1d', basic: true },
+  { id: 'gradient', name: 'Gradient', description: 'The colors blend smoothly from one end of the string to the other, standing still.', palette: 'sunset', size: 'Length', speed: false, energy: 0.05, space: '1d', basic: true },
+  { id: 'blocks', name: 'Color blocks', description: 'Blocks of each color side by side, standing still: red, green, red, green…', palette: 'christmas', size: 'Block size', speed: false, energy: 0.05, space: '1d', basic: true },
+  { id: 'rainbow', name: 'Rainbow', description: 'The colors roll smoothly along the string.', palette: 'rainbow', size: 'Length', energy: 0.4, space: '1d', basic: true },
+  { id: 'colorloop', name: 'Color fade', description: 'All the lights fade together from one color to the next.', palette: 'rainbow', energy: 0.25, space: '1d', basic: true, uniform: true },
+  { id: 'breathe', name: 'Breathe', description: 'The lights slowly brighten and dim, like breathing. With several colors, each breath takes the next one.', palette: 'custom', colors: ['#2a6cff'], intensity: 'Depth', energy: 0.15, space: '1d', basic: true, uniform: true },
+  { id: 'blink', name: 'Blink', description: 'On and off. With several colors, each blink takes the next one.', palette: 'christmas', intensity: 'Time on', energy: 0.5, space: '1d', basic: true, uniform: true },
+  { id: 'strobe', name: 'Strobe', description: 'Short, bright flashes, like a strobe light.', palette: 'snow', intensity: 'Flash length', energy: 1, space: '1d', basic: true, uniform: true },
+  { id: 'chase', name: 'Theater chase', description: 'Dots of light march along the string, with dark gaps between them, like the lights around a theater sign.', palette: 'christmas', intensity: 'Dot length', size: 'Spacing', energy: 0.55, space: '1d', basic: true },
+  { id: 'wipe', name: 'Color wipe', description: 'Each color in turn fills the string from one end to the other. With one color, it fills and then empties.', palette: 'christmas', intensity: 'Pause when full', size: 'Soft edge', energy: 0.45, space: '1d', basic: true },
+  { id: 'twinkle', name: 'Twinkle', description: 'Lights glow up at random, each in one of the colors, and fade away again.', palette: 'christmas', intensity: 'Twinkles', size: 'Twinkle length', energy: 0.3, space: '1d', basic: true },
+  { id: 'sparkle', name: 'Sparkle', description: 'Steady colors with bright white sparkles that flash on and off.', palette: 'ice', intensity: 'Sparkles', size: 'Sparkle length', energy: 0.35, space: '1d', basic: true },
+  { id: 'bounce', name: 'Bouncing dot', description: 'A dot of light runs from end to end and back, with a fading tail. With several colors, every run takes the next one.', palette: 'custom', colors: ['#ff1800'], intensity: 'Tail', size: 'Dot size', energy: 0.55, space: '1d', basic: true },
   { id: 'aurora', name: 'Aurora', description: 'Curtains of light that fold, drift and shimmer, like the northern lights.', palette: 'aurora', intensity: 'Shimmer', size: 'Curtain width', energy: 0.3, space: '1d' },
   { id: 'fireworks', name: 'Fireworks', description: 'Rockets climb and burst into sparks that slow down, cool and crackle.', palette: 'party', intensity: 'Rockets', size: 'Burst size', energy: 0.85, space: '1d' },
   { id: 'inferno', name: 'Inferno', description: 'Flames that lick and flicker, with sparks that drift away.', palette: 'fire', intensity: 'Heat', size: 'Flame size', energy: 0.6, space: '1d' },
@@ -204,7 +240,8 @@ export function paletteColors(s: Pick<EffectSettings, 'palette' | 'colors'>): st
 }
 
 export function defaultSettings(effect: EffectId): EffectSettings {
-  return { effect, palette: effectInfo(effect).palette, speed: 0.5, intensity: 0.5, size: 0.5, brightness: 0.8 };
+  const info = effectInfo(effect);
+  return { effect, palette: info.palette, ...(info.colors ? { colors: [...info.colors] } : {}), speed: 0.5, intensity: 0.5, size: 0.5, brightness: 0.8 };
 }
 
 /** The direction a 3-D effect moves in now (its setting, or its default). */
@@ -264,7 +301,10 @@ export function withEffects<F extends Layout['fixtures'][number]>(f: F, effects:
 /** Colors and liveliness of a set of effects, for a scene's button and the public page. */
 export function effectsLook(effects: EffectSettings[]): { colors: string[]; energy: number }[] {
   return effects.map((s) => {
-    const colors = paletteColors(s).filter((c) => luma(hexToRgb(c)) > 0.2);
+    const all = paletteColors(s);
+    const bright = all.filter((c) => luma(hexToRgb(c)) > 0.2);
+    // A dark color of its own (a deep blue) still shows, when it is all there is.
+    const colors = bright.length ? bright : all;
     return { colors: colors.slice(0, 4), energy: Math.min(1, effectInfo(s.effect).energy * (0.6 + 0.8 * s.speed)) };
   });
 }
@@ -401,7 +441,7 @@ class Noise {
 /** Colors along a palette. Not cyclic palettes run there and back again, so there is no seam. */
 class Pal {
   readonly stops: Rgb[];
-  private cyclic: boolean;
+  readonly cyclic: boolean;
   constructor(colors: string[], cyclic: boolean) {
     this.stops = (colors.length ? colors : ['#ffffff']).map(hexToRgb);
     this.cyclic = cyclic;
@@ -1097,6 +1137,186 @@ const candy: Factory = (n, rand) => {
   };
 };
 
+// ---------- Basics ----------
+// The simple, standard effects: a steady color, a gradient, a chase... They take the palette's
+// colors as they are, one by one, so with "My colors" you get exactly the colors you picked.
+
+/** The k-th color of the palette, round and round. */
+const stopAt = (pal: Pal, k: number): Rgb => pal.stops[((k % pal.stops.length) + pal.stops.length) % pal.stops.length];
+
+function mixRgb(a: Rgb, b: Rgb, f: number): Rgb {
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+function fillRgb(out: Float32Array, c: Rgb, k: number) {
+  for (let i = 0; i < out.length; i += 3) addRgb(out, i, c, k);
+}
+
+/** Where LED i is in the palette when it spreads over `span` LEDs: from its first color to its last. */
+function spread(pal: Pal, i: number, span: number): number {
+  const x = i / span;
+  return pal.cyclic ? (x * (pal.stops.length - 1)) / pal.stops.length : pal.wave(x);
+}
+
+const BLACK: Rgb = [0, 0, 0];
+
+const solid: Factory = (n) => (out, { pal }) => {
+  const m = pal.stops.length;
+  for (let i = 0; i < n; i++) addRgb(out, i * 3, pal.stops[Math.min(m - 1, Math.floor((i * m) / n))], 1);
+};
+
+const gradient: Factory = (n) => (out, { size, pal }) => {
+  // Size 50: the colors spread once over the string. Smaller: they repeat; bigger: they stretch.
+  const span = Math.max(1, n - 1) * size;
+  for (let i = 0; i < n; i++) pal.add(out, i * 3, spread(pal, i, span), 1);
+};
+
+const blocks: Factory = (n) => (out, { size, pal }) => {
+  const w = Math.max(1, Math.round(3 * size));
+  for (let i = 0; i < n; i++) addRgb(out, i * 3, stopAt(pal, Math.floor(i / w)), 1);
+};
+
+const rainbow: Factory = (n) => (out, { t, size, pal }) => {
+  const len = 45 * size;
+  for (let i = 0; i < n; i++) pal.add(out, i * 3, pal.wave(i / len - t * 0.22), 1);
+};
+
+const colorloop: Factory = () => (out, { t, pal }) => {
+  // The palette's smooth blend lingers on each color a moment before it moves on.
+  const hue = pal.cyclic ? t * 0.07 : pal.wave(t * 0.14);
+  for (let i = 0; i < out.length; i += 3) pal.add(out, i, hue, 1);
+};
+
+const breathe: Factory = () => (out, { t, intensity, pal }) => {
+  const ph = t / 4;
+  const k = Math.floor(ph);
+  const f = ph - k;
+  const b = (1 - Math.cos(f * Math.PI * 2)) / 2;
+  // Depth 100: down to dark. 0: only a little dimmer.
+  const low = 0.6 - 0.6 * intensity;
+  // The next color comes in while the lights are low.
+  const c = mixRgb(stopAt(pal, k - 1), stopAt(pal, k), smooth(0, 0.2, f));
+  fillRgb(out, c, low + (1 - low) * b * b);
+};
+
+const blink: Factory = () => (out, { t, intensity, pal }) => {
+  const k = Math.floor(t);
+  if (t - k < 0.1 + 0.8 * intensity) fillRgb(out, stopAt(pal, k), 1);
+};
+
+const strobe: Factory = () => {
+  let last = -1;
+  return (out, { t, intensity, pal }) => {
+    const ph = t * 5;
+    const k = Math.floor(ph);
+    // Every flash shows for at least one frame, however fast it goes.
+    const on = ph - k < 0.06 + 0.34 * intensity || k !== last;
+    last = k;
+    if (on) fillRgb(out, stopAt(pal, k), 1.3);
+  };
+};
+
+const chase: Factory = (n) => (out, { t, intensity, size, pal }) => {
+  const period = Math.max(2, Math.round(4 * size));
+  const len = Math.max(0.6, period * (0.15 + 0.6 * intensity));
+  const pos = t * 7;
+  for (let i = 0; i < n; i++) {
+    const p = i - pos;
+    const k = Math.floor(p / period);
+    const f = p - k * period;
+    // How much of the LED (f to f + 1) a dot (0 to len, and period to period + len) covers.
+    const cover = clamp01(Math.min(f + 1, len) - f) + Math.min(len, clamp01(f + 1 - period));
+    if (cover > 0) addRgb(out, i * 3, stopAt(pal, f + 1 > period ? k + 1 : k), Math.min(1, cover));
+  }
+};
+
+const wipe: Factory = (n) => (out, { t, intensity, size, pal }) => {
+  const one = pal.stops.length === 1;
+  const fill = 1 + n / 40;
+  const hold = intensity * 2.5;
+  const cycle = fill + hold;
+  const k = Math.floor(t / cycle);
+  const edge = 0.5 + 6 * (size - 0.35);
+  // The soft edge runs off the end too, so the string is all the new color before the next one.
+  const head = Math.min(1, (t - k * cycle) / fill) * (n - 1 + edge);
+  const color = (j: number) => (one ? (((j % 2) + 2) % 2 === 0 ? pal.stops[0] : BLACK) : stopAt(pal, j));
+  const from = color(k - 1);
+  const to = color(k);
+  for (let i = 0; i < n; i++) addRgb(out, i * 3, mixRgb(from, to, clamp01((head - i) / edge)), 1);
+};
+
+const twinkle: Factory = (n, rand) => {
+  const v = new Float32Array(n);
+  const rising = new Uint8Array(n);
+  const col = new Uint8Array(n);
+  return (out, { dt, intensity, size, pal }) => {
+    const rate = (0.04 + 0.6 * intensity) / size;
+    const up = dt / (0.25 * size);
+    const down = dt / (0.8 * size);
+    for (let i = 0; i < n; i++) {
+      if (rising[i]) {
+        v[i] += up;
+        if (v[i] >= 1) {
+          v[i] = 1;
+          rising[i] = 0;
+        }
+      } else if (v[i] > 0) v[i] = Math.max(0, v[i] - down);
+      else if (rand() < rate * dt) {
+        rising[i] = 1;
+        col[i] = Math.floor(rand() * pal.stops.length);
+      }
+      if (v[i] > 0) addRgb(out, i * 3, stopAt(pal, col[i]), v[i] * v[i]);
+    }
+  };
+};
+
+const sparkle: Factory = (n, rand) => {
+  const g = new Float32Array(n);
+  return (out, { dt, intensity, size, pal }) => {
+    const rate = 0.03 + 0.9 * intensity;
+    const keep = Math.exp(-dt * (14 / size));
+    const span = Math.max(1, n - 1);
+    for (let i = 0; i < n; i++) {
+      pal.add(out, i * 3, pal.stops.length > 1 ? spread(pal, i, span) : 0, 0.75);
+      g[i] *= keep;
+      if (rand() < rate * dt) g[i] = 1;
+      if (g[i] > 0.01) addRgb(out, i * 3, WHITE, g[i] * 1.2);
+    }
+  };
+};
+
+const bounce: Factory = (n) => {
+  const trail = new Float32Array(n * 3);
+  let last: number | null = null;
+  return (out, { t, dt, intensity, size, pal }) => {
+    const run = Math.max(0.6, (n - 1) / 45);
+    const ph = t / run;
+    const k = Math.floor(ph);
+    const f = ph - k;
+    const pos = (k % 2 === 0 ? f : 1 - f) * (n - 1);
+    const c = stopAt(pal, k);
+    const keep = Math.exp(-dt * (16 - 14 * intensity));
+    const w = 0.5 + 1.2 * size;
+    // The dot lights every LED it passed since the last frame, so a fast dot leaves no gaps.
+    const a = last == null || Math.abs(pos - last) > n / 2 ? pos : Math.min(pos, last);
+    const b = last == null || Math.abs(pos - last) > n / 2 ? pos : Math.max(pos, last);
+    last = pos;
+    for (let i = 0; i < n; i++) {
+      const j = i * 3;
+      trail[j] *= keep;
+      trail[j + 1] *= keep;
+      trail[j + 2] *= keep;
+      const d = (i < a ? a - i : i > b ? i - b : 0) / w;
+      if (d > 3) continue;
+      const core = Math.exp(-d * d);
+      trail[j] = Math.max(trail[j], c[0] * core);
+      trail[j + 1] = Math.max(trail[j + 1], c[1] * core);
+      trail[j + 2] = Math.max(trail[j + 2], c[2] * core);
+    }
+    out.set(trail);
+  };
+};
+
 // ---------- 3-D effects ----------
 // They light each LED by where it is (Params.space), so the same effect fills a bush, climbs a
 // tree, or plays over the whole yard as one picture.
@@ -1459,6 +1679,19 @@ const equalizer: Factory = (_n, _rand, noise) => {
 };
 
 const FACTORIES: Record<EffectId, Factory> = {
+  solid,
+  gradient,
+  blocks,
+  rainbow,
+  colorloop,
+  breathe,
+  blink,
+  strobe,
+  chase,
+  wipe,
+  twinkle,
+  sparkle,
+  bounce,
   aurora,
   fireworks,
   inferno,
