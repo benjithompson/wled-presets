@@ -81,6 +81,13 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, json?.error ?? `Upload failed (${res.status})`);
     return json as Layout;
   },
+  removeAerial: () => request<Layout>('/api/admin/layout/aerial', { method: 'DELETE' }),
+  async uploadAerial(file: File): Promise<{ url: string }> {
+    const res = await fetch('/api/admin/layout/aerial', { method: 'POST', headers: { 'Content-Type': file.type }, body: file, credentials: 'same-origin' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) throw new ApiError(res.status, json?.error ?? `Upload failed (${res.status})`);
+    return json as { url: string };
+  },
 
   state: () => request<PublicState>('/api/state'),
   applyScene: (id: string) => request<ApplyResult>(`/api/scenes/${encodeURIComponent(id)}/apply`, { method: 'POST' }),

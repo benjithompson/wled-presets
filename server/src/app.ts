@@ -609,11 +609,17 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     return c.json(layout);
   });
 
-  admin.post('/layout/background', async (c) => {
+  /** A picture from the request body: PNG, JPEG, WebP or GIF, up to 12 MB. */
+  const pictureBody = async (c: Context) => {
     const type = c.req.header('content-type') ?? '';
     if (!/^image\/(png|jpeg|webp|gif)$/.test(type)) throw new HttpError(400, 'Use a PNG, JPEG, WebP or GIF picture');
     const bytes = new Uint8Array(await c.req.arrayBuffer());
     if (bytes.length > 12 * 1024 * 1024) throw new HttpError(400, 'The picture is larger than 12 MB');
+    return { type, bytes };
+  };
+
+  admin.post('/layout/background', async (c) => {
+    const { type, bytes } = await pictureBody(c);
     saveBackground(db, config.databasePath, bytes, type);
     const layout = { ...readLayout(db), background: `/api/layout/background?v=${Date.now()}` };
     writeLayout(db, layout);
@@ -624,6 +630,28 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   admin.delete('/layout/background', (c) => {
     deleteBackground(config.databasePath);
     const layout = { ...readLayout(db), background: null };
+    writeLayout(db, layout);
+    host?.setLayout(layout);
+    return c.json(layout);
+  });
+
+  // The yard from above. Only for signed-in users, as it shows where the house is. The editor
+  // places it (Layout.aerial) and saves the layout.
+  admin.get('/layout/aerial', (c) => {
+    const pic = readBackground(db, config.databasePath, 'aerial');
+    if (!pic) return c.json({ error: 'No picture from above' }, 404);
+    return new Response(new Uint8Array(pic.bytes), { headers: { 'Content-Type': pic.type, 'Cache-Control': 'private, no-cache' } });
+  });
+
+  admin.post('/layout/aerial', async (c) => {
+    const { type, bytes } = await pictureBody(c);
+    saveBackground(db, config.databasePath, bytes, type, 'aerial');
+    return c.json({ url: `/api/admin/layout/aerial?v=${Date.now()}` });
+  });
+
+  admin.delete('/layout/aerial', (c) => {
+    deleteBackground(config.databasePath, 'aerial');
+    const layout = { ...readLayout(db), aerial: null };
     writeLayout(db, layout);
     host?.setLayout(layout);
     return c.json(layout);

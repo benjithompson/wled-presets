@@ -144,6 +144,95 @@ export interface Layout {
   lights?: string;
   /** The library of custom objects. */
   designs?: Design[];
+  /** A picture of the yard from above, under the top view. */
+  aerial?: AerialPicture | null;
+}
+
+/**
+ * A picture of the yard from above: a satellite or drone photo, or a screenshot of a map. It
+ * lies under the top view, so trees and bushes can be placed where they really are. It is placed
+ * by its middle, its width and how far it is turned.
+ */
+export interface AerialPicture {
+  /** Where to load it. Only signed-in users can: it shows where the house is. */
+  url: string;
+  /** The middle of the picture: x as in the front view, z the depth (toward the street). */
+  x: number;
+  z: number;
+  /** Width in layout units. */
+  width: number;
+  /** The picture's height divided by its width. */
+  aspect: number;
+  /** Turned clockwise as seen from above, in degrees. */
+  rotation: number;
+  /** 0 (hidden) to 1. Default: AERIAL_OPACITY. */
+  opacity?: number;
+}
+
+/** A point seen from above: x across, z the depth. */
+export type XZ = { x: number; z: number };
+
+export const AERIAL_OPACITY = 0.6;
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+/** Degrees in (-180, 180]. */
+const wrapDegrees = (d: number) => {
+  const w = ((((d + 180) % 360) + 360) % 360) - 180;
+  return round2(w === -180 ? 180 : w);
+};
+
+/**
+ * A new picture from above. `prev`: the picture it replaces, whose place it takes. A first
+ * picture is twice as wide as the front view, with its middle on the front wall.
+ */
+export function placeAerial(layout: Pick<Layout, 'width'>, url: string, aspect: number, prev?: AerialPicture | null): AerialPicture {
+  if (prev) return { ...prev, url, aspect };
+  return { url, aspect, x: layout.width / 2, z: 0, width: layout.width * 2, rotation: 0, opacity: AERIAL_OPACITY };
+}
+
+/** The corners of the picture from above: top left, top right, bottom right, bottom left. */
+export function aerialCorners(a: AerialPicture): XZ[] {
+  const t = (a.rotation * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  const hw = a.width / 2;
+  const hh = (a.width * a.aspect) / 2;
+  return [
+    [-hw, -hh],
+    [hw, -hh],
+    [hw, hh],
+    [-hw, hh]
+  ].map(([u, v]) => ({ x: a.x + u * c - v * s, z: a.z + u * s + v * c }));
+}
+
+/**
+ * Moves, turns and sizes the picture so that the spot `from1` on it lands on `to1`, and `from2`
+ * on `to2` (as the Align command of CAD programs). Without the second pair it only moves.
+ */
+export function alignAerial(a: AerialPicture, from1: XZ, to1: XZ, from2?: XZ, to2?: XZ): AerialPicture {
+  const dx = from2 ? from2.x - from1.x : 0;
+  const dz = from2 ? from2.z - from1.z : 0;
+  const d2 = dx * dx + dz * dz;
+  if (!from2 || !to2 || d2 < 1e-6) return { ...a, x: round2(a.x + to1.x - from1.x), z: round2(a.z + to1.z - from1.z) };
+  // As complex numbers: k = (to2 - to1) / (from2 - from1) turns and scales about from1.
+  const tx = to2.x - to1.x;
+  const tz = to2.z - to1.z;
+  const kr = (tx * dx + tz * dz) / d2;
+  const ki = (tz * dx - tx * dz) / d2;
+  const cx = a.x - from1.x;
+  const cz = a.z - from1.z;
+  return {
+    ...a,
+    x: round2(to1.x + kr * cx - ki * cz),
+    z: round2(to1.z + ki * cx + kr * cz),
+    width: round2(a.width * Math.hypot(kr, ki)),
+    rotation: wrapDegrees(a.rotation + (Math.atan2(ki, kr) * 180) / Math.PI)
+  };
+}
+
+/** Scales the picture by `factor` about the spot `about`, which stays where it is. */
+export function scaleAerial(a: AerialPicture, about: XZ, factor: number): AerialPicture {
+  return { ...a, x: round2(about.x + (a.x - about.x) * factor), z: round2(about.z + (a.z - about.z) * factor), width: round2(a.width * factor) };
 }
 
 export const LAYOUT_WIDTH = 1600;

@@ -26,7 +26,8 @@ async function setup() {
   const db = openDatabase(':memory:');
   const bus = new Bus();
   const lights = new Lights(db, bus);
-  const config = { ...loadConfig({}), webDir: '/nonexistent' };
+  // Files (pictures, audio) go to a temporary folder, not the repository's data folder.
+  const config = { ...loadConfig({}), webDir: '/nonexistent', databasePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wled-test-')), 'db.sqlite') };
   const app = createApp({ config, db, bus, lights, discover: async () => [] });
   await createAuth(db, { secureCookie: false }).createUser('admin', 'correct horse battery');
   let cookie = '';
@@ -264,6 +265,30 @@ describe('automatic preset import', () => {
     const d = (await t.call('POST', '/api/admin/devices', { name: 'Ghost', host: '127.0.0.1', port: 1 })).json;
     await t.call('PUT', `/api/admin/devices/${d.id}`, { name: 'Ghost', host: '127.0.0.1', port: mocks[1].port, enabled: true });
     expect((await t.call('GET', '/api/admin/overview')).json.devicePresets[d.id]).toHaveLength(7);
+  });
+});
+
+describe('layout pictures', () => {
+  it('keeps the picture from above for signed-in users only', async () => {
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    expect((await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'image/png' })).status).toBe(401);
+    await login();
+    expect((await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'text/plain' })).status).toBe(400);
+    const up = await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'image/png' });
+    expect(up.status).toBe(200);
+    const { url } = JSON.parse(await up.text());
+    expect(url).toMatch(/^\/api\/admin\/layout\/aerial\?v=\d+$/);
+    const back = await t.raw('GET', url);
+    expect(back.headers.get('content-type')).toBe('image/png');
+    expect(new Uint8Array(await back.arrayBuffer())).toEqual(png);
+    // The editor places it and saves the layout.
+    const layout = (await t.call('GET', '/api/layout')).json;
+    const aerial = { url, x: 800, z: 0, width: 3200, aspect: 0.5, rotation: 12 };
+    expect((await t.call('PUT', '/api/admin/layout', { ...layout, aerial })).status).toBe(200);
+    expect((await t.call('GET', '/api/layout')).json.aerial).toEqual(aerial);
+    const gone = await t.call('DELETE', '/api/admin/layout/aerial');
+    expect(gone.json.aerial).toBeNull();
+    expect((await t.raw('GET', url)).status).toBe(404);
   });
 });
 

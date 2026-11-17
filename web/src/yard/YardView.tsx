@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type React from 'react';
-import { buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
+import { AERIAL_OPACITY, buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
 
@@ -21,7 +21,8 @@ export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: 
  * Draws the yard: the background picture (or a night sky), faint guides along each light
  * object, and every LED as a glowing bulb in the color of the current frame.
  * `getFrame` is called on every animation frame and returns RGB bytes, one triple per LED.
- * The top view shows the front wall of the house instead of the picture. `grid` draws a grid
+ * The top view shows the front wall of the house instead, over the picture from above
+ * (Layout.aerial) when there is one. `grid` draws a grid
  * (1 m, or 5 ft) from the left edge and from the ground (front) or the front wall (top).
  *
  * By default the view keeps the shape of the yard and shows all of it. With `fill`, it fills
@@ -105,6 +106,12 @@ export function YardView({
       bg = new Image();
       bg.src = layout.background;
     }
+    const aerial = top && layout.aerial && (layout.aerial.opacity ?? AERIAL_OPACITY) > 0 ? layout.aerial : null;
+    let aerialImg: HTMLImageElement | null = null;
+    if (aerial) {
+      aerialImg = new Image();
+      aerialImg.src = aerial.url;
+    }
     let raf = 0;
     const t0 = performance.now();
 
@@ -146,6 +153,17 @@ export function YardView({
         ctx.globalAlpha = 0.42;
         ctx.drawImage(bg, X(0), Y(0), size.w * sx, size.h * sy);
         ctx.globalAlpha = 1;
+      }
+      if (aerial && aerialImg?.complete && aerialImg.naturalWidth) {
+        // In view units: moved to its middle, turned, then drawn about its middle.
+        const aw = aerial.width;
+        const ah = aerial.width * aerial.aspect;
+        ctx.save();
+        ctx.globalAlpha = aerial.opacity ?? AERIAL_OPACITY;
+        ctx.setTransform(sx, 0, 0, sy, X(aerial.x), Y(aerial.z - zMin));
+        ctx.rotate((aerial.rotation * Math.PI) / 180);
+        ctx.drawImage(aerialImg, -aw / 2, -ah / 2, aw, ah);
+        ctx.restore();
       }
       if (fill && !top) {
         // The edge of the picture.
