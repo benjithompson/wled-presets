@@ -1,6 +1,8 @@
 // Types shared by the server and the web client. Keep this file free of runtime code
 // that depends on Node or the DOM.
 
+import type { EffectSettings } from './effects.ts';
+
 export interface Device {
   id: string;
   name: string;
@@ -39,13 +41,30 @@ export interface DevicePreset {
   energy?: number;
 }
 
-/** A preset shown on the public page. It maps to one WLED preset per device. */
+/**
+ * A button on the public page. It plays a WLED preset on each device, and/or effects that the
+ * server draws for layout objects (saved from the layout editor). A device with an object that
+ * plays an effect gets the effect, not its preset.
+ */
 export interface Scene {
   id: string;
   name: string;
   sortOrder: number;
   /** deviceId -> WLED preset id */
   devicePresets: Record<string, number>;
+  /** Effect key (see effectKey: "*", an object id, or "<object id>#<segment>") -> the effect it plays. */
+  effects?: Record<string, EffectSettings>;
+  /** A sequence that plays (and loops) on the lights instead of the effects. */
+  sequenceId?: string | null;
+}
+
+/** An uploaded audio file, for the sequence editor. */
+export interface AudioFile {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  createdAt: string;
 }
 
 export interface Settings {
@@ -81,7 +100,10 @@ export interface PublicState {
 }
 
 export interface ApplyResult {
+  /** Devices that took the scene: their preset, or the effects stream. */
   applied: string[];
+  /** Layout objects that play an effect now (including objects with no device: simulator only). */
+  effects?: number;
   skipped: string[];
   failed: { deviceId: string; error: string }[];
 }
@@ -115,5 +137,5 @@ export interface SessionInfo {
 export interface BackupFile {
   version: 1 | 2;
   exportedAt: string;
-  publicPresets: { id: string; name: string; sortOrder?: number; devicePresets: Record<string, number> }[];
+  publicPresets: { id: string; name: string; sortOrder?: number; devicePresets: Record<string, number>; effects?: Record<string, EffectSettings>; sequenceId?: string | null }[];
 }

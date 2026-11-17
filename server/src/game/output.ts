@@ -67,10 +67,9 @@ export class LightsOutput {
     this.buffers.clear();
   }
 
-  /** Called by the game loop with every frame (RGB bytes in stage order). */
   /**
-   * Called by the game loop with every frame. `active`: a game is running. With no game (the
-   * idle animation), nothing goes to the lights, and they show their own color or scene.
+   * Called by the game loop with every frame (RGB bytes in stage order). `active`: a game is
+   * running. With no game, nothing goes to the lights, and they show their own color or scene.
    */
   push(frame: Uint8Array, active = true) {
     if (!this.enabled || !active || this.paused()) {
@@ -78,12 +77,34 @@ export class LightsOutput {
       if (!this.paused()) this.release();
       return;
     }
+    this.send(frame, null, this.brightness);
+  }
+
+  /**
+   * A scene's effects: to the devices in `devices` only (the others play their own preset), at
+   * full brightness (each effect has its own). The debug switch is for games and does not apply.
+   */
+  pushScene(frame: Uint8Array, devices: ReadonlySet<string>) {
+    if (this.paused()) return;
+    this.send(frame, devices, 1);
+  }
+
+  private send(frame: Uint8Array, only: ReadonlySet<string> | null, k: number) {
     const now = performance.now();
     if (now - this.lastSend < 1000 / OUTPUT_HZ - 2) return;
     this.lastSend = now;
     const devices = new Map(this.devices().map((d) => [d.id, d]));
-    const k = this.brightness;
+    // A device that no longer takes part goes back to its own state at once.
+    if (only) {
+      for (const id of [...this.sending]) {
+        if (only.has(id)) continue;
+        const d = devices.get(id);
+        if (d) this.sender.end(d);
+        this.sending.delete(id);
+      }
+    }
     for (const m of this.maps) {
+      if (only && !only.has(m.deviceId)) continue;
       const d = devices.get(m.deviceId);
       if (!d || !d.enabled) continue;
       // Send the whole strip, so LEDs no object uses (gaps, a hidden side) stay off.
@@ -116,10 +137,9 @@ export class LightsOutput {
 
   /** Names of the devices that get frames now. */
   targets(): string[] {
-    if (!this.enabled || !this.sending.size) return [];
-    const ids = new Set(this.maps.map((m) => m.deviceId));
+    if (!this.sending.size) return [];
     return this.devices()
-      .filter((d) => d.enabled && ids.has(d.id))
+      .filter((d) => d.enabled && this.sending.has(d.id))
       .map((d) => d.name);
   }
 

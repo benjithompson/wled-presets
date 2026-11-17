@@ -36,6 +36,8 @@ const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg))
 const preview = new LayoutPreview(() => lights.devicesWithStatus(), (msg) => lights.log('info', 'layout', msg), sender);
 const output = new LightsOutput(() => lights.devicesWithStatus(), () => preview.active, sender);
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), output);
+// Scenes with effects: the game host draws them and sends them to the lights.
+lights.setEffectPlayer((show) => host.playShow(show));
 const app = createApp({ config, db, bus, lights, host, preview });
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);
@@ -43,6 +45,8 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
 
 host.attach(server as unknown as Server, '/api/play');
 lights.start(config.statusIntervalMs);
+// A scene with effects that was playing before a restart plays again.
+lights.resumeEffects();
 
 // Presets on a device change over time, and older installs stored no colors. Read them again.
 const enabledIds = db.listDevices().filter((d) => d.enabled).map((d) => d.id);

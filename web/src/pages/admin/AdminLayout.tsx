@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
-import { Activity, ExternalLink, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
+import { Activity, Clapperboard, ExternalLink, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
 import { ThemeSwitcher } from '../../components/ThemeToggle.tsx';
 import { api } from '../../lib/api.ts';
 import { useEvents } from '../../lib/useEvents.ts';
@@ -18,6 +18,7 @@ const NAV = [
   { to: 'scenes', label: 'Scenes', icon: Layers },
   { to: 'devices', label: 'Devices', icon: Router },
   { to: 'layout', label: 'Layout', icon: MapIcon },
+  { to: 'sequences', label: 'Sequences', icon: Clapperboard },
   { to: 'activity', label: 'Activity', icon: Activity },
   { to: 'settings', label: 'Settings', icon: SettingsIcon }
 ];
@@ -47,8 +48,8 @@ export function AdminLayout() {
   }
   if (!signedIn) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />;
 
-  // The layout editor is a CAD workspace: on wide screens it fills the window below the header.
-  const workspace = /^\/admin\/layout\/?$/.test(location.pathname);
+  // The layout and sequence editors are workspaces: on wide screens they fill the window below the header.
+  const workspace = /^\/admin\/(layout|sequences)\/?$/.test(location.pathname);
 
   return (
     <div className={cn('min-h-dvh', workspace && 'lg:flex lg:h-dvh lg:min-h-0 lg:flex-col')}>

@@ -1,7 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router';
 import {
   ArrowLeftRight,
+  ChevronDown,
+  Clapperboard,
+  Pause,
+  Play,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -49,6 +54,8 @@ import {
   segmentLeds,
   setPointLed,
   skipAfterRemove,
+  mapSegmentEffects,
+  segmentsAfterRemove,
   deviceRuns,
   extendLine,
   insertPoint,
@@ -65,14 +72,18 @@ import {
   type Point,
   type Units
 } from '../../../../shared/layout.ts';
-import { Badge, Button, Input, Spinner, Switch } from '../../components/ui.tsx';
+import { EFFECTS, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
+import type { Stage } from '../../../../shared/layout.ts';
+import type { Scene } from '../../../../shared/types.ts';
+import { Badge, Button, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
+import { EffectProps } from './effectProps.tsx';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
 import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, snapPoint, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
-import { useOverview } from './AdminLayout.tsx';
+import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
@@ -265,6 +276,36 @@ export function LayoutPage() {
   const runs = useMemo(() => (layout ? deviceRuns(layout) : new Map()), [layout]);
   const overlapCount = [...runs.values()].reduce((n, r) => n + r.overlaps.length, 0);
 
+  // Effects: each object's effect is part of the layout (the working copy); "Play" animates
+  // them in the views (and on the real lights while Lights is on). A scene saved from here
+  // keeps its own copy, and can be loaded back to change it.
+  const effects = useMemo(() => (layout ? layoutEffects(layout) : {}), [layout]);
+  const fxCount = Object.keys(effects).length;
+  const [playing, setPlaying] = useState(false);
+  /** The scene the effects were loaded from or last saved to. */
+  const [sceneRef, setSceneRef] = useState<{ id: string; name: string } | null>(null);
+  const [newScene, setNewScene] = useState<string | null>(null);
+  const fxRef = useRef<{ scene: EffectScene; stage: Stage; data: Float32Array; bytes: Uint8Array; last: number } | null>(null);
+  useEffect(() => {
+    if (!playing || !stage || !layout) {
+      fxRef.current = null;
+      return;
+    }
+    const cur = fxRef.current;
+    if (!cur) {
+      fxRef.current = { scene: new EffectScene(stage, layout, effects), stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), last: performance.now() };
+      return;
+    }
+    // Objects whose effect and LED count stay the same keep running smoothly.
+    cur.scene.setStage(stage, layout);
+    cur.scene.setEffects(effects);
+    if (cur.stage !== stage) fxRef.current = { ...cur, stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
+  }, [playing, stage, layout, effects]);
+  // Nothing to play: stop.
+  useEffect(() => {
+    if (!fxCount) setPlaying(false);
+  }, [fxCount]);
+
   // The depths the top view shows: at least 4 m behind and 5 m in front of the house front, and
   // 1.5 m more than the objects. It stays the same while you drag, so the view does not jump.
   const zRangeRef = useRef<[number, number]>([-480, 480]);
@@ -305,6 +346,40 @@ export function LayoutPage() {
     setSelected(id);
     setSegment(k);
     setCorner(null);
+  };
+
+  // Multi-selection, to give several objects and segments one effect: Ctrl/⌘-click adds or
+  // removes (in the views, the object list and the 3D view), Shift-click in the list picks a
+  // range, Esc clears. Items are effect keys: an object id, or "<id>#<segment>".
+  const [multi, setMulti] = useState<string[]>([]);
+  /** Where a Shift-click range in the object list starts. */
+  const listAnchor = useRef<string | null>(null);
+  /** Selects these items: one is a normal selection; two or more, a multi-selection. */
+  const pickTargets = (keys: string[]) => {
+    const list = [...new Set(keys)];
+    if (list.length >= 2) {
+      setMulti(list);
+      setSelected(null);
+      return;
+    }
+    setMulti([]);
+    const t = list[0] ? effectTarget(list[0]) : null;
+    if (!t) setSelected(null);
+    else if (t.segment == null) setSelected(t.id);
+    else selectSegment(t.id, t.segment);
+  };
+  const toggleTarget = (key: string) => {
+    const base = multi.length ? multi : selected ? [effectKey(selected, segment)] : [];
+    pickTargets(base.includes(key) ? base.filter((x) => x !== key) : [...base, key]);
+  };
+  // A normal selection ends the multi-selection.
+  useEffect(() => {
+    if (selected) setMulti([]);
+  }, [selected]);
+  /** On a Mac, Ctrl-click also opens the context menu; skip that one. */
+  const skipMenu = (e: { ctrlKey: boolean }) => {
+    suppressMenu.current = e.ctrlKey;
+    setTimeout(() => (suppressMenu.current = false), 600);
   };
 
   // Warn before leaving with unsaved changes.
@@ -388,7 +463,8 @@ export function LayoutPage() {
       points: f.points.slice(0, k + 1),
       ...fromLedRange(deviceLed(f, 0), deviceLed(f, off)),
       pointLeds: tidyPins(pins.slice(0, k + 1)),
-      skip: nonEmpty(f.skip?.filter((x) => x < k))
+      skip: nonEmpty(f.skip?.filter((x) => x < k)),
+      segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x < k ? [x] : []))
     };
     const b: Fixture = {
       ...f,
@@ -397,7 +473,8 @@ export function LayoutPage() {
       points: f.points.slice(k),
       ...fromLedRange(deviceLed(f, off + 1), deviceLed(f, f.pixels - 1)),
       pointLeds: tidyPins(pins.slice(k).map((p) => (p == null ? null : p - off - 1))),
-      skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k))
+      skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k)),
+      segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x >= k ? [x - k] : []))
     };
     edit((l) => ({ ...l, fixtures: l.fixtures.flatMap((x) => (x.id === f.id ? [a, b] : [x])) }));
     setSelected(b.id);
@@ -430,7 +507,8 @@ export function LayoutPage() {
         points: f.points.slice(1),
         ...fromLedRange(deviceLed(f, off), deviceLed(f, f.pixels - 1)),
         pointLeds: tidyPins(pins.slice(1).map((p) => (p == null ? null : p - off))),
-        skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1))
+        skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1)),
+        segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k > 0 ? [k - 1] : []))
       });
     } else if (i === last) {
       // The last segment goes, with its LEDs: the line now ends at the LED of the point before.
@@ -438,10 +516,16 @@ export function LayoutPage() {
         points: f.points.slice(0, last),
         ...fromLedRange(deviceLed(f, 0), deviceLed(f, offs[last - 1])),
         pointLeds: tidyPins(pins.slice(0, last)),
-        skip: nonEmpty(f.skip?.filter((k) => k < last - 1))
+        skip: nonEmpty(f.skip?.filter((k) => k < last - 1)),
+        segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k < last - 1 ? [k] : []))
       });
     } else {
-      update(f.id, { points: f.points.filter((_, j) => j !== i), pointLeds: tidyPins(pins.filter((_, j) => j !== i)), skip: skipAfterRemove(f.skip, i) });
+      update(f.id, {
+        points: f.points.filter((_, j) => j !== i),
+        pointLeds: tidyPins(pins.filter((_, j) => j !== i)),
+        skip: skipAfterRemove(f.skip, i),
+        segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterRemove(i))
+      });
     }
     setSegment(null);
     setCorner(null);
@@ -567,6 +651,7 @@ export function LayoutPage() {
       const drawing = isLineTool(tool) && draft.pts.length > 0;
       if (e.key === 'Escape') {
         if (menu) return setMenu(null);
+        if (multi.length) return setMulti([]);
         if (drawing) {
           // As in CAD: Esc ends the line and keeps the segments drawn so far.
           if (isLineTool(tool)) finishLine(tool);
@@ -586,13 +671,22 @@ export function LayoutPage() {
         e.preventDefault();
         setDraft((d) => ({ ...d, pts: d.pts.slice(0, -1) }));
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (sel && isLine(sel) && corner != null && sel.points[corner]) deletePoint(sel, corner);
+        if (multi.length) {
+          // The whole objects in the selection go; segments stay (delete a segment's points instead).
+          const ids = new Set(multi.filter((x) => effectTarget(x).segment == null));
+          if (!ids.size) return void toast.error('Only segments are selected. To delete a segment, delete its points.');
+          edit((l) => ({ ...l, fixtures: l.fixtures.filter((f) => !ids.has(f.id)) }));
+          setMulti([]);
+          toast.success(`${ids.size} object(s) deleted. Ctrl/⌘+Z brings them back.`);
+        } else if (sel && isLine(sel) && corner != null && sel.points[corner]) deletePoint(sel, corner);
         else if (selected) remove(selected);
       } else if (e.key === 'F2' && selected) {
         e.preventDefault();
         setRenaming(selected);
       } else if (key === 'f' && !e.shiftKey) {
         frameSelection();
+      } else if (key === 'p' && !e.shiftKey) {
+        if (fxCount) setPlaying((v) => !v);
       } else if (e.key === 'Home') {
         setCams({});
       } else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
@@ -653,7 +747,7 @@ export function LayoutPage() {
     };
   }, []);
   const previewing = showOnLights && mapped && inFront;
-  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment }) : null;
+  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 }) : null;
   useEffect(() => {
     if (!previewBody) return;
     let alive = true;
@@ -691,6 +785,17 @@ export function LayoutPage() {
   // Simulator: the same view as the real lights get (see paintEditor).
   const getFrame = () => {
     if (!stage || !layout) return null;
+    const fx = fxRef.current;
+    if (playing && fx && fx.stage === stage) {
+      // Every view asks on each animation frame: draw once per frame.
+      const now = performance.now();
+      if (now - fx.last > 4) {
+        fx.scene.update(Math.min(0.1, (now - fx.last) / 1000), fx.data);
+        fx.last = now;
+        toBytes(fx.data, fx.bytes);
+      }
+      return fx.bytes;
+    }
     const out = new Uint8Array(stage.pixelCount * 3);
     // Same clock as the server, so the drawing pulses together with the real lights.
     const pulse = editorPulse(Date.now());
@@ -928,8 +1033,11 @@ export function LayoutPage() {
       setTape((t) => (!t || t.b || t.side !== side ? { side, a: p } : { ...t, b: p }));
       return;
     }
-    // Select, edit and split: a press on empty space clears the selection.
-    if (e.target === e.currentTarget) setSelected(null);
+    // Select, edit and split: a press on empty space clears the selection (not with Ctrl/⌘: that adds to it).
+    if (e.target === e.currentTarget && !e.ctrlKey && !e.metaKey) {
+      setSelected(null);
+      setMulti([]);
+    }
   }
 
   function startDrag(e: RPointerEvent, d: Drag, id: string | null, side: ViewSide) {
@@ -1065,6 +1173,72 @@ export function LayoutPage() {
     }
   }
 
+  // ---------- Scenes ----------
+
+  /** Puts a scene's effects on the objects (an undoable edit), and plays them. */
+  function loadScene(sc: Scene) {
+    const yard = sc.effects?.[YARD];
+    edit((l) => {
+      const { effect: _e, ...rest } = l;
+      return { ...rest, ...(yard ? { effect: yard } : {}), fixtures: l.fixtures.map((f) => withEffects(f, sc.effects)) };
+    });
+    setSceneRef({ id: sc.id, name: sc.name });
+    setPlaying(true);
+    const n = layout ? Object.keys(layoutEffects({ effect: yard, fixtures: layout.fixtures.map((f) => withEffects(f, sc.effects)) })).length : 0;
+    toast.success(`Editing "${sc.name}": ${n} effect(s). Save the scene when you are done.`);
+  }
+
+  // Opened from the Scenes page to edit a scene: /admin/layout?scene=<id>
+  const [params, setParams] = useSearchParams();
+  const openScene = params.get('scene');
+  useEffect(() => {
+    if (!openScene || !layout || !overview) return;
+    setParams({}, { replace: true });
+    const sc = overview.scenes.find((x) => x.id === openScene);
+    if (sc) loadScene(sc);
+  }, [openScene, !!layout, !!overview]);
+
+  /** Saves the objects' effects as a scene: a new one (name), or the one being edited. */
+  async function saveScene(target: { name: string } | { id: string }) {
+    if (!layout) return;
+    if (!fxCount) return void toast.error('Give at least one object an effect first.');
+    if (overlapCount) return void toast.error('Two objects use the same LEDs. Fix that first.');
+    setBusy(true);
+    try {
+      // A scene names the objects by id: save the layout too, so the server has them.
+      if (dirty) {
+        const out = await api.saveLayout(layout);
+        qc.setQueryData(LAYOUT_KEY, out);
+        setLayout(out);
+      }
+      const fx = layoutEffects(layout);
+      const prev = 'id' in target ? overview?.scenes.find((x) => x.id === target.id) : null;
+      const sc = prev
+        ? await api.updateScene(prev.id, { name: prev.name, devicePresets: prev.devicePresets, effects: fx })
+        : await api.createScene({ name: 'name' in target ? target.name : 'Effects', devicePresets: {}, effects: fx });
+      setSceneRef({ id: sc.id, name: sc.name });
+      setNewScene(null);
+      void qc.invalidateQueries({ queryKey: OVERVIEW });
+      toast.success(prev ? `Scene "${sc.name}" saved${dirty ? ', with the layout' : ''}.` : `Scene "${sc.name}" created. It is on the public page now.`);
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const effectScenes = (overview?.scenes ?? []).filter((x) => x.effects && Object.keys(x.effects).length);
+  const editingScene = sceneRef && overview?.scenes.some((x) => x.id === sceneRef.id) ? sceneRef : null;
+  function scenesMenu(e: RMouseEvent<HTMLElement>) {
+    const r = e.currentTarget.getBoundingClientRect();
+    const items: MenuItem[] = [];
+    if (editingScene) items.push({ label: `Save "${editingScene.name}"`, run: () => void saveScene({ id: editingScene.id }) });
+    items.push({ label: 'Save as a new scene…', run: () => setNewScene(editingScene ? `${editingScene.name} 2` : '') });
+    for (const sc of effectScenes) items.push({ label: `Open "${sc.name}"`, run: () => loadScene(sc) });
+    if (fxCount) items.push({ label: 'Remove every effect', danger: true, run: () => (edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => withEffects(f, {})) })), setSceneRef(null)) });
+    setMenu({ x: r.left, y: r.bottom + 4, title: editingScene ? `Scene: ${editingScene.name}` : 'Scenes with effects', items });
+  }
+
   async function upload(file: File | undefined) {
     if (!file || !layout) return;
     setBusy(true);
@@ -1188,7 +1362,7 @@ export function LayoutPage() {
       <circle key={key} cx={at.u} cy={at.v} r={9 * k} className={cn('stroke-stone-950', className)} strokeWidth={3 * k} onPointerDown={onDown} onDoubleClick={onDouble} />
     );
     return (
-      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null ? null : selected} fill viewBox={vb} grid={drafting.grid}>
+      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing ? null : selected} fill viewBox={vb} grid={drafting.grid}>
         <svg
           ref={(el) => void (svgs.current[side] = el)}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -1234,7 +1408,26 @@ export function LayoutPage() {
               const pts = f.points.map(V);
               return (
                 <g key={f.id}>
-                  {/* The selected segment, drawn wide so it is easy to see. */}
+                  {/* Segments in the multi-selection (all of them when the whole line is in it). */}
+                  {multi.length
+                    ? pts.slice(1).map((b, s) =>
+                        multi.includes(f.id) || multi.includes(effectKey(f.id, s)) ? (
+                          <line
+                            key={`multi${s}`}
+                            x1={pts[s].u}
+                            y1={pts[s].v}
+                            x2={b.u}
+                            y2={b.v}
+                            stroke="rgb(40,170,255)"
+                            strokeOpacity={playing ? 0.18 : 0.45}
+                            strokeWidth={14 * k}
+                            strokeLinecap="round"
+                            pointerEvents="none"
+                          />
+                        ) : null
+                      )
+                    : null}
+                  {/* The selected segment, drawn wide so it is easy to see (faint while effects play, so they show through). */}
                   {isSel && segment != null && pts[segment + 1] ? (
                     <line
                       x1={pts[segment].u}
@@ -1242,7 +1435,7 @@ export function LayoutPage() {
                       x2={pts[segment + 1].u}
                       y2={pts[segment + 1].v}
                       stroke="rgb(40,170,255)"
-                      strokeOpacity={0.45}
+                      strokeOpacity={playing ? 0.14 : 0.45}
                       strokeWidth={14 * k}
                       strokeLinecap="round"
                       pointerEvents="none"
@@ -1280,6 +1473,12 @@ export function LayoutPage() {
                         className={panMode ? '' : tool === 'select' ? 'cursor-pointer' : tool === 'edit' ? 'cursor-copy' : ''}
                         onPointerDown={(e) => {
                           if (e.button !== 0 || panMode) return;
+                          if (tool === 'select' && (e.ctrlKey || e.metaKey)) {
+                            e.stopPropagation();
+                            skipMenu(e);
+                            toggleTarget(effectKey(f.id, s));
+                            return;
+                          }
                           if (tool === 'select') {
                             startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
                             selectSegment(f.id, s);
@@ -1370,7 +1569,14 @@ export function LayoutPage() {
             const c = V(f.points[0]);
             const r = f.radius ?? 60;
             const h = f.kind === 'tree' ? (f.height ?? 240) : 0;
-            const move = (e: RPointerEvent) => startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
+            const move = (e: RPointerEvent) => {
+              if (tool === 'select' && !panMode && e.button === 0 && (e.ctrlKey || e.metaKey)) {
+                e.stopPropagation();
+                skipMenu(e);
+                return toggleTarget(f.id);
+              }
+              startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
+            };
             const hitClass = tool === 'select' && !panMode ? 'cursor-move' : '';
             return (
               <g key={f.id}>
@@ -1379,6 +1585,13 @@ export function LayoutPage() {
                 ) : (
                   <ellipse cx={c.u} cy={c.v} rx={r} ry={front ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 )}
+                {multi.includes(f.id) ? (
+                  f.kind === 'tree' && front ? (
+                    <polygon points={`${c.u - r},${c.v} ${c.u},${c.v - h} ${c.u + r},${c.v}`} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                  ) : (
+                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(front ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                  )
+                ) : null}
                 {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} /> : null}
                 {isSel ? <EndMarkers a={fixturePixels(f)[0]} b={fixturePixels(f).at(-1)} V={V} k={k} /> : null}
                 {isSel ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
@@ -1580,6 +1793,45 @@ export function LayoutPage() {
 
   const SelIcon = sel ? KIND_ICONS[sel.kind] : null;
 
+  // The multi-selection's items that still exist, with their names and effects.
+  const multiItems = multi.flatMap((key) => {
+    const t = effectTarget(key);
+    const f = layout.fixtures.find((x) => x.id === t.id);
+    if (!f) return [];
+    if (t.segment == null) return [{ key, name: f.name, effect: f.effect }];
+    if (!isLine(f) || t.segment >= f.points.length - 1) return [];
+    return [{ key, name: `${f.name} · segment ${t.segment + 1}`, effect: f.segmentEffects?.[t.segment] }];
+  });
+  const multiShown = multiItems.find((it) => it.effect)?.effect;
+  const multiMixed = new Set(multiItems.map((it) => JSON.stringify(it.effect ?? null))).size > 1;
+  /**
+   * Changes the effect of every item in the multi-selection. A new effect (or none) replaces
+   * them all; a changed setting goes to each item, which keeps its other settings.
+   */
+  function setMultiEffect(next: EffectSettings | undefined, prev: EffectSettings | undefined) {
+    let fn: (cur: EffectSettings | undefined) => EffectSettings | undefined;
+    if (!next) fn = () => undefined;
+    else if (!prev || next.effect !== prev.effect) fn = () => next;
+    else {
+      const keys = new Set([...Object.keys(next), ...Object.keys(prev)] as (keyof EffectSettings)[]);
+      const changed: Partial<EffectSettings> = {};
+      for (const k of keys) if (JSON.stringify(next[k]) !== JSON.stringify(prev[k])) (changed as Record<string, unknown>)[k] = next[k];
+      fn = (cur) => (cur ? { ...cur, ...changed } : next);
+    }
+    const keys = new Set(multiItems.map((it) => it.key));
+    edit((l) => ({
+      ...l,
+      fixtures: l.fixtures.map((f) => {
+        let g = f;
+        if (keys.has(f.id)) g = { ...g, effect: fn(g.effect) };
+        if (isLine(f))
+          for (let k = 0; k < f.points.length - 1; k++)
+            if (keys.has(effectKey(f.id, k))) g = { ...g, segmentEffects: setSegmentEffect(g.segmentEffects, k, fn(g.segmentEffects?.[k])) };
+        return g;
+      })
+    }));
+  }
+
   return (
     <div className="flex flex-col bg-stone-100 lg:h-full dark:bg-stone-950">
       {/* The command bar: history, viewports, the real lights, the picture, and saving. */}
@@ -1625,6 +1877,23 @@ export function LayoutPage() {
         >
           {showOnLights ? <Lightbulb /> : <LightbulbOff />}
           <span className="max-w-48 truncate">{lightsLabel}</span>
+        </Button>
+        {barSep}
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setPlaying((v) => !v)}
+          disabled={!fxCount}
+          aria-pressed={playing}
+          title={fxCount ? `${playing ? 'Stop' : 'Play'} the effects (P)` : 'Select an object and pick an effect for it first'}
+          className={cn(playing && 'text-sky-700 dark:text-sky-300')}
+        >
+          {playing ? <Pause /> : <Play />} {playing ? 'Stop effects' : 'Play effects'}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={scenesMenu} disabled={busy} title="Save the effects as a scene for the public page, or open a scene to change it">
+          <Clapperboard />
+          <span className="max-w-40 truncate">{editingScene ? editingScene.name : 'Scenes'}</span>
+          <ChevronDown />
         </Button>
         <Button size="sm" variant="ghost" onClick={() => fileInput.current?.click()} disabled={busy} title="A photo of the front of the house, to trace the lights over">
           <ImagePlus /> {layout.background ? 'Change picture' : 'Add house picture'}
@@ -1694,10 +1963,11 @@ export function LayoutPage() {
                         fill
                         layout={layout}
                         getFrame={getFrame}
-                        selected={selected}
-                        onSelect={(id) => {
-                          setSelected(id);
+                        selected={playing ? null : selected}
+                        onSelect={(id, add) => {
                           setTool('select');
+                          if (add) return void (id && toggleTarget(id));
+                          setSelected(id);
                         }}
                       />
                     </Suspense>
@@ -1762,21 +2032,38 @@ export function LayoutPage() {
               <ul role="listbox" aria-label="Objects" className="min-h-0 flex-1 overflow-y-auto py-1">
                 {layout.fixtures.map((f, i) => {
                   const Icon = KIND_ICONS[f.kind];
-                  const on = selected === f.id;
+                  const on = selected === f.id || multi.includes(f.id);
+                  const partly = !on && multi.some((x) => effectTarget(x).id === f.id);
                   return (
                     <li
                       key={f.id}
                       role="option"
                       aria-selected={on}
-                      onClick={() => {
+                      title={partly ? 'Some of its segments are selected' : undefined}
+                      onClick={(e) => {
                         if (tool !== 'select') chooseTool('select');
-                        setSelected(f.id);
+                        if (e.ctrlKey || e.metaKey) {
+                          toggleTarget(f.id);
+                        } else if (e.shiftKey && listAnchor.current) {
+                          // A range, from the item clicked before to this one.
+                          const ids = layout.fixtures.map((x) => x.id);
+                          const a = ids.indexOf(listAnchor.current);
+                          const b = ids.indexOf(f.id);
+                          if (a >= 0) return pickTargets(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
+                          setSelected(f.id);
+                        } else setSelected(f.id);
+                        listAnchor.current = f.id;
                       }}
+                      onMouseDown={(e) => e.shiftKey && e.preventDefault()}
                       onDoubleClick={() => setRenaming(f.id)}
                       onContextMenu={(e) => objectMenu(e, f)}
                       className={cn(
                         'mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px]',
-                        on ? 'bg-sky-600 text-white' : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
+                        on
+                          ? 'bg-sky-600 text-white'
+                          : partly
+                            ? 'bg-sky-600/15 text-stone-900 dark:text-white'
+                            : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
                       )}
                     >
                       <Icon className="size-3.5 shrink-0" style={{ color: on ? undefined : `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
@@ -1860,7 +2147,39 @@ export function LayoutPage() {
                       onClose={() => setSegment(null)}
                     />
                   </PropSection>
-                ) : isLine(sel) && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
+                ) : null}
+
+                {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+                  <PropSection
+                    key="segment-effect"
+                    id="segment-effect"
+                    title={sel.segmentEffects?.[segment] ? `Segment ${segment + 1} effect · ${EFFECT_NAMES[sel.segmentEffects[segment].effect]}` : `Segment ${segment + 1} effect`}
+                  >
+                    <EffectProps
+                      effect={sel.segmentEffects?.[segment]}
+                      objectCount={sel.points.length - 1}
+                      noneLabel={sel.effect ? `Same as the line (${EFFECT_NAMES[sel.effect.effect]})` : 'Same as the line (dark)'}
+                      copyLabel="Use on every segment"
+                      copyTitle="Every segment of this line plays this effect on its own"
+                      emptyNote={
+                        sel.skip?.includes(segment)
+                          ? 'This segment is off (skipped): it stays dark, whatever its effect.'
+                          : 'This segment plays the whole line’s effect. Pick an effect to give it its own: it runs from the segment’s first LED to its last, and the line’s effect fills the rest.'
+                      }
+                      onChange={(effect) => {
+                        update(sel.id, { segmentEffects: setSegmentEffect(sel.segmentEffects, segment, effect) });
+                        if (effect && !sel.segmentEffects?.[segment]) setPlaying(true);
+                      }}
+                      onCopyToAll={() => {
+                        const fx = sel.segmentEffects?.[segment];
+                        update(sel.id, { segmentEffects: fx ? Object.fromEntries(sel.points.slice(1).map((_, k) => [k, fx])) : undefined });
+                        setPlaying(true);
+                      }}
+                    />
+                  </PropSection>
+                ) : null}
+
+                {isLine(sel) && segment == null && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
                   <PropSection key="corner" id="corner" title={`Corner ${corner}`}>
                     <CornerProps f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} />
                   </PropSection>
@@ -1890,6 +2209,26 @@ export function LayoutPage() {
                   {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
                     <PropNote>Click one segment of the line to set its first and last LED. Click a corner to pin it, or to split the line there.</PropNote>
                   ) : null}
+                </PropSection>
+
+                <PropSection
+                  key="effect"
+                  id="effect"
+                  title={`${isLine(sel) && segment != null ? 'Whole line effect' : 'Effect'}${sel.effect ? ` · ${EFFECT_NAMES[sel.effect.effect]}` : ''}`}
+                >
+                  <EffectProps
+                    effect={sel.effect}
+                    objectCount={layout.fixtures.length}
+                    onChange={(effect) => {
+                      update(sel.id, { effect });
+                      if (effect && !sel.effect) setPlaying(true);
+                    }}
+                    onCopyToAll={() => {
+                      const fx = sel.effect;
+                      edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => ({ ...f, effect: fx })) }));
+                      setPlaying(true);
+                    }}
+                  />
                 </PropSection>
 
                 <PropSection key="leds" id="leds" title="LEDs">
@@ -1951,6 +2290,54 @@ export function LayoutPage() {
                   </PropSection>
                 ) : null}
               </>
+            ) : multiItems.length >= 2 ? (
+              <>
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] font-semibold">{multiItems.length} selected</p>
+                    <p className="truncate text-[11px] text-stone-500">Ctrl/⌘-click to add or remove. Esc to clear.</p>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setMulti([])} title="Clear the selection (Esc)" aria-label="Clear the selection" className="px-2">
+                    <X />
+                  </Button>
+                </div>
+                <PropSection key="multi-items" id="multi-items" title="Selection">
+                  <ul className="space-y-0.5">
+                    {multiItems.map((it) => (
+                      <li key={it.key} className="group flex items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
+                        <button type="button" className="min-w-0 flex-1 truncate text-left" title="Select only this" onClick={() => pickTargets([it.key])}>
+                          {it.name}
+                        </button>
+                        <span className="text-stone-500">{it.effect ? EFFECT_NAMES[it.effect.effect] : '—'}</span>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${it.name} from the selection`}
+                          title="Remove from the selection"
+                          onClick={() => toggleTarget(it.key)}
+                          className="grid size-5 place-items-center rounded text-stone-400 opacity-0 group-hover:opacity-100 hover:text-stone-900 dark:hover:text-white [&_svg]:size-3"
+                        >
+                          <X />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </PropSection>
+                <PropSection key="multi-effect" id="multi-effect" title={`Effect${multiShown ? ` · ${EFFECT_NAMES[multiShown.effect]}` : ''}`}>
+                  {multiMixed ? (
+                    <PropNote>They play different effects now. The settings below are the first one’s. A setting you change goes to each of them; a new effect replaces them all.</PropNote>
+                  ) : null}
+                  <EffectProps
+                    effect={multiShown}
+                    objectCount={multiItems.length}
+                    noneLabel="None"
+                    emptyNote="Pick an effect: every selected object and segment gets it. A segment plays its own copy; the rest of its line keeps the line’s effect."
+                    onChange={(next) => {
+                      setMultiEffect(next, multiShown);
+                      if (next) setPlaying(true);
+                    }}
+                  />
+                </PropSection>
+              </>
             ) : (
               <>
                 <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
@@ -1959,6 +2346,65 @@ export function LayoutPage() {
                     <p className="text-[11px] text-stone-500">Nothing selected. Click an object to see its properties.</p>
                   </div>
                 </div>
+                <PropSection key="yardfx" id="yardfx" title="Whole yard effect">
+                  <EffectProps
+                    effect={layout.effect}
+                    objectCount={0}
+                    noneLabel="None"
+                    emptyNote="An effect for every object at once. A 3-D effect plays over the whole yard as one picture; a 1-D effect runs along each object. Objects and segments with their own effect play theirs instead."
+                    onChange={(effect) => {
+                      updateLayout({ effect });
+                      if (effect) setPlaying(true);
+                    }}
+                  />
+                </PropSection>
+                <PropSection key="scene" id="scene" title="Effects and scenes">
+                  {fxCount ? (
+                    <ul className="space-y-0.5">
+                      {layout.effect ? (
+                        <li className="flex items-center gap-2 px-1 py-0.5 text-xs">
+                          <span className="min-w-0 flex-1 truncate font-medium">Whole yard</span>
+                          <span className="text-stone-500">{EFFECT_NAMES[layout.effect.effect]}</span>
+                        </li>
+                      ) : null}
+                      {layout.fixtures.flatMap((f) => {
+                        const rows: { key: string; name: string; fx: EffectSettings; seg: number | null }[] = [];
+                        if (f.effect) rows.push({ key: f.id, name: f.name, fx: f.effect, seg: null });
+                        if (isLine(f))
+                          for (const [k, fx] of Object.entries(f.segmentEffects ?? {}).sort(([a], [b]) => Number(a) - Number(b)))
+                            if (Number(k) < f.points.length - 1) rows.push({ key: `${f.id}#${k}`, name: `${f.name} · segment ${Number(k) + 1}`, fx, seg: Number(k) });
+                        return rows.map((r) => (
+                          <li key={r.key}>
+                            <button
+                              type="button"
+                              onClick={(e) => (e.ctrlKey || e.metaKey ? toggleTarget(r.key) : r.seg == null ? setSelected(f.id) : selectSegment(f.id, r.seg))}
+                              className={cn('flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800', r.seg != null && 'pl-4')}
+                            >
+                              <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                              <span className="text-stone-500">{EFFECT_NAMES[r.fx.effect]}</span>
+                            </button>
+                          </li>
+                        ));
+                      })}
+                    </ul>
+                  ) : (
+                    <PropNote>No object has an effect yet. Select an object, then pick an effect in its Effect section.</PropNote>
+                  )}
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    <PropButton onClick={() => setPlaying((v) => !v)} disabled={!fxCount}>
+                      {playing ? <Pause /> : <Play />} {playing ? 'Stop' : 'Play'}
+                    </PropButton>
+                    {editingScene ? (
+                      <PropButton onClick={() => void saveScene({ id: editingScene.id })} disabled={!fxCount || busy}>
+                        <Save /> Save “{editingScene.name}”
+                      </PropButton>
+                    ) : null}
+                    <PropButton onClick={() => setNewScene('')} disabled={!fxCount || busy}>
+                      <Clapperboard /> Save as a new scene
+                    </PropButton>
+                  </div>
+                  <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
+                </PropSection>
                 <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
                 {runs.size ? (
                   <PropSection key="devices" id="devices" title="LEDs per device">
@@ -2021,9 +2467,46 @@ export function LayoutPage() {
         </span>
       </div>
       {menu ? <ContextMenu menu={menu} onClose={() => setMenu(null)} /> : null}
+      <Dialog
+        open={newScene != null}
+        onClose={() => setNewScene(null)}
+        size="sm"
+        title="Save as a new scene"
+        description={`These ${fxCount} effect(s) become a scene: a button on the public page.${dirty ? ' The layout is saved too.' : ''}`}
+        footer={
+          <>
+            <Button onClick={() => setNewScene(null)}>Cancel</Button>
+            <Button variant="primary" loading={busy} disabled={!newScene?.trim()} onClick={() => newScene?.trim() && void saveScene({ name: newScene.trim() })}>
+              Create scene
+            </Button>
+          </>
+        }
+      >
+        <form
+          className="pb-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newScene?.trim()) void saveScene({ name: newScene.trim() });
+          }}
+        >
+          <Field label="Name" hint="Shown on the public page.">
+            {(id) => <Input id={id} value={newScene ?? ''} onChange={(e) => setNewScene(e.target.value)} placeholder="For example: Winter Wonderland" autoFocus maxLength={100} />}
+          </Field>
+        </form>
+      </Dialog>
     </div>
   );
 }
+
+/** Sets or clears the effect of segment k. */
+function setSegmentEffect(fx: Fixture['segmentEffects'], k: number, effect: EffectSettings | undefined): Fixture['segmentEffects'] {
+  const next = { ...fx };
+  if (effect) next[k] = effect;
+  else delete next[k];
+  return Object.keys(next).length ? next : undefined;
+}
+
+const EFFECT_NAMES = Object.fromEntries(EFFECTS.map((e) => [e.id, e.name])) as Record<EffectId, string>;
 
 /** After two points are measured: type the real distance between them to set the scale. */
 function MeasureBar({ length, m, onScale }: { length: number; m: Measure; onScale: (meters: number) => void }) {
@@ -2522,6 +3005,7 @@ const SHORTCUTS: [string, string][] = [
   ['V  A  C  H', 'Select, edit points, split, pan'],
   ['R  L  B  T', 'Roofline, line, bush, tree'],
   ['M', 'Measure'],
+  ['P', 'Play or stop the effects'],
   ['Wheel, pinch', 'Zoom at the pointer'],
   ['Middle-drag, Space-drag', 'Pan'],
   ['F', 'Zoom to the selection'],
@@ -2534,6 +3018,9 @@ const SHORTCUTS: [string, string][] = [
   ['Delete', 'Delete the point or object'],
   ['F2', 'Rename the object'],
   ['Ctrl/⌘-click an end', 'Continue the line'],
+  ['Ctrl/⌘-click', 'Add to or remove from the selection'],
+  ['Shift-click in the list', 'Select a range of objects'],
+  ['Esc', 'Clear a multi-selection'],
   ['Right-click', 'Actions'],
   ['Ctrl/⌘+Z, Shift+Z', 'Undo, redo'],
   ['Ctrl/⌘+S', 'Save']

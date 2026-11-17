@@ -1,4 +1,7 @@
-import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LogLevel, PublicState } from '../../shared/types.ts';
+import { effectObjects, effectsLook, type EffectSettings } from '../../shared/effects.ts';
+import { sequenceEffects, sequenceObjects, type Sequence } from '../../shared/sequence.ts';
+import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LogLevel, PublicState, Scene } from '../../shared/types.ts';
+import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
 import { KEY, readSettings } from './settings.ts';
@@ -6,6 +9,12 @@ import { hexToRgb, wled, type FetchResult } from './wled.ts';
 import { mergeLooks, type PresetLook } from './presetLook.ts';
 
 export type PresetImport = { deviceId: string; ok: true; count: number } | { deviceId: string; ok: false; error: string };
+
+/**
+ * Plays a scene's effects on the layout objects, or a sequence (null: stops them). Returns the
+ * devices that get the frames and the number of objects that are lit.
+ */
+export type EffectPlayer = (show: { effects?: Record<string, EffectSettings> | null; sequence?: Sequence | null } | null) => { devices: string[]; objects: number };
 
 export interface Actor {
   ip?: string | null;
@@ -30,10 +39,51 @@ export class Lights {
   private pollTimer: NodeJS.Timeout | null = null;
   private db: Db;
   private bus: Bus;
+  private effectPlayer: EffectPlayer | null = null;
 
   constructor(db: Db, bus: Bus) {
     this.db = db;
     this.bus = bus;
+  }
+
+  /** Connects the game host, which draws effects and sends them to the lights. */
+  setEffectPlayer(player: EffectPlayer) {
+    this.effectPlayer = player;
+  }
+
+  /** What a scene plays on the lights: its sequence (when it still exists), or its effects. */
+  private showOf(scene: Scene | null) {
+    if (!scene) return null;
+    const sequence = scene.sequenceId ? this.db.getSequence(scene.sequenceId) : null;
+    return sequence ? { sequence } : scene.effects ? { effects: scene.effects } : null;
+  }
+
+  /** After a restart: the scene that was playing plays again, if it has effects or a sequence. */
+  resumeEffects() {
+    const id = this.db.getSetting(KEY.currentScene);
+    const show = this.showOf(id ? this.db.getScene(id) : null);
+    if (show) this.effectPlayer?.(show);
+  }
+
+  /** A scene was changed: if it is playing, play its new effects at once. */
+  sceneChanged(sceneId: string) {
+    if (this.db.getSetting(KEY.currentScene) !== sceneId) return;
+    this.effectPlayer?.(this.showOf(this.db.getScene(sceneId)));
+  }
+
+  /** A sequence was saved or deleted: a playing scene that uses it plays the new version. */
+  sequenceChanged(sequenceId: string) {
+    const id = this.db.getSetting(KEY.currentScene);
+    const scene = id ? this.db.getScene(id) : null;
+    if (scene && (scene.sequenceId === sequenceId || !scene.sequenceId)) this.effectPlayer?.(this.showOf(scene));
+  }
+
+  /** A scene was deleted: if it was playing, its effects stop. */
+  sceneDeleted(sceneId: string) {
+    if (this.db.getSetting(KEY.currentScene) === sceneId) {
+      this.effectPlayer?.(null);
+      this.db.setSetting(KEY.currentScene, '');
+    }
   }
 
   log(level: LogLevel, action: string, message: string, details?: unknown, actor?: Actor) {
@@ -103,15 +153,22 @@ export class Lights {
     const isOnline = (id: string) => this.status.get(id)?.online === true;
     const enabledIds = new Set(enabled.map((d) => d.id));
     const presets = this.db.listDevicePresets();
+    const layout = readLayout(this.db);
+    const sequences = new Map(this.db.listSequences().map((q) => [q.id, q]));
     const scenes = this.db.listScenes().map((s) => {
-      const mapped = Object.keys(s.devicePresets).filter((id) => enabledIds.has(id));
-      const looks: PresetLook[] = [];
+      // Effects (or a sequence) on objects that are in the layout, and the devices they are on.
+      const seq = s.sequenceId ? sequences.get(s.sequenceId) : undefined;
+      const objects = new Set(seq ? sequenceObjects(seq, layout) : effectObjects(layout, Object.keys(s.effects ?? {})));
+      const fxDevices = new Set(layout.fixtures.filter((f) => objects.has(f.id)).map((f) => f.deviceId).filter((id): id is string => !!id && enabledIds.has(id)));
+      const mapped = Object.keys(s.devicePresets).filter((id) => enabledIds.has(id) && !fxDevices.has(id));
+      const looks: PresetLook[] = effectsLook(objects.size ? (seq ? sequenceEffects(seq) : Object.values(s.effects ?? {})) : []);
       for (const deviceId of mapped) {
         const p = presets[deviceId]?.find((x) => x.id === s.devicePresets[deviceId]);
         if (p?.colors?.length) looks.push({ colors: p.colors, energy: p.energy ?? 0.3 });
       }
       const look = mergeLooks(looks);
-      return { id: s.id, name: s.name, online: mapped.length === 0 ? false : mapped.some(isOnline), palette: look.colors, energy: look.energy };
+      const all = [...mapped, ...fxDevices];
+      return { id: s.id, name: s.name, online: all.length === 0 ? false : all.some(isOnline), palette: look.colors, energy: look.energy };
     });
     const onlineDevices = enabled.filter((d) => isOnline(d.id)).length;
     return {
@@ -150,17 +207,26 @@ export class Lights {
     const scene = this.db.getScene(sceneId);
     if (!scene) return null;
     const devices = this.db.listDevices().filter((d) => d.enabled);
+    // Effects first: a device with an object that plays an effect gets the effect, not a preset.
+    const played = this.effectPlayer?.(this.showOf(scene)) ?? { devices: [], objects: 0 };
+    const streamed = new Set(played.devices);
     const work = [];
     const skipped: string[] = [];
     for (const device of devices) {
       const presetId = scene.devicePresets[device.id];
+      if (streamed.has(device.id)) continue;
       if (!presetId) skipped.push(device.id);
       else work.push({ device, run: () => wled.applyPreset(device, presetId) });
     }
     const result = await this.fanOut(work);
     result.skipped = skipped;
+    for (const id of streamed) {
+      if (this.status.get(id)?.online === false) result.failed.push({ deviceId: id, error: 'Not responding' });
+      else result.applied.push(id);
+    }
+    result.effects = played.objects;
 
-    if (result.applied.length > 0) {
+    if (result.applied.length > 0 || played.objects > 0) {
       this.db.setSetting(KEY.currentScene, scene.id);
       this.db.setSetting(KEY.currentColor, '');
       const { defaultSceneId } = readSettings(this.db);
@@ -168,9 +234,9 @@ export class Lights {
       else this.scheduleRevert();
     }
     this.log(
-      result.applied.length ? (result.failed.length ? 'warn' : 'info') : 'error',
+      result.applied.length || played.objects ? (result.failed.length ? 'warn' : 'info') : 'error',
       reason === 'revert' ? 'auto_revert' : 'applied',
-      `Scene "${scene.name}" applied to ${result.applied.length}/${work.length} device(s)`,
+      `Scene "${scene.name}" applied to ${result.applied.length}/${work.length + streamed.size} device(s)${played.objects ? `, effects on ${played.objects} object(s)` : ''}`,
       { sceneId: scene.id, sceneName: scene.name, ...result },
       actor
     );
@@ -182,6 +248,7 @@ export class Lights {
     const rgb = hexToRgb(hex);
     if (!rgb) return null;
     const color = `#${hex.replace('#', '').toLowerCase()}`;
+    this.effectPlayer?.(null);
     const devices = this.db.listDevices().filter((d) => d.enabled);
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb) })));
     if (result.applied.length > 0) {

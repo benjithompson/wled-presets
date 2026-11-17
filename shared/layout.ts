@@ -2,6 +2,8 @@
 // the house, and where each LED of each object sits. Shared by the server (games) and the
 // web client (editor and simulator), so both agree on every pixel's position.
 
+import type { EffectSettings } from './effects.ts';
+
 /**
  * roof: the roofline, a line of LEDs that games use as "the roof".
  * line: any other line of LEDs (windows, doors, a fence, a path); edited like a roof line.
@@ -70,6 +72,16 @@ export interface Fixture {
    * Their LEDs stay dark, and games skip them.
    */
   skip?: number[];
+  /**
+   * The effect this object plays in the layout editor: the working copy of a scene. A scene
+   * saved from the editor keeps its own copy of every object's effect.
+   */
+  effect?: EffectSettings;
+  /**
+   * Roof and line: effects of single segments, by segment index (segment k runs from point k
+   * to point k + 1). Such a segment plays its own effect; the object's effect fills the rest.
+   */
+  segmentEffects?: Record<string, EffectSettings>;
 }
 
 export interface Layout {
@@ -85,6 +97,11 @@ export interface Layout {
   units?: Units;
   /** The ground in the front view: the y of the bottom of the front wall. Default: the bottom edge. */
   groundY?: number;
+  /**
+   * The effect the whole yard plays in the layout editor (the working copy of a scene's "*"
+   * effect). Objects and segments with their own effect play theirs instead.
+   */
+  effect?: EffectSettings;
 }
 
 export const LAYOUT_WIDTH = 1600;
@@ -306,6 +323,26 @@ export function activeLeds(f: Fixture): Uint8Array {
   return out;
 }
 
+/**
+ * Moves segment effects to new segment indexes after the points changed. `to(k)` gives the
+ * new index (or indexes) of old segment k; none drops it. When two land on one segment, the
+ * first one wins.
+ */
+export function mapSegmentEffects(fx: Fixture['segmentEffects'], to: (k: number) => number[]): Fixture['segmentEffects'] {
+  if (!fx) return fx;
+  const out: Record<string, EffectSettings> = {};
+  const keys = Object.keys(fx)
+    .map(Number)
+    .sort((a, b) => a - b);
+  for (const k of keys) for (const j of to(k)) if (j >= 0 && !(j in out)) out[j] = fx[k];
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Where the segments go when a point is inserted inside segment k: k becomes two (both keep its effect). */
+export const segmentsAfterInsert = (k: number) => (s: number) => (s < k ? [s] : s === k ? [k, k + 1] : [s + 1]);
+/** Where the segments go when inner point i is removed: segments i - 1 and i become one. */
+export const segmentsAfterRemove = (i: number) => (s: number) => (s < i ? [s] : s === i ? [i - 1] : [s - 1]);
+
 /** Segment indexes after inserting a point inside segment k: k becomes two segments. */
 export function skipAfterInsert(skip: number[] | undefined, k: number): number[] | undefined {
   if (!skip?.length) return skip;
@@ -429,7 +466,7 @@ export function clampPointLed(f: Fixture, index: number, led: number): number {
  * grow away from the old end. `shifted` is true when that would go below LED 0, so the numbers
  * start at 0 instead.
  */
-export function extendLine(f: Fixture, at: 'first' | 'last', added: Point[]): { patch: Pick<Fixture, 'points' | 'pixels' | 'startPixel' | 'pointLeds' | 'skip'>; shifted: boolean } {
+export function extendLine(f: Fixture, at: 'first' | 'last', added: Point[]): { patch: Pick<Fixture, 'points' | 'pixels' | 'startPixel' | 'pointLeds' | 'skip' | 'segmentEffects'>; shifted: boolean } {
   const n = Math.max(1, Math.floor(f.pixels));
   const oldLen = segLengths(f.points).reduce((a, b) => a + b, 0);
   // LED steps per layout unit. A line with no length yet: one LED per 10 units.
@@ -443,6 +480,7 @@ export function extendLine(f: Fixture, at: 'first' | 'last', added: Point[]): { 
   let points: Point[];
   let pins: (number | null)[];
   let skip = f.skip;
+  let segmentEffects = f.segmentEffects;
   if (at === 'last') {
     points = [...f.points, ...added];
     pins = [...oldPins, ...added.map(() => null)];
@@ -452,6 +490,7 @@ export function extendLine(f: Fixture, at: 'first' | 'last', added: Point[]): { 
     pins = [...added.map(() => null), ...oldPins.map((p) => (p == null ? null : p + add))];
     pins[added.length] = add;
     skip = f.skip?.map((k) => k + added.length);
+    segmentEffects = mapSegmentEffects(f.segmentEffects, (k) => [k + added.length]);
   }
   const pixels = Math.min(MAX_FIXTURE_PIXELS, n + add);
   // Keep the old LEDs' device numbers: the start moves down when the numbers grow toward it.
@@ -461,7 +500,7 @@ export function extendLine(f: Fixture, at: 'first' | 'last', added: Point[]): { 
   if (shifted) startPixel = 0;
   const last = points.length - 1;
   const pointLeds = pins.map((p, i) => (i === 0 || i === last || p == null ? null : p));
-  return { patch: { points, pixels, startPixel, pointLeds: pointLeds.some((p) => p != null) ? pointLeds : undefined, skip }, shifted };
+  return { patch: { points, pixels, startPixel, pointLeds: pointLeds.some((p) => p != null) ? pointLeds : undefined, skip, segmentEffects }, shifted };
 }
 
 /** The point on a line at a fraction t (0..1) of segment k, with depth. */
@@ -472,12 +511,12 @@ export function pointOnSegment(f: Fixture, k: number, t: number): Point {
 }
 
 /** Inserts a point inside segment k. Pins and skipped segments stay with their points. */
-export function insertPoint(f: Fixture, k: number, p: Point): Pick<Fixture, 'points' | 'pointLeds' | 'skip'> {
+export function insertPoint(f: Fixture, k: number, p: Point): Pick<Fixture, 'points' | 'pointLeds' | 'skip' | 'segmentEffects'> {
   const points = [...f.points];
   points.splice(k + 1, 0, p);
   const pins = f.pointLeds ? [...f.pointLeds] : undefined;
   pins?.splice(k + 1, 0, null);
-  return { points, pointLeds: pins, skip: skipAfterInsert(f.skip, k) };
+  return { points, pointLeds: pins, skip: skipAfterInsert(f.skip, k), segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterInsert(k)) };
 }
 
 export interface DeviceRun {

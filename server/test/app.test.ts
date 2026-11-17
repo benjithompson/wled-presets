@@ -41,7 +41,9 @@ async function setup() {
     const text = await res.text();
     return { status: res.status, json: text ? JSON.parse(text) : null };
   };
-  return { db, lights, call };
+  const raw = (method: string, url: string, data?: Uint8Array<ArrayBuffer>, extra: Record<string, string> = {}) =>
+    app.request(url, { method, headers: { host: 'lights.lan', ...(cookie ? { cookie } : {}), ...extra }, body: data });
+  return { db, lights, call, raw };
 }
 
 let t: Awaited<ReturnType<typeof setup>>;
@@ -110,6 +112,70 @@ describe('devices and scenes', () => {
     expect(mocks[0].requests.some((q) => q.url === '/json/state' && (q.body as any)?.ps === 3)).toBe(true);
     expect(mocks[1].requests.some((q) => q.url === '/json/state' && (q.body as any)?.ps === 5)).toBe(true);
     expect((await t.call('GET', '/api/state')).json.currentSceneId).toBe(scene.id);
+  });
+
+  it('stores a scene with effects, plays them, and stops them when a color is chosen', async () => {
+    await login();
+    const [a, b] = await addDevices();
+    // The roof is on device a; the bushes have no device (simulator only).
+    const layout = (await t.call('GET', '/api/layout')).json;
+    layout.fixtures[0].deviceId = a;
+    expect((await t.call('PUT', '/api/admin/layout', layout)).status).toBe(200);
+    const plays: (string[] | null)[] = [];
+    t.lights.setEffectPlayer((show) => {
+      const fx = show?.effects;
+      plays.push(fx ? Object.keys(fx).sort() : null);
+      return fx ? { devices: [a], objects: Object.keys(fx).length } : { devices: [], objects: 0 };
+    });
+    const effects = {
+      roof: { effect: 'aurora', palette: 'aurora', speed: 0.5, intensity: 0.5, size: 0.5, brightness: 0.8 },
+      'bush-1': { effect: 'fireworks', palette: 'custom', colors: ['#ff0000', '#00ff00'], speed: 0.7, intensity: 0.4, size: 0.5, brightness: 1, reverse: true }
+    };
+    const bad = await t.call('POST', '/api/admin/scenes', { name: 'Bad', effects: { roof: { ...effects.roof, speed: 2 } } });
+    expect(bad.status).toBe(400);
+    const created = await t.call('POST', '/api/admin/scenes', { name: 'Wonderland', devicePresets: { [a]: 2, [b]: 3 }, effects });
+    expect(created.status).toBe(201);
+    expect(created.json.effects).toEqual(effects);
+    // Renaming in the scene editor leaves the effects alone.
+    const renamed = await t.call('PUT', `/api/admin/scenes/${created.json.id}`, { name: 'Winter', devicePresets: { [a]: 2, [b]: 3 } });
+    expect(renamed.json.effects).toEqual(effects);
+
+    const r = await t.call('POST', `/api/scenes/${created.json.id}/apply`);
+    expect(r.status).toBe(200);
+    expect(r.json.effects).toBe(2);
+    // Device a plays the effects, not its preset; device b plays its preset.
+    expect(r.json.applied.sort()).toEqual([a, b].sort());
+    expect(mocks[0].requests.some((q) => (q.body as any)?.ps === 2)).toBe(false);
+    expect(mocks[1].requests.some((q) => (q.body as any)?.ps === 3)).toBe(true);
+    expect(plays).toEqual([['bush-1', 'roof']]);
+    const state = (await t.call('GET', '/api/state')).json;
+    expect(state.currentSceneId).toBe(created.json.id);
+    expect(state.scenes[0].palette.length).toBeGreaterThan(0);
+
+    // Saving new effects while the scene plays shows them at once.
+    await t.call('PUT', `/api/admin/scenes/${created.json.id}`, { name: 'Winter', devicePresets: {}, effects: { roof: effects.roof } });
+    expect(plays.at(-1)).toEqual(['roof']);
+
+    await t.call('POST', '/api/color', { color: '#ff8800' });
+    expect(plays.at(-1)).toBeNull();
+
+    // A backup keeps the effects.
+    const backup = (await t.call('GET', '/api/admin/scenes/export')).json;
+    expect(backup.publicPresets[0].effects).toEqual({ roof: effects.roof });
+    await t.call('POST', '/api/admin/scenes/import', backup);
+    expect((await t.call('GET', '/api/admin/overview')).json.scenes[0].effects).toEqual({ roof: effects.roof });
+  });
+
+  it('plays a scene with effects only on objects that are in the simulator only', async () => {
+    await login();
+    t.lights.setEffectPlayer((fx) => ({ devices: [], objects: fx ? 1 : 0 }));
+    const scene = (await t.call('POST', '/api/admin/scenes', { name: 'Sim', effects: { 'roof#1': { effect: 'plasma', palette: 'rainbow', speed: 0.5, intensity: 0.5, size: 0.5, brightness: 1 } } })).json;
+    const r = await t.call('POST', `/api/scenes/${scene.id}/apply`);
+    expect(r.status).toBe(200);
+    const state = (await t.call('GET', '/api/state')).json;
+    expect(state.currentSceneId).toBe(scene.id);
+    // A segment's effect counts for its object: the scene shows its colors.
+    expect(state.scenes[0].palette.length).toBeGreaterThan(0);
   });
 
   it('skips devices without a mapping', async () => {
@@ -286,5 +352,66 @@ describe('discovery', () => {
     const found = await discoverWled({ subnets: ['192.0.2.0/30'], hosts: ['127.0.0.1'], ports: mocks.map((m) => m.port), timeoutMs: 300 });
     expect(found.map((f) => f.name).sort()).toEqual(['Roof', 'Tree']);
     expect(found.map((f) => f.port).sort()).toEqual(mocks.map((m) => m.port).sort());
+  });
+});
+
+describe('sequences', () => {
+  const clip = { id: 'c1', start: 0, duration: 5, targets: ['*'], effect: { effect: 'wash', palette: 'rainbow', speed: 0.5, intensity: 0.5, size: 0.5, brightness: 1, direction: 'up' } };
+  const body = { name: 'Show', duration: 30, loop: true, tracks: [{ id: 't1', name: 'Layer 1', opacity: 1, blend: 'normal', clips: [clip] }], audio: [], markers: [{ id: 'm1', t: 4 }] };
+
+  it('creates, lists, saves and deletes a sequence; a scene plays it', async () => {
+    await login();
+    const created = await t.call('POST', '/api/admin/sequences', body);
+    expect(created.status).toBe(201);
+    const id = created.json.id;
+    expect((await t.call('GET', '/api/admin/sequences')).json.sequences).toMatchObject([{ id, name: 'Show', layers: 1, clips: 1 }]);
+    expect((await t.call('POST', '/api/admin/sequences', { ...body, tracks: [{ ...body.tracks[0], blend: 'x' }] })).status).toBe(400);
+
+    const shows: unknown[] = [];
+    t.lights.setEffectPlayer((show) => {
+      shows.push(show?.sequence?.name ?? null);
+      return show?.sequence ? { devices: [], objects: 4 } : { devices: [], objects: 0 };
+    });
+    expect((await t.call('POST', '/api/admin/scenes', { name: 'Nope', sequenceId: 'missing' })).status).toBe(400);
+    const scene = (await t.call('POST', '/api/admin/scenes', { name: 'Show time', sequenceId: id })).json;
+    expect(scene.sequenceId).toBe(id);
+    const r = await t.call('POST', `/api/scenes/${scene.id}/apply`);
+    expect(r.status).toBe(200);
+    expect(r.json.effects).toBe(4);
+    expect(shows).toEqual(['Show']);
+    const state = (await t.call('GET', '/api/state')).json;
+    expect(state.scenes[0].palette.length).toBeGreaterThan(0);
+
+    // Saving the sequence plays the new version on the lights.
+    const saved = await t.call('PUT', `/api/admin/sequences/${id}`, { ...body, name: 'Show 2' });
+    expect(saved.status).toBe(200);
+    expect(shows.at(-1)).toBe('Show 2');
+    expect((await t.call('GET', `/api/admin/sequences/${id}`)).json.markers).toEqual(body.markers);
+
+    // Deleting it unlinks the scene and stops it.
+    expect((await t.call('DELETE', `/api/admin/sequences/${id}`)).status).toBe(200);
+    expect(shows.at(-1)).toBeNull();
+    expect((await t.call('GET', '/api/admin/overview')).json.scenes[0].sequenceId).toBeUndefined();
+  });
+
+  it('stores audio files', async () => {
+    await login();
+    const wav = new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4]);
+    const up = await t.call('POST', '/api/admin/audio', undefined, {});
+    expect(up.status).toBe(400);
+    const res = await (async () => {
+      const r = await t.call('GET', '/api/admin/audio');
+      expect(r.json.files).toEqual([]);
+      return r;
+    })();
+    expect(res.status).toBe(200);
+    const sent = await t.raw('POST', '/api/admin/audio', wav, { 'content-type': 'audio/wav', 'x-file-name': encodeURIComponent('Jingle bells.wav') });
+    expect(sent.status).toBe(201);
+    const file = JSON.parse(await sent.text());
+    expect(file).toMatchObject({ name: 'Jingle bells.wav', type: 'audio/wav', size: 8 });
+    const back = await t.raw('GET', `/api/admin/audio/${file.id}`);
+    expect(new Uint8Array(await back.arrayBuffer())).toEqual(wav);
+    expect((await t.call('DELETE', `/api/admin/audio/${file.id}`)).status).toBe(200);
+    expect((await t.raw('GET', `/api/admin/audio/${file.id}`)).status).toBe(404);
   });
 });

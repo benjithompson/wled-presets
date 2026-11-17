@@ -147,3 +147,38 @@ describe('black level for real LEDs', () => {
     expect(Array.from(blackLevel(Uint8Array.from([7, 4, 2, 11, 25, 12, 40, 20, 2])))).toEqual([0, 0, 0, 11, 25, 12, 40, 20, 0]);
   });
 });
+
+describe('the sequence editor on the lights', () => {
+  it('plays a sequence from the editor’s time, holds a paused moment, and gives the device back', async () => {
+    const { LayoutPreview } = await import('../src/layoutPreview.ts');
+    const { LightSender } = await import('../src/lightSender.ts');
+    const { emptySequence } = await import('../../shared/sequence.ts');
+    const mock = await startMockWled(0, 'Roof', 600);
+    const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const sender = new LightSender();
+    const logs: string[] = [];
+    const preview = new LayoutPreview(() => [device], (m) => logs.push(m), sender);
+    const seq = emptySequence('Show');
+    // Red on the roof from 2 s to 6 s.
+    seq.tracks[1].clips.push({ id: 'c', start: 2, duration: 4, targets: ['roof'], effect: { effect: 'candy', palette: 'custom', colors: ['#ff0000'], speed: 0.5, intensity: 0, size: 0.5, brightness: 1 } });
+    try {
+      expect(preview.showSequence({ sequence: seq, time: 1, playing: false }, layout)).toEqual(['Roof']);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(rgb(mock.realtime.leds, 300)).toEqual([0, 0, 0]);
+      preview.showSequence({ sequence: seq, time: 3, playing: true }, layout);
+      await new Promise((r) => setTimeout(r, 200));
+      const [r, g, b] = rgb(mock.realtime.leds, 300);
+      expect(r).toBeGreaterThan(100);
+      expect(g + b).toBe(0);
+      expect(preview.active).toBe(true);
+      preview.stop();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(mock.requests.at(-1)).toMatchObject({ method: 'POST', url: '/json/state', body: { lor: 1 } });
+      expect(logs.some((l) => l.includes('Editor preview on the lights started'))).toBe(true);
+    } finally {
+      preview.close();
+      sender.close();
+      await mock.close();
+    }
+  });
+});

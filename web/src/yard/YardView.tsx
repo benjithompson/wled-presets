@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import type React from 'react';
 import { buildStage, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
@@ -37,14 +38,16 @@ export function YardView({
   zRange = [-480, 480],
   fill = false,
   viewBox,
-  grid
+  grid,
+  onPick,
+  onHover
 }: {
   layout: Layout;
   getFrame: (t: number) => Uint8Array | null;
   className?: string;
   children?: ReactNode;
-  /** Id of an object to outline. */
-  highlight?: string | null;
+  /** Id(s) of objects to outline. */
+  highlight?: string | string[] | null;
   /** CSS length, for example '50dvh'. The view keeps its shape and fits under this height. */
   maxHeight?: string;
   side?: ViewSide;
@@ -56,14 +59,20 @@ export function YardView({
   viewBox?: Box;
   /** Draw a grid. Default: in the top view only. */
   grid?: boolean;
+  /** A click on (or near) an LED: its object. A click on nothing: null. `add`: Ctrl, ⌘ or Shift was down. */
+  onPick?: (id: string | null, add: boolean) => void;
+  /** The object under the pointer (null: none), and where the pointer is in the view (CSS pixels). */
+  onHover?: (id: string | null, at: { x: number; y: number }) => void;
 }) {
   const [zMin, zMax] = zRange;
   const size = viewSize(layout, side, zRange);
   const canvas = useRef<HTMLCanvasElement>(null);
   const getFrameRef = useRef(getFrame);
   getFrameRef.current = getFrame;
-  const highlightRef = useRef(highlight);
-  highlightRef.current = highlight;
+  const highlightRef = useRef<Set<string>>(new Set());
+  highlightRef.current = new Set(highlight == null ? [] : Array.isArray(highlight) ? highlight : [highlight]);
+  /** What the last frame drew, to find the LED under the pointer. */
+  const hitRef = useRef<{ stage: ReturnType<typeof buildStage>; pos: Float32Array; vb: Box; w: number; h: number } | null>(null);
   // Read on every frame, so panning and zooming do not restart the drawing loop.
   const boxRef = useRef<Box>({ x: 0, y: 0, w: size.w, h: size.h });
   boxRef.current = viewBox ?? { x: 0, y: 0, w: size.w, h: size.h };
@@ -117,6 +126,7 @@ export function YardView({
         bloom.height = bh;
       }
       const vb = boxRef.current;
+      hitRef.current = { stage, pos, vb, w: cv.clientWidth, h: cv.clientHeight };
       const sx = w / vb.w;
       const sy = h / vb.h;
       const X = (u: number) => (u - vb.x) * sx;
@@ -179,7 +189,7 @@ export function YardView({
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       for (const f of layout.fixtures) {
-        const hl = highlightRef.current === f.id;
+        const hl = highlightRef.current.has(f.id);
         ctx.strokeStyle = hl ? 'rgba(40,170,255,0.9)' : 'rgba(255,255,255,0.08)';
         ctx.lineWidth = (hl ? 3 : 1.5) * dpr;
         const c = view(f.points[0] ?? { x: 0, y: 0 });
@@ -276,10 +286,45 @@ export function YardView({
     return () => cancelAnimationFrame(raf);
   }, [layout, side, zMin, zMax, fill]);
 
+  /** The object of the LED nearest to the pointer, within 14 pixels. */
+  const hit = (e: { clientX: number; clientY: number }) => {
+    const h = hitRef.current;
+    const cv = canvas.current;
+    if (!h || !cv) return null;
+    const r = cv.getBoundingClientRect();
+    const px = e.clientX - r.left;
+    const py = e.clientY - r.top;
+    const u = h.vb.x + (px / h.w) * h.vb.w;
+    const v = h.vb.y + (py / h.h) * h.vb.h;
+    const k = h.vb.w / h.w;
+    let best = (14 * k) ** 2;
+    let idx = -1;
+    for (let i = 0; i < h.stage.pixelCount; i++) {
+      if (!h.stage.active[i]) continue;
+      const d = (h.pos[i * 2] - u) ** 2 + (h.pos[i * 2 + 1] - v) ** 2;
+      if (d < best) {
+        best = d;
+        idx = i;
+      }
+    }
+    const f = idx < 0 ? null : h.stage.fixtures.find((x) => idx >= x.offset && idx < x.offset + x.count);
+    return { id: f?.id ?? null, x: px, y: py };
+  };
+  const pointer = {
+    onClick: onPick ? (e: React.MouseEvent) => onPick(hit(e)?.id ?? null, e.ctrlKey || e.metaKey || e.shiftKey) : undefined,
+    onPointerMove: onHover
+      ? (e: React.PointerEvent) => {
+          const r = hit(e);
+          if (r) onHover(r.id, { x: r.x, y: r.y });
+        }
+      : undefined,
+    onPointerLeave: onHover ? () => onHover(null, { x: 0, y: 0 }) : undefined
+  };
+
   if (fill) {
     return (
       <div className={cn('absolute inset-0 overflow-hidden bg-[#05070f]', className)}>
-        <canvas ref={canvas} className="absolute inset-0 h-full w-full" />
+        <canvas ref={canvas} className={cn('absolute inset-0 h-full w-full', onPick && 'cursor-pointer')} {...pointer} />
         {children}
       </div>
     );
@@ -289,7 +334,7 @@ export function YardView({
       className={cn('relative mx-auto w-full overflow-hidden rounded-2xl bg-[#05070f] ring-1 ring-white/10', className)}
       style={{ aspectRatio: `${size.w} / ${size.h}`, maxWidth: maxHeight ? `calc(${maxHeight} * ${size.w / size.h})` : undefined }}
     >
-      <canvas ref={canvas} className="absolute inset-0 h-full w-full" />
+      <canvas ref={canvas} className={cn('absolute inset-0 h-full w-full', onPick && 'cursor-pointer')} {...pointer} />
       {children}
     </div>
   );

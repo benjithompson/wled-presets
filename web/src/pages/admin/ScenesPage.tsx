@@ -1,13 +1,38 @@
 import { useRef, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { ArrowDown, ArrowUp, Download, Layers, Pencil, Play, Plus, RefreshCw, Star, Trash2, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, Clapperboard, Download, Layers, Pencil, Play, Plus, RefreshCw, Sparkles, Star, Trash2, Upload } from 'lucide-react';
+import { effectInfo, effectObjects, effectTarget, paletteColors, YARD } from '../../../../shared/effects.ts';
+import type { SequenceSummary } from '../../../../shared/sequence.ts';
+import type { Layout } from '../../../../shared/layout.ts';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, Scene } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Select, Spinner, StatusDot } from '../../components/ui.tsx';
 import { api, type Overview } from '../../lib/api.ts';
 import { downloadJson, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
+import { PaletteSwatch } from './effectProps.tsx';
+
+/**
+ * The effects of a scene on the yard, objects or segments of the layout, those objects, and the
+ * devices they are on. A scene with a sequence lights the objects of the sequence instead.
+ */
+function sceneEffects(scene: Scene, layout: Layout | undefined, seq?: SequenceSummary & { objects?: string[] }) {
+  const byId = new Map((layout?.fixtures ?? []).map((f) => [f.id, f]));
+  const items = seq
+    ? []
+    : Object.entries(scene.effects ?? {}).flatMap(([key, effect]) => {
+        if (key === YARD) return [{ key, effect, name: 'Whole yard' }];
+        const t = effectTarget(key);
+        const f = byId.get(t.id);
+        return f ? [{ key, effect, name: t.segment == null ? f.name : `${f.name} · segment ${t.segment + 1}` }] : [];
+      });
+  const ids = new Set(seq ? (layout?.fixtures ?? []).map((f) => f.id) : effectObjects(layout ?? { fixtures: [] }, items.map((i) => i.key)));
+  const objects = (layout?.fixtures ?? []).filter((f) => ids.has(f.id));
+  return { items, objects, devices: new Set(objects.map((f) => f.deviceId).filter((id): id is string => !!id)) };
+}
+
+const SEQUENCES = ['admin', 'sequences'];
 
 export function ScenesPage() {
   const qc = useQueryClient();
@@ -18,6 +43,9 @@ export function ScenesPage() {
   const fileInput = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const refresh = () => qc.invalidateQueries({ queryKey: OVERVIEW });
+  const { data: layout } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
+  const { data: seqData } = useQuery({ queryKey: SEQUENCES, queryFn: api.sequences });
+  const seqById = new Map((seqData?.sequences ?? []).map((q) => [q.id, q]));
 
   const apply = useMutation({
     mutationFn: (id: string) => api.applyScene(id),
@@ -87,9 +115,12 @@ export function ScenesPage() {
     <>
       <PageHeader
         title="Scenes"
-        description="A scene is one button on the public page. It sets a WLED preset on each device at the same time."
+        description="A scene is one button on the public page. It sets a WLED preset on each device at the same time, or plays effects drawn by the server on the objects of your layout."
         actions={
           <>
+            <Button onClick={() => navigate('/admin/layout')} title="Give objects effects in the layout editor, then save them as a scene">
+              <Sparkles /> New effect scene
+            </Button>
             <Button onClick={exportScenes} disabled={!data?.scenes.length}>
               <Download /> Export
             </Button>
@@ -132,7 +163,10 @@ export function ScenesPage() {
         ) : (
           <ul className="divide-y divide-stone-100 dark:divide-stone-800">
             {data.scenes.map((s, i) => {
-              const mapped = enabledDevices.filter((d) => s.devicePresets[d.id]).length;
+              const seq = s.sequenceId ? seqById.get(s.sequenceId) : undefined;
+              const fx = sceneEffects(s, layout, seq);
+              const mapped = enabledDevices.filter((d) => s.devicePresets[d.id] || fx.devices.has(d.id)).length;
+              const playable = mapped > 0 || fx.objects.length > 0;
               const isDefault = data.settings.defaultSceneId === s.id;
               const isCurrent = data.state.currentSceneId === s.id;
               return (
@@ -169,13 +203,34 @@ export function ScenesPage() {
                     </div>
                     <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">
                       {mapped === enabledDevices.length ? `All ${mapped} device(s)` : `${mapped} of ${enabledDevices.length} device(s)`}
-                      {mapped === 0 ? ' — this scene does nothing yet' : ''}
+                      {seq ? ` · plays the sequence “${seq.name}”` : fx.objects.length ? ` · effects on ${fx.objects.length} object(s)` : ''}
+                      {!playable ? ' — this scene does nothing yet' : ''}
                     </p>
+                    {fx.objects.length ? (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {fx.items.map((it) => (
+                          <span key={it.key} className="inline-flex items-center gap-1.5 rounded-full bg-stone-100 py-0.5 pr-2 pl-1 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300" title={it.name}>
+                            <PaletteSwatch colors={paletteColors(it.effect)} className="block h-3 w-5 rounded-full" />
+                            <span className="max-w-40 truncate">{it.name}</span>
+                            <span className="text-stone-400">{effectInfo(it.effect.effect).name}</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => apply.mutate(s.id)} loading={apply.isPending && apply.variables === s.id} disabled={!mapped}>
+                    <Button size="sm" variant="ghost" onClick={() => apply.mutate(s.id)} loading={apply.isPending && apply.variables === s.id} disabled={!playable}>
                       <Play /> Try
                     </Button>
+                    {seq ? (
+                      <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/sequences?open=${encodeURIComponent(seq.id)}`)} title="Open the sequence in the sequence editor">
+                        <Clapperboard /> Sequence
+                      </Button>
+                    ) : fx.items.length ? (
+                      <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/layout?scene=${encodeURIComponent(s.id)}`)} title="Change the effects in the layout editor">
+                        <Sparkles /> Effects
+                      </Button>
+                    ) : null}
                     <Button size="sm" variant="ghost" onClick={() => setEditing(s)}>
                       <Pencil /> Edit
                     </Button>
@@ -190,7 +245,9 @@ export function ScenesPage() {
         )}
       </Card>
 
-      {data && editing ? <SceneEditor key={editing === 'new' ? 'new' : editing.id} scene={editing === 'new' ? null : editing} data={data} onClose={() => setEditing(null)} /> : null}
+      {data && editing ? (
+        <SceneEditor key={editing === 'new' ? 'new' : editing.id} scene={editing === 'new' ? null : editing} data={data} layout={layout} sequences={seqData?.sequences ?? []} onClose={() => setEditing(null)} />
+      ) : null}
 
       <ConfirmDialog
         open={!!deleting}
@@ -221,17 +278,20 @@ export function ScenesPage() {
   );
 }
 
-function SceneEditor({ scene, data, onClose }: { scene: Scene | null; data: Overview; onClose: () => void }) {
+function SceneEditor({ scene, data, layout, sequences, onClose }: { scene: Scene | null; data: Overview; layout: Layout | undefined; sequences: SequenceSummary[]; onClose: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = useState(scene?.name ?? '');
   const [map, setMap] = useState<Record<string, number>>(scene?.devicePresets ?? {});
+  const [sequenceId, setSequenceId] = useState<string>(scene?.sequenceId ?? '');
   const devices = data.devices.filter((d) => d.enabled);
-  const missing = devices.filter((d) => !data.devicePresets[d.id]?.length);
+  const seq = sequences.find((q) => q.id === sequenceId);
+  const fx = scene || seq ? sceneEffects(scene ?? { id: '', name, sortOrder: 0, devicePresets: {} }, layout, seq) : null;
+  const missing = devices.filter((d) => !data.devicePresets[d.id]?.length && !fx?.devices.has(d.id));
 
   const save = useMutation({
     mutationFn: () => {
       const devicePresets = Object.fromEntries(Object.entries(map).filter(([, v]) => v >= 1));
-      return scene ? api.updateScene(scene.id, { name, devicePresets }) : api.createScene({ name, devicePresets });
+      return scene ? api.updateScene(scene.id, { name, devicePresets, sequenceId: sequenceId || null }) : api.createScene({ name, devicePresets, sequenceId: sequenceId || null });
     },
     onSuccess: () => {
       toast.success(scene ? 'Scene saved' : 'Scene created');
@@ -288,6 +348,21 @@ function SceneEditor({ scene, data, onClose }: { scene: Scene | null; data: Over
           {(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="For example: Candy Cane" autoFocus maxLength={100} />}
         </Field>
 
+        {sequences.length ? (
+          <Field label="Sequence" hint="Plays a sequence on the lights, over and over, instead of effects. Devices with objects in it play it; the others play their preset below.">
+            {(id) => (
+              <Select id={id} value={sequenceId} onChange={(e) => setSequenceId(e.target.value)}>
+                <option value="">None</option>
+                {sequences.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        ) : null}
+
         {sharedNames.length > 0 ? (
           <Field label="Quick fill" hint="Sets every device that has a preset with this name.">
             {(id) => (
@@ -314,7 +389,14 @@ function SceneEditor({ scene, data, onClose }: { scene: Scene | null; data: Over
           </div>
           <ul className="divide-y divide-stone-100 rounded-xl ring-1 ring-stone-200 dark:divide-stone-800 dark:ring-stone-800">
             {devices.map((d) => (
-              <DeviceRow key={d.id} device={d} presets={data.devicePresets[d.id] ?? []} value={map[d.id] ?? 0} onChange={(v) => setMap((m) => ({ ...m, [d.id]: v }))} />
+              <DeviceRow
+                key={d.id}
+                device={d}
+                presets={data.devicePresets[d.id] ?? []}
+                value={map[d.id] ?? 0}
+                onChange={(v) => setMap((m) => ({ ...m, [d.id]: v }))}
+                effects={fx?.objects.filter((f) => f.deviceId === d.id).map((f) => f.name)}
+              />
             ))}
           </ul>
         </div>
@@ -323,7 +405,20 @@ function SceneEditor({ scene, data, onClose }: { scene: Scene | null; data: Over
   );
 }
 
-function DeviceRow({ device, presets, value, onChange }: { device: DeviceWithStatus; presets: { id: number; name: string }[]; value: number; onChange: (v: number) => void }) {
+function DeviceRow({
+  device,
+  presets,
+  value,
+  onChange,
+  effects
+}: {
+  device: DeviceWithStatus;
+  presets: { id: number; name: string }[];
+  value: number;
+  onChange: (v: number) => void;
+  /** Objects on this device that play an effect in the scene: then the device plays effects, not a preset. */
+  effects?: string[];
+}) {
   return (
     <li className="flex flex-wrap items-center gap-3 px-3 py-2.5">
       <StatusDot online={device.online} />
@@ -334,7 +429,12 @@ function DeviceRow({ device, presets, value, onChange }: { device: DeviceWithSta
           {device.port !== 80 ? `:${device.port}` : ''}
         </p>
       </div>
-      {presets.length ? (
+      {effects?.length ? (
+        <span className="inline-flex w-full items-center gap-1.5 text-sm text-stone-600 sm:w-56 dark:text-stone-300" title={effects.join(', ')}>
+          <Sparkles className="size-4 shrink-0 text-sky-600 dark:text-sky-400" />
+          <span className="truncate">Effects on {effects.length === 1 ? effects[0] : `${effects.length} objects`}</span>
+        </span>
+      ) : presets.length ? (
         <Select aria-label={`Preset for ${device.name}`} className="w-full sm:w-56" value={value} onChange={(e) => onChange(Number(e.target.value))}>
           <option value={0}>Do not change</option>
           {presets.map((p) => (
