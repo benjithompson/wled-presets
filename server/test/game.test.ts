@@ -12,7 +12,7 @@ describe('layout geometry', () => {
     const roof = sampleLayout().fixtures[0];
     const px = fixturePixels(roof);
     expect(px).toHaveLength(450);
-    expect(px[0]).toEqual(roof.points[0]);
+    expect(px[0]).toEqual({ ...roof.points[0], z: 0 });
     expect(px[449].x).toBeCloseTo(roof.points.at(-1)!.x);
   });
   it('finds the corners of the roof', () => {
@@ -22,6 +22,44 @@ describe('layout geometry', () => {
     // The peak is the middle corner of a symmetric gable.
     expect(corners[1]).toBeGreaterThan(200);
     expect(corners[1]).toBeLessThan(250);
+  });
+  it('spreads LEDs by their real 3D length, so a run back along the side gets its share', () => {
+    // From the front the side run (point 1 to 2) has no length; it is 400 units deep.
+    const f: Fixture = { ...sampleLayout().fixtures[0], points: [{ x: 0, y: 100 }, { x: 400, y: 100 }, { x: 400, y: 100, z: -400 }], pixels: 101, pointLeds: undefined };
+    expect(pointOffsets(f)).toEqual([0, 50, 100]);
+    const px = fixturePixels(f);
+    expect(px[75]).toEqual({ x: 400, y: 100, z: -200 });
+  });
+  it('places bush LEDs on a dome in front of its center, and tree LEDs on a cone', () => {
+    const bush: Fixture = { id: 'b', name: 'B', kind: 'bush', points: [{ x: 500, y: 700, z: 100 }], radius: 80, pattern: 'fill', pixels: 60, deviceId: null, startPixel: 0, reversed: false };
+    for (const p of fixturePixels(bush)) {
+      expect(p.z).toBeGreaterThanOrEqual(100);
+      expect(p.z).toBeLessThanOrEqual(100 + 80 * 0.75 + 1e-9);
+    }
+    const tree: Fixture = { id: 't', name: 'T', kind: 'tree', points: [{ x: 800, y: 900, z: 300 }], radius: 100, height: 400, pattern: 'spiral', turns: 6, pixels: 200, deviceId: null, startPixel: 0, reversed: false };
+    const tp = fixturePixels(tree);
+    expect(tp).toHaveLength(200);
+    // LED 0 at the base, at the front; the last LED at the top, on the axis.
+    expect(tp[0]).toMatchObject({ y: 900 });
+    expect(tp[0].z).toBeCloseTo(400);
+    expect(tp[199].y).toBeCloseTo(500);
+    expect(Math.hypot(tp[199].x - 800, tp[199].z - 300)).toBeLessThan(5);
+    const strands = fixturePixels({ ...tree, pattern: 'strands', strands: 4 });
+    // Zigzag: strand 0 goes up (ends at the top), strand 1 comes down (ends at the base).
+    expect(strands[49].y).toBeCloseTo(500);
+    expect(strands[50].y).toBeCloseTo(500);
+    expect(strands[99].y).toBeCloseTo(900);
+  });
+  it('keeps 3D positions in the stage, and accepts layouts saved before depth existed', () => {
+    const old = sampleLayout();
+    expect(layoutSchema.safeParse(old).success).toBe(true);
+    const withDepth = { ...old, scale: 50, units: 'm' as const, groundY: 880, fixtures: [...old.fixtures, { id: 't', name: 'Tree', kind: 'tree' as const, points: [{ x: 1, y: 2, z: -3 }], radius: 40, height: 200, pattern: 'strands' as const, strands: 8, pixels: 80, deviceId: null, startPixel: 0, reversed: false }] };
+    const parsed = layoutSchema.parse(withDepth);
+    expect(parsed.fixtures.at(-1)).toMatchObject({ kind: 'tree', points: [{ z: -3 }], height: 200, strands: 8 });
+    expect(parsed).toMatchObject({ scale: 50, units: 'm', groundY: 880 });
+    const stage = buildStage(parsed);
+    expect(stage.positions3).toHaveLength(stage.pixelCount * 3);
+    expect(stage.scale).toBe(50);
   });
   it('builds one frame index range per object', () => {
     const stage = buildStage(sampleLayout());
@@ -46,9 +84,9 @@ describe('LED numbers', () => {
     const f = roof({ pointLeds: [null, null, 300, null, null] });
     const px = fixturePixels(f);
     expect(px).toHaveLength(450);
-    expect(px[300]).toEqual(f.points[2]);
+    expect(px[300]).toEqual({ ...f.points[2], z: 0 });
     expect(pointOffsets(f)[2]).toBe(300);
-    expect(px[449]).toEqual(f.points[4]);
+    expect(px[449]).toEqual({ ...f.points[4], z: 0 });
     // Corners between pins still spread by length.
     expect(pointOffsets(f)[1]).toBeGreaterThan(0);
     expect(pointOffsets(f)[1]).toBeLessThan(300);

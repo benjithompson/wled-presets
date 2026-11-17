@@ -2,7 +2,7 @@ import type { Stage } from '../../../shared/layout.ts';
 import { hsv, type Frame } from './frame.ts';
 import type { Game } from './types.ts';
 
-/** Calm animation shown when nobody is playing: slow color waves on the roof, breathing bushes. */
+/** Calm animation shown when nobody is playing: slow color waves on the roof; everything else breathes. */
 export function idleGame(stage: Stage): Game {
   let t = 0;
   return {
@@ -19,7 +19,8 @@ export function idleGame(stage: Stage): Game {
       }
       stage.fixtures.forEach((f, fi) => {
         for (let i = 0; i < f.count; i++) {
-          if (f.kind === 'bush') {
+          // Everything that is not the roof (bushes, trees, other lines) breathes and twinkles.
+          if (f.kind !== 'roof') {
             const breathe = 0.5 + 0.5 * Math.sin(t * 0.8 + fi * 1.7);
             const twinkle = Math.max(0, Math.sin(t * 3 + i * 12.9898) - 0.85) * 3;
             frame.set(f.offset + i, hsv(0.36 + 0.05 * fi, 0.7, 0.08 + 0.18 * breathe + 0.4 * twinkle));
