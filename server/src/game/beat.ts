@@ -58,8 +58,9 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 //
 // The whole roof reacts to the play: a miss sends red ripples out along the full roofline and
 // makes the backdrop stutter red; losing a multiplier scatters red sparks along the roof; a
-// PERFECT sends a soft gold ripple, a new multiplier a bright gold one; low health beats
-// red through the whole roof like a heart.
+// PERFECT sends a soft gold ripple; low health beats red through the whole roof like a heart.
+// A new multiplier is celebrated off the roof (bushes, trees, the house), with only a soft glow
+// along the roof, so the next notes stay easy to see.
 //
 // Colors mean one thing each: the four note colors say which button (the heads at full brightness,
 // tails and hold bodies dimmer, hold end caps bright), the zone is a warm white that tints toward
@@ -167,8 +168,8 @@ type Judged = NonNullable<ArcadeHud['judged']>['kind'];
 const STEP = 8;
 const MAX_MULT = 4;
 const HEALTH_START = 0.6;
-/** Seconds the lights celebrate a new multiplier. */
-const POWER = 1.2;
+/** Seconds the roof glows for a new multiplier. */
+const POWER = 0.8;
 /** Meters of roof between the late edge of the zone's band (at top speed) and the start of the roof. */
 export const RUNWAY = 0.6;
 /** How strong the stage backdrops are on each difficulty. */
@@ -498,30 +499,20 @@ export function beatGame(stage: Stage): BeatGame {
   }
 
   /**
-   * The multiplier climbs: a power-up, bigger at every step. Gold sweeps out along the whole roof
-   * from the zone (a rainbow at ×4), fireworks go up all along it, shockwaves cross the yard, the
-   * bushes strobe, a gold band runs up the trees and the house flashes; a light flies down to the
-   * next bush.
+   * The multiplier climbs. The yard celebrates, more at every step: the bushes flash, a gold band
+   * runs up the trees, the house flashes and a light flies down to the next bush. The roof, where
+   * the next notes come, gets only a soft glow from the zone and a small burst in it.
    */
   function stepUp() {
     const m = mult();
-    const top = m >= MAX_MULT;
     ups++;
     powerAge = 0;
     powerTo = m;
     const p = linePoint();
     const shine = mix(COLORS.gold, WHITE, 0.35);
-    for (let k = 0; k < m - 1; k++) waves.add(p.x, p.y, k % 2 ? shine : top ? hsv(k / 3) : COLORS.gold, { amount: 0.9, speed: stage.scale * (14 - 3 * k) });
-    for (let k = 0; k < m; k++) ripple(top ? hsv(k / m) : k % 2 ? shine : COLORS.gold, 0.6, { life: 1.2, width: 6 + 2 * m, age: -0.12 * k });
-    const bursts = 2 + 2 * m;
-    for (let k = 0; k < bursts; k++) {
-      const at = line + span * ((k + 0.3 + 0.4 * Math.random()) / bursts);
-      const colors: Rgb[] = top ? [hsv(Math.random()), hsv(Math.random()), WHITE] : [COLORS.gold, shine, WHITE];
-      sparks.burst(at, colors, 8 + 4 * m, n * (0.04 + 0.015 * m), 0.9);
-    }
-    sparks.burst(line, [COLORS.gold, WHITE, shine], 30 + 10 * m, n * 0.25, 1.1);
-    decorFlare.add(COLORS.gold, 1);
-    if (m >= 3) decorFlare.add(WHITE, 0.5);
+    ripple(m >= MAX_MULT ? hsv(clock * 0.3) : COLORS.gold, 0.25, { life: 0.8, width: 4 });
+    sparks.burst(line, [COLORS.gold, shine], 10 + 3 * m, n * 0.06, 0.6);
+    decorFlare.add(COLORS.gold, 0.5 + 0.1 * m);
     const b = yard.bushes.length;
     if (b) {
       const lit = Math.max(1, Math.round((b * (mult() - 1)) / (MAX_MULT - 1)));
@@ -810,18 +801,18 @@ export function beatGame(stage: Stage): BeatGame {
       bgDot(line + r.age * r.speed, r.color, r.width, a);
       bgDot(line - r.age * r.speed, r.color, r.width, a);
     }
-    // A power-up: light sweeps out along the whole roof from the zone and fades (see stepUp).
+    // A new multiplier: a soft glow sweeps out along the roof from the zone and fades (see stepUp).
     if (powerAge < POWER) {
       const front = (powerAge / 0.45) * (span + 10);
       const fade = (1 - powerAge / POWER) * fadeOut;
-      const amount = 0.2 + 0.1 * (powerTo - 2);
+      const amount = 0.05 + 0.02 * (powerTo - 2);
       const top = powerTo >= MAX_MULT;
       for (let i = 0; i < n; i++) {
         const d = Math.abs(i - line);
         if (d > front + 8) continue;
         const edge = Math.exp(-(((d - front) / 3) ** 2));
         const c = top ? mix(hsv((i / n) * 2 + clock * 0.8), WHITE, 0.2) : mix(COLORS.gold, WHITE, 0.3 * edge);
-        const a = ((d <= front ? amount : 0) + 0.6 * edge) * fade;
+        const a = ((d <= front ? amount : 0) + 0.2 * edge) * fade;
         bg[i * 3] += c[0] * a;
         bg[i * 3 + 1] += c[1] * a;
         bg[i * 3 + 2] += c[2] * a;
@@ -958,8 +949,8 @@ export function beatGame(stage: Stage): BeatGame {
     const drop = Math.max(0, 1 - dropFlash / 0.6);
     // A flash in the color of the note just hit.
     const flash = phase === 'play' && !single() ? Math.max(0, 1 - hitFlash / 0.2) : 0;
-    // A new multiplier: every bush strobes, harder at every step.
-    const power = powerAge < 0.8 ? (Math.floor(powerAge * 14) % 2 ? 0.15 : 0.45 + 0.1 * powerTo) * (1 - powerAge / 0.8) : 0;
+    // A new multiplier: every bush flashes and fades, brighter at every step.
+    const power = powerAge < 0.8 ? (0.3 + 0.08 * powerTo) * (1 - powerAge / 0.8) : 0;
     yard.bushes.forEach((bush, bi) => {
       const on = Math.max(0, Math.min(1, bushLevel - bi));
       const color = mult() >= MAX_MULT ? mix(COLORS.gold, WHITE, 0.25 * beat) : COLORS.gold;
@@ -1085,6 +1076,26 @@ export function beatGame(stage: Stage): BeatGame {
         { label: 'Stage', value: stageNow + 1 }
       ];
       const common = { score, lives: null, goal: null };
+      // The arcade cabinet around the yard on the phone, from GO! to game over.
+      const arcade = (play: boolean): ArcadeHud => {
+        const m = play ? mult() : 1;
+        return {
+          score: phase === 'ready' ? 0 : score,
+          best,
+          mult: m,
+          maxMult: MAX_MULT,
+          charge: !play ? 0 : m >= MAX_MULT ? STEP : streak % STEP,
+          perStep: STEP,
+          streak: play ? streak : 0,
+          judged: play && judged ? { n: judged.n, text: judged.text, kind: judged.kind } : null,
+          ups,
+          drops,
+          info: [
+            { label: 'Stage', value: stageNow + 1 },
+            { label: 'BPM', value: Math.round(barNow().bpm) }
+          ]
+        };
+      };
       switch (phase) {
         case 'ready':
           return {
@@ -1097,6 +1108,7 @@ export function beatGame(stage: Stage): BeatGame {
             button: 'GO!',
             tone: 'go',
             stats: [{ label: 'Best', value: best }],
+            arcade: arcade(false),
             settings
           };
         case 'play': {
@@ -1114,27 +1126,11 @@ export function beatGame(stage: Stage): BeatGame {
                 : single()
                   ? 'Tap when a white note passes through the blue zone.'
                   : 'Press the button in the note’s color as it passes through the zone.';
-          const m = mult();
           return {
             ...common,
             phase,
             message,
-            arcade: {
-              score,
-              best,
-              mult: m,
-              maxMult: MAX_MULT,
-              charge: m >= MAX_MULT ? STEP : streak % STEP,
-              perStep: STEP,
-              streak,
-              judged: judged ? { n: judged.n, text: judged.text, kind: judged.kind } : null,
-              ups,
-              drops,
-              info: [
-                { label: 'Stage', value: stageNow + 1 },
-                { label: 'BPM', value: Math.round(barNow().bpm) }
-              ]
-            },
+            arcade: arcade(true),
             button: held ? 'HOLD' : 'TAP',
             tone: 'go',
             progress: { value: Math.round(Math.max(0, health) * 100), max: 100 },
@@ -1150,6 +1146,7 @@ export function beatGame(stage: Stage): BeatGame {
             button: 'GO!',
             tone: 'go',
             stats,
+            arcade: arcade(false),
             settings
           };
       }

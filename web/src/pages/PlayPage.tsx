@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bug, Heart, Loader2, Radio, Square, Star, Users, WifiOff, X } from 'lucide-react';
-import type { ButtonTone, GameControl, GameSetting, GameStatus } from '../../../shared/layout.ts';
+import { ArrowLeft, Bug, Loader2, Radio, Square, Users, WifiOff, X } from 'lucide-react';
+import type { ButtonTone, GameControl, GameSetting } from '../../../shared/layout.ts';
 import { api } from '../lib/api.ts';
 import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { InitialsEntry, Scoreboard } from './HighScores.tsx';
 import { LineCard, OfferCard, TurnBanner } from './LineParts.tsx';
-import { ArcadeHud } from './ArcadeHud.tsx';
+import { ArcadeWindow } from './ArcadeHud.tsx';
+import { GameScreen, GameWindow } from './GameWindow.tsx';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
@@ -125,6 +126,7 @@ export function PlayPage() {
   const buttonLabel = status?.button ?? (phase === 'ready' || phase === 'over' || phase === 'won' ? 'GO!' : 'STOP!');
   const tone: ButtonTone = status?.tone ?? (phase === 'miss' || phase === 'over' ? 'bad' : phase === 'hit' || phase === 'won' ? 'good' : 'go');
   const you = status?.you ?? null;
+  const arcade = status?.arcade ?? null;
   // On your team's turn, the button is in your team's color.
   const teamButton = you && tone === 'go';
 
@@ -133,8 +135,16 @@ export function PlayPage() {
       className="dark min-h-dvh bg-[radial-gradient(ellipse_at_top,var(--play-glow)_0%,#0c0a09_60%)] text-white transition-[background] duration-700"
       style={{ '--play-glow': you ? `color-mix(in srgb, ${you.color} 35%, #0c0a09)` : '#1e1b4b' } as React.CSSProperties}
     >
-      <div className="mx-auto flex min-h-dvh max-w-4xl flex-col px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
-        <header className="flex items-center justify-between py-2">
+      {/* Playing, the game fits on one screen: the game window takes all the room the controls leave. The high scores are below it. */}
+      <div
+        className={cn(
+          'mx-auto flex flex-col',
+          playing
+            ? 'min-h-dvh max-w-6xl px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6'
+            : 'min-h-dvh max-w-4xl px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6'
+        )}
+      >
+        <header className={cn('flex shrink-0 items-center justify-between', playing ? 'py-0.5' : 'py-2')}>
           <a href="/" className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white">
             <ArrowLeft className="size-4" /> Lights
           </a>
@@ -174,60 +184,44 @@ export function PlayPage() {
         ) : (
           <>
             {!connected ? (
-              <p className="mb-3 inline-flex items-center gap-2 self-center rounded-full bg-red-500/15 px-3 py-1 text-sm text-red-300">
+              <p className="mb-3 inline-flex shrink-0 items-center gap-2 self-center rounded-full bg-red-500/15 px-3 py-1 text-sm text-red-300">
                 <WifiOff className="size-4" /> Reconnecting…
               </p>
             ) : null}
 
-            {layout ? <YardView layout={layout} getFrame={() => frame.current} maxHeight={playing ? '42dvh' : '60dvh'} className="shadow-2xl shadow-black/60" /> : null}
+            {layout && playing && status ? (
+              <div className="flex min-h-52 flex-1 flex-col">
+                {arcade ? (
+                  <ArcadeWindow hud={arcade} health={status.progress}>
+                    <GameScreen layout={layout} getFrame={() => frame.current} />
+                  </ArcadeWindow>
+                ) : (
+                  <GameWindow status={status}>
+                    <GameScreen layout={layout} getFrame={() => frame.current} />
+                  </GameWindow>
+                )}
+              </div>
+            ) : layout ? (
+              <YardView layout={layout} getFrame={() => frame.current} maxHeight="60dvh" className="shadow-2xl shadow-black/60" />
+            ) : null}
 
-            {shownNotice ? <p className="mt-3 self-center rounded-full bg-amber-400/15 px-4 py-1.5 text-sm text-amber-200">{shownNotice}</p> : null}
+            {shownNotice ? <p className="mt-3 shrink-0 self-center rounded-full bg-amber-400/15 px-4 py-1.5 text-sm text-amber-200">{shownNotice}</p> : null}
 
             {offer ? (
               <OfferCard offer={offer} onPlay={() => send({ type: 'accept' })} onPass={() => send({ type: 'leaveLine' })} />
             ) : playing ? (
-              <section className="flex flex-1 flex-col items-center justify-center gap-5 py-5">
+              <section className="flex shrink-0 flex-col items-center justify-center gap-2 pt-2">
                 {line ? <TurnBanner line={line} /> : null}
                 {you ? (
                   <p className="-mb-2 rounded-full px-4 py-1 text-sm font-bold tracking-widest uppercase" style={{ backgroundColor: `color-mix(in srgb, ${you.color} 25%, transparent)`, color: you.color }}>
                     You're {you.name}
                   </p>
                 ) : null}
-                {status?.scores?.length ? <Scores scores={status.scores} /> : null}
-                {status?.arcade ? <ArcadeHud hud={status.arcade} /> : null}
-                {status?.message || !status?.arcade ? (
-                  <p className="text-center text-2xl font-bold tracking-tight text-balance sm:text-3xl" aria-live="polite">
-                    {status?.message}
-                  </p>
-                ) : null}
+                {/* Room for two lines kept while playing, so the game window does not jump when a message comes and goes. */}
+                <p className="grid min-h-14 place-items-center text-center text-lg leading-snug font-bold tracking-tight text-balance sm:text-2xl" aria-live="polite">
+                  {status?.message}
+                </p>
                 {status?.enterInitials ? <InitialsEntry entry={status.enterInitials} onSave={(initials) => send({ type: 'initials', id: status.enterInitials!.id, initials })} /> : null}
-                <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
-                  {status?.progress ? (
-                    <Progress {...status.progress} />
-                  ) : status?.goal ? (
-                    <div className="flex flex-wrap justify-center gap-1" aria-label={`${status.score} of ${status.goal} caught`}>
-                      {Array.from({ length: status.goal }, (_, i) => (
-                        <Star key={i} className={cn('size-7 transition', i < status.score ? 'fill-amber-300 text-amber-300 drop-shadow-[0_0_8px_rgba(252,211,77,0.8)]' : 'text-white/20')} />
-                      ))}
-                    </div>
-                  ) : null}
-                  {status?.lives != null ? (
-                    <div className="flex gap-1" aria-label={`${status.lives} lives left`}>
-                      {Array.from({ length: 3 }, (_, i) => (
-                        <Heart key={i} className={cn('size-6', i < (status.lives ?? 0) ? 'fill-rose-500 text-rose-500' : 'text-white/20')} />
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                {status?.stats?.length && !status.arcade ? (
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {status.stats.map((s) => (
-                      <span key={s.label} className="rounded-full bg-white/10 px-3 py-1 text-sm text-white/70">
-                        {s.label} <span className="font-semibold text-white tabular-nums">{s.value}</span>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
                 {status?.settings?.length ? <Settings settings={status.settings} onPick={(id, value) => send({ type: 'setting', id, value })} /> : null}
                 {controls?.length ? (
                   <ControlRow controls={controls} pressed={pressed} tone={tone} disabled={phase === 'setup'} onPress={press} onRelease={release} />
@@ -248,8 +242,10 @@ export function PlayPage() {
                     disabled={phase === 'setup'}
                     style={teamButton ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${you.color} 70%, white), ${you.color})`, boxShadow: `0 25px 50px -12px ${you.color}` } : undefined}
                     className={cn(
-                      'grid size-40 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none] sm:size-52',
-                      buttonLabel.length > 6 ? 'text-2xl sm:text-3xl' : 'text-4xl',
+                      // A finger-sized round button on a touch screen; a regular button for a mouse.
+                      'grid size-28 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none]',
+                      'pointer-fine:h-12 pointer-fine:w-auto pointer-fine:min-w-40 pointer-fine:px-8 pointer-fine:text-xl pointer-fine:shadow-lg pointer-fine:ring-2',
+                      buttonLabel.length <= 4 ? 'text-3xl' : buttonLabel.length <= 6 ? 'text-xl' : 'text-lg',
                       TONES[tone],
                       pressed.has('main') ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
                       'disabled:opacity-40'
@@ -258,10 +254,9 @@ export function PlayPage() {
                     {buttonLabel}
                   </button>
                 )}
-                <p className="hidden text-sm text-white/40 sm:block">
+                <p className="hidden text-sm text-white/40 pointer-fine:block">
                   {controls?.length ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
                 </p>
-                {status?.scoreboard ? <Scoreboard board={status.scoreboard} onRemove={isAdmin ? (id) => void api.removeScore(id).catch(() => {}) : undefined} /> : null}
               </section>
             ) : (
               <section className="flex-1 py-6">
@@ -320,6 +315,11 @@ export function PlayPage() {
           </>
         )}
       </div>
+      {playing && !offer && status?.scoreboard ? (
+        <div className="mx-auto flex max-w-4xl justify-center px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
+          <Scoreboard board={status.scoreboard} onRemove={isAdmin ? (id) => void api.removeScore(id).catch(() => {}) : undefined} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -336,7 +336,7 @@ const TONES: Record<ButtonTone, string> = {
 /** Choices for the next game: each setting as a row of pills, the chosen one lit. */
 function Settings({ settings, onPick }: { settings: GameSetting[]; onPick: (id: string, value: string) => void }) {
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
       {settings.map((s) => (
         <div key={s.id} role="radiogroup" aria-label={s.label} className="flex flex-wrap items-center justify-center gap-2">
           <span className="text-sm text-white/60">{s.label}</span>
@@ -348,7 +348,7 @@ function Settings({ settings, onPick }: { settings: GameSetting[]; onPick: (id: 
                 role="radio"
                 aria-checked={c.value === s.value}
                 onClick={() => onPick(s.id, c.value)}
-                className={cn('rounded-full px-4 py-1.5 text-sm font-semibold transition', c.value === s.value ? 'bg-white text-slate-900 shadow' : 'text-white/70 hover:text-white')}
+                className={cn('rounded-full px-3.5 py-1 text-sm font-semibold transition', c.value === s.value ? 'bg-white text-slate-900 shadow' : 'text-white/70 hover:text-white')}
               >
                 {c.label}
               </button>
@@ -381,7 +381,7 @@ function ControlRow({
 }) {
   const many = controls.length > 3;
   return (
-    <div className={cn('flex w-full max-w-xl items-center justify-center', many ? 'gap-2 sm:gap-3' : 'gap-3 sm:gap-5')}>
+    <div className={cn('flex w-full max-w-xl items-center justify-center', many ? 'gap-2.5 pointer-fine:gap-3' : 'gap-4 pointer-fine:gap-3')}>
       {controls.map((c) => {
         const down = pressed.has(c.id);
         return (
@@ -403,7 +403,10 @@ function ControlRow({
             style={c.color ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${c.color} 65%, white), ${c.color})`, boxShadow: `0 20px 40px -12px ${c.color}` } : undefined}
             className={cn(
               'grid aspect-square min-w-0 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-2 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none] [text-shadow:0_1px_6px_rgba(0,0,0,0.55)]',
-              many ? 'flex-1 text-3xl sm:max-w-32 sm:text-4xl' : c.big ? 'w-[38%] max-w-48 text-3xl sm:text-4xl' : 'w-[26%] max-w-32 text-4xl sm:text-5xl',
+              // Finger-sized on a touch screen (about 2 cm); a regular round button for a mouse.
+              many ? 'max-w-20 flex-1 text-3xl' : c.big ? 'w-28 text-2xl' : 'w-20 text-3xl',
+              many || !c.big ? 'pointer-fine:w-14 pointer-fine:flex-none pointer-fine:text-xl' : 'pointer-fine:w-20 pointer-fine:text-lg',
+              'pointer-fine:shadow-lg pointer-fine:ring-2',
               !c.color && TONES[tone],
               down ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
               'disabled:opacity-40'
@@ -413,48 +416,6 @@ function ControlRow({
           </button>
         );
       })}
-    </div>
-  );
-}
-
-/** Stars for a short goal, a bar for a long one. */
-function Progress({ value, max }: { value: number; max: number }) {
-  if (max <= 10) {
-    return (
-      <div className="flex flex-wrap justify-center gap-1" aria-label={`${value} of ${max}`}>
-        {Array.from({ length: max }, (_, i) => (
-          <Star key={i} className={cn('size-7 transition', i < value ? 'fill-amber-300 text-amber-300 drop-shadow-[0_0_8px_rgba(252,211,77,0.8)]' : 'text-white/20')} />
-        ))}
-      </div>
-    );
-  }
-  return (
-    <div className="flex w-64 max-w-full items-center gap-3" aria-label={`${value} of ${max}`}>
-      <div className="h-3 flex-1 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full bg-gradient-to-r from-amber-300 to-yellow-200 shadow-[0_0_12px_rgba(252,211,77,0.8)] transition-[width] duration-300" style={{ width: `${Math.min(100, (value / max) * 100)}%` }} />
-      </div>
-      <span className="text-sm font-semibold tabular-nums">
-        {value}/{max}
-      </span>
-    </div>
-  );
-}
-
-/** Two big team scores, each in its team's color. */
-function Scores({ scores }: { scores: NonNullable<GameStatus['scores']> }) {
-  return (
-    <div className="flex items-center gap-5">
-      {scores.map((s, i) => (
-        <div key={s.name} className="flex items-center gap-5">
-          {i > 0 ? <span className="text-2xl text-white/30">–</span> : null}
-          <div className="text-center">
-            <div className="text-5xl font-black tabular-nums" style={{ color: s.color, textShadow: `0 0 24px ${s.color}` }}>
-              {s.value}
-            </div>
-            <div className="text-xs tracking-widest text-white/60 uppercase">{s.name}</div>
-          </div>
-        </div>
-      ))}
     </div>
   );
 }

@@ -2,31 +2,32 @@ import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import type { ArcadeHud as Hud } from '../../../shared/layout.ts';
 import { cn } from '../lib/utils.ts';
+import { Cabinet, ProgressBar } from './GameWindow.tsx';
 
-// Beat Drop's score display on the phone, like an arcade cabinet: a rolling score, the
-// multiplier with a meter charging toward the next one, the streak, and a pop for every
-// judgment. A new multiplier takes over the whole screen (bigger at every step); losing one
-// shakes the display.
+// Beat Drop's view of the yard as an arcade cabinet: the yard is the screen, with the score, the
+// best and the multiplier in a bar above it, and the meter charging toward the next multiplier
+// and the combo in a bar below. Every judgment pops in the middle of the top bar. Nothing is ever
+// drawn over the yard itself, so the notes coming down the roof are always easy to see.
 
 /** Each multiplier's color: ×1 plain, ×2 cyan, ×3 magenta, ×4 a rainbow. */
 const MULT_COLOR = ['#e7e5e4', '#e7e5e4', '#22d3ee', '#e879f9', '#fde047'];
 const multColor = (m: number) => MULT_COLOR[Math.min(m, MULT_COLOR.length - 1)];
 
 const JUDGED: Record<NonNullable<Hud['judged']>['kind'], string> = {
-  perfect: 'text-amber-200 [text-shadow:0_0_18px_rgba(252,211,77,0.9),0_0_40px_rgba(251,146,60,0.6)]',
-  held: 'text-emerald-200 [text-shadow:0_0_18px_rgba(52,211,153,0.9)]',
-  good: 'text-sky-200 [text-shadow:0_0_14px_rgba(56,189,248,0.8)]',
-  miss: 'text-red-400 [text-shadow:0_0_18px_rgba(239,68,68,0.9)]',
-  stray: 'text-orange-300 [text-shadow:0_0_14px_rgba(251,146,60,0.8)]'
+  perfect: 'text-amber-200 [text-shadow:0_0_12px_rgba(252,211,77,0.9)]',
+  held: 'text-emerald-200 [text-shadow:0_0_12px_rgba(52,211,153,0.9)]',
+  good: 'text-sky-200 [text-shadow:0_0_10px_rgba(56,189,248,0.8)]',
+  miss: 'text-red-400 [text-shadow:0_0_12px_rgba(239,68,68,0.9)]',
+  stray: 'text-orange-300 [text-shadow:0_0_10px_rgba(251,146,60,0.8)]'
 };
 
-export function ArcadeHud({ hud }: { hud: Hud }) {
+export function ArcadeWindow({ hud, health, children }: { hud: Hud; health?: { value: number; max: number }; children: React.ReactNode }) {
   const shown = useRolling(hud.score);
   const top = hud.mult >= hud.maxMult;
   const color = multColor(hud.mult);
   const newBest = hud.best > 0 && hud.score > hud.best;
 
-  // Points as they land: "+6" floats up from the score.
+  // Points as they land: "+6" floats up off the score.
   const [gains, setGains] = useState<{ id: number; value: number }[]>([]);
   const lastScore = useRef(hud.score);
   useEffect(() => {
@@ -34,162 +35,120 @@ export function ArcadeHud({ hud }: { hud: Hud }) {
     lastScore.current = hud.score;
     if (d <= 0) return;
     const id = Date.now() + Math.random();
-    setGains((g) => [...g.slice(-3), { id, value: d }]);
-    const t = setTimeout(() => setGains((g) => g.filter((x) => x.id !== id)), 900);
+    setGains((g) => [...g.slice(-2), { id, value: d }]);
+    const t = setTimeout(() => setGains((g) => g.filter((x) => x.id !== id)), 800);
     return () => clearTimeout(t);
   }, [hud.score]);
 
-  // A new multiplier: the whole screen celebrates. Losing one: the display shakes.
-  const power = useEdge(hud.ups, 1600);
-  const crash = useEdge(hud.drops, 600);
+  // A new multiplier: the cabinet's edge flashes in its color and the top bar announces it.
+  // Losing one: the top bar shakes and the edge flashes red.
+  const power = useEdge(hud.ups, 1400);
+  const crash = useEdge(hud.drops, 500);
   const best = useEdge(newBest ? 1 : 0, 1600);
   useEffect(() => {
-    if (power) navigator.vibrate?.(Array.from({ length: hud.mult * 2 - 1 }, (_, i) => (i % 2 ? 40 : 60)));
-  }, [power, hud.mult]);
+    if (power) navigator.vibrate?.(top ? [50, 40, 50, 40, 90] : [50, 40, 50]);
+  }, [power, top]);
   useEffect(() => {
-    if (crash) navigator.vibrate?.(150);
+    if (crash) navigator.vibrate?.(120);
   }, [crash]);
 
   const digits = String(shown).padStart(7, '0');
   const lead = digits.length - String(shown).length;
 
   return (
-    <div className="relative w-full max-w-xl">
-      <div
-        className={cn(
-          'relative overflow-hidden rounded-3xl border-2 bg-black/50 p-4 font-mono transition-[box-shadow,border-color] duration-500 sm:p-5',
-          crash ? 'hud-shake border-red-500/80' : top ? 'border-amber-300/70' : 'border-white/10'
-        )}
-        style={{ boxShadow: `0 0 ${12 + hud.mult * 10}px ${hud.mult > 1 ? color : 'transparent'}66, inset 0 0 40px rgba(0,0,0,0.6)` }}
-      >
-        {crash ? <div className="hud-flash pointer-events-none absolute inset-0 bg-red-600/40" /> : null}
-        {/* The score and the best. */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="relative min-w-0">
-            <p className="text-[10px] font-bold tracking-[0.3em] text-white/50 uppercase sm:text-xs">Score</p>
-            <p className="text-4xl leading-none font-black tracking-tight tabular-nums sm:text-5xl" aria-label={`Score ${hud.score}`}>
-              <span className="text-white/15">{digits.slice(0, lead)}</span>
-              <span className="text-white [text-shadow:0_0_14px_rgba(255,255,255,0.45)]">{digits.slice(lead)}</span>
-            </p>
-            {gains.map((g) => (
-              <span key={g.id} className="hud-float pointer-events-none absolute top-6 right-0 text-lg font-black" style={{ color, textShadow: `0 0 10px ${color}` }}>
-                +{g.value}
-              </span>
-            ))}
-          </div>
-          <div className="shrink-0 text-right">
-            {/* Beaten: the best is this game's score now, in a rainbow. */}
-            <p className={cn('text-[10px] font-bold tracking-[0.3em] uppercase sm:text-xs', newBest ? 'hud-rainbow font-black' : 'text-white/50')}>{newBest ? 'New best!' : 'Best'}</p>
-            <p className="text-lg font-bold text-amber-200/80 tabular-nums sm:text-xl">{Math.max(hud.best, shown)}</p>
-            <p className="mt-1 text-[10px] tracking-widest text-white/40 uppercase sm:text-xs">
-              {hud.info.map((x) => `${x.label} ${x.value}`).join(' · ')}
-            </p>
-          </div>
+    <Cabinet
+      className={cn('transition-[box-shadow,border-color] duration-500', top ? 'border-amber-300/50' : 'border-white/10')}
+      style={{ boxShadow: hud.mult > 1 ? `0 0 ${8 + hud.mult * 6}px ${color}55` : undefined }}
+    >
+      {/* The top bar: score, the judgment (or a new multiplier, or a new best), best and the multiplier. */}
+      <div className={cn('grid h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-2.5', crash && 'hud-shake')}>
+        <div className="relative">
+          <p className="text-[9px] leading-none font-bold tracking-[0.3em] text-white/45 uppercase">Score</p>
+          <p className="mt-1 text-2xl leading-none font-black tracking-tight tabular-nums sm:text-3xl" aria-label={`Score ${hud.score}`}>
+            <span className="text-white/15">{digits.slice(0, lead)}</span>
+            <span className="text-white [text-shadow:0_0_10px_rgba(255,255,255,0.4)]">{digits.slice(lead)}</span>
+          </p>
+          {gains.map((g) => (
+            <span key={g.id} className="hud-float pointer-events-none absolute top-3 right-0 text-sm font-black sm:text-base" style={{ color, textShadow: `0 0 8px ${color}` }}>
+              +{g.value}
+            </span>
+          ))}
         </div>
 
-        {/* The multiplier, and its meter charging toward the next one. */}
-        <div className="mt-4 flex items-center gap-3">
+        <div className="grid h-full min-w-0 place-items-center text-center" aria-live="polite">
+          {power ? (
+            <div key={`up${hud.ups}`} className="hud-power leading-none italic">
+              <p className={cn('text-3xl font-black sm:text-4xl', top && 'hud-rainbow')} style={top ? undefined : { color, textShadow: `0 0 14px ${color}` }}>
+                ×{hud.mult}
+              </p>
+              <p className="mt-0.5 text-[9px] font-bold tracking-[0.25em] text-white uppercase sm:text-[10px]">{top ? 'Max power!' : 'Multiplier!'}</p>
+            </div>
+          ) : best ? (
+            <p key="best" className="hud-power text-base font-black tracking-wider uppercase italic sm:text-xl">
+              <span className="hud-rainbow">New best!</span>
+            </p>
+          ) : hud.judged ? (
+            <span key={hud.judged.n} className={cn('hud-pop text-base font-black tracking-wide whitespace-nowrap uppercase italic sm:text-2xl', JUDGED[hud.judged.kind])}>
+              {hud.judged.text}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <div className="text-right">
+            {/* Beaten: the best is this game's score now, in a rainbow. */}
+            <p className={cn('text-[9px] leading-none font-bold tracking-[0.2em] uppercase', newBest ? 'hud-rainbow font-black' : 'text-white/45')}>{newBest ? 'New best' : 'Best'}</p>
+            <p className="mt-1 text-sm leading-none font-bold text-amber-200/80 tabular-nums sm:text-base">{Math.max(hud.best, shown)}</p>
+          </div>
           <div
             key={hud.ups}
-            className={cn('hud-bump grid size-16 shrink-0 place-items-center rounded-2xl border-2 text-3xl font-black sm:size-20 sm:text-4xl', top && 'hud-charge')}
-            style={{ color, borderColor: `color-mix(in srgb, ${color} 60%, transparent)`, backgroundColor: `color-mix(in srgb, ${color} ${hud.mult > 1 ? 18 : 6}%, transparent)`, boxShadow: hud.mult > 1 ? `0 0 ${hud.mult * 8}px ${color}` : undefined }}
+            className={cn('hud-bump grid size-11 shrink-0 place-items-center rounded-xl border-2 text-xl font-black sm:size-12 sm:text-2xl', top && 'hud-charge')}
+            style={{ color, borderColor: `color-mix(in srgb, ${color} 60%, transparent)`, backgroundColor: `color-mix(in srgb, ${color} ${hud.mult > 1 ? 18 : 6}%, transparent)`, boxShadow: hud.mult > 1 ? `0 0 ${hud.mult * 5}px ${color}` : undefined }}
             aria-label={`Multiplier ×${hud.mult}`}
           >
             {top ? <span className="hud-rainbow">×{hud.mult}</span> : `×${hud.mult}`}
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex gap-1" aria-hidden>
-              {Array.from({ length: hud.perStep }, (_, i) => {
-                const on = i < hud.charge;
-                const next = multColor(Math.min(hud.maxMult, hud.mult + 1));
-                return (
-                  <span
-                    key={i}
-                    className={cn('h-4 flex-1 rounded-sm transition-all duration-150 sm:h-5', top && 'hud-charge')}
-                    style={
-                      on
-                        ? { backgroundColor: top ? `hsl(${(i / hud.perStep) * 300} 95% 62%)` : next, boxShadow: `0 0 8px ${top ? '#fde047' : next}` }
-                        : { backgroundColor: 'rgba(255,255,255,0.08)' }
-                    }
-                  />
-                );
-              })}
-            </div>
-            <p className="mt-1.5 flex items-baseline justify-between text-[10px] font-bold tracking-[0.2em] text-white/50 uppercase sm:text-xs">
-              <span>{top ? <span className="hud-rainbow">Max multiplier!</span> : `${hud.perStep - hud.charge} to ×${hud.mult + 1}`}</span>
-              {hud.streak >= 2 ? (
-                <span key={hud.streak} className="hud-bump inline-block text-base text-white sm:text-lg" style={{ textShadow: `0 0 10px ${color}` }}>
-                  {hud.streak} <span className="text-[10px] text-white/60 sm:text-xs">combo</span>
-                </span>
-              ) : null}
-            </p>
-          </div>
         </div>
       </div>
 
-      {/* Each judgment pops under the display. */}
-      <div className="pointer-events-none relative mt-2 grid h-10 place-items-center sm:h-12" aria-live="polite">
-        {hud.judged ? (
-          <span key={hud.judged.n} className={cn('hud-pop text-3xl font-black tracking-wide uppercase italic sm:text-4xl', JUDGED[hud.judged.kind])}>
-            {hud.judged.text}
-          </span>
-        ) : null}
+      {/* The screen: the yard. */}
+      {children}
+
+      {/* The bottom bar: the meter charging toward the next multiplier, the combo, the stage. */}
+      <div className="flex h-9 items-center gap-2.5 px-2.5 text-[10px] font-bold tracking-[0.15em] text-white/50 uppercase sm:text-xs">
+        <span className="shrink-0 whitespace-nowrap">{top ? <span className="hud-rainbow">Max!</span> : `${hud.perStep - hud.charge} to ×${hud.mult + 1}`}</span>
+        <div className="flex min-w-0 flex-1 gap-0.5 sm:gap-1" aria-hidden>
+          {Array.from({ length: hud.perStep }, (_, i) => {
+            const on = i < hud.charge;
+            const next = multColor(Math.min(hud.maxMult, hud.mult + 1));
+            return (
+              <span
+                key={i}
+                className={cn('h-2 flex-1 rounded-sm transition-all duration-150 sm:h-2.5', top && 'hud-charge')}
+                style={
+                  on
+                    ? { backgroundColor: top ? `hsl(${(i / hud.perStep) * 300} 95% 62%)` : next, boxShadow: `0 0 6px ${top ? '#fde047' : next}` }
+                    : { backgroundColor: 'rgba(255,255,255,0.08)' }
+                }
+              />
+            );
+          })}
+        </div>
+        <span className="w-16 shrink-0 text-right whitespace-nowrap sm:w-20">
+          {hud.streak >= 2 ? (
+            <span key={hud.streak} className="hud-bump inline-block text-white" style={{ textShadow: `0 0 8px ${color}` }}>
+              <span className="text-sm sm:text-base">{hud.streak}</span> combo
+            </span>
+          ) : null}
+        </span>
+        <span className="hidden shrink-0 whitespace-nowrap text-white/40 sm:inline">{hud.info.map((x) => `${x.label} ${x.value}`).join(' · ')}</span>
       </div>
+      {health ? <ProgressBar value={health.value} max={health.max} label="Health" className="h-6 pb-1" /> : null}
 
-      {power ? <PowerUp key={hud.ups} mult={hud.mult} top={top} /> : best && !power ? <Banner key="best" text="New best!" /> : null}
-    </div>
-  );
-}
-
-/** A new multiplier, over the whole screen: a flash, rings, sparks and a huge ×N, bigger at every step. */
-function PowerUp({ mult, top }: { mult: number; top: boolean }) {
-  const color = multColor(mult);
-  const rays = useState(() =>
-    Array.from({ length: 10 + mult * 6 }, (_, i) => {
-      const a = (i / (10 + mult * 6)) * Math.PI * 2 + Math.random() * 0.3;
-      const d = 120 + Math.random() * (80 + mult * 50);
-      return { dx: Math.cos(a) * d, dy: Math.sin(a) * d, hue: Math.round(Math.random() * 360), size: 6 + Math.random() * (4 + mult * 2) };
-    })
-  )[0];
-  const size = mult >= 4 ? 'text-[9rem] sm:text-[12rem]' : mult === 3 ? 'text-8xl sm:text-[9rem]' : 'text-7xl sm:text-8xl';
-  return (
-    <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center overflow-hidden" aria-live="assertive">
-      <div className="hud-scrim absolute inset-0 bg-black/45" />
-      <div className="hud-flash absolute inset-0" style={{ background: `radial-gradient(circle at center, ${color}cc 0%, ${color}33 40%, transparent 75%)` }} />
-      {Array.from({ length: mult - 1 }, (_, i) => (
-        <div
-          key={i}
-          className="hud-ring absolute size-64 rounded-full border-4"
-          style={{ borderColor: top ? `hsl(${i * 120} 95% 65%)` : color, animationDelay: `${i * 120}ms`, boxShadow: `0 0 30px ${color}` }}
-        />
-      ))}
-      {rays.map((r, i) => (
-        <span
-          key={i}
-          className="hud-ray absolute top-1/2 left-1/2 rounded-full"
-          style={{ width: r.size, height: r.size, backgroundColor: top ? `hsl(${r.hue} 95% 65%)` : color, boxShadow: `0 0 12px ${top ? `hsl(${r.hue} 95% 65%)` : color}`, ['--dx' as string]: `${r.dx}px`, ['--dy' as string]: `${r.dy}px` } as React.CSSProperties}
-        />
-      ))}
-      <div className="hud-power relative text-center font-mono font-black italic">
-        <p className={cn(size, 'leading-none', top ? 'hud-rainbow' : '')} style={top ? undefined : { color, textShadow: `0 0 30px ${color}, 0 0 80px ${color}` }}>
-          ×{mult}
-        </p>
-        <p className="mt-2 text-xl tracking-[0.4em] text-white uppercase sm:text-2xl" style={{ textShadow: `0 0 16px ${color}` }}>
-          {top ? 'Max power!' : 'Multiplier!'}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/** A smaller celebration, for example a new best score. */
-function Banner({ text }: { text: string }) {
-  return (
-    <div className="pointer-events-none fixed inset-x-0 top-1/3 z-50 grid place-items-center" aria-live="polite">
-      <p className="hud-power font-mono text-5xl font-black tracking-wider uppercase italic sm:text-6xl">
-        <span className="hud-rainbow">{text}</span>
-      </p>
-    </div>
+      {/* The cabinet's edge flashes: in the new multiplier's color, or red for a lost one. */}
+      {power ? <div key={`edge${hud.ups}`} className="hud-flash pointer-events-none absolute inset-0 rounded-3xl border-4" style={{ borderColor: color }} /> : null}
+      {crash ? <div key={`crash${hud.drops}`} className="hud-flash pointer-events-none absolute inset-0 rounded-3xl border-4 border-red-500" /> : null}
+    </Cabinet>
   );
 }
 
