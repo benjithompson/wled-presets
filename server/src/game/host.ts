@@ -15,9 +15,24 @@ import { idleGame } from './idle.ts';
 import { GameOutput } from './output.ts';
 import { ViewStream, type Viewer } from './viewStream.ts';
 import { overflowGame } from './overflow.ts';
+import { beadsGame } from './beads.ts';
+import { beatGame } from './beat.ts';
+import { colorgateGame } from './colorgate.ts';
+import { ricochetGame } from './ricochet.ts';
+import { sliceGame } from './slice.ts';
 import type { Game, GameFactory } from './types.ts';
 
-const CREATE: Record<string, GameFactory> = { catcher: catcherGame, cascade: cascadeGame, overflow: overflowGame, duel: duelGame };
+const CREATE: Record<string, GameFactory> = {
+  catcher: catcherGame,
+  cascade: cascadeGame,
+  overflow: overflowGame,
+  duel: duelGame,
+  slice: sliceGame,
+  colorgate: colorgateGame,
+  ricochet: ricochetGame,
+  beads: beadsGame,
+  beat: beatGame
+};
 
 export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({ tagline: _, ...info }) => ({ ...info, create: CREATE[info.id] }));
 
