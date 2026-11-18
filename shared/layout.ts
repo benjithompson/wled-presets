@@ -732,10 +732,10 @@ export interface MatchProbe {
  * The offsets the blinking LED can take for one point, so the points stay in order with at
  * least one LED in each segment. The start stays before the next pinned corner; a corner stays
  * after the point before it (later corners give way, see matchPoint); the end stays after the
- * last pinned corner. Device LED numbers never go below 0, and the line stays within
- * MAX_FIXTURE_PIXELS.
+ * last pinned corner. Device LED numbers never go below 0, nor past the last LED the device
+ * has (`ledCount`, as set in WLED, when known), and the line stays within MAX_FIXTURE_PIXELS.
  */
-export function matchRange(f: Fixture, point: number): { lo: number; hi: number } {
+export function matchRange(f: Fixture, point: number, ledCount?: number | null): { lo: number; hi: number } {
   const L = f.points.length - 1;
   const n = Math.max(1, Math.floor(f.pixels));
   const offs = pointOffsets(f);
@@ -754,9 +754,13 @@ export function matchRange(f: Fixture, point: number): { lo: number; hi: number 
     lo = offs[before] + (point - before);
     hi = n - 1 - (L - point);
   }
-  // Device LED 0 is as far as it goes.
+  // Device LED 0 is as far as it goes one way, the device's last LED the other way.
   if (f.reversed) hi = Math.min(hi, f.startPixel + n - 1);
   else lo = Math.max(lo, -f.startPixel);
+  if (ledCount && ledCount > 0) {
+    if (f.reversed) lo = Math.max(lo, f.startPixel + n - ledCount);
+    else hi = Math.min(hi, ledCount - 1 - f.startPixel);
+  }
   return { lo, hi: Math.max(lo, hi) };
 }
 
@@ -765,9 +769,9 @@ export function matchRange(f: Fixture, point: number): { lo: number; hi: number 
  * there, a corner is pinned there. Every other pinned corner keeps its device LED number,
  * except later corners the new pin passes: they are unpinned, to be matched next.
  */
-export function matchPoint(f: Fixture, point: number, offset: number): Pick<Fixture, 'startPixel' | 'pixels' | 'reversed' | 'pointLeds'> {
+export function matchPoint(f: Fixture, point: number, offset: number, ledCount?: number | null): Pick<Fixture, 'startPixel' | 'pixels' | 'reversed' | 'pointLeds'> {
   const L = f.points.length - 1;
-  const { lo, hi } = matchRange(f, point);
+  const { lo, hi } = matchRange(f, point, ledCount);
   const o = Math.min(hi, Math.max(lo, Math.round(offset)));
   let g = f;
   if (point > 0 && point < L && f.pointLeds) {

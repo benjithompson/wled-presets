@@ -510,16 +510,27 @@ export function LayoutPage() {
     setCorner(point);
     setMatch({ id: f.id, point, offset: pointOffsets(f)[point] });
   };
+  /** The LEDs the device has, as set in WLED (null: not known yet). */
+  const ledCountOf = (f: Fixture) => overview?.devices.find((d) => d.id === f.deviceId)?.info?.leds?.count || null;
   const setProbe = (offset: number) => {
     if (!matching || !probe) return;
-    const { lo, hi } = matchRange(matching, probe.point);
+    const { lo, hi } = matchRange(matching, probe.point, ledCountOf(matching));
     setMatch({ id: matching.id, point: probe.point, offset: Math.min(hi, Math.max(lo, Math.round(offset))) });
   };
   const moveProbe = (delta: number) => setProbe((probe?.offset ?? 0) + delta);
+  /** Moves the blinking LED to the first LED of the next (1) or the previous (-1) strand, counted from device LED 0. */
+  const strandJump = (f: Fixture, dir: 1 | -1) => {
+    const per = lightsOf(layout ?? undefined, f.lights)?.perStrand;
+    if (!probe || !per) return;
+    const led = deviceLed(f, probe.offset);
+    const target = dir > 0 ? (Math.floor(led / per) + 1) * per : led % per ? Math.floor(led / per) * per : led - per;
+    // Device numbers run against the offsets on a line that counts down.
+    setProbe(probe.offset + (f.reversed ? led - target : target - led));
+  };
   /** The blinking LED is at the real spot: the point takes it, and the wizard goes on to the next point. */
   const matchFound = () => {
     if (!matching || !probe) return;
-    const patch = matchPoint(matching, probe.point, probe.offset);
+    const patch = matchPoint(matching, probe.point, probe.offset, ledCountOf(matching));
     update(matching.id, patch);
     const g = { ...matching, ...patch };
     if (probe.point >= g.points.length - 1) {
@@ -816,6 +827,7 @@ export function LayoutPage() {
         const step = e.shiftKey ? 10 : 1;
         if (e.key === 'ArrowRight' || e.key === 'ArrowUp') moveProbe(step);
         else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') moveProbe(-step);
+        else if (e.key === 'PageUp' || e.key === 'PageDown') strandJump(matching, e.key === 'PageDown' ? 1 : -1);
         else if (e.key === 'Enter') matchFound();
         else if (e.key === 'Escape') setMatch(null);
         else if (e.key === 'Backspace') matchGo(probe.point - 1);
@@ -2482,9 +2494,13 @@ export function LayoutPage() {
                     <MatchWizard
                       f={matching}
                       probe={probe}
+                      ledCount={ledCountOf(matching)}
+                      device={devices.find((d) => d.id === matching.deviceId)?.name ?? null}
+                      perStrand={lightsOf(layout, matching.lights)?.perStrand ?? null}
                       lights={!showOnLights ? 'Lights are off: turn them on in the toolbar to see the blinking LED.' : !inFront ? 'Paused while this window is not in front.' : previewDevices.length ? null : 'Waiting for the device to answer…'}
                       onSet={setProbe}
                       onMove={moveProbe}
+                      onStrand={(dir) => strandJump(matching, dir)}
                       onGo={(point) => matchGo(point)}
                       onFound={matchFound}
                       onStop={() => setMatch(null)}
@@ -3263,7 +3279,11 @@ function LedProps({ f, onRange }: { f: Fixture; onRange: (first: number, last: n
 function MatchWizard({
   f,
   probe,
+  ledCount,
+  device,
+  perStrand,
   lights,
+  onStrand,
   onSet,
   onMove,
   onGo,
@@ -3272,6 +3292,13 @@ function MatchWizard({
 }: {
   f: Fixture;
   probe: MatchProbe;
+  /** The LEDs on the device, as set in WLED (null: not known). */
+  ledCount: number | null;
+  device: string | null;
+  /** LEDs in one strand of the line's lights (null: not known, or a strip). */
+  perStrand: number | null;
+  /** Jumps to the start of the next (1) or the previous (-1) strand. */
+  onStrand: (dir: 1 | -1) => void;
   /** Why the lights do not show the blinking LED, if they do not. */
   lights: string | null;
   onSet: (offset: number) => void;
@@ -3283,7 +3310,7 @@ function MatchWizard({
   const L = f.points.length - 1;
   const n = Math.max(1, Math.floor(f.pixels));
   const { point, offset } = probe;
-  const { lo, hi } = matchRange(f, point);
+  const { lo, hi } = matchRange(f, point, ledCount);
   const offs = pointOffsets(f);
   // The slider spans the room the point has, or a little past the line for the ends.
   const room = Math.max(10, Math.round(n * 0.2));
@@ -3292,6 +3319,12 @@ function MatchWizard({
   const led = deviceLed(f, offset);
   const name = point === 0 ? 'The start' : point === L ? 'The end' : `Corner ${point}`;
   const since = point > 0 ? offset - offs[point - 1] : null;
+  // Strands count from device LED 0: the chain on the device is made of whole strands.
+  const strand = perStrand ? { at: Math.floor(led / perStrand) + 1, bulb: (led % perStrand) + 1, of: ledCount ? Math.ceil(ledCount / perStrand) : null } : null;
+  // The device's last LED, where a line that ends the chain ends.
+  const lastLed = ledCount ? ledCount - 1 : null;
+  const lastOffset = lastLed != null ? (f.reversed ? f.startPixel + n - 1 - lastLed : lastLed - f.startPixel) : null;
+  const towardLast = lastOffset != null && lastOffset >= lo && lastOffset <= hi;
   const steps: [number, string][] = [
     [-10, '−10'],
     [-1, '−1'],
@@ -3316,8 +3349,22 @@ function MatchWizard({
       </p>
       <div className="flex items-center justify-between gap-2 rounded-md bg-stone-100 px-2.5 py-2 dark:bg-stone-800">
         <span className="text-lg font-semibold text-red-600 tabular-nums dark:text-red-400">LED {led}</span>
-        <span className="text-[11px] text-stone-500 tabular-nums">{since != null ? `${since} LEDs after the ${point === 1 ? 'start' : `corner ${point - 1}`}` : `${n} LEDs in the line`}</span>
+        <span className="text-right text-[11px] text-stone-500 tabular-nums">
+          {strand ? (
+            <>
+              strand {strand.at}
+              {strand.of ? ` of ${strand.of}` : ''}, bulb {strand.bulb} of {perStrand}
+              <br />
+            </>
+          ) : null}
+          {since != null ? `${since} LEDs after the ${point === 1 ? 'start' : `corner ${point - 1}`}` : `${n} LEDs in the line`}
+        </span>
       </div>
+      {ledCount ? (
+        <p className="text-[11px] text-stone-500 tabular-nums">
+          {device ?? 'The device'} has {ledCount} LEDs in WLED (0–{ledCount - 1}){perStrand ? `: ${ledCount % perStrand ? `${(ledCount / perStrand).toFixed(1)}` : ledCount / perStrand} strands of ${perStrand}` : ''}. The red LED stays within them.
+        </p>
+      ) : null}
       <div className="grid grid-cols-4 gap-1">
         {steps.map(([d, label]) => (
           <PropButton key={d} onClick={() => onMove(d)} disabled={d < 0 ? offset <= lo : offset >= hi} title={`${d < 0 ? 'Back toward the start' : 'On toward the end'} by ${Math.abs(d)}`}>
@@ -3325,6 +3372,25 @@ function MatchWizard({
           </PropButton>
         ))}
       </div>
+      {perStrand || (point === f.points.length - 1 && towardLast) ? (
+        <div className="flex flex-wrap gap-1">
+          {perStrand ? (
+            <>
+              <PropButton onClick={() => onStrand(-1)} title="To the first bulb of this strand, or of the one before (Page Up)">
+                <ChevronLeft /> Strand
+              </PropButton>
+              <PropButton onClick={() => onStrand(1)} title="To the first bulb of the next strand (Page Down)">
+                Strand <ChevronRight />
+              </PropButton>
+            </>
+          ) : null}
+          {point === f.points.length - 1 && towardLast && lastOffset !== offset ? (
+            <PropButton onClick={() => onSet(lastOffset!)} title="This line ends the chain: its last LED is the device's last">
+              Last LED in WLED ({lastLed})
+            </PropButton>
+          ) : null}
+        </div>
+      ) : null}
       <input
         type="range"
         aria-label="Blinking LED"
@@ -3365,7 +3431,9 @@ function MatchWizard({
         ))}
       </div>
       {lights ? <PropNote tone="red">{lights}</PropNote> : null}
-      <PropNote>Arrow keys move the LED (Shift: 10 at a time), Enter takes it, Backspace goes back, Esc stops.</PropNote>
+      <PropNote>
+        Arrow keys move the LED (Shift: 10 at a time{perStrand ? '; Page Up and Page Down: a strand' : ''}), Enter takes it, Backspace goes back, Esc stops.
+      </PropNote>
       <PropRow label="">
         <PropButton onClick={onStop}>
           <X /> Stop

@@ -98,6 +98,18 @@ describe('matching a drawn line to the real lights', () => {
     expect(matchRange(line({ reversed: true }), 4).hi).toBe(54);
   });
 
+  it('stays within the LEDs the device has in WLED', () => {
+    // 60 LEDs in WLED (0–59): the line from LED 5 can end at 59 at most, that is offset 54.
+    // With no corner pinned yet, the end can come back to one LED for each segment.
+    expect(matchRange(line(), 4, 60)).toEqual({ lo: 4, hi: 54 });
+    expect({ ...line(), ...matchPoint(line(), 4, 80, 60) }).toMatchObject({ startPixel: 5, pixels: 55 });
+    // Counting down from LED 54 to 5: the start can go up to LED 59, that is offset -5.
+    expect(matchRange(line({ reversed: true }), 0, 60).lo).toBe(-5);
+    expect({ ...line({ reversed: true }), ...matchPoint(line({ reversed: true }), 0, -20, 60) }).toMatchObject({ startPixel: 5, pixels: 55, reversed: true });
+    // Not known yet: no limit but the line's own.
+    expect(matchRange(line(), 4, null).hi).toBe(1999);
+  });
+
   it('blinks the LED on the device, also past the end of the line', () => {
     const f = line();
     const lay: Layout = { width: 1600, height: 900, background: null, fixtures: [f] };
