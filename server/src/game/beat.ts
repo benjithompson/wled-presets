@@ -28,7 +28,9 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // meter; hits fill it back a little; empty is game over.
 //
 // Settings, chosen on the phone before a game (kept from one game to the next):
-//   Colors: 4 (a button per color, as above) or 1 (the original one-button game: every note
+//   Colors: 4 (a button per color, as above); 2 (only the two outside colors, green and magenta,
+//     with two buttons, ← and →, or F and J: the same notes and patterns, the colors in turns,
+//     pairs and jumps between the two); or 1 (the original one-button game: every note
 //     white-headed with a cyan tail, the big button plays any note, Space or Enter on a keyboard).
 //   Difficulty (see LEVELS):
 //     Easy: 75 → 130 BPM, a longer look at each note, only the two simpler pattern sets and holds of
@@ -77,7 +79,7 @@ export const PERFECT = 0.05;
 export const GOOD = 0.12;
 
 export type Level = 'easy' | 'normal' | 'hard';
-export type ColorCount = '1' | '4';
+export type ColorCount = '1' | '2' | '4';
 
 /** How each difficulty plays. Tiers: when the busier pattern sets (and color changes) come in, by bar. */
 export const LEVELS: Record<
@@ -127,6 +129,13 @@ const KEYS = [
   ['ArrowRight', 'KeyK']
 ];
 const CONTROLS: GameControl[] = ORB_COLORS.map((c, i) => ({ id: BUTTONS[i], label: LABELS[i], color: css(c), keys: KEYS[i] }));
+/** The two-color game: the two outside colors, green (←) and magenta (→), with keys for both hands. */
+const TWO_TONES = [0, 3];
+const TWO_CONTROLS: GameControl[] = [
+  { ...CONTROLS[0], keys: ['ArrowLeft', 'KeyF', 'KeyD'] },
+  { ...CONTROLS[3], keys: ['ArrowRight', 'KeyJ', 'KeyK'] }
+];
+const COLOR_NAMES: Record<ColorCount, string> = { '1': '1 color', '2': '2 colors', '4': '4 colors' };
 /** The posts: a dim, warm white. */
 const POST: Rgb = [1, 0.78, 0.5];
 /** How a bar picks its notes' colors. */
@@ -222,6 +231,7 @@ export function beatGame(stage: Stage): BeatGame {
   let colors: ColorCount = '4';
   const cfg = () => LEVELS[level];
   const single = () => colors === '1';
+  const two = () => colors === '2';
   const bestKey = () => `beat:${colors}:${level}`;
   let travel = cfg().travelSlow;
   let demo = true;
@@ -280,6 +290,13 @@ export function beatGame(stage: Stage): BeatGame {
    */
   function colorsFor(tier: number): { palette: number[]; modes: ColorMode[] } {
     if (single()) return { palette: [0], modes: ['same'] };
+    // Two colors: the same patterns, the two colors in turns, pairs and (later) jumps.
+    if (two()) {
+      if (tier < 0) return { palette: TWO_TONES, modes: ['same'] };
+      if (level === 'easy' || tier === 0) return { palette: TWO_TONES, modes: ['same', 'same', 'alternate', 'pairs'] };
+      if (demo || tier <= 2) return { palette: TWO_TONES, modes: ['same', 'alternate', 'pairs'] };
+      return { palette: TWO_TONES, modes: ['alternate', 'pairs', 'random', 'random'] };
+    }
     // Easy: all four colors after the first bars, but only gentle changes.
     if (level === 'easy' && tier >= 1) return { palette: [0, 1, 2, 3], modes: ['same', 'same', 'alternate', 'pairs'] };
     if (demo) return { palette: [0, 1, 2, 3], modes: ['alternate', 'stairs', 'pairs'] };
@@ -688,7 +705,7 @@ export function beatGame(stage: Stage): BeatGame {
 
     setting(id: string, value: string) {
       if (phase === 'play') return;
-      if (id === 'colors' && (value === '1' || value === '4')) colors = value;
+      if (id === 'colors' && (value === '1' || value === '2' || value === '4')) colors = value;
       else if (id === 'level' && (value === 'easy' || value === 'normal' || value === 'hard')) level = value;
       else return;
       // The attract demo shows the new choice.
@@ -729,7 +746,7 @@ export function beatGame(stage: Stage): BeatGame {
     status(): GameStatusFields {
       const best = bestScore(bestKey());
       const settings: GameSetting[] = [
-        { id: 'colors', label: 'Colors', value: colors, choices: [{ value: '1', label: '1 color' }, { value: '4', label: '4 colors' }] },
+        { id: 'colors', label: 'Colors', value: colors, choices: (['1', '2', '4'] as ColorCount[]).map((c) => ({ value: c, label: COLOR_NAMES[c] })) },
         {
           id: 'level',
           label: 'Difficulty',
@@ -737,7 +754,7 @@ export function beatGame(stage: Stage): BeatGame {
           choices: (['easy', 'normal', 'hard'] as Level[]).map((l) => ({ value: l, label: LEVEL_NAMES[l] }))
         }
       ];
-      const choice = `${LEVEL_NAMES[level]}, ${colors === '1' ? '1 color' : '4 colors'}.`;
+      const choice = `${LEVEL_NAMES[level]}, ${COLOR_NAMES[colors]}.`;
       if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
       const stats = [
         { label: 'Score', value: score },
@@ -783,7 +800,7 @@ export function beatGame(stage: Stage): BeatGame {
             tone: 'go',
             progress: { value: Math.round(Math.max(0, health) * 100), max: 100 },
             stats,
-            ...(single() ? {} : { controls: CONTROLS, keysHint: 'Arrow keys (or D F J K) for the four colors' })
+            ...(single() ? {} : two() ? { controls: TWO_CONTROLS, keysHint: '← → (or F J) for the two colors' } : { controls: CONTROLS, keysHint: 'Arrow keys (or D F J K) for the four colors' })
           };
         }
         case 'over':

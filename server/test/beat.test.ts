@@ -225,6 +225,7 @@ describe('Beat Drop', () => {
   describe.each(['easy', 'normal', 'hard'] as Level[])('on %s', (level) => {
     it.each([
       ['1', true],
+      ['2', false],
       ['4', false]
     ] as const)('lets a perfect player go on with %s color(s)', (colors, oneColor) => {
       seeded(level.length * 7 + Number(colors));
@@ -235,7 +236,7 @@ describe('Beat Drop', () => {
       game.setting!('level', level);
       press(game);
       if (oneColor) expect(game.status().controls).toBeUndefined();
-      else expect(game.status().controls).toHaveLength(4);
+      else expect(game.status().controls).toHaveLength(Number(colors));
       const bpm = Number(game.status().stats!.find((s) => s.label === 'BPM')!.value);
       expect(bpm).toBe(LEVELS[level].bpmStart);
       bot(game, frame, 60, oneColor);
@@ -243,6 +244,7 @@ describe('Beat Drop', () => {
       expect(health(game)).toBe(100);
       const tones = new Set(game.chart().notes.map((x) => x.tone));
       if (oneColor) expect([...tones]).toEqual([0]);
+      if (colors === '2') expect([...tones].sort()).toEqual([0, 3]);
     });
   });
 
@@ -260,6 +262,35 @@ describe('Beat Drop', () => {
     expect(game.status().score).toBe(2);
   });
 
+  it('plays the two-color game with the two outside buttons, ← and →', () => {
+    seeded(5);
+    const stage = buildStage(sampleLayout());
+    const game = beatGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    game.setting!('colors', '2');
+    expect(game.status().message).toMatch(/Normal, 2 colors/);
+    press(game);
+    const controls = game.status().controls!;
+    expect(controls.map((c) => c.id)).toEqual(['c0', 'c3']);
+    expect(controls.map((c) => c.label)).toEqual(['←', '→']);
+    expect(controls[0].keys).toContain('ArrowLeft');
+    expect(controls[1].keys).toContain('ArrowRight');
+    expect(game.status().keysHint).toMatch(/two colors/);
+    // A while in, both colors have come, and nothing else.
+    bot(game, frame, 40);
+    expect(health(game)).toBe(100);
+    const tones = new Set(game.chart().notes.map((x) => x.tone));
+    expect([...tones].sort()).toEqual([0, 3]);
+    // The wrong one of the two is a stray; the right one scores.
+    const note = waitFor(game, frame, (x) => !x.hold);
+    const score = game.status().score;
+    press(game, note.tone === 0 ? 3 : 0);
+    release(game, note.tone === 0 ? 3 : 0);
+    expect(game.status().message).toMatch(/Wrong color/);
+    press(game, note.tone);
+    expect(game.status().score).toBeGreaterThan(score);
+  });
+
   it('shows the settings before and after a game, not during one, and ignores changes while playing', () => {
     const stage = buildStage(sampleLayout());
     const game = beatGame(stage);
@@ -269,6 +300,7 @@ describe('Beat Drop', () => {
       ['colors', '4'],
       ['level', 'normal']
     ]);
+    expect(ready[0].choices.map((c) => c.label)).toEqual(['1 color', '2 colors', '4 colors']);
     expect(ready[1].choices.map((c) => c.label)).toEqual(['Easy', 'Normal', 'Hard']);
     game.setting!('level', 'easy');
     game.setting!('level', 'nonsense');
@@ -304,6 +336,8 @@ describe('Beat Drop', () => {
     expect(game.status().phase).toBe('ready');
     expect(best()).toBe(scored);
     game.setting!('colors', '4');
+    expect(best()).not.toBe(scored);
+    game.setting!('colors', '2');
     expect(best()).not.toBe(scored);
     game.setting!('colors', '1');
     game.setting!('level', 'easy');

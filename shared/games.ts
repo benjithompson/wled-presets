@@ -62,7 +62,7 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     id: 'beat',
     name: 'Beat Drop',
     tagline: 'Hit the colors on the beat',
-    description: 'Notes in four colors slide along the roof to the posts: press the button in each note\'s color as it arrives, hold the long ones to their end. Pick 1 or 4 colors and Easy, Normal or Hard; the beat never stops and keeps getting faster.',
+    description: 'Notes in four colors slide along the roof to the posts: press the button in each note\'s color as it arrives, hold the long ones to their end. Pick 1, 2 or 4 colors and Easy, Normal or Hard; the beat never stops and keeps getting faster.',
     players: '1 player'
   }
 ];
