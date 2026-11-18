@@ -9,6 +9,7 @@ import { DevicesPage } from './pages/admin/DevicesPage.tsx';
 import { ActivityPage } from './pages/admin/ActivityPage.tsx';
 import { SettingsPage } from './pages/admin/SettingsPage.tsx';
 import { LayoutPage } from './pages/admin/LayoutPage.tsx';
+import { GamesPage } from './pages/admin/GamesPage.tsx';
 import { PlayPage } from './pages/PlayPage.tsx';
 import { SequencePage } from './pages/admin/sequence/SequencePage.tsx';
 
@@ -25,6 +26,7 @@ const router = createBrowserRouter([
       { path: 'devices', element: <DevicesPage /> },
       { path: 'layout', element: <LayoutPage /> },
       { path: 'sequences', element: <SequencePage /> },
+      { path: 'games', element: <GamesPage /> },
       { path: 'activity', element: <ActivityPage /> },
       { path: 'settings', element: <SettingsPage /> }
     ]

@@ -12,6 +12,8 @@ import { useTheme } from '../lib/theme.ts';
 import { useBackgroundSpeed } from '../lib/backgroundSpeed.ts';
 import { SpeedControl } from '../components/SpeedControl.tsx';
 import { api } from '../lib/api.ts';
+import { gameLook } from '../lib/gameLooks.ts';
+import { GAME_CATALOG } from '../../../shared/games.ts';
 import { useEvents } from '../lib/useEvents.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
 
@@ -78,12 +80,6 @@ export function PublicPage() {
             {state?.subtitle ? <p className="mt-1.5 text-stone-500 dark:text-stone-400">{state.subtitle}</p> : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <a
-              href="/play"
-              className="inline-flex h-10 items-center gap-2 rounded-full bg-white/60 px-4 text-sm font-semibold text-stone-700 ring-1 ring-stone-200 backdrop-blur transition hover:text-stone-950 dark:bg-white/5 dark:text-stone-200 dark:ring-white/10 dark:hover:text-white"
-            >
-              <Gamepad2 className="size-[18px]" /> Play
-            </a>
             <SpeedControl className="bg-white/60 dark:bg-white/5" />
             <ThemeCycleButton className="bg-white/60 dark:bg-white/5" />
           </div>
@@ -116,73 +112,118 @@ export function PublicPage() {
               </section>
             ) : null}
 
-            <section aria-labelledby="scenes-h">
-              <h2 id="scenes-h" className="mb-4 text-xs font-semibold tracking-widest text-stone-400 uppercase dark:text-stone-500">
-                Scenes
-              </h2>
-              {state.scenes.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-stone-300 p-10 text-center text-sm text-stone-500 dark:border-stone-800">
-                  No scenes yet. An admin can add them.
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {state.scenes.map((s) => {
-                    const active = state.currentSceneId === s.id;
-                    const loading = pending === s.id;
-                    const swatch = s.palette.length ? s.palette : ['#f59e0b'];
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        disabled={!s.online || busy}
-                        aria-pressed={active}
-                        onClick={(e) => {
-                          burst(e.currentTarget);
-                          fieldBurst(e.currentTarget, s.palette);
-                          fieldPreview(null);
-                          scene.mutate(s.id);
-                        }}
-                        onPointerEnter={(e) => e.pointerType === 'mouse' && s.online && fieldPreview({ colors: s.palette, energy: s.energy })}
-                        onPointerLeave={() => fieldPreview(null)}
-                        style={
-                          {
-                            '--glow': `color-mix(in oklch, ${swatch[0]} 75%, transparent)`,
-                            '--swatch': swatch.length > 1 ? `linear-gradient(90deg, ${swatch.join(', ')})` : swatch[0]
-                          } as CSSProperties
-                        }
-                        className={cn(
-                          'group relative flex min-h-24 flex-col justify-between overflow-hidden rounded-2xl p-4 text-left backdrop-blur-md transition duration-200 active:scale-[0.97] disabled:cursor-not-allowed',
-                          'after:absolute after:inset-x-0 after:bottom-0 after:h-1 after:[background:var(--swatch)] after:opacity-80 after:transition-all hover:after:h-1.5',
-                          active
-                            ? 'animate-glow bg-stone-900/90 text-white dark:bg-white/90 dark:text-stone-950'
-                            : 'bg-white/65 ring-1 ring-stone-900/10 hover:-translate-y-0.5 hover:bg-white/80 hover:shadow-lg dark:bg-stone-900/45 dark:ring-white/10 dark:hover:bg-stone-900/60',
-                          !s.online && 'opacity-50',
-                          busy && !loading && s.online && 'opacity-70'
-                        )}
-                      >
-                        <span className="flex items-center justify-between">
-                          {loading ? (
-                            <Loader2 className="size-4 animate-spin" />
-                          ) : active ? (
-                            <Check className="size-4" />
-                          ) : !s.online ? (
-                            <WifiOff className="size-4 text-stone-400" />
-                          ) : (
-                            <Sparkles className="size-4 text-accent-500 opacity-70 transition group-hover:opacity-100" />
+            <div className="space-y-12">
+              <section aria-labelledby="scenes-h">
+                <h2 id="scenes-h" className="mb-4 text-xs font-semibold tracking-widest text-stone-400 uppercase dark:text-stone-500">
+                  Scenes
+                </h2>
+                {state.scenes.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-stone-300 p-10 text-center text-sm text-stone-500 dark:border-stone-800">No scenes yet. An admin can add them.</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {state.scenes.map((s) => {
+                      const active = state.currentSceneId === s.id;
+                      const loading = pending === s.id;
+                      const swatch = s.palette.length ? s.palette : ['#f59e0b'];
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          disabled={!s.online || busy}
+                          aria-pressed={active}
+                          onClick={(e) => {
+                            burst(e.currentTarget);
+                            fieldBurst(e.currentTarget, s.palette);
+                            fieldPreview(null);
+                            scene.mutate(s.id);
+                          }}
+                          onPointerEnter={(e) => e.pointerType === 'mouse' && s.online && fieldPreview({ colors: s.palette, energy: s.energy })}
+                          onPointerLeave={() => fieldPreview(null)}
+                          style={
+                            {
+                              '--glow': `color-mix(in oklch, ${swatch[0]} 75%, transparent)`,
+                              '--swatch': swatch.length > 1 ? `linear-gradient(90deg, ${swatch.join(', ')})` : swatch[0]
+                            } as CSSProperties
+                          }
+                          className={cn(
+                            'group relative flex min-h-24 flex-col justify-between overflow-hidden rounded-2xl p-4 text-left backdrop-blur-md transition duration-200 active:scale-[0.97] disabled:cursor-not-allowed',
+                            'after:absolute after:inset-x-0 after:bottom-0 after:h-1 after:[background:var(--swatch)] after:opacity-80 after:transition-all hover:after:h-1.5',
+                            active
+                              ? 'animate-glow bg-stone-900/90 text-white dark:bg-white/90 dark:text-stone-950'
+                              : 'bg-white/65 ring-1 ring-stone-900/10 hover:-translate-y-0.5 hover:bg-white/80 hover:shadow-lg dark:bg-stone-900/45 dark:ring-white/10 dark:hover:bg-stone-900/60',
+                            !s.online && 'opacity-50',
+                            busy && !loading && s.online && 'opacity-70'
                           )}
-                          {!s.online ? <span className="text-[10px] font-semibold tracking-wider text-stone-400 uppercase">Offline</span> : null}
-                        </span>
-                        <span className="mt-4 text-[15px] leading-snug font-semibold">{s.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
+                        >
+                          <span className="flex items-center justify-between">
+                            {loading ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : active ? (
+                              <Check className="size-4" />
+                            ) : !s.online ? (
+                              <WifiOff className="size-4 text-stone-400" />
+                            ) : (
+                              <Sparkles className="size-4 text-accent-500 opacity-70 transition group-hover:opacity-100" />
+                            )}
+                            {!s.online ? <span className="text-[10px] font-semibold tracking-wider text-stone-400 uppercase">Offline</span> : null}
+                          </span>
+                          <span className="mt-4 text-[15px] leading-snug font-semibold">{s.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+              <GamesSection />
+            </div>
           </main>
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** The games, in their own group: cards the size of the scene buttons that open the play page. */
+function GamesSection() {
+  return (
+    <section aria-labelledby="games-h">
+      <h2 id="games-h" className="mb-4 flex items-center gap-2 text-xs font-semibold tracking-widest text-stone-400 uppercase dark:text-stone-500">
+        <Gamepad2 className="size-4" /> Games
+        <span className="font-normal tracking-normal normal-case">· the lights on the house become the game</span>
+      </h2>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {GAME_CATALOG.map((g) => {
+          const look = gameLook(g.id);
+          const Icon = look.icon;
+          return (
+            <a
+              key={g.id}
+              href={`/play?game=${g.id}`}
+              onClick={(e) => burst(e.currentTarget)}
+              onPointerEnter={(e) => e.pointerType === 'mouse' && fieldPreview({ colors: look.colors, energy: 0.7 })}
+              onPointerLeave={() => fieldPreview(null)}
+              style={{ '--swatch': `linear-gradient(90deg, ${look.colors.join(', ')})` } as CSSProperties}
+              className={cn(
+                'group relative flex min-h-24 flex-col justify-between overflow-hidden rounded-2xl p-4 text-left backdrop-blur-md transition duration-200 active:scale-[0.97]',
+                'after:absolute after:inset-x-0 after:bottom-0 after:h-1 after:[background:var(--swatch)] after:opacity-80 after:transition-all hover:after:h-1.5',
+                'bg-white/65 ring-1 ring-stone-900/10 hover:-translate-y-0.5 hover:bg-white/80 hover:shadow-lg dark:bg-stone-900/45 dark:ring-white/10 dark:hover:bg-stone-900/60'
+              )}
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className={cn('grid size-7 place-items-center rounded-lg bg-gradient-to-br text-white shadow-md transition group-hover:scale-110', look.className)}>
+                  <Icon className="size-4" />
+                </span>
+                <span className="text-[10px] font-semibold tracking-wider text-stone-400 uppercase">{g.players?.startsWith('2') ? '2 players' : '1 player'}</span>
+              </span>
+              <span className="mt-4">
+                <span className="block text-[15px] leading-snug font-semibold">{g.name}</span>
+                <span className="block text-xs leading-snug text-stone-500 dark:text-stone-400">{g.tagline}</span>
+              </span>
+            </a>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

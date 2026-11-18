@@ -16,13 +16,14 @@ import type { Bus } from './events.ts';
 import type { Lights } from './lights.ts';
 import { isValidCidr } from './net.ts';
 import { rateLimit } from './rateLimit.ts';
-import { readSettings, writeSettings } from './settings.ts';
+import { readGameArea, readSettings, writeGameArea, writeSettings } from './settings.ts';
 import type { GameHost } from './game/host.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
 import { readAudio, removeAudio, sequenceInput, writeAudio } from './sequenceStore.ts';
 import { summarize, type Sequence } from '../../shared/sequence.ts';
+import { deviceKey, keyDevice } from '../../shared/effects.ts';
 
 export interface AppDeps {
   config: AppConfig;
@@ -57,6 +58,12 @@ const settingsInput = z.object({
   defaultSceneId: z.string().nullable(),
   revertMinutes: z.coerce.number().int().min(0).max(24 * 60),
   discoverySubnets: z.array(z.string().trim().refine(isValidCidr, 'Use CIDR form, for example 192.168.1.0/24')).max(16)
+});
+
+const gameAreaInput = z.object({
+  exclude: z.array(z.string().min(1).max(64)).max(512).optional(),
+  skip: z.record(z.string().min(1).max(64), z.array(z.number().int().min(0).max(9999)).max(512)).optional(),
+  trim: z.record(z.string().min(1).max(64), z.tuple([z.number().int().min(0).max(99999), z.number().int().min(0).max(99999)])).optional()
 });
 
 const backupInput = z.object({
@@ -462,8 +469,19 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
         const target = remap.get(devId) ?? (byId.has(devId) ? devId : null);
         if (target && Number.isInteger(presetId) && presetId >= 1) devicePresets[target] = presetId;
       }
+      // Effects on a whole device follow the device too; ones for a device that is not here go.
+      const effects = p.effects
+        ? Object.fromEntries(
+            Object.entries(p.effects).flatMap(([key, fx]) => {
+              const devId = keyDevice(key);
+              if (devId == null) return [[key, fx]];
+              const target = remap.get(devId) ?? (byId.has(devId) ? devId : null);
+              return target ? [[deviceKey(target), fx]] : [];
+            })
+          )
+        : null;
       const sequenceId = p.sequenceId && db.getSequence(p.sequenceId) ? p.sequenceId : null;
-      return { id: p.id, name: p.name, sortOrder: p.sortOrder ?? i, devicePresets, ...(p.effects ? { effects: p.effects } : {}), ...(sequenceId ? { sequenceId } : {}) };
+      return { id: p.id, name: p.name, sortOrder: p.sortOrder ?? i, devicePresets, ...(effects ? { effects } : {}), ...(sequenceId ? { sequenceId } : {}) };
     });
     db.replaceScenes(scenes);
     lights.log('info', 'config', `Restored ${scenes.length} scene(s) from backup`, null, actor(c));
@@ -575,7 +593,16 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // Yard layout
   // active: sent only by an editor window that is in front (an older page that does not send it is ignored).
   // play: show the objects' effects (the editor's working copy) instead of the editor's colors.
-  const previewSchema = z.object({ active: z.literal(true), layout: layoutShape, selected: z.string().nullable(), corner: z.number().int().nullable(), segment: z.number().int().nullable().optional(), play: z.boolean().optional() });
+  // area: the Games page shows the game area instead.
+  const previewSchema = z.object({
+    active: z.literal(true),
+    layout: layoutShape,
+    selected: z.string().nullable(),
+    corner: z.number().int().nullable(),
+    segment: z.number().int().nullable().optional(),
+    play: z.boolean().optional(),
+    area: gameAreaInput.nullable().optional()
+  });
   admin.post('/layout/preview', async (c) => {
     const req = await body(c, previewSchema);
     return c.json({ devices: preview?.show(req) ?? [] });
@@ -583,6 +610,25 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   admin.delete('/layout/preview', (c) => {
     preview?.stop();
     return c.json({ ok: true });
+  });
+
+  // The part of the yard that games use (Games page).
+  admin.get('/games/area', (c) => c.json({ area: readGameArea(db) }));
+  admin.put('/games/area', async (c) => {
+    const input = await body(c, gameAreaInput);
+    // Keep only what leaves something out, for objects that are in the layout.
+    const ids = new Set(readLayout(db).fixtures.map((f) => f.id));
+    const keep = <T>(r: Record<string, T> | undefined, used: (v: T) => boolean) => Object.fromEntries(Object.entries(r ?? {}).filter(([id, v]) => ids.has(id) && used(v)));
+    const area = {
+      exclude: [...new Set(input.exclude ?? [])].filter((id) => ids.has(id)),
+      skip: keep(input.skip, (v) => v.length > 0),
+      trim: keep(input.trim, ([a, b]) => a > 0 || b > 0)
+    };
+    const any = area.exclude.length || Object.keys(area.skip).length || Object.keys(area.trim).length;
+    writeGameArea(db, any ? area : null);
+    host?.setGameArea(any ? area : null);
+    lights.log('info', 'config', any ? `Game area saved: ${area.exclude.length} object(s) left out, ${Object.keys(area.skip).length + Object.keys(area.trim).length} line(s) shortened` : 'Game area saved: games use the whole yard', null, actor(c));
+    return c.json({ area: any ? area : null });
   });
 
   // Debug mode: send the games to the real lights too.

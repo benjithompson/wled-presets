@@ -8,6 +8,7 @@ import { createAuth } from '../src/auth.ts';
 import { loadConfig } from '../src/config.ts';
 import { openDatabase, type Db } from '../src/db.ts';
 import { Bus } from '../src/events.ts';
+import { sampleLayout } from '../../shared/layout.ts';
 import { Lights } from '../src/lights.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 import { discoverWled } from '../src/discovery.ts';
@@ -309,6 +310,20 @@ describe('backup', () => {
     expect(scenes[0].devicePresets).toEqual({ [a2]: 4 });
   });
 
+  it('moves effects on a whole device to the matching device', async () => {
+    await login();
+    const [a] = await addDevices();
+    const fx = { effect: 'rainbow', palette: 'rainbow', speed: 0.5, intensity: 0.5, size: 0.5, brightness: 0.8 };
+    await t.call('POST', '/api/admin/scenes', { name: 'Glow', devicePresets: {}, effects: { [`@${a}`]: fx, '@gone': fx } });
+    const backup = (await t.call('GET', '/api/admin/scenes/export')).json;
+    t = await setup();
+    await login();
+    const [a2] = await addDevices();
+    await t.call('POST', '/api/admin/scenes/import', backup);
+    const scenes = (await t.call('GET', '/api/admin/overview')).json.scenes;
+    expect(Object.keys(scenes[0].effects)).toEqual([`@${a2}`]);
+  });
+
   it('accepts a v1 backup file', async () => {
     await login();
     const [a] = await addDevices();
@@ -438,5 +453,20 @@ describe('sequences', () => {
     expect(new Uint8Array(await back.arrayBuffer())).toEqual(wav);
     expect((await t.call('DELETE', `/api/admin/audio/${file.id}`)).status).toBe(200);
     expect((await t.raw('GET', `/api/admin/audio/${file.id}`)).status).toBe(404);
+  });
+});
+
+describe('game area', () => {
+  it('keeps only what leaves something out, for objects in the layout', async () => {
+    expect((await t.call('GET', '/api/admin/games/area')).status).toBe(401);
+    await login();
+    const layout = sampleLayout();
+    expect((await t.call('PUT', '/api/admin/layout', layout)).status).toBe(200);
+    const [roof, bush] = layout.fixtures;
+    const r = await t.call('PUT', '/api/admin/games/area', { exclude: [bush.id, 'nope'], skip: { [roof.id]: [1], other: [0] }, trim: { [roof.id]: [3, 0], [bush.id]: [0, 0] } });
+    expect(r.status).toBe(200);
+    expect(r.json.area).toEqual({ exclude: [bush.id], skip: { [roof.id]: [1] }, trim: { [roof.id]: [3, 0] } });
+    expect((await t.call('GET', '/api/admin/games/area')).json.area).toEqual(r.json.area);
+    expect((await t.call('PUT', '/api/admin/games/area', {})).json.area).toBeNull();
   });
 });

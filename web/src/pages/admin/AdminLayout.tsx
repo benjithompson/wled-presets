@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
-import { Activity, Clapperboard, ExternalLink, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
+import { Activity, Clapperboard, ExternalLink, Gamepad2, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
 import { ThemeSwitcher } from '../../components/ThemeToggle.tsx';
 import { api } from '../../lib/api.ts';
 import { useEvents } from '../../lib/useEvents.ts';
@@ -19,6 +19,7 @@ const NAV = [
   { to: 'devices', label: 'Devices', icon: Router },
   { to: 'layout', label: 'Layout', icon: MapIcon },
   { to: 'sequences', label: 'Sequences', icon: Clapperboard },
+  { to: 'games', label: 'Games', icon: Gamepad2 },
   { to: 'activity', label: 'Activity', icon: Activity },
   { to: 'settings', label: 'Settings', icon: SettingsIcon }
 ];

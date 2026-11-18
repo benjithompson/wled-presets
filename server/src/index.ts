@@ -6,7 +6,7 @@ import { openDatabase } from './db.ts';
 import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
-import { migrateV1Settings, readSettings } from './settings.ts';
+import { migrateV1Settings, readGameArea, readSettings } from './settings.ts';
 import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
 import { readLayout } from './layoutStore.ts';
@@ -36,6 +36,7 @@ const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg))
 const preview = new LayoutPreview(() => lights.devicesWithStatus(), (msg) => lights.log('info', 'layout', msg), sender);
 const output = new LightsOutput(() => lights.devicesWithStatus(), () => preview.active, sender);
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), output);
+host.setGameArea(readGameArea(db));
 // Scenes with effects: the game host draws them and sends them to the lights.
 lights.setEffectPlayer((show) => host.playShow(show));
 const app = createApp({ config, db, bus, lights, host, preview });

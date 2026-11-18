@@ -3,7 +3,8 @@ import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
-import { buildStage, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
+import { buildStage, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
+import { GAME_CATALOG } from '../../../shared/games.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
 import { duelGame } from './duel.ts';
@@ -13,36 +14,9 @@ import type { LightsOutput } from './output.ts';
 import { overflowGame } from './overflow.ts';
 import type { Game, GameFactory } from './types.ts';
 
-export const GAMES: (GameInfo & { create: GameFactory })[] = [
-  {
-    id: 'catcher',
-    name: 'Comet Catcher',
-    description: 'Stop the comet inside the green gate. Every catch lights up a bush.',
-    players: '1 player',
-    create: catcherGame
-  },
-  {
-    id: 'cascade',
-    name: 'Cascade',
-    description: 'Glowing orbs roll along the roof. One tap sets off a blast: catch them in a chain reaction.',
-    players: '1 player',
-    create: cascadeGame
-  },
-  {
-    id: 'overflow',
-    name: 'Overflow',
-    description: 'Hold to pour light into each bush and tree. Let go so it settles inside the ring, not over it.',
-    players: '1 player',
-    create: overflowGame
-  },
-  {
-    id: 'duel',
-    name: 'Roof Duel',
-    description: 'Fire against Ice: hit the ball back when it reaches your end of the roof. The later the hit, the faster it flies.',
-    players: '2 players, or play the house',
-    create: duelGame
-  }
-];
+const CREATE: Record<string, GameFactory> = { catcher: catcherGame, cascade: cascadeGame, overflow: overflowGame, duel: duelGame };
+
+export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({ tagline: _, ...info }) => ({ ...info, create: CREATE[info.id] }));
 
 const TICK_HZ = 60;
 /** A game with no input for this long goes back to the idle animation. */
@@ -77,7 +51,13 @@ const HEARTBEAT_MS = 4000;
  * also go to the real lights.
  */
 export class GameHost {
+  /** Every LED of the layout: scenes play on it. */
   private stage: Stage;
+  /** The same LEDs, with only the game area active: games play on it. */
+  private gameStage: Stage;
+  private area: GameArea | null;
+  /** LEDs outside the game area: they stay dark during a game. */
+  private outside = new Int32Array(0);
   private layout: Layout;
   private frame: Frame;
   private bytes: Uint8Array<ArrayBuffer>;
@@ -109,12 +89,31 @@ export class GameHost {
     this.heartbeatMs = heartbeatMs;
     this.layout = layout;
     this.output = output;
+    this.area = null;
     this.stage = buildStage(layout);
+    this.gameStage = this.buildGameStage();
     output?.setStage(layout, this.stage);
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
-    this.game = idleGame(this.stage);
+    this.game = idleGame(this.gameStage);
     this.log = log;
+  }
+
+  private buildGameStage(): Stage {
+    const g = buildStage(this.layout, this.area);
+    const out: number[] = [];
+    for (let i = 0; i < g.pixelCount; i++) if (!g.active[i] && this.stage.active[i]) out.push(i);
+    this.outside = Int32Array.from(out);
+    return g;
+  }
+
+  /** The part of the yard that games use. A running game ends: it cannot go on in a changed area. */
+  setGameArea(area: GameArea | null) {
+    this.area = area;
+    this.gameStage = this.buildGameStage();
+    if (this.game.id !== 'idle') this.log('Game ended: the game area changed');
+    this.game = idleGame(this.gameStage);
+    this.sendStatus(true);
   }
 
   /** Accepts WebSocket upgrades on the given path. */
@@ -128,11 +127,12 @@ export class GameHost {
   setLayout(layout: Layout) {
     this.layout = layout;
     this.stage = buildStage(layout);
+    this.gameStage = this.buildGameStage();
     this.output?.setStage(layout, this.stage);
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     // A game cannot continue on a changed yard.
-    this.game = idleGame(this.stage);
+    this.game = idleGame(this.gameStage);
     // A scene keeps playing on the changed yard.
     if (this.show) this.playShow(this.show);
     this.broadcastJson({ type: 'layout', layout });
@@ -216,7 +216,7 @@ export class GameHost {
       // Nobody is playing: end the game, so the next visitor starts at the game picker.
       // A scene's effects keep playing for the people outside: they take the lights back on
       // the next frame, and devices that play a preset get it back.
-      this.game = idleGame(this.stage);
+      this.game = idleGame(this.gameStage);
       if (!this.scene) this.pause();
     }
     this.sendStatus(true);
@@ -269,12 +269,12 @@ export class GameHost {
     if (msg.type === 'start') {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;
-      this.game = g.create(this.stage);
+      this.game = g.create(this.gameStage);
       this.started = performance.now();
       this.log(`Game started: ${g.name}`);
     } else if (msg.type === 'stop') {
       if (this.game.id !== 'idle') this.log('Game stopped');
-      this.game = idleGame(this.stage);
+      this.game = idleGame(this.gameStage);
     } else if (msg.type === 'input' && (msg.action === 'press' || msg.action === 'release')) {
       this.game.input({ playerId: client.id, action: msg.action, at: (performance.now() - this.started) / 1000 });
     }
@@ -301,11 +301,16 @@ export class GameHost {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     if (this.game.id !== 'idle' && Date.now() - this.lastInput > IDLE_AFTER_MS) {
-      this.game = idleGame(this.stage);
+      this.game = idleGame(this.gameStage);
     }
     const gameOn = this.game.id !== 'idle';
     if (!gameOn && this.scene) this.scene.update(dt, this.frame.data);
-    else this.game.update(dt, this.frame);
+    else {
+      this.game.update(dt, this.frame);
+      // Lights outside the game area stay dark, whatever the game drew there.
+      const d = this.frame.data;
+      for (const i of this.outside) d[i * 3] = d[i * 3 + 1] = d[i * 3 + 2] = 0;
+    }
     this.frame.toBytes(this.bytes);
     if (!gameOn && this.scene) this.output?.pushScene(this.bytes, this.sceneDevices);
     else this.output?.push(this.bytes, gameOn);
@@ -327,7 +332,7 @@ export class GameHost {
   endGame(reason: string) {
     if (this.game.id === 'idle') return;
     this.log(`Game ended: ${reason}`);
-    this.game = idleGame(this.stage);
+    this.game = idleGame(this.gameStage);
     // A scene's effects take the lights back on the next frame (and give the other devices
     // back). With no scene, every device goes back to its own state now.
     if (!this.scene) this.output?.release();

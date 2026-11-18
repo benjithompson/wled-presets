@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, effectDirection, EFFECTS, effectObjects, EffectRunner, EffectScene, effectKey, effectsLook, effectTarget, isSpatial, layoutEffects, stageSpace, withEffects, YARD, type EffectSettings } from '../../shared/effects.ts';
+import { defaultSettings, deviceKey, effectDirection, keyDevice, EFFECTS, effectObjects, EffectRunner, EffectScene, effectKey, effectsLook, effectTarget, isSpatial, layoutEffects, stageSpace, withEffects, YARD, type EffectSettings } from '../../shared/effects.ts';
 import { buildStage, extendLine, fromLedRange, insertPoint, mapSegmentEffects, sampleLayout, segmentLeds, segmentsAfterRemove, type Layout } from '../../shared/layout.ts';
 import { GameHost } from '../src/game/host.ts';
 import { LightsOutput } from '../src/game/output.ts';
@@ -313,5 +313,31 @@ describe('3-D effects and the whole yard', () => {
     expect(effectDirection({ effect: 'scanner', direction: 'left' })).toBe('right');
     expect(isSpatial('nebula')).toBe(true);
     expect(isSpatial('aurora')).toBe(false);
+  });
+});
+
+describe('effects on a whole device', () => {
+  const base: Layout = sampleLayout();
+  // The roof is on device A, the first bush on device B, the rest on no device.
+  const layout: Layout = { ...base, fixtures: base.fixtures.map((f, i) => ({ ...f, deviceId: i === 0 ? 'A' : i === 1 ? 'B' : null })) };
+  const stage = buildStage(layout);
+  const red: EffectSettings = { ...defaultSettings('solid'), palette: 'custom', colors: ['#ff0000'], brightness: 1 };
+  const blue: EffectSettings = { ...red, colors: ['#0000ff'] };
+
+  it('plays on every object of that device, under the object’s own effect and over the yard’s', () => {
+    expect(effectObjects(layout, [deviceKey('A')])).toEqual([layout.fixtures[0].id]);
+    const out = new Float32Array(stage.pixelCount * 3);
+    const scene = new EffectScene(stage, layout, { [YARD]: blue, [deviceKey('A')]: red });
+    scene.update(0.1, out);
+    const [roof, bush, other] = stage.fixtures;
+    expect(rgb(out, roof.offset + 5)[0]).toBeGreaterThan(0.5);
+    expect(rgb(out, bush.offset)[2]).toBeGreaterThan(0.5);
+    expect(rgb(out, other.offset)[2]).toBeGreaterThan(0.5);
+    // An object's own effect still wins over its device's.
+    const own = new Float32Array(stage.pixelCount * 3);
+    new EffectScene(stage, layout, { [deviceKey('A')]: red, [layout.fixtures[0].id]: blue }).update(0.1, own);
+    expect(rgb(own, roof.offset + 5)[2]).toBeGreaterThan(0.5);
+    expect(keyDevice(deviceKey('A'))).toBe('A');
+    expect(keyDevice('roof')).toBeNull();
   });
 });

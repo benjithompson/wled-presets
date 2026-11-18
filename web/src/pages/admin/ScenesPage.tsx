@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { ArrowDown, ArrowUp, Clapperboard, Download, Layers, Pencil, Play, Plus, RefreshCw, Sparkles, Star, Trash2, Upload } from 'lucide-react';
-import { effectInfo, effectObjects, effectTarget, paletteColors, YARD } from '../../../../shared/effects.ts';
+import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Layers, Pencil, Play, Plus, RefreshCw, Sparkles, Star, Trash2, Upload } from 'lucide-react';
+import { defaultSettings, deviceKey, effectInfo, effectObjects, effectTarget, keyDevice, paletteColors, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { SequenceSummary } from '../../../../shared/sequence.ts';
 import type { Layout } from '../../../../shared/layout.ts';
 import { toast } from 'sonner';
@@ -11,25 +11,52 @@ import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHe
 import { api, type Overview } from '../../lib/api.ts';
 import { downloadJson, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
-import { PaletteSwatch } from './effectProps.tsx';
+import { EFFECT_GROUPS, EffectProps, PaletteSwatch } from './effectProps.tsx';
 
 /**
- * The effects of a scene on the yard, objects or segments of the layout, those objects, and the
- * devices they are on. A scene with a sequence lights the objects of the sequence instead.
+ * The effects of a scene on the yard, devices, objects or segments of the layout, those objects,
+ * and the devices they are on. A scene with a sequence lights the objects of the sequence instead.
+ * `layoutDevices`: the devices reached by effects from the layout editor (not whole-device ones).
  */
-function sceneEffects(scene: Scene, layout: Layout | undefined, seq?: SequenceSummary & { objects?: string[] }) {
-  const byId = new Map((layout?.fixtures ?? []).map((f) => [f.id, f]));
+function sceneEffects(scene: Scene, layout: Layout | undefined, devices: { id: string; name: string }[], seq?: SequenceSummary & { objects?: string[] }) {
+  const fixtures = layout?.fixtures ?? [];
+  const byId = new Map(fixtures.map((f) => [f.id, f]));
+  const deviceName = new Map(devices.map((d) => [d.id, d.name]));
   const items = seq
     ? []
     : Object.entries(scene.effects ?? {}).flatMap(([key, effect]) => {
-        if (key === YARD) return [{ key, effect, name: 'Whole yard' }];
+        if (key === YARD) return [{ key, effect, name: 'Whole yard', device: false }];
+        const dev = keyDevice(key);
+        if (dev != null) return deviceName.has(dev) && fixtures.some((f) => f.deviceId === dev) ? [{ key, effect, name: deviceName.get(dev)!, device: true }] : [];
         const t = effectTarget(key);
         const f = byId.get(t.id);
-        return f ? [{ key, effect, name: t.segment == null ? f.name : `${f.name} · segment ${t.segment + 1}` }] : [];
+        return f ? [{ key, effect, name: t.segment == null ? f.name : `${f.name} · segment ${t.segment + 1}`, device: false }] : [];
       });
-  const ids = new Set(seq ? (layout?.fixtures ?? []).map((f) => f.id) : effectObjects(layout ?? { fixtures: [] }, items.map((i) => i.key)));
-  const objects = (layout?.fixtures ?? []).filter((f) => ids.has(f.id));
-  return { items, objects, devices: new Set(objects.map((f) => f.deviceId).filter((id): id is string => !!id)) };
+  const devicesOf = (ids: Set<string>) =>
+    new Set(
+      fixtures
+        .filter((f) => ids.has(f.id))
+        .map((f) => f.deviceId)
+        .filter((id): id is string => !!id)
+    );
+  const ids = new Set(
+    seq
+      ? fixtures.map((f) => f.id)
+      : effectObjects(
+          { fixtures },
+          items.map((i) => i.key)
+        )
+  );
+  const fromLayout = new Set(
+    seq
+      ? ids
+      : effectObjects(
+          { fixtures },
+          items.filter((i) => !i.device).map((i) => i.key)
+        )
+  );
+  const objects = fixtures.filter((f) => ids.has(f.id));
+  return { items, objects, devices: devicesOf(ids), layoutDevices: devicesOf(fromLayout), layoutItems: items.filter((i) => !i.device).length };
 }
 
 const SEQUENCES = ['admin', 'sequences'];
@@ -115,11 +142,11 @@ export function ScenesPage() {
     <>
       <PageHeader
         title="Scenes"
-        description="A scene is one button on the public page. It sets a WLED preset on each device at the same time, or plays effects drawn by the server on the objects of your layout."
+        description="A scene is one button on the public page. Each device plays one of its WLED presets or a built-in effect drawn by the server, all at the same time. For an effect on single objects, use the layout editor."
         actions={
           <>
-            <Button onClick={() => navigate('/admin/layout')} title="Give objects effects in the layout editor, then save them as a scene">
-              <Sparkles /> New effect scene
+            <Button onClick={() => navigate('/admin/layout')} title="Give single objects or segments effects in the layout editor, then save them as a scene">
+              <Sparkles /> Effects per object
             </Button>
             <Button onClick={exportScenes} disabled={!data?.scenes.length}>
               <Download /> Export
@@ -156,15 +183,13 @@ export function ScenesPage() {
               )
             }
           >
-            {enabledDevices.length
-              ? 'Create a scene, then choose which WLED preset each device plays for it.'
-              : 'Scenes control devices. Add a WLED device before you create a scene.'}
+            {enabledDevices.length ? 'Create a scene, then choose which WLED preset each device plays for it.' : 'Scenes control devices. Add a WLED device before you create a scene.'}
           </Empty>
         ) : (
           <ul className="divide-y divide-stone-100 dark:divide-stone-800">
             {data.scenes.map((s, i) => {
               const seq = s.sequenceId ? seqById.get(s.sequenceId) : undefined;
-              const fx = sceneEffects(s, layout, seq);
+              const fx = sceneEffects(s, layout, data.devices, seq);
               const mapped = enabledDevices.filter((d) => s.devicePresets[d.id] || fx.devices.has(d.id)).length;
               const playable = mapped > 0 || fx.objects.length > 0;
               const isDefault = data.settings.defaultSceneId === s.id;
@@ -209,7 +234,11 @@ export function ScenesPage() {
                     {fx.objects.length ? (
                       <div className="mt-1.5 flex flex-wrap gap-1.5">
                         {fx.items.map((it) => (
-                          <span key={it.key} className="inline-flex items-center gap-1.5 rounded-full bg-stone-100 py-0.5 pr-2 pl-1 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300" title={it.name}>
+                          <span
+                            key={it.key}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-stone-100 py-0.5 pr-2 pl-1 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+                            title={it.name}
+                          >
                             <PaletteSwatch colors={paletteColors(it.effect)} className="block h-3 w-5 rounded-full" />
                             <span className="max-w-40 truncate">{it.name}</span>
                             <span className="text-stone-400">{effectInfo(it.effect.effect).name}</span>
@@ -226,7 +255,7 @@ export function ScenesPage() {
                       <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/sequences?open=${encodeURIComponent(seq.id)}`)} title="Open the sequence in the sequence editor">
                         <Clapperboard /> Sequence
                       </Button>
-                    ) : fx.items.length ? (
+                    ) : fx.layoutItems ? (
                       <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/layout?scene=${encodeURIComponent(s.id)}`)} title="Change the effects in the layout editor">
                         <Sparkles /> Effects
                       </Button>
@@ -246,7 +275,14 @@ export function ScenesPage() {
       </Card>
 
       {data && editing ? (
-        <SceneEditor key={editing === 'new' ? 'new' : editing.id} scene={editing === 'new' ? null : editing} data={data} layout={layout} sequences={seqData?.sequences ?? []} onClose={() => setEditing(null)} />
+        <SceneEditor
+          key={editing === 'new' ? 'new' : editing.id}
+          scene={editing === 'new' ? null : editing}
+          data={data}
+          layout={layout}
+          sequences={seqData?.sequences ?? []}
+          onClose={() => setEditing(null)}
+        />
       ) : null}
 
       <ConfirmDialog
@@ -282,16 +318,27 @@ function SceneEditor({ scene, data, layout, sequences, onClose }: { scene: Scene
   const qc = useQueryClient();
   const [name, setName] = useState(scene?.name ?? '');
   const [map, setMap] = useState<Record<string, number>>(scene?.devicePresets ?? {});
+  /** deviceId -> the built-in effect it plays on all its objects. */
+  const [dfx, setDfx] = useState<Record<string, EffectSettings>>(() =>
+    Object.fromEntries(Object.entries(scene?.effects ?? {}).flatMap(([k, v]) => (keyDevice(k) != null ? [[keyDevice(k)!, v]] : [])))
+  );
   const [sequenceId, setSequenceId] = useState<string>(scene?.sequenceId ?? '');
   const devices = data.devices.filter((d) => d.enabled);
   const seq = sequences.find((q) => q.id === sequenceId);
-  const fx = scene || seq ? sceneEffects(scene ?? { id: '', name, sortOrder: 0, devicePresets: {} }, layout, seq) : null;
-  const missing = devices.filter((d) => !data.devicePresets[d.id]?.length && !fx?.devices.has(d.id));
+  const fx = scene || seq ? sceneEffects(scene ?? { id: '', name, sortOrder: 0, devicePresets: {} }, layout, data.devices, seq) : null;
+  const hasObjects = new Set((layout?.fixtures ?? []).map((f) => f.deviceId).filter((id): id is string => !!id));
+  const missing = devices.filter((d) => !data.devicePresets[d.id]?.length && !fx?.layoutDevices.has(d.id) && !dfx[d.id]);
 
   const save = useMutation({
     mutationFn: () => {
-      const devicePresets = Object.fromEntries(Object.entries(map).filter(([, v]) => v >= 1));
-      return scene ? api.updateScene(scene.id, { name, devicePresets, sequenceId: sequenceId || null }) : api.createScene({ name, devicePresets, sequenceId: sequenceId || null });
+      // A device plays its effect or its preset, not both.
+      const devicePresets = Object.fromEntries(Object.entries(map).filter(([id, v]) => v >= 1 && !dfx[id]));
+      const effects = {
+        ...Object.fromEntries(Object.entries(scene?.effects ?? {}).filter(([k]) => keyDevice(k) == null)),
+        ...Object.fromEntries(Object.entries(dfx).map(([id, v]) => [deviceKey(id), v]))
+      };
+      const body = { name, devicePresets, effects, sequenceId: sequenceId || null };
+      return scene ? api.updateScene(scene.id, body) : api.createScene(body);
     },
     onSuccess: () => {
       toast.success(scene ? 'Scene saved' : 'Scene created');
@@ -313,12 +360,32 @@ function SceneEditor({ scene, data, layout, sequences, onClose }: { scene: Scene
 
   const setAll = (presetName: string) => {
     const next: Record<string, number> = { ...map };
+    const nextFx = { ...dfx };
     for (const d of devices) {
       const p = data.devicePresets[d.id]?.find((x) => x.name.toLowerCase() === presetName.toLowerCase());
-      if (p) next[d.id] = p.id;
+      if (p) ((next[d.id] = p.id), delete nextFx[d.id]);
     }
     setMap(next);
+    setDfx(nextFx);
   };
+  /** Every device that can play built-in effects plays this one (the same settings, so 3-D effects line up). */
+  const setAllEffect = (id: EffectId) => {
+    const settings = defaultSettings(id);
+    const next = { ...dfx };
+    for (const d of devices) if (hasObjects.has(d.id) && !fx?.layoutDevices.has(d.id)) next[d.id] = settings;
+    setDfx(next);
+  };
+  const choose = (deviceId: string, choice: { preset: number } | { effect: EffectSettings } | null) => {
+    setMap((m) => {
+      const { [deviceId]: _, ...rest } = m;
+      return choice && 'preset' in choice ? { ...rest, [deviceId]: choice.preset } : rest;
+    });
+    setDfx((m) => {
+      const { [deviceId]: _, ...rest } = m;
+      return choice && 'effect' in choice ? { ...rest, [deviceId]: choice.effect } : rest;
+    });
+  };
+  const canEffects = devices.some((d) => hasObjects.has(d.id) && !fx?.layoutDevices.has(d.id));
   const sharedNames = [...new Set(devices.flatMap((d) => data.devicePresets[d.id]?.map((p) => p.name) ?? []))].sort();
 
   return (
@@ -327,7 +394,7 @@ function SceneEditor({ scene, data, layout, sequences, onClose }: { scene: Scene
       onClose={onClose}
       size="lg"
       title={scene ? 'Edit scene' : 'New scene'}
-      description="Choose the WLED preset that each device plays for this scene. Leave a device on “Do not change” to skip it."
+      description="Choose what each device plays for this scene: one of its WLED presets, or a built-in effect that the server draws on all its lights. Leave a device on “Do not change” to skip it."
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
@@ -363,16 +430,39 @@ function SceneEditor({ scene, data, layout, sequences, onClose }: { scene: Scene
           </Field>
         ) : null}
 
-        {sharedNames.length > 0 ? (
-          <Field label="Quick fill" hint="Sets every device that has a preset with this name.">
+        {sharedNames.length > 0 || canEffects ? (
+          <Field label="Quick fill" hint="Sets every device that has a preset with this name, or every device in the layout to the same built-in effect.">
             {(id) => (
-              <Select id={id} value="" onChange={(e) => e.target.value && setAll(e.target.value)}>
-                <option value="">Choose a preset name…</option>
-                {sharedNames.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
+              <Select
+                id={id}
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v.startsWith('e:')) setAllEffect(v.slice(2) as EffectId);
+                  else if (v.startsWith('p:')) setAll(v.slice(2));
+                }}
+              >
+                <option value="">Choose a preset or an effect for every device…</option>
+                {sharedNames.length ? (
+                  <optgroup label="WLED device presets">
+                    {sharedNames.map((n) => (
+                      <option key={n} value={`p:${n}`}>
+                        {n}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+                {canEffects
+                  ? EFFECT_GROUPS.map((g) => (
+                      <optgroup key={g.label} label={`Built-in effects · ${g.label}`}>
+                        {g.options.map(([eid, label]) => (
+                          <option key={eid} value={`e:${eid}`}>
+                            {label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))
+                  : null}
               </Select>
             )}
           </Field>
@@ -394,8 +484,10 @@ function SceneEditor({ scene, data, layout, sequences, onClose }: { scene: Scene
                 device={d}
                 presets={data.devicePresets[d.id] ?? []}
                 value={map[d.id] ?? 0}
-                onChange={(v) => setMap((m) => ({ ...m, [d.id]: v }))}
-                effects={fx?.objects.filter((f) => f.deviceId === d.id).map((f) => f.name)}
+                effect={dfx[d.id]}
+                inLayout={hasObjects.has(d.id)}
+                onChange={(c) => choose(d.id, c)}
+                effects={fx?.layoutDevices.has(d.id) ? fx.objects.filter((f) => f.deviceId === d.id).map((f) => f.name) : undefined}
               />
             ))}
           </ul>
@@ -409,51 +501,113 @@ function DeviceRow({
   device,
   presets,
   value,
+  effect,
+  inLayout,
   onChange,
   effects
 }: {
   device: DeviceWithStatus;
   presets: { id: number; name: string }[];
   value: number;
-  onChange: (v: number) => void;
-  /** Objects on this device that play an effect in the scene: then the device plays effects, not a preset. */
+  /** The built-in effect it plays on all its lights. */
+  effect: EffectSettings | undefined;
+  /** True when some layout object is on this device: only then can the server draw effects for it. */
+  inLayout: boolean;
+  onChange: (choice: { preset: number } | { effect: EffectSettings } | null) => void;
+  /** Objects on this device that play an effect from the layout editor: then the device plays those, not a preset. */
   effects?: string[];
 }) {
+  const [typing, setTyping] = useState(false);
+  const [adjust, setAdjust] = useState(false);
+  const manual = !presets.length && !effect && (typing || value > 0);
+  const current = effect ? `e:${effect.effect}` : manual ? 'p:manual' : value ? `p:${value}` : '';
+  const pick = (v: string) => {
+    setTyping(v === 'p:manual');
+    if (!v) return onChange(null);
+    if (v === 'p:manual') return onChange(value ? { preset: value } : null);
+    if (v.startsWith('p:')) return onChange({ preset: Number(v.slice(2)) });
+    const id = v.slice(2) as EffectId;
+    // A new effect keeps the brightness and colors you picked for the last one.
+    const next = defaultSettings(id);
+    onChange({ effect: effect ? { ...next, brightness: effect.brightness } : next });
+  };
   return (
-    <li className="flex flex-wrap items-center gap-3 px-3 py-2.5">
-      <StatusDot online={device.online} />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">{device.name}</p>
-        <p className="truncate text-xs text-stone-500">
-          {device.host}
-          {device.port !== 80 ? `:${device.port}` : ''}
-        </p>
+    <li className="px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-3">
+        <StatusDot online={device.online} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{device.name}</p>
+          <p className="truncate text-xs text-stone-500">
+            {device.host}
+            {device.port !== 80 ? `:${device.port}` : ''}
+          </p>
+        </div>
+        {effects?.length ? (
+          <span className="inline-flex w-full items-center gap-1.5 text-sm text-stone-600 sm:w-64 dark:text-stone-300" title={effects.join(', ')}>
+            <Sparkles className="size-4 shrink-0 text-sky-600 dark:text-sky-400" />
+            <span className="truncate">Effects on {effects.length === 1 ? effects[0] : `${effects.length} objects`}</span>
+          </span>
+        ) : (
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-64">
+            <Select aria-label={`What ${device.name} plays`} className="w-full" value={current} onChange={(e) => pick(e.target.value)}>
+              <option value="">Do not change</option>
+              <optgroup label="WLED device presets">
+                {presets.map((p) => (
+                  <option key={p.id} value={`p:${p.id}`}>
+                    {p.id}. {p.name}
+                  </option>
+                ))}
+                {value && presets.length && !presets.some((p) => p.id === value) ? <option value={`p:${value}`}>{value}. (not on device)</option> : null}
+                {!presets.length ? <option value="p:manual">Type a preset number…</option> : null}
+              </optgroup>
+              {EFFECT_GROUPS.map((g) => (
+                <optgroup key={g.label} label={inLayout ? `Built-in effects · ${g.label}` : `Built-in effects · ${g.label} (put this device in the layout first)`} disabled={!inLayout}>
+                  {g.options.map(([eid, label]) => (
+                    <option key={eid} value={`e:${eid}`}>
+                      {label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </Select>
+            {manual ? (
+              <Input
+                aria-label={`Preset id for ${device.name}`}
+                className="w-full"
+                inputMode="numeric"
+                placeholder="Preset id (1–250)"
+                value={value || ''}
+                autoFocus={typing && !value}
+                onChange={(e) => {
+                  const n = Number(e.target.value.replace(/\D/g, '')) || 0;
+                  onChange(n ? { preset: n } : null);
+                  setTyping(true);
+                }}
+              />
+            ) : null}
+          </div>
+        )}
       </div>
-      {effects?.length ? (
-        <span className="inline-flex w-full items-center gap-1.5 text-sm text-stone-600 sm:w-56 dark:text-stone-300" title={effects.join(', ')}>
-          <Sparkles className="size-4 shrink-0 text-sky-600 dark:text-sky-400" />
-          <span className="truncate">Effects on {effects.length === 1 ? effects[0] : `${effects.length} objects`}</span>
-        </span>
-      ) : presets.length ? (
-        <Select aria-label={`Preset for ${device.name}`} className="w-full sm:w-56" value={value} onChange={(e) => onChange(Number(e.target.value))}>
-          <option value={0}>Do not change</option>
-          {presets.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.id}. {p.name}
-            </option>
-          ))}
-          {value && !presets.some((p) => p.id === value) ? <option value={value}>{value}. (not on device)</option> : null}
-        </Select>
-      ) : (
-        <Input
-          aria-label={`Preset id for ${device.name}`}
-          className="w-full sm:w-56"
-          inputMode="numeric"
-          placeholder="Preset id (1–250)"
-          value={value || ''}
-          onChange={(e) => onChange(Number(e.target.value.replace(/\D/g, '')) || 0)}
-        />
-      )}
+      {effect && !effects?.length ? (
+        <div className="mt-2 ml-5">
+          <button
+            type="button"
+            onClick={() => setAdjust((v) => !v)}
+            aria-expanded={adjust}
+            className="inline-flex items-center gap-1.5 rounded-md py-0.5 text-xs text-stone-600 hover:text-stone-950 dark:text-stone-400 dark:hover:text-white"
+          >
+            <PaletteSwatch colors={paletteColors(effect)} className="block h-2.5 w-6 rounded-full ring-1 ring-black/10 dark:ring-white/10" />
+            {effectInfo(effect.effect).name} on all its lights
+            <ChevronDown className={adjust ? 'size-3.5 rotate-180 transition' : 'size-3.5 transition'} />
+            <span className="text-stone-400">{adjust ? 'Done' : 'Colors, speed…'}</span>
+          </button>
+          {adjust ? (
+            <div className="mt-2 space-y-1.5 rounded-lg bg-stone-50 p-3 ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
+              <EffectProps effect={effect} onChange={(e) => (e ? onChange({ effect: e }) : (onChange(null), setAdjust(false)))} objectCount={0} noneLabel="Do not change" />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }

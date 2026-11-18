@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bomb, Bug, Droplets, Heart, Loader2, Radio, Rocket, Square, Star, Swords, Users, WifiOff, X, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, Bug, Heart, Loader2, Radio, Square, Star, Users, WifiOff, X } from 'lucide-react';
 import type { ButtonTone, GameStatus } from '../../../shared/layout.ts';
 import { api } from '../lib/api.ts';
 import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
+import { gameLook } from '../lib/gameLooks.ts';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button. */
@@ -21,6 +22,16 @@ export function PlayPage() {
   useEffect(() => {
     document.title = 'Play';
   }, []);
+
+  // Opened from a game on the public page (/play?game=cascade): start it, unless a game is on.
+  const wanted = useRef(new URLSearchParams(location.search).get('game'));
+  useEffect(() => {
+    const id = wanted.current;
+    if (!id || !connected || !status || !games.length) return;
+    wanted.current = null;
+    history.replaceState(null, '', location.pathname);
+    if (!status.game && games.some((g) => g.id === id)) send({ type: 'start', game: id });
+  }, [connected, status, games, send]);
 
   // The button is held for as long as the finger (or key) is down: some games pour while you hold.
   const held = useRef(false);
@@ -195,7 +206,7 @@ export function PlayPage() {
                 <p className="mb-5 text-white/60">The lights on the house become the game.</p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {games.map((g) => {
-                    const look = GAME_LOOKS[g.id] ?? GAME_LOOKS.catcher;
+                    const look = gameLook(g.id);
                     const Icon = look.icon;
                     return (
                       <button
@@ -237,13 +248,6 @@ const TONES: Record<ButtonTone, string> = {
   wait: 'from-slate-500 to-slate-700 shadow-black/40'
 };
 
-/** Each game's icon and colors in the game picker. */
-const GAME_LOOKS: Record<string, { icon: LucideIcon; className: string }> = {
-  catcher: { icon: Rocket, className: 'from-amber-300 to-orange-500 shadow-orange-500/30' },
-  cascade: { icon: Bomb, className: 'from-fuchsia-500 via-violet-500 to-cyan-400 shadow-fuchsia-500/30' },
-  overflow: { icon: Droplets, className: 'from-sky-400 via-emerald-400 to-amber-300 shadow-sky-500/30' },
-  duel: { icon: Swords, className: 'from-orange-500 to-sky-500 shadow-orange-500/30' }
-};
 
 /** Stars for a short goal, a bar for a long one. */
 function Progress({ value, max }: { value: number; max: number }) {
@@ -309,6 +313,13 @@ function DebugPanel({ onClose }: { onClose: () => void }) {
         <div>
           <h2 className="font-semibold">Real lights</h2>
           <p className="text-white/60">A running game shows on the WLED devices; when the game ends, the lights go back to their color or scene at once. Only signed-in admins see this panel. Turning it off lasts until the server restarts.</p>
+          <p className="mt-1 text-white/60">
+            To keep games off lights that cannot be seen, go to{' '}
+            <a href="/admin/games" className="underline">
+              Admin → Games
+            </a>
+            .
+          </p>
         </div>
         <button type="button" onClick={onClose} className="rounded-full p-1.5 text-white/60 hover:bg-white/10 hover:text-white" aria-label="Close debug panel">
           <X className="size-4" />
