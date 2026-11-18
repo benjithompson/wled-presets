@@ -106,11 +106,6 @@ export function PublicPage() {
 
         {state ? <StatusLine state={state} /> : null}
         {line ? <LineBanner line={line} /> : null}
-        {locked ? (
-          <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/65 px-3 py-1 text-sm text-stone-600 tabular-nums ring-1 ring-stone-900/10 backdrop-blur-md dark:bg-stone-900/45 dark:text-stone-300 dark:ring-white/10" aria-live="polite">
-            <Clock className="size-3.5" /> You can change the lights again in {clock(cooling)}
-          </p>
-        ) : null}
 
         {isLoading ? (
           <div className="grid place-items-center py-32">
@@ -257,8 +252,9 @@ function GamesSection() {
 function LineBanner({ line }: { line: LineView }) {
   const left = useCountdown(line.endsIn);
   const mine = useCountdown(line.you?.startsIn ?? null);
+  const cooling = useCountdown(line.cooldown);
   const leave = useMutation({ mutationFn: api.leaveLine, onError: (e) => toast.error(errorText(e)) });
-  if (!line.enabled || (line.free && !line.you && !line.offer)) return null;
+  if (!line.enabled || (line.free && !line.you && !line.offer && !cooling)) return null;
   const now = line.now;
   const box = 'mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl px-4 py-3 text-sm ring-1 backdrop-blur-md';
   if (line.offer) {
@@ -290,7 +286,13 @@ function LineBanner({ line }: { line: LineView }) {
           <Users className="size-3.5" /> {line.waiting} in line
         </span>
       ) : null}
-      {left != null && (line.waiting || !line.free) ? (
+      {cooling ? (
+        <span className="inline-flex items-center gap-1 text-stone-500 tabular-nums dark:text-stone-400">
+          <Clock className="size-3.5" /> change again in {clock(cooling)}
+        </span>
+      ) : null}
+      {/* Your own pick's time left is only worth showing when others wait, and not twice. */}
+      {left != null && (now?.you ? line.waiting && !(cooling && Math.abs(left - cooling) < 1500) : line.waiting || !line.free) ? (
         <span className="inline-flex items-center gap-1 text-stone-500 tabular-nums dark:text-stone-400">
           <Clock className="size-3.5" /> {now?.kind === 'game' ? `ends after this game, or in ${clock(left)}` : `next in ${clock(left)}`}
         </span>

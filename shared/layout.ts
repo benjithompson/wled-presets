@@ -1233,8 +1233,30 @@ export interface GameStatus {
   settings?: GameSetting[];
   /** The game's high scores (on the start and game-over screens). */
   scoreboard?: Scoreboard;
+  /** An arcade score display while playing (Beat Drop): it takes the place of score and stats. */
+  arcade?: ArcadeHud;
   /** The last game's score made the board: the phone asks for initials. */
   enterInitials?: { id: number; rank: number; score: number; refused?: boolean };
+}
+
+/** A game's arcade score display: the score, the multiplier and how close the next one is. */
+export interface ArcadeHud {
+  score: number;
+  best: number;
+  mult: number;
+  maxMult: number;
+  /** Hits toward the next step of the multiplier, of perStep (all of them at the top). */
+  charge: number;
+  perStep: number;
+  /** Hits in a row. */
+  streak: number;
+  /** The latest judgment, numbered so the phone can pop each new one. */
+  judged: { n: number; text: string; kind: 'perfect' | 'good' | 'held' | 'miss' | 'stray' } | null;
+  /** Times the multiplier climbed, and was lost, this game: a new count is a celebration (or a crash). */
+  ups: number;
+  drops: number;
+  /** Small facts in the corner, for example the speed and the stage. */
+  info: { label: string; value: string | number }[];
 }
 
 /** An arcade high-score table: the best scores of one game (and its settings), with initials. */
