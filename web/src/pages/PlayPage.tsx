@@ -2,17 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Bug, Heart, Loader2, Radio, Square, Star, Users, WifiOff, X } from 'lucide-react';
-import type { ButtonTone, GameStatus } from '../../../shared/layout.ts';
+import type { ButtonTone, GameControl, GameSetting, GameStatus } from '../../../shared/layout.ts';
 import { api } from '../lib/api.ts';
 import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { cn } from '../lib/utils.ts';
 
-/** Kid-friendly game screen: the yard as it looks right now, and one huge button. */
+/** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
 export function PlayPage() {
   const { layout, games, status, connected, frame, send } = usePlaySocket();
-  const [pressed, setPressed] = useState(false);
+  /** The buttons held down now, by id ('main': the big button). */
+  const [pressed, setPressed] = useState<ReadonlySet<string>>(new Set());
   const playing = !!status?.game;
   const { data: session } = useQuery({ queryKey: ['session'], queryFn: api.session, retry: false });
   const isAdmin = !!session?.user;
@@ -33,47 +34,66 @@ export function PlayPage() {
     if (!status.game && games.some((g) => g.id === id)) send({ type: 'start', game: id });
   }, [connected, status, games, send]);
 
-  // The button is held for as long as the finger (or key) is down: some games pour while you hold.
-  const held = useRef(false);
-  const press = useCallback(() => {
-    if (held.current) return;
-    held.current = true;
-    send({ type: 'input', action: 'press' });
-    navigator.vibrate?.(15);
-    setPressed(true);
-  }, [send]);
-  const release = useCallback(() => {
-    if (!held.current) return;
-    held.current = false;
-    send({ type: 'input', action: 'release' });
-    setPressed(false);
-  }, [send]);
+  // Each button is held for as long as its finger (or key) is down: some games pour while you
+  // hold. Several can be down at once (one finger per button).
+  const held = useRef(new Set<string>());
+  const press = useCallback(
+    (id = 'main') => {
+      if (held.current.has(id)) return;
+      held.current.add(id);
+      send({ type: 'input', action: 'press', ...(id === 'main' ? {} : { button: id }) });
+      navigator.vibrate?.(15);
+      setPressed(new Set(held.current));
+    },
+    [send]
+  );
+  const release = useCallback(
+    (id = 'main') => {
+      if (!held.current.delete(id)) return;
+      send({ type: 'input', action: 'release', ...(id === 'main' ? {} : { button: id }) });
+      setPressed(new Set(held.current));
+    },
+    [send]
+  );
+  const releaseAll = useCallback(() => {
+    for (const id of [...held.current]) release(id);
+  }, [release]);
 
-  // Space bar or Enter works as the big button on a computer.
+  const controls = playing ? status?.controls : undefined;
+  // A button that goes away (the game moved on to its game-over screen) lets go.
+  const controlIds = controls?.map((c) => c.id).join() ?? 'main';
+  useEffect(() => {
+    const ids = new Set(controlIds.split(','));
+    for (const id of [...held.current]) if (!ids.has(id)) release(id);
+  }, [controlIds, release]);
+
+  // On a computer: the space bar or Enter is the big button; a row of buttons has its own keys.
+  const keyMap = useRef(new Map<string, string>());
+  keyMap.current = new Map(controls ? controls.flatMap((c) => (c.keys ?? []).map((k) => [k, c.id] as const)) : [['Space', 'main'], ['Enter', 'main']]);
   useEffect(() => {
     if (!playing) return;
-    const isKey = (e: KeyboardEvent) => e.code === 'Space' || e.code === 'Enter';
     const down = (e: KeyboardEvent) => {
-      if (!isKey(e)) return;
+      const id = keyMap.current.get(e.code);
+      if (!id) return;
       e.preventDefault();
-      if (!e.repeat) press();
+      if (!e.repeat) press(id);
     };
     const up = (e: KeyboardEvent) => {
-      if (!isKey(e)) return;
+      const id = keyMap.current.get(e.code);
+      if (!id) return;
       e.preventDefault();
-      release();
+      release(id);
     };
     // A finger that leaves the page (a notification, switching apps) lets go.
-    const blur = () => release();
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
-    window.addEventListener('blur', blur);
+    window.addEventListener('blur', releaseAll);
     return () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
-      window.removeEventListener('blur', blur);
+      window.removeEventListener('blur', releaseAll);
     };
-  }, [playing, press, release]);
+  }, [playing, press, release, releaseAll]);
 
   const phase = status?.phase ?? '';
   const buttonLabel = status?.button ?? (phase === 'ready' || phase === 'over' || phase === 'won' ? 'GO!' : 'STOP!');
@@ -173,32 +193,39 @@ export function PlayPage() {
                     ))}
                   </div>
                 ) : null}
-                <button
-                  type="button"
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    // Keep getting this finger's events even if it slides off the button.
-                    e.currentTarget.setPointerCapture?.(e.pointerId);
-                    press();
-                  }}
-                  onPointerUp={release}
-                  onPointerCancel={release}
-                  onLostPointerCapture={release}
-                  onContextMenu={(e) => e.preventDefault()}
-                  onKeyDown={(e) => e.key === ' ' && e.preventDefault()}
-                  disabled={phase === 'setup'}
-                  style={teamButton ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${you.color} 70%, white), ${you.color})`, boxShadow: `0 25px 50px -12px ${you.color}` } : undefined}
-                  className={cn(
-                    'grid size-40 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none] sm:size-52',
-                    buttonLabel.length > 6 ? 'text-2xl sm:text-3xl' : 'text-4xl',
-                    TONES[tone],
-                    pressed ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
-                    'disabled:opacity-40'
-                  )}
-                >
-                  {buttonLabel}
-                </button>
-                <p className="hidden text-sm text-white/40 sm:block">or press the space bar{status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}</p>
+                {status?.settings?.length ? <Settings settings={status.settings} onPick={(id, value) => send({ type: 'setting', id, value })} /> : null}
+                {controls?.length ? (
+                  <ControlRow controls={controls} pressed={pressed} tone={tone} disabled={phase === 'setup'} onPress={press} onRelease={release} />
+                ) : (
+                  <button
+                    type="button"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      // Keep getting this finger's events even if it slides off the button.
+                      e.currentTarget.setPointerCapture?.(e.pointerId);
+                      press();
+                    }}
+                    onPointerUp={() => release()}
+                    onPointerCancel={() => release()}
+                    onLostPointerCapture={() => release()}
+                    onContextMenu={(e) => e.preventDefault()}
+                    onKeyDown={(e) => e.key === ' ' && e.preventDefault()}
+                    disabled={phase === 'setup'}
+                    style={teamButton ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${you.color} 70%, white), ${you.color})`, boxShadow: `0 25px 50px -12px ${you.color}` } : undefined}
+                    className={cn(
+                      'grid size-40 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none] sm:size-52',
+                      buttonLabel.length > 6 ? 'text-2xl sm:text-3xl' : 'text-4xl',
+                      TONES[tone],
+                      pressed.has('main') ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
+                      'disabled:opacity-40'
+                    )}
+                  >
+                    {buttonLabel}
+                  </button>
+                )}
+                <p className="hidden text-sm text-white/40 sm:block">
+                  {controls?.length ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
+                </p>
               </section>
             ) : (
               <section className="flex-1 py-6">
@@ -248,6 +275,90 @@ const TONES: Record<ButtonTone, string> = {
   wait: 'from-slate-500 to-slate-700 shadow-black/40'
 };
 
+
+/** Choices for the next game: each setting as a row of pills, the chosen one lit. */
+function Settings({ settings, onPick }: { settings: GameSetting[]; onPick: (id: string, value: string) => void }) {
+  return (
+    <div className="flex flex-col items-center gap-2">
+      {settings.map((s) => (
+        <div key={s.id} role="radiogroup" aria-label={s.label} className="flex flex-wrap items-center justify-center gap-2">
+          <span className="text-sm text-white/60">{s.label}</span>
+          <div className="inline-flex rounded-full bg-white/10 p-1">
+            {s.choices.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                role="radio"
+                aria-checked={c.value === s.value}
+                onClick={() => onPick(s.id, c.value)}
+                className={cn('rounded-full px-4 py-1.5 text-sm font-semibold transition', c.value === s.value ? 'bg-white text-slate-900 shadow' : 'text-white/70 hover:text-white')}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A row of buttons for games with more than one (change color, fire…), one finger each. On a
+ * phone they sit side by side, the big one in the middle; each one in the color it stands for.
+ */
+function ControlRow({
+  controls,
+  pressed,
+  tone,
+  disabled,
+  onPress,
+  onRelease
+}: {
+  controls: GameControl[];
+  pressed: ReadonlySet<string>;
+  tone: ButtonTone;
+  disabled: boolean;
+  onPress: (id: string) => void;
+  onRelease: (id: string) => void;
+}) {
+  const many = controls.length > 3;
+  return (
+    <div className={cn('flex w-full max-w-xl items-center justify-center', many ? 'gap-2 sm:gap-3' : 'gap-3 sm:gap-5')}>
+      {controls.map((c) => {
+        const down = pressed.has(c.id);
+        return (
+          <button
+            key={c.id}
+            type="button"
+            aria-label={c.label}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.currentTarget.setPointerCapture?.(e.pointerId);
+              onPress(c.id);
+            }}
+            onPointerUp={() => onRelease(c.id)}
+            onPointerCancel={() => onRelease(c.id)}
+            onLostPointerCapture={() => onRelease(c.id)}
+            onContextMenu={(e) => e.preventDefault()}
+            onKeyDown={(e) => e.key === ' ' && e.preventDefault()}
+            disabled={disabled}
+            style={c.color ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${c.color} 65%, white), ${c.color})`, boxShadow: `0 20px 40px -12px ${c.color}` } : undefined}
+            className={cn(
+              'grid aspect-square min-w-0 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-2 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none] [text-shadow:0_1px_6px_rgba(0,0,0,0.55)]',
+              many ? 'flex-1 text-3xl sm:max-w-32 sm:text-4xl' : c.big ? 'w-[38%] max-w-48 text-3xl sm:text-4xl' : 'w-[26%] max-w-32 text-4xl sm:text-5xl',
+              !c.color && TONES[tone],
+              down ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
+              'disabled:opacity-40'
+            )}
+          >
+            {c.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /** Stars for a short goal, a bar for a long one. */
 function Progress({ value, max }: { value: number; max: number }) {

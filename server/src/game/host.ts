@@ -3,7 +3,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
-import { buildStage, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
+import { buildStage, CONTROL_ID, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
@@ -39,7 +39,7 @@ export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({
 /** A game with no input for this long goes back to the idle animation. */
 const IDLE_AFTER_MS = 3 * 60_000;
 
-type ClientMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'leave' } | { type: 'input'; action: 'press' | 'release' };
+type ClientMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'leave' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string };
 
 /** What a scene plays on the lights: effects on the yard and its objects, or a sequence (it loops). */
 export interface Show {
@@ -301,7 +301,10 @@ export class GameHost implements FrameSource {
       if (this.game.id !== 'idle') this.log('Game stopped');
       this.game = idleGame(this.gameStage);
     } else if (msg.type === 'input' && (msg.action === 'press' || msg.action === 'release')) {
-      this.game.input({ playerId: client.id, action: msg.action });
+      const button = typeof msg.button === 'string' && CONTROL_ID.test(msg.button) && msg.button !== 'main' ? msg.button : undefined;
+      this.game.input({ playerId: client.id, action: msg.action, ...(button ? { button } : {}) });
+    } else if (msg.type === 'setting' && typeof msg.id === 'string' && typeof msg.value === 'string' && CONTROL_ID.test(msg.id) && CONTROL_ID.test(msg.value)) {
+      this.game.setting?.(msg.id, msg.value);
     }
     this.sendStatus(true);
   }

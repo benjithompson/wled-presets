@@ -454,6 +454,45 @@ describe('game host with sides', () => {
   });
 });
 
+describe('game host with several buttons and settings', () => {
+  it('passes each button and setting on to the game, and drops ids it does not accept', async () => {
+    const server = http.createServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const host = new GameHost(sampleLayout(), () => {});
+    host.attach(server, '/api/play');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/play`);
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'start', game: 'slice' }));
+    await new Promise((r) => setTimeout(r, 50));
+    const game = (host as unknown as { game: Game }).game;
+    const inputs: unknown[] = [];
+    const settings: unknown[] = [];
+    game.input = (e) => void inputs.push(e);
+    game.setting = (id, value) => void settings.push([id, value]);
+    const send = (m: object) => ws.send(JSON.stringify(m));
+    send({ type: 'input', action: 'press', button: 'left' });
+    send({ type: 'input', action: 'release', button: 'left' });
+    send({ type: 'input', action: 'press' });
+    send({ type: 'input', action: 'press', button: 'main' });
+    send({ type: 'input', action: 'press', button: 'Not OK!' });
+    send({ type: 'setting', id: 'level', value: 'hard' });
+    send({ type: 'setting', id: 'level', value: '<script>' });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(inputs).toEqual([
+      { playerId: expect.any(String), action: 'press', button: 'left' },
+      { playerId: expect.any(String), action: 'release', button: 'left' },
+      { playerId: expect.any(String), action: 'press' },
+      { playerId: expect.any(String), action: 'press' },
+      { playerId: expect.any(String), action: 'press' }
+    ]);
+    expect(settings).toEqual([['level', 'hard']]);
+    ws.close();
+    host.stop();
+    server.close();
+  });
+});
+
 describe('the game area', () => {
   const layout = sampleLayout();
   const roof = layout.fixtures.find((f) => f.kind === 'roof')!;

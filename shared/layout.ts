@@ -1162,6 +1162,36 @@ export interface GameInfo {
 /** The big button's color on the play screen. */
 export type ButtonTone = 'go' | 'good' | 'bad' | 'calm' | 'wait';
 
+/**
+ * One of a row of buttons on the phone, for games with more than one (see GameStatus.controls).
+ * Its press and release reach the game with this id.
+ */
+export interface GameControl {
+  /** Sent with the input: 'main' is the big button's job (start, fire); games name the others. */
+  id: string;
+  label: string;
+  /** A CSS color: the button's fill (for example the color it picks). Not set: the tone's colors. */
+  color?: string;
+  /** Keyboard keys (KeyboardEvent.code) that work as this button. */
+  keys?: string[];
+  /** Larger than the others (the middle button of a row). */
+  big?: boolean;
+}
+
+/**
+ * A choice the player makes before a game (difficulty, number of colors), shown on the phone as
+ * a row of choices on the start and game-over screens. A tap sends the setting's id and the value.
+ */
+export interface GameSetting {
+  id: string;
+  label: string;
+  value: string;
+  choices: { value: string; label: string }[];
+}
+
+/** A button id (or a setting's id or value) the server accepts: short, lowercase letters and digits. */
+export const CONTROL_ID = /^[a-z0-9]{1,16}$/;
+
 export interface GameStatus {
   game: string | null;
   phase: string;
@@ -1185,6 +1215,15 @@ export interface GameStatus {
   scores?: { name: string; color: string; value: number }[];
   /** This player's side in a game with sides (each phone gets its own). */
   you?: { name: string; color: string } | null;
+  /**
+   * A row of buttons in place of the one big button, left to right (for example: change color
+   * left, fire, change color right). Not set: the big button (id 'main').
+   */
+  controls?: GameControl[];
+  /** Under the buttons on a computer: which keys to use, for example "← → to change, space to fire". */
+  keysHint?: string;
+  /** Choices for the next game (on the start and game-over screens). */
+  settings?: GameSetting[];
 }
 
 /** Debug mode state: games sent to the real lights. */

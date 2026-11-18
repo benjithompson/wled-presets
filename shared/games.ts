@@ -55,14 +55,14 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     id: 'beads',
     name: 'Bead Rush',
     tagline: 'Match the chain before it lands',
-    description: 'A chain of colored beads creeps along the roof toward you. Tap to fire the loaded bead into its front, hold to swap: three of a color pop and push the chain back.',
+    description: 'A chain of colored beads creeps along the roof toward you. Turn the color wheel with ◀ ▶ and fire the matching bead into its front: three of a color pop and push the chain back. Every minute brings a new color.',
     players: '1 player'
   },
   {
     id: 'beat',
     name: 'Beat Drop',
-    tagline: 'Tap to the beat on the roof',
-    description: 'White notes slide along the roof to the blue posts: tap as each one arrives, hold the long ones to their end. The beat never stops and keeps getting faster.',
+    tagline: 'Hit the colors on the beat',
+    description: 'Notes in four colors slide along the roof to the posts: press the button in each note\'s color as it arrives, hold the long ones to their end. Pick 1 or 4 colors and Easy, Normal or Hard; the beat never stops and keeps getting faster.',
     players: '1 player'
   }
 ];
