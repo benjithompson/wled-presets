@@ -434,6 +434,15 @@ describe('sequences', () => {
     expect((await t.call('GET', '/api/admin/overview')).json.scenes[0].sequenceId).toBeUndefined();
   });
 
+  it('refuses a preview on the lights from an editor that is not in front (an older page)', async () => {
+    await login();
+    const req = { active: true, sequence: body, time: 0, playing: false };
+    const old = await t.call('POST', '/api/admin/sequence-preview', req);
+    expect(old.status).toBe(400);
+    expect(JSON.stringify(old.json)).toContain('Reload this page');
+    expect((await t.call('POST', '/api/admin/sequence-preview', { ...req, inFront: true })).status).toBe(200);
+  });
+
   it('stores audio files', async () => {
     await login();
     const wav = new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4]);
