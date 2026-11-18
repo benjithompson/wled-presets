@@ -526,8 +526,10 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     return c.json({ ok: true });
   });
 
-  // The sequence editor's preview on the real lights.
-  const seqPreviewSchema = z.object({ active: z.literal(true), sequence: sequenceInput.extend({ id: z.string().max(64).default('') }), time: z.number().min(0), playing: z.boolean() });
+  // The sequence editor's preview on the real lights. inFront: sent only by an editor whose
+  // window is in front. Before v2.6.0 the editor also sent from a background tab, about once a
+  // minute, and each request took every light for 8 seconds; such a page, still open, is refused.
+  const seqPreviewSchema = z.object({ active: z.literal(true), inFront: z.literal(true, { error: 'Reload this page to show the sequence on the lights' }), sequence: sequenceInput.extend({ id: z.string().max(64).default('') }), time: z.number().min(0), playing: z.boolean() });
   admin.post('/sequence-preview', async (c) => {
     const req = await body(c, seqPreviewSchema);
     return c.json({ devices: preview?.showSequence(req as SequencePreviewRequest, readLayout(db)) ?? [] });

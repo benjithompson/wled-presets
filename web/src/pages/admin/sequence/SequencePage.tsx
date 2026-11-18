@@ -399,7 +399,7 @@ export function SequencePage() {
     if (!previewing || !s) return;
     const { updatedAt: _u, ...sequence } = s;
     void api
-      .previewSequence(JSON.stringify({ active: true, sequence, time: clock.time(), playing: clock.playing }))
+      .previewSequence(JSON.stringify({ active: true, inFront: true, sequence, time: clock.time(), playing: clock.playing }))
       .then((r) => setLightDevices(r.devices))
       .catch(() => setLightDevices([]));
   };
