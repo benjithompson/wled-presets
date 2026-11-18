@@ -66,6 +66,25 @@ const gameAreaInput = z.object({
   trim: z.record(z.string().min(1).max(64), z.tuple([z.number().int().min(0).max(99999), z.number().int().min(0).max(99999)])).optional()
 });
 
+/** A picture in a layout file: its type, and its bytes in base64 (up to 12 MB). */
+const pictureInput = z.object({ type: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), data: z.string().max(17_000_000) });
+/**
+ * A layout file (Layout → File → Export): the layout, the devices its objects use (so they
+ * match devices by address on another install), the game area, and the pictures. A bare
+ * layout (an object with `fixtures`) is read as a file with only the layout.
+ */
+const layoutFileInput = z.preprocess(
+  (raw) => (raw && typeof raw === 'object' && 'fixtures' in raw ? { layout: raw } : raw),
+  z.object({
+    kind: z.literal('wled-layout').optional(),
+    version: z.number().optional(),
+    layout: layoutShape,
+    devices: z.array(z.object({ id: z.string(), name: z.string().optional(), host: z.string(), port: z.number().optional() })).max(256).optional(),
+    gameArea: gameAreaInput.nullable().optional(),
+    pictures: z.object({ background: pictureInput.nullable().optional(), aerial: pictureInput.nullable().optional() }).optional()
+  })
+);
+
 const backupInput = z.object({
   version: z.number().optional(),
   devices: z.array(z.object({ id: z.string(), host: z.string(), port: z.number().optional() })).optional(),
@@ -650,6 +669,87 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     }
     host!.refreshStatus();
     return c.json(out.info());
+  });
+
+  // A layout file: export everything a layout needs, and import one in place of the layout.
+  admin.get('/layout/export', (c) => {
+    const layout = readLayout(db);
+    const used = new Set(layout.fixtures.map((f) => f.deviceId).filter(Boolean));
+    const pic = (kind: 'background' | 'aerial') => {
+      const p = readBackground(db, config.databasePath, kind);
+      return p ? { type: p.type, data: p.bytes.toString('base64') } : null;
+    };
+    c.header('Content-Disposition', `attachment; filename="wled-layout-${new Date().toISOString().slice(0, 10)}.json"`);
+    return c.json({
+      kind: 'wled-layout',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      layout,
+      devices: db
+        .listDevices()
+        .filter((d) => used.has(d.id))
+        .map(({ id, name, host, port }) => ({ id, name, host, port })),
+      gameArea: readGameArea(db),
+      pictures: { background: layout.background ? pic('background') : null, aerial: layout.aerial ? pic('aerial') : null }
+    });
+  });
+
+  admin.post('/layout/import', async (c) => {
+    const file = await body(c, layoutFileInput);
+    // Objects keep their device when it is here: the same id, else the same address, else the same name.
+    const local = db.listDevices();
+    const byId = new Set(local.map((d) => d.id));
+    const byAddr = new Map(local.map((d) => [`${d.host}:${d.port}`, d.id]));
+    const byName = new Map(local.map((d) => [d.name.trim().toLowerCase(), d.id]));
+    const remap = new Map<string, string>();
+    for (const d of file.devices ?? []) {
+      const match = byId.has(d.id) ? d.id : (byAddr.get(`${normalizeHost(d.host)}:${d.port ?? 80}`) ?? (d.name ? byName.get(d.name.trim().toLowerCase()) : undefined));
+      if (match) remap.set(d.id, match);
+    }
+    let unmatched = 0;
+    const fixtures = file.layout.fixtures.map((f) => {
+      if (!f.deviceId) return f;
+      const deviceId = remap.get(f.deviceId) ?? (byId.has(f.deviceId) ? f.deviceId : null);
+      if (!deviceId) unmatched++;
+      return { ...f, deviceId };
+    });
+    // The pictures in the file replace the ones here; without one, the layout has none.
+    const decode = (p: z.infer<typeof pictureInput>) => {
+      const bytes = Buffer.from(p.data, 'base64');
+      if (!bytes.length) throw new HttpError(400, 'A picture in the file is empty');
+      if (bytes.length > 12 * 1024 * 1024) throw new HttpError(400, 'A picture in the file is larger than 12 MB');
+      return bytes;
+    };
+    const bg = file.pictures?.background ? decode(file.pictures.background) : null;
+    const aerialPic = file.layout.aerial && file.pictures?.aerial ? decode(file.pictures.aerial) : null;
+    const now = Date.now();
+    const checked = layoutSchema.safeParse({
+      ...file.layout,
+      fixtures,
+      background: bg ? `/api/layout/background?v=${now}` : null,
+      aerial: file.layout.aerial && aerialPic ? { ...file.layout.aerial, url: `/api/admin/layout/aerial?v=${now}` } : null
+    });
+    if (!checked.success) throw new HttpError(400, errorMessage(checked.error));
+    const layout = checked.data;
+    if (bg) saveBackground(db, config.databasePath, bg, file.pictures!.background!.type);
+    else deleteBackground(config.databasePath);
+    if (aerialPic) saveBackground(db, config.databasePath, aerialPic, file.pictures!.aerial!.type, 'aerial');
+    else deleteBackground(config.databasePath, 'aerial');
+    writeLayout(db, layout);
+    host?.setLayout(layout);
+    // The game area goes with the layout (only for its objects); a file without one leaves the game area as it is.
+    if (file.gameArea !== undefined) {
+      const ids = new Set(layout.fixtures.map((f) => f.id));
+      const g = file.gameArea;
+      const keep = <T>(r: Record<string, T> | undefined) => Object.fromEntries(Object.entries(r ?? {}).filter(([id]) => ids.has(id)));
+      const area = g ? { exclude: (g.exclude ?? []).filter((id) => ids.has(id)), skip: keep(g.skip), trim: keep(g.trim) } : null;
+      const any = area && (area.exclude.length || Object.keys(area.skip).length || Object.keys(area.trim).length);
+      writeGameArea(db, any ? area : null);
+      host?.setGameArea(any ? area : null);
+    }
+    const pixels = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
+    lights.log('info', 'config', `Yard layout imported: ${layout.fixtures.length} object(s), ${pixels} LED(s)${unmatched ? `; ${unmatched} object(s) without their device` : ''}`, null, actor(c));
+    return c.json({ layout, unmatched });
   });
 
   admin.put('/layout', async (c) => {
