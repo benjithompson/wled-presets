@@ -107,4 +107,4 @@ Frames reach the lights through one pipeline ([server/src/framePipeline.ts](serv
 
 ## Release
 
-Push a tag such as `v2.0.0`. The workflow in [.github/workflows](.github/workflows) runs the checks and publishes a multi-arch image (amd64, arm64) to GHCR.
+Push a tag such as `v2.0.0`. The workflow in [.github/workflows](.github/workflows) runs the checks and publishes an amd64 image to GHCR.
