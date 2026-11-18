@@ -9,6 +9,7 @@ import { usePlaySocket } from '../yard/usePlaySocket.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { InitialsEntry, Scoreboard } from './HighScores.tsx';
 import { LineCard, OfferCard, TurnBanner } from './LineParts.tsx';
+import { ArcadeHud } from './ArcadeHud.tsx';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
@@ -193,9 +194,12 @@ export function PlayPage() {
                   </p>
                 ) : null}
                 {status?.scores?.length ? <Scores scores={status.scores} /> : null}
-                <p className="text-center text-2xl font-bold tracking-tight text-balance sm:text-3xl" aria-live="polite">
-                  {status?.message}
-                </p>
+                {status?.arcade ? <ArcadeHud hud={status.arcade} /> : null}
+                {status?.message || !status?.arcade ? (
+                  <p className="text-center text-2xl font-bold tracking-tight text-balance sm:text-3xl" aria-live="polite">
+                    {status?.message}
+                  </p>
+                ) : null}
                 {status?.enterInitials ? <InitialsEntry entry={status.enterInitials} onSave={(initials) => send({ type: 'initials', id: status.enterInitials!.id, initials })} /> : null}
                 <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
                   {status?.progress ? (
@@ -215,7 +219,7 @@ export function PlayPage() {
                     </div>
                   ) : null}
                 </div>
-                {status?.stats?.length ? (
+                {status?.stats?.length && !status.arcade ? (
                   <div className="flex flex-wrap justify-center gap-2">
                     {status.stats.map((s) => (
                       <span key={s.label} className="rounded-full bg-white/10 px-3 py-1 text-sm text-white/70">
