@@ -8,6 +8,7 @@ import { GAME_CATALOG } from '../../../shared/games.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
 import { duelGame } from './duel.ts';
+import { FrameLoop } from '../frameLoop.ts';
 import { Frame } from './frame.ts';
 import { idleGame } from './idle.ts';
 import type { LightsOutput } from './output.ts';
@@ -63,7 +64,7 @@ export class GameHost {
   private bytes: Uint8Array<ArrayBuffer>;
   private game: Game;
   private clients = new Map<WebSocket, { id: string }>();
-  private timer: NodeJS.Timeout | null = null;
+  private loop = new FrameLoop(() => this.tick(), TICK_HZ);
   private last = 0;
   private lastInput = Date.now();
   /** The last status sent to each browser, so an unchanged one is not sent again. */
@@ -185,8 +186,7 @@ export class GameHost {
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.loop.stop();
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
     for (const ws of this.clients.keys()) ws.close();
@@ -284,14 +284,13 @@ export class GameHost {
   // ---------- Loop ----------
 
   private resume() {
-    if (this.timer) return;
+    if (this.loop.running) return;
     this.last = performance.now();
-    this.timer = setInterval(() => this.tick(), 1000 / TICK_HZ);
+    this.loop.start();
   }
 
   private pause() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.loop.stop();
     // Nobody is watching: give the lights back at once.
     this.output?.release();
   }

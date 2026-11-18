@@ -41,9 +41,14 @@ export class Lights {
   private bus: Bus;
   private effectPlayer: EffectPlayer | null = null;
 
+  /** devicesWithStatus() for the frame loops, which ask 60 times a second (see liveDevices). */
+  private live: DeviceWithStatus[] | null = null;
+
   constructor(db: Db, bus: Bus) {
     this.db = db;
     this.bus = bus;
+    // Every change to the device list is announced on the bus.
+    this.bus.on('devices', () => (this.live = null));
   }
 
   /** Connects the game host, which draws effects and sends them to the lights. */
@@ -127,10 +132,12 @@ export class Lights {
           { online: prev?.online === true && misses < 2, misses, info: prev?.info ?? null, lastSeen: prev?.lastSeen ?? null };
       if (!prev || prev.online !== next.online) changed = true;
       this.status.set(d.id, next);
+      this.live = null;
     });
     for (const id of this.status.keys()) {
       if (!seen.has(id)) {
         this.status.delete(id);
+        this.live = null;
         changed = true;
       }
     }
@@ -138,6 +145,15 @@ export class Lights {
       this.bus.emit('state');
       this.bus.emit('devices');
     }
+  }
+
+  /**
+   * The same as devicesWithStatus(), kept between changes, for the loops that send frames to the
+   * lights: they ask on every frame, and a database query each time would cost frame time. It is
+   * rebuilt after a device changes and after each status check (an LED count changed in WLED).
+   */
+  liveDevices(): DeviceWithStatus[] {
+    return (this.live ??= this.devicesWithStatus());
   }
 
   devicesWithStatus(): DeviceWithStatus[] {
@@ -198,6 +214,7 @@ export class Lights {
       const prev = this.status.get(id);
       if (prev && prev.online !== r.ok) {
         this.status.set(id, { ...prev, online: r.ok });
+        this.live = null;
       }
     });
     return out;

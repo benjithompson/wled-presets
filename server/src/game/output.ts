@@ -3,20 +3,53 @@ import type { Device, DeviceInfo } from '../../../shared/types.ts';
 import { LightSender } from '../lightSender.ts';
 import { DDP_PORT } from '../realtime.ts';
 
-/**
- * Frames per second sent to the lights: every game frame. WLED shows the newest frame it has,
- * so sending faster than it can draw adds no delay.
- */
-const OUTPUT_HZ = 60;
-
 type DeviceWithInfo = Device & { info: DeviceInfo | null };
 
-interface DeviceMap {
+/** Where the LEDs of a stage go on one device. Built once per stage, used on every frame. */
+export interface DeviceMap {
   deviceId: string;
+  /** One past the highest device LED number used. */
   size: number;
   /** Pairs of (stage LED index, device LED number). */
   pairs: Int32Array;
   objects: string[];
+}
+
+/** One DeviceMap for each device that drives an object of the layout. */
+export function deviceMaps(layout: Layout, stage: Stage): DeviceMap[] {
+  const byDevice = new Map<string, DeviceMap & { list: number[] }>();
+  layout.fixtures.forEach((f, fi) => {
+    if (!f.deviceId) return;
+    const s = stage.fixtures[fi];
+    const m = byDevice.get(f.deviceId) ?? { deviceId: f.deviceId, size: 0, pairs: new Int32Array(), objects: [], list: [] };
+    for (let i = 0; i < s.count; i++) {
+      const led = deviceLed(f, i);
+      m.list.push(s.offset + i, led);
+      m.size = Math.max(m.size, led + 1);
+    }
+    m.objects.push(f.name);
+    byDevice.set(f.deviceId, m);
+  });
+  return [...byDevice.values()].map(({ list, ...m }) => ({ ...m, pairs: Int32Array.from(list) }));
+}
+
+/**
+ * One device's colors from a stage frame (RGB bytes in stage order), times `k`: the whole strip
+ * from LED 0, so LEDs that no object uses (gaps, a hidden side) stay off. `buf` is reused when
+ * it has the right size.
+ */
+export function deviceFrame(m: DeviceMap, frame: Uint8Array, ledCount: number, k = 1, buf?: Uint8Array): Uint8Array {
+  const size = Math.max(m.size, ledCount);
+  if (!buf || buf.length !== size * 3) buf = new Uint8Array(size * 3);
+  const pairs = m.pairs;
+  for (let p = 0; p < pairs.length; p += 2) {
+    const src = pairs[p] * 3;
+    const dst = pairs[p + 1] * 3;
+    buf[dst] = frame[src] * k;
+    buf[dst + 1] = frame[src + 1] * k;
+    buf[dst + 2] = frame[src + 2] * k;
+  }
+  return buf;
 }
 
 /**
@@ -31,7 +64,6 @@ export class LightsOutput {
   private sending = new Set<string>();
   brightness = 0.5;
   private framesSent = 0;
-  private lastSend = 0;
   private maps: DeviceMap[] = [];
   private simOnly: string[] = [];
   private buffers = new Map<string, Uint8Array>();
@@ -46,24 +78,8 @@ export class LightsOutput {
   }
 
   setStage(layout: Layout, stage: Stage) {
-    const byDevice = new Map<string, DeviceMap & { list: number[] }>();
-    this.simOnly = [];
-    layout.fixtures.forEach((f, fi) => {
-      if (!f.deviceId) {
-        this.simOnly.push(f.name);
-        return;
-      }
-      const s = stage.fixtures[fi];
-      const m = byDevice.get(f.deviceId) ?? { deviceId: f.deviceId, size: 0, pairs: new Int32Array(), objects: [], list: [] };
-      for (let i = 0; i < s.count; i++) {
-        const led = deviceLed(f, i);
-        m.list.push(s.offset + i, led);
-        m.size = Math.max(m.size, led + 1);
-      }
-      m.objects.push(f.name);
-      byDevice.set(f.deviceId, m);
-    });
-    this.maps = [...byDevice.values()].map(({ list, ...m }) => ({ ...m, pairs: Int32Array.from(list) }));
+    this.simOnly = layout.fixtures.filter((f) => !f.deviceId).map((f) => f.name);
+    this.maps = deviceMaps(layout, stage);
     this.buffers.clear();
   }
 
@@ -89,10 +105,8 @@ export class LightsOutput {
     this.send(frame, devices, 1);
   }
 
+  /** Every frame of the game loop goes out: WLED shows the newest frame it has. */
   private send(frame: Uint8Array, only: ReadonlySet<string> | null, k: number) {
-    const now = performance.now();
-    if (now - this.lastSend < 1000 / OUTPUT_HZ - 2) return;
-    this.lastSend = now;
     const devices = new Map(this.devices().map((d) => [d.id, d]));
     // A device that no longer takes part goes back to its own state at once.
     if (only) {
@@ -107,17 +121,8 @@ export class LightsOutput {
       if (only && !only.has(m.deviceId)) continue;
       const d = devices.get(m.deviceId);
       if (!d || !d.enabled) continue;
-      // Send the whole strip, so LEDs no object uses (gaps, a hidden side) stay off.
-      const size = Math.max(m.size, d.info?.leds?.count ?? 0);
-      let buf = this.buffers.get(m.deviceId);
-      if (!buf || buf.length !== size * 3) this.buffers.set(m.deviceId, (buf = new Uint8Array(size * 3)));
-      for (let p = 0; p < m.pairs.length; p += 2) {
-        const src = m.pairs[p] * 3;
-        const dst = m.pairs[p + 1] * 3;
-        buf[dst] = frame[src] * k;
-        buf[dst + 1] = frame[src + 1] * k;
-        buf[dst + 2] = frame[src + 2] * k;
-      }
+      const buf = deviceFrame(m, frame, d.info?.leds?.count ?? 0, k, this.buffers.get(m.deviceId));
+      this.buffers.set(m.deviceId, buf);
       this.sender.send(d, buf);
       this.sending.add(d.id);
     }

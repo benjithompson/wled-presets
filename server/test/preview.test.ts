@@ -227,6 +227,69 @@ describe('DDP', () => {
     out.close();
     await mock.close();
   });
+
+  it('sends a host name to its address, looked up once', async () => {
+    const mock = await startMockWled(0, 'Named', 10);
+    await new Promise((r) => setTimeout(r, 50));
+    const out = new RealtimeOut();
+    const frame = new Uint8Array(10 * 3).fill(90);
+    // The first frame goes to the name while the lookup runs; the next ones to the address.
+    for (let i = 0; i < 5; i++) {
+      out.sendDdp('localhost', mock.ddpPort(), frame);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    expect(mock.realtime.ddpFrames).toBe(5);
+    out.close();
+    await mock.close();
+  });
+
+  it('does not send a frame the device already shows, but repeats it every second', async () => {
+    const { LightSender } = await import('../src/lightSender.ts');
+    const mock = await startMockWled(0, 'Still', 10);
+    await new Promise((r) => setTimeout(r, 50));
+    const sender = new LightSender();
+    const device = { id: 'd', name: 'Still', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 10 }, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const still = new Uint8Array(10 * 3).fill(100);
+    for (let i = 0; i < 10; i++) {
+      sender.send(device, still);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mock.realtime.ddpFrames).toBe(1);
+    // A changed frame goes out at once.
+    sender.send(device, new Uint8Array(10 * 3).fill(200));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mock.realtime.ddpFrames).toBe(2);
+    expect(rgb(mock.realtime.leds, 3)).toEqual([200, 200, 200]);
+    // The same frame again after a second, so the device's real-time timeout does not run out.
+    await new Promise((r) => setTimeout(r, 1000));
+    sender.send(device, new Uint8Array(10 * 3).fill(200));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mock.realtime.ddpFrames).toBe(3);
+    sender.close();
+    await mock.close();
+  });
+});
+
+describe('the frame loop', () => {
+  it('holds 60 frames a second on average, where setInterval rounds to whole milliseconds', async () => {
+    const { FrameLoop } = await import('../src/frameLoop.ts');
+    let n = 0;
+    const loop = new FrameLoop(() => n++, 60);
+    loop.start();
+    await new Promise((r) => setTimeout(r, 1000));
+    loop.stop();
+    expect(n).toBeGreaterThanOrEqual(57);
+    expect(n).toBeLessThanOrEqual(61);
+    // Stopped from inside a frame, it stays stopped.
+    let m = 0;
+    const once = new FrameLoop(() => (m++, once.stop()), 60);
+    once.start();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(m).toBe(1);
+    expect(once.running).toBe(false);
+  });
 });
 
 describe('black level for real LEDs', () => {

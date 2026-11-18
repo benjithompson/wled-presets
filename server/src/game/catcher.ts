@@ -22,6 +22,8 @@ const GRACE = 0.12;
 
 const BUSH_COLORS: Rgb[] = [hsv(0.0), hsv(0.12), hsv(0.33), hsv(0.55), hsv(0.75), hsv(0.9)];
 const COMET: Rgb = [0.55, 0.85, 1];
+/** The roof's faint glow under everything. */
+const ROOF_GLOW: Rgb = [0.06, 0.035, 0.02];
 const GATE: Rgb = [0.15, 1, 0.45];
 const RED: Rgb = [1, 0.06, 0.02];
 
@@ -171,7 +173,7 @@ export function catcherGame(stage: Stage): Game {
       if (phase === 'over' && phaseTime > 4) setPhase('ready');
 
       // Roof base glow.
-      for (let i = 0; i < n; i++) at(i, [0.06, 0.035, 0.02]);
+      for (let i = 0; i < n; i++) at(i, ROOF_GLOW);
 
       // Gate: dim fill with bright posts that breathe.
       if (phase !== 'won') {

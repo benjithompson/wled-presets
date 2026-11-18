@@ -290,8 +290,16 @@ export class Yard {
   /** A ring of light at distance r from a point: one frame of a shockwave through the yard. */
   ring(x: number, y: number, r: number, width: number, color: Rgb, amount = 1) {
     const pos = this.stage.positions;
+    // Only LEDs within 2.5 widths of the ring light up: test the squared distance first.
+    const inner = r - 2.5 * width;
+    const in2 = inner > 0 ? inner * inner : -1;
+    const out2 = (r + 2.5 * width) ** 2;
     for (const i of this.lit) {
-      const d = (Math.hypot(pos[i * 2] - x, pos[i * 2 + 1] - y) - r) / width;
+      const dx = pos[i * 2] - x;
+      const dy = pos[i * 2 + 1] - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= in2 || d2 >= out2) continue;
+      const d = (Math.sqrt(d2) - r) / width;
       if (d > -2.5 && d < 2.5) this.out?.add(i, color, amount * Math.exp(-d * d));
     }
   }

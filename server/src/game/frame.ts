@@ -55,12 +55,15 @@ export class Frame {
   }
 }
 
+const hsvChannel = (n: number, h6: number, v: number, vs: number) => {
+  const k = (n + h6) % 6;
+  return v - vs * Math.max(0, Math.min(k, 4 - k, 1));
+};
+
 export function hsv(h: number, s = 1, v = 1): Rgb {
-  const f = (n: number) => {
-    const k = (n + h * 6) % 6;
-    return v - v * s * Math.max(0, Math.min(k, 4 - k, 1));
-  };
-  return [f(5), f(3), f(1)];
+  const h6 = h * 6;
+  const vs = v * s;
+  return [hsvChannel(5, h6, v, vs), hsvChannel(3, h6, v, vs), hsvChannel(1, h6, v, vs)];
 }
 
 export const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];

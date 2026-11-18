@@ -1227,22 +1227,31 @@ export const GAME_OUT_RGB: [number, number, number] = [70, 0, 0];
 /** Roof LEDs that cannot be seen from the street, which games hurry through (see roofTrack). */
 export const GAME_UNSEEN_RGB: [number, number, number] = [40, 48, 70];
 
-let hiddenCache: { layout: Layout; area: string; hidden: Map<string, Uint8Array> } | null = null;
+let hiddenCache: { layout: Layout; area: string; key: string; hidden: Map<string, Uint8Array> } | null = null;
 
 /**
  * For each roof object: 1 for each LED (from the first point) that cannot be seen from the
  * street, as games see it (see roofTrack).
  */
 export function roofHidden(layout: Layout, area: GameArea | null | undefined): Map<string, Uint8Array> {
-  const key = JSON.stringify(area ?? null);
-  if (hiddenCache?.layout === layout && hiddenCache.area === key) return hiddenCache.hidden;
+  // The Games page sends its layout with every change (a new object each time): what matters
+  // is the shape of the yard, not its effects or names, so a new object with the same shape
+  // does not build the stage again.
+  const areaKey = JSON.stringify(area ?? null);
+  if (hiddenCache?.layout === layout && hiddenCache.area === areaKey) return hiddenCache.hidden;
+  const key = JSON.stringify([areaKey, layout.width, layout.height, layout.scale, layout.groundY, layout.fixtures.map(({ effect: _e, segmentEffects: _s, name: _n, ...f }) => f)]);
+  if (hiddenCache?.key === key) {
+    hiddenCache.layout = layout;
+    hiddenCache.area = areaKey;
+    return hiddenCache.hidden;
+  }
   const stage = buildStage(layout, area);
   const track = roofTrack(stage);
   const byLed = new Uint8Array(stage.pixelCount);
   for (let k = 0; k < track.leds.length; k++) byLed[track.leds[k]] = track.hidden[k];
   const hidden = new Map<string, Uint8Array>();
   for (const f of stage.fixtures) if (f.kind === 'roof') hidden.set(f.id, byLed.slice(f.offset, f.offset + f.count));
-  hiddenCache = { layout, area: key, hidden };
+  hiddenCache = { layout, area: areaKey, key, hidden };
   return hidden;
 }
 

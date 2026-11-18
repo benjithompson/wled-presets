@@ -33,8 +33,8 @@ if (db.countUsers() === 0) {
 }
 
 const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg));
-const preview = new LayoutPreview(() => lights.devicesWithStatus(), (msg) => lights.log('info', 'layout', msg), sender);
-const output = new LightsOutput(() => lights.devicesWithStatus(), () => preview.active, sender);
+const preview = new LayoutPreview(() => lights.liveDevices(), (msg) => lights.log('info', 'layout', msg), sender);
+const output = new LightsOutput(() => lights.liveDevices(), () => preview.active, sender);
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), output);
 host.setGameArea(readGameArea(db));
 // Scenes with effects: the game host draws them and sends them to the lights.

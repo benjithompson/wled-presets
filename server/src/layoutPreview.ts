@@ -2,12 +2,14 @@ import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
 import { buildStage, deviceLed, editorPulse, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import type { Device, DeviceInfo } from '../../shared/types.ts';
+import { FrameLoop } from './frameLoop.ts';
+import { deviceFrame, deviceMaps, type DeviceMap } from './game/output.ts';
 import type { LightSender } from './lightSender.ts';
 
 /** Often enough that a changed number shows on the lights at once. */
-const TICK_MS = 50;
+const TICK_HZ = 20;
 /** While the effects play: every frame, as smooth as a scene. */
-const PLAY_TICK_MS = 1000 / 60;
+const PLAY_TICK_HZ = 60;
 /** The preview stops when the editor has not refreshed it for this long. */
 const EXPIRE_MS = 8_000;
 
@@ -30,22 +32,6 @@ export interface SequencePreviewRequest {
   sequence: Sequence;
   time: number;
   playing: boolean;
-}
-
-/** Colors for one device from a whole stage frame (RGB bytes in stage order). */
-export function stageFrame(layout: Layout, stage: Stage, bytes: Uint8Array, deviceId: string, ledCount: number): Uint8Array {
-  const fixtures = layout.fixtures.filter((f) => f.deviceId === deviceId);
-  const size = Math.max(ledCount, ...fixtures.map((f) => f.startPixel + f.pixels));
-  const out = new Uint8Array(size * 3);
-  layout.fixtures.forEach((f, fi) => {
-    if (f.deviceId !== deviceId) return;
-    const sf = stage.fixtures[fi];
-    for (let i = 0; i < sf.count; i++) {
-      const led = deviceLed(f, i);
-      if (led >= 0 && led < size) out.set(bytes.subarray((sf.offset + i) * 3, (sf.offset + i) * 3 + 3), led * 3);
-    }
-  });
-  return out;
 }
 
 /** Colors for one device: the editor's view (see paintEditor), mapped to the device's LED numbers. */
@@ -72,16 +58,18 @@ export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: nu
 export class LayoutPreview {
   private req: PreviewRequest | null = null;
   private until = 0;
-  private timer: NodeJS.Timeout | null = null;
+  private loop = new FrameLoop(() => this.send(), TICK_HZ);
   private sender: LightSender;
 
   private devices: () => (Device & { info: DeviceInfo | null })[];
   private log: (msg: string) => void;
   /** While the effects play: the stage, the running effects, and the last frame's time. */
   private fx: { key: string; stage: Stage; scene: EffectScene; data: Float32Array; bytes: Uint8Array; last: number } | null = null;
-  private tickMs = 0;
   /** The sequence editor's preview: the player, and whether it plays or shows one moment. */
-  private seq: { key: string; player: SequencePlayer; stage: Stage; layout: Layout; data: Float32Array; bytes: Uint8Array; playing: boolean; last: number } | null = null;
+  private seq: { key: string; player: SequencePlayer; stage: Stage; data: Float32Array; bytes: Uint8Array; playing: boolean; last: number } | null = null;
+  /** While effects or a sequence play: where their stage's LEDs go on each device, and each device's frame. */
+  private maps = new Map<string, DeviceMap>();
+  private buffers = new Map<string, Uint8Array>();
 
   constructor(devices: () => (Device & { info: DeviceInfo | null })[], log: (msg: string) => void, sender: LightSender) {
     this.devices = devices;
@@ -106,7 +94,7 @@ export class LayoutPreview {
       const stage = buildStage(layout);
       const player = new SequencePlayer(stage, layout, req.sequence);
       player.seek(req.time);
-      this.seq = { key, player, stage, layout, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), playing: req.playing, last: performance.now() };
+      this.seq = { key, player, stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), playing: req.playing, last: performance.now() };
     } else {
       cur.player.setSequence(req.sequence);
       // Small differences are the network delay; only a jump (or a paused editor) moves the clock.
@@ -115,6 +103,7 @@ export class LayoutPreview {
       cur.last = performance.now();
     }
     this.fx = null;
+    this.mapStage(layout, this.seq!.stage);
     return this.start({ layout, selected: null, corner: null, play: true });
   }
 
@@ -125,15 +114,8 @@ export class LayoutPreview {
     if (this.seq) this.fx = null;
     else if (req.play) this.syncEffects(req.layout);
     else this.fx = null;
-    const tick = req.play ? PLAY_TICK_MS : TICK_MS;
-    if (this.timer && this.tickMs !== tick) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (!this.timer) {
-      this.timer = setInterval(() => this.send(), tick);
-      this.tickMs = tick;
-    }
+    this.loop.setRate(req.play ? PLAY_TICK_HZ : TICK_HZ);
+    this.loop.start();
     this.send();
     const names = this.targets().map((d) => d.name);
     if (started && names.length) this.log(`Editor preview on the lights started (${names.join(', ')})`);
@@ -151,8 +133,7 @@ export class LayoutPreview {
     this.req = null;
     this.fx = null;
     this.seq = null;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.loop.stop();
     // Put each device's own color, scene or preset back at once.
     for (const d of targets) this.sender.end(d);
     this.log('Editor preview on the lights stopped');
@@ -177,6 +158,26 @@ export class LayoutPreview {
       this.fx = { key, stage, scene, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), last: performance.now() };
     } else this.fx.scene.setStage(this.fx.stage, layout);
     this.fx.scene.setEffects(effects);
+    // The stage stays across edits, but LED numbers or devices may have changed.
+    this.mapStage(layout, this.fx.stage);
+  }
+
+  /** Where the playing stage's LEDs go on each device: once per request, not on every frame. */
+  private mapStage(layout: Layout, stage: Stage) {
+    this.maps = new Map(deviceMaps(layout, stage).map((m) => [m.deviceId, m]));
+    // A reused frame would keep the colors of LEDs that are no longer mapped.
+    this.buffers.clear();
+  }
+
+  /** Sends a whole stage frame (RGB bytes in stage order) to every device of the preview. */
+  private sendStage(bytes: Uint8Array) {
+    for (const d of this.targets()) {
+      const m = this.maps.get(d.id);
+      if (!m) continue;
+      const buf = deviceFrame(m, bytes, d.info?.leds?.count ?? 0, 1, this.buffers.get(d.id));
+      this.buffers.set(d.id, buf);
+      this.sender.send(d, buf);
+    }
   }
 
   private send() {
@@ -189,16 +190,17 @@ export class LayoutPreview {
       sq.last = now;
       sq.player.update(dt, sq.data);
       toBytes(sq.data, sq.bytes);
-      for (const d of this.targets()) this.sender.send(d, stageFrame(sq.layout, sq.stage, sq.bytes, d.id, d.info?.leds?.count ?? 0));
+      this.sendStage(sq.bytes);
       return;
     }
     const fx = this.fx;
     if (fx) {
       const now = performance.now();
-      fx.scene.update((now - fx.last) / 1000, fx.data);
+      // As in a scene: a stall (a busy server) does not make the effects jump ahead.
+      fx.scene.update(Math.min(0.1, (now - fx.last) / 1000), fx.data);
       fx.last = now;
       toBytes(fx.data, fx.bytes);
-      for (const d of this.targets()) this.sender.send(d, stageFrame(this.req.layout, fx.stage, fx.bytes, d.id, d.info?.leds?.count ?? 0));
+      this.sendStage(fx.bytes);
       return;
     }
     for (const d of this.targets()) {

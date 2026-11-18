@@ -268,7 +268,7 @@ export function duelGame(stage: Stage): Game {
 
   // ---------- Drawing ----------
 
-  function drawRoof() {
+  function drawRoof(dt: number) {
     // The roof is split between the teams; the line moves toward whoever is losing.
     const front = 0.5 + (0.4 * (score[0] - score[1])) / WIN;
     for (let i = 0; i < n; i++) {
@@ -292,7 +292,7 @@ export function duelGame(stage: Stage): Game {
       }
     }
     // The ball and its trail, in the color of whoever hit it last.
-    const fadeRate = Math.exp(-(1 / 60) * (4 + Math.abs(vel) / n * 4));
+    const fadeRate = Math.exp(-dt * (4 + Math.abs(vel) / n * 4));
     for (let i = 0; i < n; i++) trail[i] *= fadeRate;
     if (phase === 'rally' || phase === 'serve') {
       const p = Math.max(0, Math.min(n - 1, pos));
@@ -403,7 +403,7 @@ export function duelGame(stage: Stage): Game {
       waves.update(dt);
       for (const f of flare) f.update(dt);
 
-      drawRoof();
+      drawRoof(dt);
       drawBushes();
       drawTreesAndDecor();
       if (phase === 'won') drawWin();
