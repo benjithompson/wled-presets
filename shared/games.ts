@@ -29,5 +29,40 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     tagline: 'Fire against Ice on the roof',
     description: 'Fire against Ice: hit the ball back when it reaches your end of the roof. The later the hit, the faster it flies.',
     players: '2 players, or play the house'
+  },
+  {
+    id: 'slice',
+    name: 'Slice',
+    tagline: 'Stack it, edge to edge',
+    description: 'Drop the sliding light on the band below: whatever hangs over breaks off. Line up the edges for a perfect; five in a row and the band grows back.',
+    players: '1 player'
+  },
+  {
+    id: 'colorgate',
+    name: 'Color Gate',
+    tagline: 'Match every wall that comes',
+    description: 'Walls of color stream down the roof toward your light. Tap to change your color so each one passes: walls in a row multiply the points.',
+    players: '1 player'
+  },
+  {
+    id: 'ricochet',
+    name: 'Ricochet',
+    tagline: 'Catch it, it turns around',
+    description: 'Tap while the white comet is in the green gate: it turns around and the next gate is already waiting. One miss ends the run.',
+    players: '1 player'
+  },
+  {
+    id: 'beads',
+    name: 'Bead Rush',
+    tagline: 'Match the chain before it lands',
+    description: 'A chain of colored beads creeps along the roof toward you. Tap to fire the loaded bead into its front, hold to swap: three of a color pop and push the chain back.',
+    players: '1 player'
+  },
+  {
+    id: 'beat',
+    name: 'Beat Drop',
+    tagline: 'Tap to the beat on the roof',
+    description: 'White notes slide along the roof to the blue posts: tap as each one arrives, hold the long ones to their end. The beat never stops and keeps getting faster.',
+    players: '1 player'
   }
 ];
