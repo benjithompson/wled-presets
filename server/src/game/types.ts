@@ -25,6 +25,8 @@ export interface Game {
   leave?(playerId: string): void;
   /** A player picked a choice for the next game (see GameStatus.settings). */
   setting?(id: string, value: string): void;
+  /** The scoreboard this game's scores go on now (see record in kit.ts), and its title. */
+  scoreBoard?(): { key: string; title: string } | null;
 }
 
 export type GameFactory = (stage: Stage) => Game;

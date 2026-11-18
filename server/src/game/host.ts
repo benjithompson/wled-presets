@@ -5,6 +5,7 @@ import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
 import { buildStage, CONTROL_ID, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
+import { endRun, nameScore, pendingInitials, removeScore, scoreboard } from './kit.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
 import { duelGame } from './duel.ts';
@@ -39,7 +40,7 @@ export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({
 /** A game with no input for this long goes back to the idle animation. */
 const IDLE_AFTER_MS = 3 * 60_000;
 
-type ClientMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'leave' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string };
+type ClientMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'leave' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
 
 /** What a scene plays on the lights: effects on the yard and its objects, or a sequence (it loops). */
 export interface Show {
@@ -58,6 +59,9 @@ function sequenceProgram(stage: Stage, layout: Layout, seq: Sequence): Program {
   const p = new SequencePlayer(stage, layout, seq);
   return { setStage: (s, l) => p.setStage(s, l), update: (dt, out) => p.update(dt, out, true), objects: () => p.objects() };
 }
+
+/** Phases with the scoreboard on the phone: before a game and after it. */
+const SHOWS_BOARD = new Set(['ready', 'over']);
 
 /** How often the host checks that each browser is still there (WebSocket ping). */
 const HEARTBEAT_MS = 4000;
@@ -95,6 +99,11 @@ export class GameHost implements FrameSource {
   private log: (msg: string) => void;
   /** Games on the real lights: the debug switch and brightness, and the debug panel's view. */
   readonly output: GameOutput;
+
+  /** The scoreboard line named last, lit up on the phones for a minute. */
+  private freshScore: { id: number; until: number } | null = null;
+  /** Phones whose initials were refused: they are asked again. */
+  private refused = new Set<string>();
 
   private heartbeatMs: number;
   /**
@@ -292,9 +301,13 @@ export class GameHost implements FrameSource {
     if (!client) return;
     if (msg.type === 'leave') return this.drop(ws);
     this.lastInput = Date.now();
+    // A new game (a game started, or a press that starts the next one) is a new run: the last
+    // one's score can no longer be named.
+    const before = this.game.status().phase;
     if (msg.type === 'start') {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;
+      endRun();
       this.game = g.create(this.gameStage);
       this.log(`Game started: ${g.name}`);
     } else if (msg.type === 'stop') {
@@ -303,9 +316,17 @@ export class GameHost implements FrameSource {
     } else if (msg.type === 'input' && (msg.action === 'press' || msg.action === 'release')) {
       const button = typeof msg.button === 'string' && CONTROL_ID.test(msg.button) && msg.button !== 'main' ? msg.button : undefined;
       this.game.input({ playerId: client.id, action: msg.action, ...(button ? { button } : {}) });
+    } else if (msg.type === 'initials' && typeof msg.id === 'number' && typeof msg.initials === 'string') {
+      const result = nameScore(msg.id, msg.initials.slice(0, 8));
+      if (result === 'ok') {
+        this.freshScore = { id: msg.id, until: Date.now() + 60_000 };
+        this.refused.delete(client.id);
+        this.log(`High score named: ${msg.initials.slice(0, 3).toUpperCase()}`);
+      } else if (result === 'refused') this.refused.add(client.id);
     } else if (msg.type === 'setting' && typeof msg.id === 'string' && typeof msg.value === 'string' && CONTROL_ID.test(msg.id) && CONTROL_ID.test(msg.value)) {
       this.game.setting?.(msg.id, msg.value);
     }
+    if (msg.type === 'input' && SHOWS_BOARD.has(before) && !SHOWS_BOARD.has(this.game.status().phase)) endRun();
     this.sendStatus(true);
   }
 
@@ -339,7 +360,23 @@ export class GameHost implements FrameSource {
   }
 
   private status(): GameStatus {
-    return { ...this.game.status(), game: this.game.id === 'idle' ? null : this.game.id, players: this.clients.size, realLights: this.output.targets() };
+    const s: GameStatus = { ...this.game.status(), game: this.game.id === 'idle' ? null : this.game.id, players: this.clients.size, realLights: this.output.targets() };
+    // The high scores, on the start and game-over screens.
+    const board = SHOWS_BOARD.has(s.phase) ? this.game.scoreBoard?.() : null;
+    if (board) {
+      const fresh = this.freshScore && this.freshScore.until > Date.now() ? this.freshScore.id : undefined;
+      s.scoreboard = { title: board.title, entries: scoreboard(board.key).map((e, i) => ({ ...e, rank: i + 1 })), ...(fresh ? { fresh } : {}) };
+      const pending = pendingInitials(board.key);
+      if (pending) s.enterInitials = pending;
+    }
+    return s;
+  }
+
+  /** An admin takes a line off a scoreboard. */
+  removeScore(id: number) {
+    const ok = removeScore(id);
+    if (ok) this.sendStatus(true);
+    return ok;
   }
 
   /**
@@ -366,7 +403,10 @@ export class GameHost implements FrameSource {
     const shared = this.game.playerStatus ? null : JSON.stringify({ type: 'status', status: base });
     for (const [ws, client] of this.clients) {
       if (ws.readyState !== ws.OPEN) continue;
-      const s = shared ?? JSON.stringify({ type: 'status', status: { ...base, ...this.game.playerStatus!(client.id) } });
+      const own = this.game.playerStatus?.(client.id);
+      // Initials this phone tried that are not allowed: it asks again.
+      const refused = base.enterInitials && this.refused.has(client.id) ? { enterInitials: { ...base.enterInitials, refused: true } } : null;
+      const s = !own && !refused && shared ? shared : JSON.stringify({ type: 'status', status: { ...base, ...own, ...refused } });
       if (!force && s === this.lastStatus.get(ws)) continue;
       this.lastStatus.set(ws, s);
       ws.send(s);

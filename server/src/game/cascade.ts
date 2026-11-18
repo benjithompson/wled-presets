@@ -457,6 +457,8 @@ export function cascadeGame(stage: Stage): Game {
   return {
     id: 'cascade',
 
+    scoreBoard: () => ({ key: 'cascade', title: 'Cascade' }),
+
     input,
 
     update(dt: number, frame: Frame) {

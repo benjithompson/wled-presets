@@ -673,15 +673,148 @@ export class Flare {
 export const spreadHue = (i: number) => (i * 0.618034) % 1;
 export const rainbow = (i: number, s = 1) => hsv(spreadHue(i), s);
 
-// ---------- Best scores ----------
+// ---------- High scores ----------
 
-const best = new Map<string, number>();
+/** One line of a scoreboard. */
+export interface HighScore {
+  id: number;
+  initials: string;
+  score: number;
+}
 
-/** Keeps the best score of each game while the server runs. Returns the best and whether this is a new one. */
-export function record(game: string, score: number): { best: number; isNew: boolean } {
-  const old = best.get(game) ?? 0;
-  if (score > old) best.set(game, score);
+/** Where the scoreboards are kept: the database on the server, memory in tests. */
+export interface ScoreStore {
+  /** The best scores of a board, best first (equal scores: the earlier first). */
+  top(board: string, limit: number): HighScore[];
+  /** A new line, with initials still to come; returns its id. */
+  add(board: string, score: number, initials: string): number;
+  setScore(id: number, score: number): void;
+  setInitials(id: number, initials: string): void;
+  remove(id: number): boolean;
+  /** Keeps the best `keep` of a board, and removes the rest. */
+  prune(board: string, keep: number): void;
+}
+
+/** Lines on each scoreboard. */
+export const BOARD_SIZE = 10;
+/** The initials of a line that has not been named (yet). */
+export const NO_INITIALS = '???';
+
+export function memoryScores(): ScoreStore {
+  let next = 1;
+  const rows: { id: number; board: string; initials: string; score: number }[] = [];
+  const sorted = (board: string) => rows.filter((r) => r.board === board).sort((a, b) => b.score - a.score || a.id - b.id);
+  return {
+    top: (board, limit) => sorted(board).slice(0, limit).map(({ id, initials, score }) => ({ id, initials, score })),
+    add(board, score, initials) {
+      rows.push({ id: next, board, score, initials });
+      return next++;
+    },
+    setScore(id, score) {
+      const r = rows.find((x) => x.id === id);
+      if (r) r.score = score;
+    },
+    setInitials(id, initials) {
+      const r = rows.find((x) => x.id === id);
+      if (r) r.initials = initials;
+    },
+    remove(id) {
+      const i = rows.findIndex((x) => x.id === id);
+      if (i < 0) return false;
+      rows.splice(i, 1);
+      return true;
+    },
+    prune(board, keep) {
+      const drop = new Set(sorted(board).slice(keep).map((r) => r.id));
+      for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i].id)) rows.splice(i, 1);
+    }
+  };
+}
+
+let store: ScoreStore = memoryScores();
+
+/** The score of the run that is going on, or just ended, while it can still be named. */
+interface Run {
+  board: string;
+  id: number;
+  score: number;
+  /** When it got onto the board (ms): it can be named for a while. */
+  at: number;
+}
+let run: Run | null = null;
+/** How long a run's line can be named after it got onto the board. */
+const NAME_FOR_MS = 5 * 60_000;
+
+/** The scoreboards live here from now on (the server's database). */
+export function useScoreStore(s: ScoreStore) {
+  store = s;
+  run = null;
+}
+
+/** The place a score would take on a board, from 1 (equal scores go below the ones already there). */
+function rankOf(board: string, score: number, except = -1) {
+  return store.top(board, BOARD_SIZE + 1).filter((h) => h.id !== except && h.score >= score).length + 1;
+}
+
+/**
+ * A game's score, at the end of a game (or along the way: a game that records again before the
+ * next game starts updates the same line). A score good enough for the board goes on it at once,
+ * with initials to come (see pendingInitials). Returns the best and whether this is a new one.
+ */
+export function record(board: string, score: number): { best: number; isNew: boolean } {
+  const same = run && run.board === board ? run : null;
+  const old = store.top(board, 2).find((h) => h.id !== same?.id)?.score ?? 0;
+  if (score > 0) {
+    if (same) {
+      if (score > same.score) {
+        same.score = score;
+        store.setScore(same.id, score);
+      }
+    } else if (rankOf(board, score) <= BOARD_SIZE) {
+      const id = store.add(board, score, NO_INITIALS);
+      run = { board, id, score, at: Date.now() };
+      store.prune(board, BOARD_SIZE);
+    }
+  }
   return { best: Math.max(old, score), isNew: score > old && score > 0 };
 }
 
-export const bestScore = (game: string) => best.get(game) ?? 0;
+export const bestScore = (board: string) => store.top(board, 1)[0]?.score ?? 0;
+
+/** The top of a board. */
+export const scoreboard = (board: string) => store.top(board, BOARD_SIZE);
+
+/** A new game started: the last one's line can no longer be named, and a new score is a new line. */
+export function endRun() {
+  run = null;
+}
+
+/** The line on `board` that waits for its initials, if any. */
+export function pendingInitials(board: string): { id: number; rank: number; score: number } | null {
+  if (!run || run.board !== board) return null;
+  if (Date.now() - run.at > NAME_FOR_MS || !store.top(board, BOARD_SIZE).some((h) => h.id === run!.id && h.initials === NO_INITIALS)) return null;
+  return { id: run.id, rank: rankOf(board, run.score, run.id), score: run.score };
+}
+
+/** Three-letter words that do not go on a family scoreboard. */
+const BLOCKED = new Set(['ASS', 'CUM', 'DIC', 'DIK', 'FAG', 'FCK', 'FUC', 'FUK', 'FKU', 'JIZ', 'KKK', 'NIG', 'SEX', 'TIT', 'VAG', 'COK', 'PIS', 'SHT', 'WTF', 'POO', 'PEE', 'NAZ']);
+
+/** Cleans up initials: up to three letters or digits, in capitals. Null: not allowed. */
+export function cleanInitials(raw: string): string | null {
+  const v = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 3);
+  if (!v || BLOCKED.has(v)) return null;
+  return v;
+}
+
+/** Names the line that waits for its initials. False: no such line (any more), or the initials were refused. */
+export function nameScore(id: number, raw: string): 'ok' | 'gone' | 'refused' {
+  if (!run || run.id !== id) return 'gone';
+  const initials = cleanInitials(raw);
+  if (!initials) return 'refused';
+  store.setInitials(id, initials);
+  run.at = -Infinity;
+  return 'ok';
+}
+
+/** Takes a line off a board (an admin). */
+export const removeScore = (id: number) => store.remove(id);

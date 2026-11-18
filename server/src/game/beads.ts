@@ -427,6 +427,8 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   return {
     id: 'beads',
 
+    scoreBoard: () => ({ key: 'beads', title: 'Bead Rush' }),
+
     peek: () => ({ front, tones: chain.map((b) => b.tone), loaded, palette: [...palette()], flying: !!shot, stage: stageIndex + 1 }),
 
     input,

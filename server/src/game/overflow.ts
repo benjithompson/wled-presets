@@ -318,6 +318,8 @@ export function overflowGame(stage: Stage): Game {
   return {
     id: 'overflow',
 
+    scoreBoard: () => ({ key: 'overflow', title: 'Overflow' }),
+
     input(e: GameInput) {
       if (!playable) return;
       if (e.action === 'press') {

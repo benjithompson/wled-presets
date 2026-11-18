@@ -378,6 +378,8 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   return {
     id: 'ricochet',
 
+    scoreBoard: () => ({ key: 'ricochet', title: 'Ricochet' }),
+
     input,
 
     update(dt: number, frame: Frame) {

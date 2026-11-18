@@ -86,6 +86,7 @@ export const api = {
   gameArea: () => request<{ area: GameArea | null }>('/api/admin/games/area'),
   saveGameArea: (area: GameArea) => request<{ area: GameArea | null }>('/api/admin/games/area', { method: 'PUT', body: area }),
   playOutput: () => request<OutputInfo | null>('/api/admin/play/output'),
+  removeScore: (id: number) => request<{ ok: true }>(`/api/admin/play/scores/${id}`, { method: 'DELETE' }),
   setPlayOutput: (body: { enabled?: boolean; brightness?: number }) => request<OutputInfo>('/api/admin/play/output', { method: 'PUT', body }),
   /** The layout file (layout, devices, game area and pictures) for the saved layout. */
   exportLayout: () => request<LayoutFile>('/api/admin/layout/export'),
