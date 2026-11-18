@@ -4,6 +4,8 @@ import type { Frame } from './frame.ts';
 export interface GameInput {
   playerId: string;
   action: 'press' | 'release';
+  /** Which button (see GameStatus.controls); not set: the big button, 'main'. */
+  button?: string;
 }
 
 export type GameStatusFields = Omit<GameStatus, 'players' | 'game'>;
@@ -21,6 +23,8 @@ export interface Game {
   playerStatus?(playerId: string): Partial<GameStatusFields>;
   /** A player closed the page. */
   leave?(playerId: string): void;
+  /** A player picked a choice for the next game (see GameStatus.settings). */
+  setting?(id: string, value: string): void;
 }
 
 export type GameFactory = (stage: Stage) => Game;

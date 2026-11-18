@@ -8,10 +8,15 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // There is no pause between gates: catch, turn, catch, turn, a little faster every time, with a
 // gate that slowly narrows. One mistake ends the run: a tap outside the gate, or a comet that
 // gets all the way through it. A catch dead in the middle of the gate is PERFECT: double points,
-// a gold burst and a shockwave over the house. Perfect play goes on forever.
+// and the bushes, trees and windows flash gold. Perfect play goes on forever.
 //
 // Colors mean one thing each: white is only ever the comet (with a blue-white tail), the gate is
 // green, gold is points, red is the mistake that ends the run.
+//
+// The roof is kept clear for the comet and the gate: the comet turns around right where the next
+// run starts, so a catch makes only a small gold flash that stays where the gate was (no sparks
+// flying along the roof with the comet, nothing green or white). The celebration is in the rest
+// of the yard.
 //
 // The yard: every 10 catches the streak flies from the gate into the next bush, which lights up
 // in its own color (the next one fills faintly from the ground as the catches add up). When every
@@ -31,6 +36,9 @@ const PERFECT = 1.2;
 const SPEEDUP = 1.02;
 /** How long the streak takes from the gate to its bush, in seconds. */
 const STREAK = 0.55;
+/** How long a catch's gold flash lasts on the roof, in seconds (a perfect one a little longer). */
+const POP = 0.3;
+const POP_PERFECT = 0.45;
 
 const COMET_TAIL: Rgb = [0.45, 0.7, 1];
 const GATE: Rgb = [0.15, 1, 0.45];
@@ -91,6 +99,10 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   let missAt = 0;
   /** Seconds since the last PERFECT, for the phone's message. */
   let sincePerfect = Infinity;
+  /** Gold flashes where gates were caught: two dots that open out from the gate's middle and fade. */
+  let pops: { pos: number; half: number; t: number; perfect: boolean }[] = [];
+  /** Seconds since the last catch: the bushes and trees flash. */
+  let sinceCatch = Infinity;
   /** Which set of bush colors (each full yard starts a new one). */
   let set = 0;
   /** 0..1 fill of each bush, following litTarget. */
@@ -151,6 +163,8 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     litTarget.fill(0);
     flashAll = 0;
     sincePerfect = Infinity;
+    sinceCatch = Infinity;
+    pops = [];
     sparks.clear();
     motes.clear();
     waves.clear();
@@ -178,7 +192,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
         flare.add(color, 0.8);
         if (litTarget.every((v) => v >= 1)) {
           flashAll = 1.6;
-          for (const b of bushes) waves.add(b.x, b.top, COLORS.gold, { amount: 0.9 });
+          for (const b of bushes) waves.add(b.x, b.top, COLORS.gold, { amount: 0.5 });
         }
       }
     });
@@ -188,17 +202,16 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     const perfect = closest <= PERFECT;
     catches++;
     score += perfect ? 2 : 1;
+    sinceCatch = 0;
+    pops.push({ pos: gate, half: halfWidth, t: 0, perfect });
+    // The comet turns back over its own tail: wipe it, so the turn is crisp and the gold flash
+    // does not mix with it into white.
+    trail.clear();
     if (perfect) {
       perfects++;
       sincePerfect = 0;
-      sparks.burst(gate, [COLORS.gold, WHITE, mix(COLORS.gold, WHITE, 0.5)], 56, n * 0.5, 1.3);
-      const p = roof.point(gate);
-      waves.add(p.x, p.y, COLORS.gold, { amount: 0.9 });
-      flare.add(COLORS.gold, 1);
-    } else {
-      sparks.burst(gate, [GATE, COLORS.gold], 34, n * 0.4);
-      flare.add(GATE, 0.6);
-    }
+      flare.add(COLORS.gold, 1.1);
+    } else flare.add(COLORS.gold, 0.45);
     if (catches % PER_BUSH === 0) winBush();
     // Turn around at once, a little faster, and the next gate is already there.
     dir = -dir;
@@ -240,8 +253,31 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     yard.roofSplat(gate + halfWidth, color, 1, 0.9 * breathe + 0.3);
   }
 
+  /**
+   * A catch's flash: gold, at the old gate, opening out a few steps and fading fast. The comet
+   * leaves through it, so it is not drawn where the comet's tail is: the comet stays on top
+   * (gold added to the blue-white tail would look white, like the comet).
+   */
+  function drawPops() {
+    const clear = (i: number) => (trail.level[Math.round(i)] ?? 0) < 0.03 && Math.abs(i - pos) > 2.5;
+    for (const p of pops) {
+      const life = p.perfect ? POP_PERFECT : POP;
+      const f = p.t / life;
+      const spread = p.half * (0.3 + f * 0.9);
+      const amount = (1 - f) ** 1.5 * (p.perfect ? 0.9 : 0.6);
+      for (const at of [p.pos - spread, p.pos + spread]) {
+        for (let i = Math.floor(at - 2); i <= Math.ceil(at + 2); i++) {
+          const d = (i - at) / 0.9;
+          if (i >= 0 && i < n && clear(i)) yard.roofAt(i, COLORS.gold, amount * Math.exp(-d * d));
+        }
+      }
+      if (p.perfect && f < 0.35) for (let i = Math.ceil(p.pos - spread); i <= Math.floor(p.pos + spread); i++) if (clear(i)) yard.roofAt(i, COLORS.gold, 0.25 * (1 - f / 0.35));
+    }
+  }
+
   function drawRoof() {
     for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT);
+    drawPops();
     if (phase !== 'over') drawGate(GATE);
     trail.draw(yard, (v) => mix(COMET_TAIL, WHITE, v * v * 0.7), 0.9);
     if (phase !== 'over') yard.roofSplat(pos, WHITE, 1.1, 1);
@@ -259,6 +295,9 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
         const i = b.bottomUp[k];
         const u = k / Math.max(1, b.count - 1);
         const sparkle = 0.75 + 0.25 * Math.sin(clock * 7 + i * 2.3);
+        // Every catch flashes the bushes gold (a perfect one brighter and longer).
+        const glint = sincePerfect < 0.5 ? 1 - sincePerfect / 0.5 : sinceCatch < 0.25 ? 0.5 * (1 - sinceCatch / 0.25) : 0;
+        if (glint > 0) yard.add(b.offset + i, COLORS.gold, glint * 0.6);
         if (flashAll > 0) {
           const f = Math.max(0, Math.sin(clock * 14 + i));
           yard.add(b.offset + i, mix(color, COLORS.gold, f * 0.7), 0.5 + f * 0.5);
@@ -277,6 +316,11 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       const u = part.up[i];
       if (u <= level) yard.add(part.offset + i, heat(u * 0.9), 0.6 + (u > level - 0.05 ? 0.3 : 0));
       else yard.add(part.offset + i, [0.02, 0.015, 0.04]);
+      // A perfect catch: a gold flash that runs up the tree.
+      if (sincePerfect < 0.6) {
+        const d = u - sincePerfect / 0.5;
+        if (Math.abs(d) < 0.15) yard.add(part.offset + i, COLORS.gold, 0.8 * (1 - Math.abs(d) / 0.15));
+      }
     }
   }
 
@@ -312,6 +356,9 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     waves.update(dt);
     flare.update(dt);
     sincePerfect += dt;
+    sinceCatch += dt;
+    for (const p of pops) p.t += dt;
+    pops = pops.filter((p) => p.t < (p.perfect ? POP_PERFECT : POP));
     if (flashAll > 0) {
       flashAll -= dt;
       if (flashAll <= 0) {

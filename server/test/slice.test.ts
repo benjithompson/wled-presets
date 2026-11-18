@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildStage, sampleLayout } from '../../shared/layout.ts';
 import { Frame } from '../src/game/frame.ts';
 import { Yard } from '../src/game/kit.ts';
-import { REGROW, sliceGame } from '../src/game/slice.ts';
+import { DROP_CROSSINGS, PERFECT_CROSSINGS, REGROW, sliceGame, TIME_MAX, TIME_START } from '../src/game/slice.ts';
 import type { Game } from '../src/game/types.ts';
 
 const press = (g: Game) => g.input({ playerId: 'p', action: 'press' });
@@ -20,6 +20,8 @@ function dropAt(game: Slice, frame: Frame, lo: number) {
   const edges: number[] = [];
   for (let f = 0; f < 600; f++) {
     game.update(1 / 60, frame);
+    // The clock ran out on the way.
+    if (game.status().phase !== 'sweep') return;
     edges.push(game.peek().bar);
     if (edges.length < 7) continue;
     const then = edges[edges.length - 6];
@@ -133,5 +135,80 @@ describe('Slice', () => {
     press(game);
     run(game, frame, 1);
     expect(game.status().score).toBe(1);
+  });
+
+  it('runs a clock down while the bar slides: waiting too long topples the tower', () => {
+    const game = sliceGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    press(game);
+    expect(game.status().stats).toContainEqual({ label: 'Time', value: `${TIME_START}s` });
+    run(game, frame, TIME_START - 2.5);
+    expect(game.status()).toMatchObject({ phase: 'sweep', tone: 'bad' });
+    expect(game.status().message).toMatch(/Hurry/);
+    // The last seconds tick red over the whole roof.
+    let most = 0;
+    for (let i = 0; i < 60; i++) {
+      game.update(1 / 60, frame);
+      const red = stage.roofPath.filter((led) => frame.data[led * 3] - frame.data[led * 3 + 1] > 0.04).length;
+      most = Math.max(most, red);
+    }
+    expect(most).toBeGreaterThan(n * 0.25);
+    run(game, frame, 1.6);
+    expect(game.status().phase).toBe('over');
+    expect(game.status().message).toMatch(/Out of time/);
+  });
+
+  it('winds the clock back up with every drop, more for a perfect, up to its limit', () => {
+    const game = sliceGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    press(game);
+    dropAt(game, frame, lo);
+    expect(game.status().message).toMatch(/PERFECT/);
+    // The bar came in from the left end and reached the band in under a crossing; the perfect
+    // gave back more than a crossing.
+    expect(game.peek().time).toBeGreaterThan(TIME_START);
+    expect(game.peek().time).toBeLessThanOrEqual(TIME_MAX);
+    run(game, frame, 0.05);
+    const before = game.peek().time;
+    press(game);
+    expect(game.status().message).toMatch(/broke off/);
+    // A plain drop gives back three quarters of a crossing (at the new, narrower width).
+    expect(game.peek().time).toBeCloseTo(Math.min(TIME_MAX, before + DROP_CROSSINGS * game.peek().crossing), 2);
+    expect(PERFECT_CROSSINGS).toBeGreaterThan(DROP_CROSSINGS);
+  });
+
+  it('lets a player who drops on the first pass stack for ever', () => {
+    const game = sliceGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    press(game);
+    for (let i = 0; i < 60; i++) dropAt(game, frame, game.peek().lo);
+    expect(game.status()).toMatchObject({ phase: 'sweep', score: 60 });
+    expect(game.peek().time).toBeGreaterThan(TIME_START - 1);
+  });
+
+  it('runs out for a player who waits for the bar to come round again', () => {
+    const game = sliceGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    press(game);
+    let layers = 0;
+    for (let i = 0; i < 20 && game.status().phase === 'sweep'; i++) {
+      // Let it go by once, then drop it on the way back.
+      const pass = (target: number) => {
+        let was = game.peek().bar - target;
+        for (let f = 0; f < 600 && game.status().phase === 'sweep'; f++) {
+          game.update(1 / 60, frame);
+          const now = game.peek().bar - target;
+          if (was * now <= 0) return;
+          was = now;
+        }
+      };
+      pass(game.peek().lo);
+      if (game.status().phase !== 'sweep') break;
+      dropAt(game, frame, game.peek().lo);
+      layers = game.status().score;
+    }
+    expect(game.status().phase).toBe('over');
+    expect(game.status().message).toMatch(/Out of time/);
+    expect(layers).toBeLessThan(12);
   });
 });

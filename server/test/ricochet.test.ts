@@ -148,4 +148,27 @@ describe('Ricochet', () => {
     for (let i = 0; i < 1200; i++) game.update(1 / 60, frame);
     expect(game.status().phase).not.toBe('running');
   });
+
+  it('keeps the roof clear after a catch: only the comet is white, only the gate is green', () => {
+    const { stage, game, frame } = setup();
+    press(game);
+    expect(runUntilInGate(game, frame, 0.5)).toBe(true);
+    press(game);
+    expect(game.status().message).toMatch(/PERFECT/);
+    const { gate, halfWidth } = game.peek();
+    for (let f = 0; f < 30; f++) {
+      game.update(1 / 60, frame);
+      const pos = game.peek().pos;
+      for (let i = 0; i < stage.roofPath.length; i++) {
+        const k = stage.roofPath[i] * 3;
+        const [r, g, b] = [frame.data[k], frame.data[k + 1], frame.data[k + 2]];
+        // White (every channel bright): the comet's head and the start of its tail.
+        if (Math.min(r, g, b) > 0.5) expect(Math.abs(i - pos)).toBeLessThan(9);
+        // Green (much more green than red): the gate.
+        if (g > 0.25 && g > r * 2) expect(Math.abs(i - game.peek().gate)).toBeLessThanOrEqual(halfWidth + 3);
+      }
+    }
+    expect(game.peek().gate).toBe(gate);
+  });
 });
+

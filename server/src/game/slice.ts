@@ -13,6 +13,13 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // perfects in a row and every perfect after that grows the band back a little, so a perfect
 // player can stack forever.
 //
+// A clock runs down while the bar slides, and every drop winds it back up (more for a perfect),
+// to a limit. What a drop gives back is measured in the time the bar takes to cross the roof,
+// so it is fair at every speed and width: the bar reaches the band in about half a crossing,
+// and a drop gives back three quarters of one, so a drop on the first pass gains time; waiting
+// for the bar to come round again costs a whole crossing more than that. When the clock runs out, the tower falls. In the last
+// seconds the roof and the windows tick red, faster and faster.
+//
 // The yard: the trees are the tower itself, a layer of color per drop stacking up from the base
 // (the newest at the top); perfect layers sparkle gold. The bushes count the perfect streak, one
 // more bush lit per perfect in a row, all of them gold when the band grows back. Windows and doors
@@ -48,12 +55,24 @@ export const REGROW = 5;
 const CHUNK_LIFE = 0.7;
 /** Layers a tree shows at once (the newest at the top). */
 const TREE_LAYERS = 10;
+/** The clock, in seconds: at the start, and the most it holds. */
+export const TIME_START = 8;
+export const TIME_MAX = 10;
+/** What a drop and a perfect drop put back on the clock, in crossings of the roof by the bar. */
+export const DROP_CROSSINGS = 0.75;
+export const PERFECT_CROSSINGS = 1.1;
+/** The clock ticks red in the yard below this many seconds. */
+const HURRY = 3;
 
 /** Where things are, for tests: the bar's low edge and the top layer, in roof steps. */
 export interface SlicePeek {
   bar: number;
   lo: number;
   hi: number;
+  /** Seconds on the clock. */
+  time: number;
+  /** Seconds the bar takes to cross the roof now. */
+  crossing: number;
 }
 
 export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
@@ -92,6 +111,11 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   let lastLoss = 0;
   let grew = false;
   let chunks: Chunk[] = [];
+  /** Seconds on the clock, and whether it ran out (the game ended on time, not a miss). */
+  let timeLeft = TIME_START;
+  let timedOut = false;
+  /** What the last drop put back on the clock. */
+  let lastGain = 0;
   /** Every layer so far: its color and whether it was perfect (for the trees). */
   let tower: { color: Rgb; perfect: boolean; t: number }[] = [];
 
@@ -99,6 +123,8 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   const layerColor = (i: number) => LAYER_COLORS[((i % LAYER_COLORS.length) + LAYER_COLORS.length) % LAYER_COLORS.length];
   /** The bar's speed, in roof steps a second: a crossing in 3.4 s at first, 1.8 s at most. */
   const speed = () => n / Math.max(1.8, 3.4 - layers * 0.05);
+  /** Seconds the bar takes to cross the roof, end to end, at its width and speed now. */
+  const crossing = () => Math.max(0, n - 1 - width()) / speed();
   /** How far off a drop can be and still count as perfect: a time window, so it stays fair when fast. */
   const tolerance = () => Math.max(1.5, Math.min(width() * 0.15, speed() * 0.03));
 
@@ -133,6 +159,9 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
     grew = false;
     chunks = [];
     tower = [];
+    timeLeft = TIME_START;
+    timedOut = false;
+    lastGain = 0;
     nextBar();
   }
 
@@ -201,8 +230,19 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
     }
     layers++;
     tower.push({ color, perfect: lastPerfect, t: 0 });
+    const before = timeLeft;
+    timeLeft = Math.min(TIME_MAX, timeLeft + (lastPerfect ? PERFECT_CROSSINGS : DROP_CROSSINGS) * crossing());
+    lastGain = timeLeft - before;
     decorFlare.add(color, 0.7);
     nextBar();
+  }
+
+  /** The clock ran out: the bar falls where it is, and the tower with it. */
+  function outOfTime() {
+    timeLeft = 0;
+    timedOut = true;
+    breakOff(bar, bar + width(), layerColor(layers + 1));
+    gameOver();
   }
 
   function gameOver() {
@@ -223,6 +263,9 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
 
   function drawRoof() {
     for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT, 1 + 0.3 * Math.sin(clock * 0.8 + i * 0.07));
+    // The last seconds on the clock: the whole roof ticks red, faster as it runs out.
+    const tick = hurryTick();
+    if (tick) for (let i = 0; i < n; i++) yard.roofAt(i, COLORS.bad, 0.1 * tick);
     if (phase !== 'over') {
       // The top layer: its color, with brighter edges to line up with. It flashes after a drop.
       // The bar lies on top of it, not mixed in (two colors added up look white on real LEDs):
@@ -302,10 +345,24 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
     });
   }
 
+  /**
+   * 0..1: a red tick for the last seconds on the clock, once a second from HURRY seconds left,
+   * twice a second in the last 1.5; each flash fades quickly.
+   */
+  function hurryTick() {
+    if (phase !== 'sweep' || timeLeft >= HURRY) return 0;
+    const rate = timeLeft < 1.5 ? 2 : 1;
+    const phaseIn = (timeLeft * rate) % 1;
+    // A flash right as each whole (or half) second goes by.
+    return Math.max(0, 1 - (1 - phaseIn) * 5);
+  }
+
   function drawDecor(part: Part) {
     const warm = Math.min(1, streak / REGROW);
+    const tick = hurryTick();
     for (let i = 0; i < part.count; i++) {
       yard.add(part.offset + i, NIGHT, 1.2);
+      if (tick) yard.add(part.offset + i, COLORS.bad, 0.5 * tick);
       yard.add(part.offset + i, decorFlare.color, 1);
       if (warm > 0) yard.add(part.offset + i, COLORS.gold, warm * 0.18 * (0.8 + 0.2 * Math.sin(clock * 2 + i * 0.3)));
     }
@@ -318,7 +375,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
 
     input,
 
-    peek: () => ({ bar, lo, hi }),
+    peek: () => ({ bar, lo, hi, time: timeLeft, crossing: crossing() }),
 
     update(dt: number, frame: Frame) {
       clock += dt;
@@ -340,6 +397,10 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
         }
         bar = Math.max(0, Math.min(end, bar));
         seen.push(clock, bar);
+      }
+      if (phase === 'sweep') {
+        timeLeft -= dt;
+        if (timeLeft <= 0) outOfTime();
       }
       for (const c of chunks) c.t += dt;
       chunks = chunks.filter((c) => c.t < CHUNK_LIFE);
@@ -369,6 +430,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
       const widthPct = `${Math.round((width() / startWidth) * 100)}%`;
       const stats = [
         { label: 'Layers', value: layers },
+        { label: 'Time', value: `${Math.max(0, Math.ceil(timeLeft))}s` },
         { label: 'Width', value: widthPct },
         { label: 'Best', value: Math.max(best, layers) }
       ];
@@ -379,17 +441,23 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
         case 'sweep': {
           const progress = { value: Math.min(streak, REGROW), max: REGROW };
           let message: string;
-          if (!layers) message = 'Tap when the white edges line up with the band!';
-          else if (grew) message = `PERFECT ×${streak}! The band grows back.`;
-          else if (lastPerfect) message = streak >= REGROW ? `PERFECT ×${streak}!` : `PERFECT ×${streak}! ${REGROW - streak} more to grow back.`;
-          else message = `Layer ${layers}. ${Math.max(1, Math.round(lastLoss))} broke off. Line up the edges for a perfect!`;
-          return { ...common, phase, progress, message, button: 'DROP', tone: lastPerfect ? 'good' : 'go' };
+          const gain = lastGain > 0.05 ? ` +${lastGain.toFixed(1)}s` : '';
+          if (timeLeft < HURRY) message = layers ? `Hurry! ${Math.ceil(timeLeft)}s left. Every drop winds the clock back up.` : `Hurry! ${Math.ceil(timeLeft)}s left. Drop it!`;
+          else if (!layers) message = 'Tap when the white edges line up with the band! Be quick: the clock is running.';
+          else if (grew) message = `PERFECT ×${streak}!${gain} The band grows back.`;
+          else if (lastPerfect) message = streak >= REGROW ? `PERFECT ×${streak}!${gain}` : `PERFECT ×${streak}!${gain} ${REGROW - streak} more to grow back.`;
+          else message = `Layer ${layers}.${gain} ${Math.max(1, Math.round(lastLoss))} broke off. Line up the edges for a perfect!`;
+          return { ...common, phase, progress, message, button: 'DROP', tone: timeLeft < HURRY ? 'bad' : lastPerfect ? 'good' : 'go' };
         }
         case 'over':
           return {
             ...common,
             phase,
-            message: newBest ? `New best: ${layers} layers!` : `The tower fell at ${layers} layer${layers === 1 ? '' : 's'}. Best perfect streak ${bestStreak}.`,
+            message: newBest
+              ? `${timedOut ? 'Out of time! ' : ''}New best: ${layers} layers!`
+              : timedOut
+                ? `Out of time at ${layers} layer${layers === 1 ? '' : 's'}! Drop sooner to keep the clock going.`
+                : `The tower fell at ${layers} layer${layers === 1 ? '' : 's'}. Best perfect streak ${bestStreak}.`,
             button: 'GO!',
             tone: 'bad'
           };
