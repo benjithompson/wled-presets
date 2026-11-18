@@ -15,6 +15,7 @@ import {
   House,
   ImagePlus,
   Images,
+  FolderOpen,
   Move,
   LayoutPanelLeft,
   Lightbulb,
@@ -95,7 +96,7 @@ import {
 import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { Stage } from '../../../../shared/layout.ts';
 import type { Scene } from '../../../../shared/types.ts';
-import { Badge, Button, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
+import { Badge, Button, ConfirmDialog, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { EffectProps } from './effectProps.tsx';
 import { DesignEditor } from './DesignEditor.tsx';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
@@ -105,7 +106,7 @@ import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type
 import { NumberInput, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
-import { cn, errorText } from '../../lib/utils.ts';
+import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 
@@ -279,6 +280,9 @@ export function LayoutPage() {
   const [busy, setBusy] = useState(false);
   const svgs = useRef<Partial<Record<ViewSide, SVGSVGElement | null>>>({});
   const fileInput = useRef<HTMLInputElement>(null);
+  const layoutFileInput = useRef<HTMLInputElement>(null);
+  /** A layout file read from disk, waiting for Import to be confirmed. */
+  const [importing, setImporting] = useState<{ data: unknown; name: string; objects: number; pictures: number } | null>(null);
   const aerialInput = useRef<HTMLInputElement>(null);
   /** Align tool: a spot on the picture from above, where it goes, then a second spot and where it goes (top view). */
   const [alignPts, setAlignPts] = useState<UV[]>([]);
@@ -1600,6 +1604,79 @@ export function LayoutPage() {
     }
   }
 
+  /** The File menu: the layout to a file, and a layout from a file. */
+  function fileMenu(e: RMouseEvent<HTMLElement>) {
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenu({
+      x: r.left,
+      y: r.bottom + 4,
+      title: 'Layout file',
+      items: [
+        { label: 'Export the layout…', run: () => void exportLayout() },
+        { label: 'Import a layout…', run: () => layoutFileInput.current?.click() }
+      ]
+    });
+  }
+
+  /** Downloads the layout as it is in the editor (unsaved changes too), with its pictures, devices and game area. */
+  async function exportLayout() {
+    if (!layout) return;
+    setBusy(true);
+    try {
+      const file = await api.exportLayout();
+      downloadJson({ ...file, layout }, `wled-layout-${new Date().toISOString().slice(0, 10)}.json`);
+      toast.success(dirty ? 'Layout exported, with your unsaved changes.' : 'Layout exported.');
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Reads a layout file, then asks before it replaces the layout. */
+  async function pickLayoutFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text()) as { layout?: { fixtures?: unknown }; fixtures?: unknown; pictures?: Record<string, unknown> };
+      const fixtures = (data?.layout ?? data)?.fixtures;
+      if (!Array.isArray(fixtures)) throw new Error('bad');
+      const pictures = Object.values(data.pictures ?? {}).filter(Boolean).length;
+      setImporting({ data, name: file.name, objects: fixtures.length, pictures });
+    } catch {
+      toast.error(`${file.name} is not a layout file. Use a file from Export the layout.`);
+    }
+  }
+
+  async function confirmImport() {
+    if (!importing) return;
+    setBusy(true);
+    try {
+      const out = await api.importLayout(importing.data);
+      qc.setQueryData(LAYOUT_KEY, out.layout);
+      void qc.invalidateQueries({ queryKey: ['admin', 'game-area'] });
+      // A new layout: start over, with nothing selected, no undo history, and the views zoomed to fit.
+      past.current = [];
+      future.current = [];
+      setHistoryTick((n) => n + 1);
+      setLayout(out.layout);
+      setSelected(null);
+      setMulti([]);
+      setCorner(null);
+      setSegment(null);
+      setMatch(null);
+      setTape(null);
+      setDraft((d) => ({ ...d, pts: [] }));
+      setCams({});
+      setImporting(null);
+      toast.success(`Layout imported: ${out.layout.fixtures.length} object(s).`);
+      if (out.unmatched) toast.warning(`${out.unmatched} object(s) had a device that is not here. Choose their WLED device again.`);
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** The Pictures menu: the front of the house, and the yard from above. */
   function picturesMenu(e: RMouseEvent<HTMLElement>) {
     if (!layout) return;
@@ -2552,6 +2629,11 @@ export function LayoutPage() {
           {layout.background || layout.aerial ? <Images /> : <ImagePlus />} Pictures
           <ChevronDown />
         </Button>
+        <Button size="sm" variant="ghost" onClick={fileMenu} disabled={busy} title="Export the layout to a file, or import a layout from a file">
+          <FolderOpen /> File
+          <ChevronDown />
+        </Button>
+        <input ref={layoutFileInput} type="file" accept="application/json,.json" hidden onChange={(e) => (void pickLayoutFile(e.target.files?.[0]), (e.target.value = ''))} />
         <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
         <input ref={aerialInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (uploadAerial(e.target.files?.[0]), (e.target.value = ''))} />
         <span className="ml-auto" />
@@ -3033,6 +3115,30 @@ export function LayoutPage() {
         </span>
       </div>
       {menu ? <ContextMenu menu={menu} onClose={() => setMenu(null)} /> : null}
+      <ConfirmDialog
+        open={importing != null}
+        title="Import this layout?"
+        confirmLabel="Import and replace"
+        danger
+        loading={busy}
+        onConfirm={() => void confirmImport()}
+        onClose={() => !busy && setImporting(null)}
+      >
+        <div className="space-y-2">
+          <p>
+            <span className="font-medium">{importing?.name}</span> has {importing?.objects} object(s)
+            {importing?.pictures ? ` and ${importing.pictures} picture(s)` : ' and no pictures'}. It replaces the saved layout, its pictures and its game area
+            {dirty ? ', and your unsaved changes are lost' : ''}. Objects keep their WLED device when it is here (the same address or name).
+          </p>
+          <p>
+            To keep a copy of the layout you have now,{' '}
+            <button type="button" className="font-medium text-sky-700 underline hover:no-underline dark:text-sky-300" disabled={busy} onClick={() => void exportLayout()}>
+              export it first
+            </button>
+            .
+          </p>
+        </div>
+      </ConfirmDialog>
       <Dialog
         open={library}
         onClose={() => setLibrary(false)}

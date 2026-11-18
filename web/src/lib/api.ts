@@ -66,6 +66,17 @@ export interface DeviceInput {
   enabled: boolean;
 }
 
+/** A layout file, as Layout → File → Export writes it. */
+export interface LayoutFile {
+  kind: 'wled-layout';
+  version: number;
+  exportedAt: string;
+  layout: Layout;
+  devices: { id: string; name: string; host: string; port: number }[];
+  gameArea: GameArea | null;
+  pictures: { background: { type: string; data: string } | null; aerial: { type: string; data: string } | null };
+}
+
 export const api = {
   layout: () => request<Layout>('/api/layout'),
   saveLayout: (layout: Layout) => request<Layout>('/api/admin/layout', { method: 'PUT', body: layout }),
@@ -76,6 +87,10 @@ export const api = {
   saveGameArea: (area: GameArea) => request<{ area: GameArea | null }>('/api/admin/games/area', { method: 'PUT', body: area }),
   playOutput: () => request<OutputInfo | null>('/api/admin/play/output'),
   setPlayOutput: (body: { enabled?: boolean; brightness?: number }) => request<OutputInfo>('/api/admin/play/output', { method: 'PUT', body }),
+  /** The layout file (layout, devices, game area and pictures) for the saved layout. */
+  exportLayout: () => request<LayoutFile>('/api/admin/layout/export'),
+  /** Replaces the layout (and its pictures) with a layout file, or a bare layout. */
+  importLayout: (file: unknown) => request<{ layout: Layout; unmatched: number }>('/api/admin/layout/import', { body: file }),
   removeBackground: () => request<Layout>('/api/admin/layout/background', { method: 'DELETE' }),
   async uploadBackground(file: File): Promise<Layout> {
     const res = await fetch('/api/admin/layout/background', { method: 'POST', headers: { 'Content-Type': file.type }, body: file, credentials: 'same-origin' });

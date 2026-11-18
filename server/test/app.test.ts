@@ -293,6 +293,58 @@ describe('layout pictures', () => {
   });
 });
 
+describe('layout files', () => {
+  it('exports a layout with its pictures and devices, and imports it on another install', async () => {
+    await login();
+    const [a] = await addDevices();
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+    await t.raw('POST', '/api/admin/layout/background', png, { 'content-type': 'image/png' });
+    const { url } = JSON.parse(await (await t.raw('POST', '/api/admin/layout/aerial', png, { 'content-type': 'image/png' })).text());
+    const layout = (await t.call('GET', '/api/layout')).json;
+    layout.fixtures[0].deviceId = a;
+    layout.aerial = { url, x: 800, z: 0, width: 3200, aspect: 0.5, rotation: 12 };
+    expect((await t.call('PUT', '/api/admin/layout', layout)).status).toBe(200);
+    await t.call('PUT', '/api/admin/games/area', { exclude: [layout.fixtures[1].id] });
+
+    const file = (await t.call('GET', '/api/admin/layout/export')).json;
+    expect(file).toMatchObject({ kind: 'wled-layout', version: 1, gameArea: { exclude: [layout.fixtures[1].id] } });
+    expect(file.devices).toHaveLength(1);
+    expect(Buffer.from(file.pictures.background.data, 'base64')).toEqual(Buffer.from(png));
+    expect(file.pictures.aerial.type).toBe('image/png');
+
+    // A new install: other device ids, the same addresses.
+    t = await setup();
+    await login();
+    const [b] = await addDevices();
+    expect(b).not.toBe(a);
+    const r = await t.call('POST', '/api/admin/layout/import', file);
+    expect(r.status).toBe(200);
+    expect(r.json.unmatched).toBe(0);
+    expect(r.json.layout.fixtures[0].deviceId).toBe(b);
+    expect(r.json.layout.fixtures.map((f: { id: string }) => f.id)).toEqual(layout.fixtures.map((f: { id: string }) => f.id));
+    expect((await t.call('GET', '/api/layout')).json).toEqual(r.json.layout);
+    const bg = await t.raw('GET', r.json.layout.background);
+    expect(new Uint8Array(await bg.arrayBuffer())).toEqual(png);
+    expect((await t.raw('GET', r.json.layout.aerial.url)).status).toBe(200);
+    expect((await t.call('GET', '/api/admin/games/area')).json.area.exclude).toEqual([layout.fixtures[1].id]);
+  });
+
+  it('reads a bare layout, drops devices it cannot find, and refuses a broken file', async () => {
+    await login();
+    const layout = sampleLayout();
+    layout.fixtures[0] = { ...layout.fixtures[0], deviceId: 'gone' };
+    const r = await t.call('POST', '/api/admin/layout/import', layout);
+    expect(r.status).toBe(200);
+    expect(r.json.unmatched).toBe(1);
+    expect(r.json.layout.fixtures[0].deviceId).toBeNull();
+    expect(r.json.layout.background).toBeNull();
+    expect((await t.call('POST', '/api/admin/layout/import', { layout: { fixtures: 'no' } })).status).toBe(400);
+    expect((await t.call('POST', '/api/admin/layout/import', { hello: 1 })).status).toBe(400);
+    // Nothing changed.
+    expect((await t.call('GET', '/api/layout')).json).toEqual(r.json.layout);
+  });
+});
+
 describe('backup', () => {
   it('restores onto a new install by matching device addresses', async () => {
     await login();
