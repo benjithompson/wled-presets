@@ -8,10 +8,11 @@ import { GAME_CATALOG } from '../../../shared/games.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
 import { duelGame } from './duel.ts';
-import { FrameLoop } from '../frameLoop.ts';
+import { deviceMaps, FramePipeline, type DeviceMap, type FrameSource, type LightFrame } from '../framePipeline.ts';
+import { LightSender } from '../lightSender.ts';
 import { Frame } from './frame.ts';
 import { idleGame } from './idle.ts';
-import type { LightsOutput } from './output.ts';
+import { GameOutput } from './output.ts';
 import { overflowGame } from './overflow.ts';
 import type { Game, GameFactory } from './types.ts';
 
@@ -19,7 +20,6 @@ const CREATE: Record<string, GameFactory> = { catcher: catcherGame, cascade: cas
 
 export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({ tagline: _, ...info }) => ({ ...info, create: CREATE[info.id] }));
 
-const TICK_HZ = 60;
 /** A game with no input for this long goes back to the idle animation. */
 const IDLE_AFTER_MS = 3 * 60_000;
 
@@ -47,11 +47,12 @@ function sequenceProgram(stage: Stage, layout: Layout, seq: Sequence): Program {
 const HEARTBEAT_MS = 4000;
 
 /**
- * Runs games on the stage. Browsers connect over a WebSocket to watch the simulated yard
- * (binary RGB frames, one byte triple per LED) and to send input. Later, the same frames
- * also go to the real lights.
+ * Runs games and scenes on the stage. Browsers connect over a WebSocket to watch the simulated
+ * yard (binary RGB frames, one byte triple per LED) and to send input. It is a source of the
+ * FramePipeline, which ticks it and sends its frames to the real lights: a running game (unless
+ * the debug switch is off), or else a scene's effects.
  */
-export class GameHost {
+export class GameHost implements FrameSource {
   /** Every LED of the layout: scenes play on it. */
   private stage: Stage;
   /** The same LEDs, with only the game area active: games play on it. */
@@ -64,17 +65,18 @@ export class GameHost {
   private bytes: Uint8Array<ArrayBuffer>;
   private game: Game;
   private clients = new Map<WebSocket, { id: string }>();
-  private loop = new FrameLoop(() => this.tick(), TICK_HZ);
-  private last = 0;
+  /** Where the stage's LEDs go on the devices. */
+  private maps: DeviceMap[] = [];
+  private pipeline: FramePipeline;
+  /** True when the host made its own pipeline (no lights given): it closes it on stop. */
+  private ownPipeline: boolean;
   private lastInput = Date.now();
   /** The last status sent to each browser, so an unchanged one is not sent again. */
   private lastStatus = new WeakMap<WebSocket, string>();
-  /** When the running game started, for GameInput.at. */
-  private started = performance.now();
   private wss = new WebSocketServer({ noServer: true });
   private log: (msg: string) => void;
-  /** Debug mode: the same frames also go to the real lights. */
-  readonly output?: LightsOutput;
+  /** Games on the real lights: the debug switch and brightness, and the debug panel's view. */
+  readonly output: GameOutput;
 
   private heartbeatMs: number;
   /**
@@ -86,18 +88,22 @@ export class GameHost {
   /** Devices that get the scene's frames: those with an object that plays an effect. */
   private sceneDevices = new Set<string>();
 
-  constructor(layout: Layout, log: (msg: string) => void, output?: LightsOutput, heartbeatMs = HEARTBEAT_MS) {
+  /** `pipeline`: the lights. Without one, the host ticks on its own and nothing reaches a device. */
+  constructor(layout: Layout, log: (msg: string) => void, pipeline?: FramePipeline, heartbeatMs = HEARTBEAT_MS) {
     this.heartbeatMs = heartbeatMs;
-    this.layout = layout;
-    this.output = output;
+    this.log = log;
+    this.ownPipeline = !pipeline;
+    this.pipeline = pipeline ?? new FramePipeline(() => [], new LightSender());
+    this.pipeline.add(this);
+    this.output = new GameOutput(this.pipeline, this, () => this.maps, () => this.layout.fixtures.filter((f) => !f.deviceId).map((f) => f.name));
     this.area = null;
+    this.layout = layout;
     this.stage = buildStage(layout);
     this.gameStage = this.buildGameStage();
-    output?.setStage(layout, this.stage);
+    this.maps = deviceMaps(layout, this.stage);
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     this.game = idleGame(this.gameStage);
-    this.log = log;
   }
 
   private buildGameStage(): Stage {
@@ -129,7 +135,7 @@ export class GameHost {
     this.layout = layout;
     this.stage = buildStage(layout);
     this.gameStage = this.buildGameStage();
-    this.output?.setStage(layout, this.stage);
+    this.maps = deviceMaps(layout, this.stage);
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     // A game cannot continue on a changed yard.
@@ -160,9 +166,8 @@ export class GameHost {
       this.show = null;
       this.scene = null;
       this.sceneDevices.clear();
-      // Give the devices back, unless a game has them now.
-      if (this.game.id === 'idle') this.output?.release();
-      if (!this.clients.size) this.pause();
+      // The pipeline gives the devices back on the next frame, unless a game has them.
+      this.pipeline.wake();
       return { devices: [], objects: 0 };
     }
     const same = this.show && (seq ? this.show.sequence === seq : this.show.effects === fx);
@@ -176,7 +181,7 @@ export class GameHost {
     } else this.scene = new EffectScene(this.stage, this.layout, fx!);
     const playing = new Set(this.scene.objects());
     this.sceneDevices = new Set(this.layout.fixtures.filter((f) => playing.has(f.id) && f.deviceId).map((f) => f.deviceId!));
-    this.resume();
+    this.pipeline.wake();
     return { devices: [...this.sceneDevices], objects: playing.size };
   }
 
@@ -186,12 +191,12 @@ export class GameHost {
   }
 
   stop() {
-    this.loop.stop();
+    if (this.ownPipeline) this.pipeline.close();
+    else this.pipeline.remove(this);
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
     for (const ws of this.clients.keys()) ws.close();
     this.wss.close();
-    this.output?.close();
   }
 
   // ---------- Connections ----------
@@ -217,7 +222,8 @@ export class GameHost {
       // A scene's effects keep playing for the people outside: they take the lights back on
       // the next frame, and devices that play a preset get it back.
       this.game = idleGame(this.gameStage);
-      if (!this.scene) this.pause();
+      // With no scene, the host stops running: the pipeline gives the lights back.
+      this.pipeline.wake();
     }
     this.sendStatus(true);
   }
@@ -258,7 +264,7 @@ export class GameHost {
     });
     ws.on('close', () => this.drop(ws));
     ws.on('error', () => this.drop(ws, true));
-    this.resume();
+    this.pipeline.wake();
   }
 
   private onMessage(ws: WebSocket, msg: ClientMessage) {
@@ -270,35 +276,24 @@ export class GameHost {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;
       this.game = g.create(this.gameStage);
-      this.started = performance.now();
       this.log(`Game started: ${g.name}`);
     } else if (msg.type === 'stop') {
       if (this.game.id !== 'idle') this.log('Game stopped');
       this.game = idleGame(this.gameStage);
     } else if (msg.type === 'input' && (msg.action === 'press' || msg.action === 'release')) {
-      this.game.input({ playerId: client.id, action: msg.action, at: (performance.now() - this.started) / 1000 });
+      this.game.input({ playerId: client.id, action: msg.action });
     }
     this.sendStatus(true);
   }
 
-  // ---------- Loop ----------
+  // ---------- Frames ----------
 
-  private resume() {
-    if (this.loop.running) return;
-    this.last = performance.now();
-    this.loop.start();
+  /** Ticks while someone watches, or a scene plays for the people outside. */
+  get running() {
+    return this.clients.size > 0 || !!this.scene;
   }
 
-  private pause() {
-    this.loop.stop();
-    // Nobody is watching: give the lights back at once.
-    this.output?.release();
-  }
-
-  private tick() {
-    const now = performance.now();
-    const dt = Math.min(0.05, (now - this.last) / 1000);
-    this.last = now;
+  tick(dt: number): LightFrame | null {
     if (this.game.id !== 'idle' && Date.now() - this.lastInput > IDLE_AFTER_MS) {
       this.game = idleGame(this.gameStage);
     }
@@ -311,17 +306,20 @@ export class GameHost {
       for (const i of this.outside) d[i * 3] = d[i * 3 + 1] = d[i * 3 + 2] = 0;
     }
     this.frame.toBytes(this.bytes);
-    if (!gameOn && this.scene) this.output?.pushScene(this.bytes, this.sceneDevices);
-    else this.output?.push(this.bytes, gameOn);
     for (const ws of this.clients.keys()) {
       // Skip a frame for a slow client instead of queueing a backlog.
       if (ws.readyState === ws.OPEN && ws.bufferedAmount < 64 * 1024) ws.send(this.bytes);
     }
     this.sendStatus(false);
+    // A scene goes to the devices that play its effects, at full brightness (each effect has
+    // its own); the other devices keep their preset. A game goes everywhere, if switched on.
+    if (!gameOn && this.scene) return { maps: this.maps, bytes: this.bytes, devices: this.sceneDevices };
+    if (gameOn && this.output.enabled) return { maps: this.maps, bytes: this.bytes, k: this.output.brightness };
+    return null;
   }
 
   private status(): GameStatus {
-    return { ...this.game.status(), game: this.game.id === 'idle' ? null : this.game.id, players: this.clients.size, realLights: this.output?.targets() ?? [] };
+    return { ...this.game.status(), game: this.game.id === 'idle' ? null : this.game.id, players: this.clients.size, realLights: this.output.targets() };
   }
 
   /**
@@ -333,8 +331,7 @@ export class GameHost {
     this.log(`Game ended: ${reason}`);
     this.game = idleGame(this.gameStage);
     // A scene's effects take the lights back on the next frame (and give the other devices
-    // back). With no scene, every device goes back to its own state now.
-    if (!this.scene) this.output?.release();
+    // back). With no scene, the pipeline gives every device back on the next frame.
     this.sendStatus(true);
   }
 

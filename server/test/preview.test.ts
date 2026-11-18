@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { fromLedRange, matchPoint, matchRange, pointOffsets, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
+import { buildStage, fromLedRange, matchPoint, matchRange, pointOffsets, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
+import { deviceMaps, FramePipeline, PRIORITY, type LightFrame } from '../src/framePipeline.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
+import { LightSender } from '../src/lightSender.ts';
 import { RealtimeOut } from '../src/realtime.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
@@ -126,44 +128,73 @@ describe('matching a drawn line to the real lights', () => {
   });
 });
 
-describe('debug mode: games on the real lights', () => {
-  it('maps stage LEDs to device LEDs, scales brightness, and leaves gaps off', async () => {
-    const { LightsOutput } = await import('../src/game/output.ts');
-    const { buildStage } = await import('../../shared/layout.ts');
+describe('the frame pipeline', () => {
+  /** A source that shows one color on every LED, while it runs. */
+  const solid = (stage: ReturnType<typeof buildStage>, value: number, k?: number) => {
+    const maps = deviceMaps(layout, stage);
+    const bytes = new Uint8Array(stage.pixelCount * 3).fill(value);
+    const s = { running: true, ticks: 0, tick: (): LightFrame => (s.ticks++, { maps, bytes, k }) };
+    return s;
+  };
+
+  it('maps stage LEDs to device LEDs at the source’s brightness, and gives a device back when its source stops', async () => {
     const mock = await startMockWled(0, 'Roof', 600);
     const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
-    let paused = false;
-    const out = new LightsOutput(() => [device], () => paused);
+    const pipeline = new FramePipeline(() => [device], new LightSender());
+    const game = solid(buildStage(layout), 200, 0.5);
+    pipeline.add(game);
+    try {
+      pipeline.wake();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(rgb(mock.realtime.leds, 300)).toEqual([100, 100, 100]);
+      // LEDs that no object uses stay off.
+      expect(rgb(mock.realtime.leds, 40)).toEqual([0, 0, 0]);
+      expect(pipeline.targets(game)).toEqual(['Roof']);
+      expect(pipeline.framesSent(game)).toBeGreaterThan(3);
+      // The source stops: the device is told at once to show its own state again, and the clock stops.
+      game.running = false;
+      await new Promise((r) => setTimeout(r, 150));
+      expect(mock.requests.at(-1)).toMatchObject({ method: 'POST', url: '/json/state', body: { lor: 1 } });
+      expect(pipeline.targets(game)).toEqual([]);
+      const ticks = game.ticks;
+      // It starts again: that is undone first, so the device shows the stream again.
+      game.running = true;
+      pipeline.wake();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(mock.requests.at(-1)).toMatchObject({ body: { lor: 0 } });
+      expect(game.ticks).toBeGreaterThan(ticks);
+    } finally {
+      pipeline.close();
+      await mock.close();
+    }
+  });
+
+  it('gives the lights to the most important source, ticks the others, and hands devices over without giving them back', async () => {
+    const mock = await startMockWled(0, 'Roof', 600);
+    const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const pipeline = new FramePipeline(() => [device], new LightSender());
     const stage = buildStage(layout);
-    out.setStage(layout, stage);
-    const frame = new Uint8Array(stage.pixelCount * 3).fill(200);
-    out.enabled = false;
-    out.push(frame); // off: nothing is sent
-    out.enabled = true;
-    out.push(frame, false); // no game running: nothing is sent
-    expect(out.info().framesSent).toBe(0);
-    out.brightness = 0.5;
-    paused = true;
-    out.push(frame); // paused by the layout preview: nothing is sent
-    expect(out.info().framesSent).toBe(0);
-    paused = false;
-    out.push(frame);
-    await new Promise((r) => setTimeout(r, 150));
-    expect(out.info()).toMatchObject({ framesSent: 1, devices: [{ name: 'Roof', mappedLeds: 450 }], simulationOnly: ['Left bush', 'Middle bush', 'Right bush'] });
-    expect(rgb(mock.realtime.leds, 300)).toEqual([100, 100, 100]);
-    expect(rgb(mock.realtime.leds, 40)).toEqual([0, 0, 0]);
-    expect(out.targets()).toEqual(['Roof']);
-    // The game ends: the device is told at once to show its own state again.
-    out.push(frame, false);
-    await new Promise((r) => setTimeout(r, 150));
-    expect(mock.requests.at(-1)).toMatchObject({ method: 'POST', url: '/json/state', body: { lor: 1 } });
-    expect(out.targets()).toEqual([]);
-    // A new game undoes that first, so the device shows the stream again.
-    out.push(frame);
-    await new Promise((r) => setTimeout(r, 150));
-    expect(mock.requests.at(-1)).toMatchObject({ body: { lor: 0 } });
-    out.close();
-    await mock.close();
+    const scene = solid(stage, 50);
+    const editor = solid(stage, 200);
+    pipeline.add(scene, PRIORITY.show);
+    pipeline.add(editor, PRIORITY.editor);
+    try {
+      pipeline.wake();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(rgb(mock.realtime.leds, 300)).toEqual([200, 200, 200]);
+      expect(pipeline.owner).toBe(editor);
+      // The scene kept time while the editor had the lights.
+      expect(scene.ticks).toBeGreaterThan(3);
+      editor.running = false;
+      await new Promise((r) => setTimeout(r, 150));
+      expect(rgb(mock.realtime.leds, 300)).toEqual([50, 50, 50]);
+      expect(pipeline.owner).toBe(scene);
+      // Passed from one source to the other: never given back in between.
+      expect(mock.requests.some((q) => (q.body as { lor?: number } | undefined)?.lor === 1)).toBe(false);
+    } finally {
+      pipeline.close();
+      await mock.close();
+    }
   });
 });
 
@@ -309,7 +340,8 @@ describe('the sequence editor on the lights', () => {
     const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
     const sender = new LightSender();
     const logs: string[] = [];
-    const preview = new LayoutPreview(() => [device], (m) => logs.push(m), sender);
+    const pipeline = new FramePipeline(() => [device], sender);
+    const preview = new LayoutPreview(pipeline, (m) => logs.push(m));
     const seq = emptySequence('Show');
     // Red on the roof from 2 s to 6 s.
     seq.tracks[1].clips.push({ id: 'c', start: 2, duration: 4, targets: ['roof'], effect: { effect: 'candy', palette: 'custom', colors: ['#ff0000'], speed: 0.5, intensity: 0, size: 0.5, brightness: 1 } });
@@ -329,6 +361,7 @@ describe('the sequence editor on the lights', () => {
       expect(logs.some((l) => l.includes('Editor preview on the lights started'))).toBe(true);
     } finally {
       preview.close();
+      pipeline.close();
       sender.close();
       await mock.close();
     }

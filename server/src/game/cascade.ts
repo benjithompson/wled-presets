@@ -1,6 +1,6 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, Flare, heat, Motes, record, scale, Sparks, spreadHue, Waves, Yard, type Part } from './kit.ts';
+import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, spreadHue, Waves, Yard, type Part } from './kit.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Cascade: glowing orbs of every color roll along the roofline under real gravity: they speed up
@@ -82,7 +82,8 @@ export function cascadeGame(stage: Stage): Game {
   let cursorDir = 1;
   let quietFor = 0;
   let newBest = false;
-  const history: { t: number; pos: number }[] = [];
+  /** Where the spark was lately: a tap sets off the blast where the player saw it. */
+  const seen = new Recent<number>(0.4);
   /** The tree meter, smoothed. */
   let meter = 0;
 
@@ -131,7 +132,7 @@ export function cascadeGame(stage: Stage): Game {
     bushNext.fill(0);
     cursor = Math.random() < 0.5 ? 0 : n - 1;
     cursorDir = cursor === 0 ? 1 : -1;
-    history.length = 0;
+    seen.clear();
   }
 
   function newGame() {
@@ -147,10 +148,7 @@ export function cascadeGame(stage: Stage): Game {
     setPhase('aim');
   }
 
-  function cursorAt(t: number) {
-    for (let i = history.length - 1; i >= 0; i--) if (history[i].t <= t) return history[i].pos;
-    return cursor;
-  }
+  const cursorAt = (t: number) => seen.at(t) ?? cursor;
 
   function detonate(pos: number, color: Rgb, player: boolean, radius: number) {
     blasts.push({ id: blastId++, pos, color, radius, t: 0, player });
@@ -392,16 +390,8 @@ export function cascadeGame(stage: Stage): Game {
 
       const sweeping = phase === 'aim' || phase === 'ready';
       if (sweeping) {
-        cursor += cursorDir * sweepSpeed(level) * dt;
-        if (cursor >= n - 1) {
-          cursor = 2 * (n - 1) - cursor;
-          cursorDir = -1;
-        } else if (cursor <= 0) {
-          cursor = -cursor;
-          cursorDir = 1;
-        }
-        history.push({ t: clock, pos: cursor });
-        while (history.length && clock - history[0].t > 0.4) history.shift();
+        ({ pos: cursor, dir: cursorDir } = bounce(cursor, cursorDir, sweepSpeed(level) * dt, n));
+        seen.push(clock, cursor);
       }
       if (phase !== 'over') stepOrbs(dt);
       stepBlasts(dt);

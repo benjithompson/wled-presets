@@ -102,7 +102,7 @@ import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } f
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
 import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
-import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
+import { NumberInput, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, snapPoint, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
@@ -2614,16 +2614,13 @@ export function LayoutPage() {
                       options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
                       onChange={(id) => update(sel.id, { deviceId: id || null })}
                     />
-                    {isLine(sel) ? (
-                      <PropRow label="" hint="One LED blinks red on the house. Move it to the start, to each corner and to the end of the real line, and the drawing takes those LEDs.">
-                        <PropButton onClick={() => startMatch(sel)} disabled={!sel.deviceId} title={sel.deviceId ? 'Step through the start, each corner and the end on the real lights' : 'Pick the WLED device first'}>
-                          <LocateFixed /> Match to the lights
-                        </PropButton>
-                      </PropRow>
-                    ) : null}
                     {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
-                      <PropNote>Or click one segment of the line to set its first and last LED, or a corner to pin it or split the line there.</PropNote>
+                      <PropNote>Click a segment of the line to turn it off or give it its own effect, or a corner to split the line there.</PropNote>
                     ) : null}
+                  </PropSection>
+
+                  <PropSection key="leds" id="leds" title="LEDs">
+                    <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} />
                   </PropSection>
 
                   <PropSection
@@ -2671,10 +2668,6 @@ export function LayoutPage() {
                       onEdit={(lt) => setLightEdit({ type: lt })}
                       onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
                     />
-                  </PropSection>
-
-                  <PropSection key="leds" id="leds" title="LEDs">
-                    <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} />
                   </PropSection>
 
                   <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
@@ -3226,7 +3219,36 @@ function tidyPins(pins: (number | null)[] | undefined) {
   return out?.some((p) => p != null) ? out : undefined;
 }
 
-function LedProps({ f, onRange }: { f: Fixture; onRange: (first: number, last: number) => void }) {
+/**
+ * The LED numbers of an object on its device. A line is matched to the real lights with the
+ * wizard (`onMatch`); typing the numbers is folded away under Advanced. Other objects have
+ * only the numbers.
+ */
+function LedProps({ f, onRange, onMatch }: { f: Fixture; onRange: (first: number, last: number) => void; onMatch?: () => void }) {
+  const { first, last } = ledRange(f);
+  const fields = <LedFields f={f} onRange={onRange} />;
+  if (!onMatch) return fields;
+  return (
+    <>
+      <PropRow label="LEDs">
+        <span className="block text-xs tabular-nums">
+          {first}–{last} ({f.pixels})
+        </span>
+      </PropRow>
+      <PropRow label="" hint="One LED blinks red on the house. Move it to the start, to each corner and to the end of the real line, and the drawing takes those LEDs.">
+        <PropButton onClick={onMatch} disabled={!f.deviceId} title={f.deviceId ? 'Step through the start, each corner and the end on the real lights' : 'Pick the WLED device first'}>
+          <LocateFixed /> Match to the lights
+        </PropButton>
+      </PropRow>
+      {!f.deviceId ? <PropNote>Pick its WLED device (in Object) to match it to the real lights.</PropNote> : null}
+      <PropAdvanced id="leds" label="Advanced: type the LED numbers">
+        {fields}
+      </PropAdvanced>
+    </>
+  );
+}
+
+function LedFields({ f, onRange }: { f: Fixture; onRange: (first: number, last: number) => void }) {
   const { first, last } = ledRange(f);
   // A custom object has as many LEDs as its design: moving the first LED moves them all.
   const fixed = f.kind === 'custom';
@@ -3449,9 +3471,27 @@ function CornerProps({ f, index, onPin, onSplit, onFind }: { f: Fixture; index: 
   const ignored = f.pointLeds?.[index] != null && !pinned;
   return (
     <>
-      <PropNumber label="LED after it" steppers value={led} onChange={(n) => onPin(Math.round(n))} hint="The first LED after this corner. The segment before it ends on the LED just before." />
+      <PropRow label="LED after it" hint="The first LED after this corner. The segment before it ends on the LED just before.">
+        <span className="block text-xs tabular-nums">
+          {led} {pinned ? '(pinned)' : '(estimated from the line length)'}
+        </span>
+      </PropRow>
       <PropRow label="">
         <div className="flex flex-wrap gap-1">
+          {onFind ? (
+            <PropButton onClick={onFind} title="Blink an LED on the house and move it to this corner">
+              <LocateFixed /> Find on the lights
+            </PropButton>
+          ) : null}
+          <PropButton onClick={onSplit}>
+            <Scissors /> Split here
+          </PropButton>
+        </div>
+      </PropRow>
+      {ignored ? <PropNote tone="red">The pinned number is not between the numbers of the points on each side, so it is not used.</PropNote> : null}
+      <PropAdvanced id="corner" label="Advanced: type the LED number">
+        <PropNumber label="LED after it" steppers value={led} onChange={(n) => onPin(Math.round(n))} />
+        <PropRow label="">
           {pinned || ignored ? (
             <PropButton onClick={() => onPin(null)}>
               <PinOff /> Unpin
@@ -3461,18 +3501,9 @@ function CornerProps({ f, index, onPin, onSplit, onFind }: { f: Fixture; index: 
               <Pin /> Pin here
             </PropButton>
           )}
-          <PropButton onClick={onSplit}>
-            <Scissors /> Split here
-          </PropButton>
-          {onFind ? (
-            <PropButton onClick={onFind} title="Blink an LED on the house and move it to this corner">
-              <LocateFixed /> Find on the lights
-            </PropButton>
-          ) : null}
-        </div>
-      </PropRow>
-      <PropNote>{pinned ? 'Pinned: this number stays when you edit other segments.' : 'Estimated from the line length. Type the real number to pin it.'}</PropNote>
-      {ignored ? <PropNote tone="red">The pinned number is not between the numbers of the points on each side, so it is not used.</PropNote> : null}
+        </PropRow>
+        <PropNote>{pinned ? 'Pinned: this number stays when you edit other segments.' : 'Type the real number to pin it.'}</PropNote>
+      </PropAdvanced>
     </>
   );
 }
@@ -3698,18 +3729,27 @@ function SegmentProps({
           <Switch label="Segment on" checked={on} onChange={onToggle} />
         </div>
       </PropRow>
-      <PropNumber label="Start LED" tone="green" steppers value={start} onChange={(n) => onPoint(index, limit(index, Math.round(n)))} />
-      <PropNumber
-        label="End LED"
-        tone="red"
-        steppers
-        value={end}
-        onChange={(n) => (isLast ? onPoint(index + 1, limit(index + 1, Math.round(n))) : onPoint(index + 1, limit(index + 1, Math.round(n) + dir)))}
-      />
-      <PropNote>
-        {Math.abs(end - start) + 1} LEDs{on ? '' : ', off'}.{!isLast ? ` The next segment starts at LED ${end + dir}.` : ''} Only this segment glows on the lights. Move its ends until the green and
-        red LEDs sit at the real corners; these numbers stay fixed when you edit other segments.
-      </PropNote>
+      <PropRow label="LEDs">
+        <span className="block text-xs tabular-nums">
+          {start}–{end} ({Math.abs(end - start) + 1}
+          {on ? '' : ', off'})
+        </span>
+      </PropRow>
+      <PropNote>Only this segment glows on the lights: green at its start, red at its end. To move its ends, match the line to the lights (in LEDs).</PropNote>
+      <PropAdvanced id="segment" label="Advanced: type the LED numbers">
+        <PropNumber label="Start LED" tone="green" steppers value={start} onChange={(n) => onPoint(index, limit(index, Math.round(n)))} />
+        <PropNumber
+          label="End LED"
+          tone="red"
+          steppers
+          value={end}
+          onChange={(n) => (isLast ? onPoint(index + 1, limit(index + 1, Math.round(n))) : onPoint(index + 1, limit(index + 1, Math.round(n) + dir)))}
+        />
+        <PropNote>
+          {!isLast ? `The next segment starts at LED ${end + dir}. ` : ''}Move its ends until the green and red LEDs sit at the real corners; these numbers stay fixed when you edit
+          other segments.
+        </PropNote>
+      </PropAdvanced>
       <PropRow label="Length">
         <span className="block text-xs tabular-nums">
           {m.text(length)}

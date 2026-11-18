@@ -11,7 +11,7 @@ import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
 import { readLayout } from './layoutStore.ts';
 import { LayoutPreview } from './layoutPreview.ts';
-import { LightsOutput } from './game/output.ts';
+import { FramePipeline } from './framePipeline.ts';
 import { LightSender } from './lightSender.ts';
 
 const config = loadConfig();
@@ -33,9 +33,11 @@ if (db.countUsers() === 0) {
 }
 
 const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg));
-const preview = new LayoutPreview(() => lights.liveDevices(), (msg) => lights.log('info', 'layout', msg), sender);
-const output = new LightsOutput(() => lights.liveDevices(), () => preview.active, sender);
-const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), output);
+// Everything that draws on the lights goes through one pipeline: the editors' previews win
+// over games and scenes.
+const pipeline = new FramePipeline(() => lights.liveDevices(), sender);
+const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout', msg));
+const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), pipeline);
 host.setGameArea(readGameArea(db));
 // Scenes with effects: the game host draws them and sends them to the lights.
 lights.setEffectPlayer((show) => host.playShow(show));
@@ -87,6 +89,7 @@ async function shutdown() {
   lights.stop();
   host.stop();
   preview.close();
+  pipeline.close();
   sender.close();
   server.close();
   db.close();

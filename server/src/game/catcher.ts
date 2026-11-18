@@ -1,40 +1,43 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { Roof } from './kit.ts';
+import { hsv, mix, WHITE, type Rgb } from './frame.ts';
+import { bounce, Motes, Recent, Sparks, Trail, Yard } from './kit.ts';
 import type { Game, GameInput } from './types.ts';
 
 // Comet Catcher: a comet races along the roofline. Tap to stop it inside the glowing gate.
-// Each catch fills the next bush with light; light every bush to win a yard-wide finale.
+// Each catch sends a streak of light down into the next bush, which fills with color; light
+// every bush to win a yard-wide finale.
 
 type Phase = 'ready' | 'running' | 'hit' | 'miss' | 'won' | 'over';
-
-interface Spark {
-  pos: number;
-  vel: number;
-  color: Rgb;
-  life: number;
-}
 
 const LIVES = 3;
 const GOAL_WITHOUT_BUSHES = 8;
 /** Inputs this many seconds late still count, so Wi-Fi delay does not cost a kid a catch. */
 const GRACE = 0.12;
+/** How long the streak takes from the gate to its bush, in seconds. */
+const STREAK = 0.55;
 
 const BUSH_COLORS: Rgb[] = [hsv(0.0), hsv(0.12), hsv(0.33), hsv(0.55), hsv(0.75), hsv(0.9)];
 const COMET: Rgb = [0.55, 0.85, 1];
 /** The roof's faint glow under everything. */
 const ROOF_GLOW: Rgb = [0.06, 0.035, 0.02];
+const BUSH_DARK: Rgb = [0.02, 0.05, 0.02];
 const GATE: Rgb = [0.15, 1, 0.45];
 const RED: Rgb = [1, 0.06, 0.02];
+const EMBER: Rgb = [1, 0.3, 0];
 
 export function catcherGame(stage: Stage): Game {
   // "The roof" is every roof object joined in strip order, measured as it looks from the street,
   // so the comet crosses the front of the house at an even speed (see Roof).
-  const track = new Roof(stage);
-  const roof = track.n ? track : undefined;
-  const bushes = stage.fixtures.filter((f) => f.kind === 'bush');
-  const n = track.n;
+  const yard = new Yard(stage);
+  const { roof, bushes } = yard;
+  const n = roof.n;
+  const playable = n >= 10;
   const goal = bushes.length || GOAL_WITHOUT_BUSHES;
+  const sparks = new Sparks(roof, 0, 2.2);
+  const motes = new Motes(yard);
+  const trail = new Trail(n);
+  /** Where the comet was lately: a press is judged by what the player saw. */
+  const seen = new Recent<number>(0.3);
 
   let phase: Phase = 'ready';
   let phaseTime = 0;
@@ -47,10 +50,7 @@ export function catcherGame(stage: Stage): Game {
   let gate = 0;
   let halfWidth = 0;
   let missAt = 0;
-  const history: { t: number; pos: number }[] = [];
-  const trail = new Float32Array(n);
-  const sparks: Spark[] = [];
-  /** 0..1 fill of each bush; colors are fixed per bush. */
+  /** 0..1 fill of each bush (left to right); it follows litTarget. */
   const lit = bushes.map(() => 0);
   const litTarget = bushes.map(() => 0);
 
@@ -63,18 +63,19 @@ export function catcherGame(stage: Stage): Game {
     dir = 1;
     lit.fill(0);
     litTarget.fill(0);
+    motes.clear();
     placeGate();
   }
 
   function placeGate() {
     const margin = halfWidth + 4;
-    const corners = (roof?.corners ?? []).filter((c) => c > margin && c < n - margin);
+    const corners = roof.corners.filter((c) => c > margin && c < n - margin);
     for (let tries = 0; tries < 20; tries++) {
       const atCorner = corners.length > 0 && Math.random() < 0.6;
       const g = atCorner ? corners[Math.floor(Math.random() * corners.length)] : margin + Math.random() * (n - margin * 2);
       // Not right next to the comet, so every gate takes a little waiting, and where it can be
       // seen from the street (the comet hurries through the rest).
-      if ((Math.abs(g - pos) > n * 0.2 && !track.hiddenAt(g)) || tries === 19) {
+      if ((Math.abs(g - pos) > n * 0.2 && !roof.hiddenAt(g)) || tries === 19) {
         gate = Math.round(g);
         return;
       }
@@ -86,52 +87,99 @@ export function catcherGame(stage: Stage): Game {
     phaseTime = 0;
   }
 
-  function burst(at: number, colors: Rgb[], count: number, power: number) {
-    for (let i = 0; i < count; i++) {
-      sparks.push({
-        pos: at,
-        vel: (Math.random() - 0.5) * 2 * power * (0.4 + Math.random()),
-        color: colors[i % colors.length],
-        life: 0.7 + Math.random() * 0.8
-      });
-    }
+  function start() {
+    reset();
+    setPhase('running');
   }
 
-  function inGate(): boolean {
-    // Accept the press if the comet was in the gate at any moment in the grace window.
-    return history.some((h) => clock - h.t <= GRACE && Math.abs(h.pos - gate) <= halfWidth);
+  /** The catch flies from the gate into the next bush, which then fills. */
+  function lightBush(index: number) {
+    const bush = bushes[index];
+    const color = BUSH_COLORS[index % BUSH_COLORS.length];
+    motes.fly(roof.point(gate), yard.topOf(bush), mix(color, WHITE, 0.4), STREAK, { arc: 40, size: 28, arrive: () => (litTarget[index] = 1) });
   }
 
   function press() {
-    if (!roof || n < 10) return;
-    if (phase === 'ready' || phase === 'over') {
-      reset();
-      setPhase('running');
-      return;
-    }
-    if (phase === 'won' && phaseTime > 2) {
-      reset();
-      setPhase('running');
-      return;
-    }
+    if (!playable) return;
+    if (phase === 'ready' || phase === 'over' || (phase === 'won' && phaseTime > 2)) return start();
     if (phase !== 'running') return;
-    if (inGate()) {
+    // Accept the press if the comet was in the gate at any moment in the grace window.
+    if (seen.since(clock - GRACE).some((p) => Math.abs(p - gate) <= halfWidth)) {
       score++;
-      burst(gate, [hsv(Math.random()), WHITE, GATE], 46, n * 0.5);
-      if (bushes.length) litTarget[score - 1] = 1;
-      if (score >= goal) {
-        setPhase('won');
-        return;
-      }
+      sparks.burst(gate, [hsv(Math.random()), WHITE, GATE], 46, n * 0.5);
+      if (bushes.length) lightBush(score - 1);
+      if (score >= goal) return setPhase('won');
       speed = Math.min(n / 0.9, speed / 0.9);
       halfWidth = Math.max(3, Math.round(halfWidth * 0.88));
       setPhase('hit');
     } else {
       lives--;
       missAt = pos;
-      burst(pos, [RED, [1, 0.3, 0]], 18, n * 0.15);
+      sparks.burst(pos, [RED, EMBER], 18, n * 0.15);
       setPhase(lives > 0 ? 'miss' : 'over');
     }
+  }
+
+  function step(dt: number) {
+    if (phase === 'running') {
+      ({ pos, dir } = bounce(pos, dir, speed * dt, n));
+      seen.push(clock, pos);
+    }
+    if (phase === 'hit' && phaseTime > 0.9) {
+      placeGate();
+      setPhase('running');
+    }
+    if (phase === 'miss' && phaseTime > 1.3) setPhase('running');
+    if (phase === 'over' && phaseTime > 4) setPhase('ready');
+    if (phase === 'won' && phaseTime > 9) {
+      reset();
+      setPhase('ready');
+    }
+    sparks.update(dt);
+    motes.update(dt);
+    trail.fade(dt, phase === 'running' ? 9 : 3);
+    if (phase === 'running' || phase === 'hit') trail.mark(pos);
+    lit.forEach((v, i) => (lit[i] = v + (litTarget[i] - v) * Math.min(1, dt * 2.5)));
+  }
+
+  function drawRoof() {
+    for (let i = 0; i < n; i++) yard.roofAt(i, ROOF_GLOW);
+    // The gate: a dim fill between bright posts that breathe; red after a miss.
+    if (phase !== 'won') {
+      const flashRed = (phase === 'miss' || phase === 'over') && Math.floor(phaseTime * 6) % 2 === 0;
+      const color = flashRed ? RED : GATE;
+      const breathe = 0.6 + 0.4 * Math.sin(clock * 6);
+      for (let i = gate - halfWidth; i <= gate + halfWidth; i++) yard.roofAt(i, color, 0.14 + 0.08 * breathe);
+      yard.roofSplat(gate - halfWidth, color, 1, 0.9 * breathe + 0.3);
+      yard.roofSplat(gate + halfWidth, color, 1, 0.9 * breathe + 0.3);
+    }
+    // The comet: a bright head with a blue-white tail.
+    if (phase === 'ready') yard.roofSplat(0, COMET, 1.5, 0.5 + 0.5 * Math.sin(clock * 4));
+    trail.draw(yard, (v) => mix(COMET, WHITE, v * 0.6));
+    if (phase === 'miss' || phase === 'over') yard.roofSplat(missAt, RED, 2 + phaseTime * 10, Math.max(0, 1 - phaseTime));
+    sparks.draw(yard);
+  }
+
+  function drawBushes() {
+    // Each catch fills one bush with its color, from the middle out, with sparkle.
+    bushes.forEach((b, bi) => {
+      const color = BUSH_COLORS[bi % BUSH_COLORS.length];
+      const filled = lit[bi] * b.count;
+      for (let i = 0; i < b.count; i++) {
+        const sparkle = 0.75 + 0.25 * Math.sin(clock * 7 + i * 2.3);
+        if (i < filled) yard.add(b.offset + i, color, 0.65 * sparkle);
+        else yard.add(b.offset + i, BUSH_DARK);
+      }
+    });
+    motes.draw();
+  }
+
+  function drawFinale(dt: number) {
+    // Fireworks on the roof and rainbow bushes.
+    if (Math.random() < dt * 6) sparks.burst(Math.random() * n, [hsv(Math.random()), hsv(Math.random()), WHITE], 30, n * 0.4);
+    bushes.forEach((b, bi) => {
+      for (let i = 0; i < b.count; i++) yard.add(b.offset + i, hsv((clock * 0.3 + i / b.count + bi * 0.2) % 1), 0.5);
+    });
   }
 
   reset();
@@ -146,101 +194,16 @@ export function catcherGame(stage: Stage): Game {
     update(dt, frame) {
       clock += dt;
       phaseTime += dt;
-      frame.clear();
-      if (!roof || n < 10) return;
-      const put = (i: number, color: Rgb, amount: number) => frame.add(i, color, amount);
-      const at = (i: number, color: Rgb, amount = 1) => track.at(put, i, color, amount);
-      const splat = (p: number, color: Rgb, width = 1.5, amount = 1) => track.splat(put, p, color, width, amount, 2);
-
-      // Comet motion.
-      if (phase === 'running') {
-        pos += dir * speed * dt;
-        if (pos >= n - 1) {
-          pos = n - 1 - (pos - (n - 1));
-          dir = -1;
-        } else if (pos <= 0) {
-          pos = -pos;
-          dir = 1;
-        }
-        history.push({ t: clock, pos });
-        while (history.length && clock - history[0].t > 0.3) history.shift();
-      }
-      if (phase === 'hit' && phaseTime > 0.9) {
-        placeGate();
-        setPhase('running');
-      }
-      if (phase === 'miss' && phaseTime > 1.3) setPhase('running');
-      if (phase === 'over' && phaseTime > 4) setPhase('ready');
-
-      // Roof base glow.
-      for (let i = 0; i < n; i++) at(i, ROOF_GLOW);
-
-      // Gate: dim fill with bright posts that breathe.
-      if (phase !== 'won') {
-        const flashRed = (phase === 'miss' || phase === 'over') && Math.floor(phaseTime * 6) % 2 === 0;
-        const color = flashRed ? RED : GATE;
-        const breathe = 0.6 + 0.4 * Math.sin(clock * 6);
-        for (let i = gate - halfWidth; i <= gate + halfWidth; i++) at(i, color, 0.14 + 0.08 * breathe);
-        splat(gate - halfWidth, color, 1, 0.9 * breathe + 0.3);
-        splat(gate + halfWidth, color, 1, 0.9 * breathe + 0.3);
-      }
-
-      // Comet: bright head and a fading trail.
-      const k = Math.exp(-dt * (phase === 'running' ? 9 : 3));
-      for (let i = 0; i < n; i++) trail[i] *= k;
-      if (phase === 'running' || phase === 'hit') {
-        const lo = Math.max(0, Math.floor(pos - 2));
-        const hi = Math.min(n - 1, Math.ceil(pos + 2));
-        for (let i = lo; i <= hi; i++) trail[i] = Math.max(trail[i], Math.exp(-((i - pos) ** 2) / 1.5));
-      }
-      if (phase === 'ready') {
-        splat(0, COMET, 1.5, 0.5 + 0.5 * Math.sin(clock * 4));
-      }
-      for (let i = 0; i < n; i++) if (trail[i] > 0.01) at(i, mix(COMET, WHITE, trail[i] * 0.6), trail[i]);
-      if (phase === 'miss' || phase === 'over') {
-        splat(missAt, RED, 2 + phaseTime * 10, Math.max(0, 1 - phaseTime));
-      }
-
-      // Sparks fly along the roof and fade.
-      for (let i = sparks.length - 1; i >= 0; i--) {
-        const s = sparks[i];
-        s.life -= dt;
-        s.pos += s.vel * dt;
-        s.vel *= Math.exp(-dt * 2.2);
-        if (s.life <= 0 || s.pos < 0 || s.pos >= n) {
-          sparks.splice(i, 1);
-          continue;
-        }
-        splat(s.pos, s.color, 1, Math.min(1, s.life * 1.5));
-      }
-
-      // Bushes: each catch fills one bush with its color, from the middle out, with sparkle.
-      bushes.forEach((b, bi) => {
-        lit[bi] += (litTarget[bi] - lit[bi]) * Math.min(1, dt * 2.5);
-        const color = BUSH_COLORS[bi % BUSH_COLORS.length];
-        const filled = lit[bi] * b.count;
-        for (let i = 0; i < b.count; i++) {
-          const sparkle = 0.75 + 0.25 * Math.sin(clock * 7 + i * 2.3);
-          if (i < filled) frame.add(b.offset + i, color, 0.65 * sparkle);
-          else frame.add(b.offset + i, [0.02, 0.05, 0.02]);
-        }
-      });
-
-      // Finale: fireworks on the roof and rainbow bushes.
-      if (phase === 'won') {
-        if (Math.random() < dt * 6) burst(Math.random() * n, [hsv(Math.random()), hsv(Math.random()), WHITE], 30, n * 0.4);
-        bushes.forEach((b, bi) => {
-          for (let i = 0; i < b.count; i++) frame.add(b.offset + i, hsv((clock * 0.3 + i / b.count + bi * 0.2) % 1), 0.5);
-        });
-        if (phaseTime > 9) {
-          reset();
-          setPhase('ready');
-        }
-      }
+      yard.begin(frame);
+      if (!playable) return;
+      step(dt);
+      drawRoof();
+      drawBushes();
+      if (phase === 'won') drawFinale(dt);
     },
 
     status() {
-      if (!roof || n < 10) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score, lives, goal };
+      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score, lives, goal };
       const message: Record<Phase, string> = {
         ready: 'Tap to start!',
         running: 'Stop the comet in the green gate!',

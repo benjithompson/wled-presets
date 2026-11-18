@@ -294,7 +294,7 @@ function playUntilCatch(game: ReturnType<typeof catcherGame>, frame: Frame, stag
       if (g > 0.4 && g > b * 1.6) green.push(p);
     }
     if (green.length && comet >= Math.min(...green) + 1 && comet <= Math.max(...green) - 1) {
-      game.input({ playerId: 'p', action: 'press', at: 0 });
+      game.input({ playerId: 'p', action: 'press' });
       return true;
     }
   }
@@ -307,7 +307,7 @@ describe('Comet Catcher', () => {
     const game = catcherGame(stage);
     const frame = new Frame(stage.pixelCount);
     expect(game.status().phase).toBe('ready');
-    game.input({ playerId: 'p', action: 'press', at: 0 });
+    game.input({ playerId: 'p', action: 'press' });
     expect(game.status().phase).toBe('running');
     expect(playUntilCatch(game, frame, stage)).toBe(true);
     expect(game.status().score).toBe(1);
@@ -321,10 +321,10 @@ describe('Comet Catcher', () => {
     const stage = buildStage(sampleLayout());
     const game = catcherGame(stage);
     const frame = new Frame(stage.pixelCount);
-    game.input({ playerId: 'p', action: 'press', at: 0 });
+    game.input({ playerId: 'p', action: 'press' });
     game.update(1 / 60, frame);
     // The comet starts at the left end; the gate is never right there.
-    game.input({ playerId: 'p', action: 'press', at: 0 });
+    game.input({ playerId: 'p', action: 'press' });
     expect(game.status()).toMatchObject({ phase: 'miss', lives: 2 });
   });
 

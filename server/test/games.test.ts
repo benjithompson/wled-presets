@@ -11,8 +11,8 @@ import { Yard } from '../src/game/kit.ts';
 import { overflowGame } from '../src/game/overflow.ts';
 import type { Game } from '../src/game/types.ts';
 
-const press = (g: Game, playerId = 'p') => g.input({ playerId, action: 'press', at: 0 });
-const release = (g: Game, playerId = 'p') => g.input({ playerId, action: 'release', at: 0 });
+const press = (g: Game, playerId = 'p') => g.input({ playerId, action: 'press' });
+const release = (g: Game, playerId = 'p') => g.input({ playerId, action: 'release' });
 const run = (g: Game, frame: Frame, seconds: number) => {
   for (let i = 0; i < Math.round(seconds * 60); i++) g.update(1 / 60, frame);
 };

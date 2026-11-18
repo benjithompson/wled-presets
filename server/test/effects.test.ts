@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { defaultSettings, deviceKey, effectDirection, keyDevice, EFFECTS, effectObjects, EffectRunner, EffectScene, effectKey, effectsLook, effectTarget, isSpatial, layoutEffects, stageSpace, withEffects, YARD, type EffectSettings } from '../../shared/effects.ts';
 import { buildStage, extendLine, fromLedRange, insertPoint, mapSegmentEffects, sampleLayout, segmentLeds, segmentsAfterRemove, type Layout } from '../../shared/layout.ts';
 import { GameHost } from '../src/game/host.ts';
-import { LightsOutput } from '../src/game/output.ts';
+import { FramePipeline } from '../src/framePipeline.ts';
+import { LightSender } from '../src/lightSender.ts';
 import { layoutSchema } from '../src/layoutStore.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
@@ -133,10 +134,10 @@ describe('scenes with effects on the real lights', () => {
     const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, online: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
     const layout = sampleLayout();
     layout.fixtures[0] = { ...layout.fixtures[0], deviceId: 'd', ...fromLedRange(536, 87) };
-    const output = new LightsOutput(() => [device]);
+    const pipeline = new FramePipeline(() => [device], new LightSender());
+    const host = new GameHost(layout, () => {}, pipeline);
     // The games' debug switch is off: scenes still play.
-    output.enabled = false;
-    const host = new GameHost(layout, () => {}, output);
+    host.output.enabled = false;
     try {
       const played = host.playEffects({ roof: { ...defaultSettings('candy'), brightness: 1 }, 'bush-1': defaultSettings('aurora') });
       expect(played).toEqual({ devices: ['d'], objects: 2 });
@@ -148,7 +149,7 @@ describe('scenes with effects on the real lights', () => {
       expect(roofLeds.some(([r, g, b]) => r > 150 && g > 150 && b > 150)).toBe(true);
       // LEDs no object uses stay off.
       expect(rgb(mock.realtime.leds, 40)).toEqual([0, 0, 0]);
-      expect(output.targets()).toEqual(['Roof']);
+      expect(host.output.targets()).toEqual(['Roof']);
       // Stop: the device is told at once to show its own state again.
       host.playEffects(null);
       await new Promise((r) => setTimeout(r, 150));
@@ -156,6 +157,7 @@ describe('scenes with effects on the real lights', () => {
       expect(host.playingEffects).toBe(false);
     } finally {
       host.stop();
+      pipeline.close();
       await mock.close();
     }
   });
@@ -164,7 +166,7 @@ describe('scenes with effects on the real lights', () => {
     const layout = sampleLayout();
     layout.fixtures[0] = { ...layout.fixtures[0], deviceId: 'roof-device' };
     layout.fixtures[1] = { ...layout.fixtures[1], deviceId: 'bush-device', startPixel: 0 };
-    const host = new GameHost(layout, () => {}, new LightsOutput(() => []));
+    const host = new GameHost(layout, () => {});
     try {
       expect(host.playEffects({ 'bush-1': defaultSettings('starlight'), gone: defaultSettings('aurora') })).toEqual({ devices: ['bush-device'], objects: 1 });
     } finally {
@@ -235,7 +237,7 @@ describe('effects on one segment of a line', () => {
   it('send a segment’s effect to the device of its line', () => {
     const l = sampleLayout();
     l.fixtures[0] = { ...l.fixtures[0], deviceId: 'roof-device' };
-    const host = new GameHost(l, () => {}, new LightsOutput(() => []));
+    const host = new GameHost(l, () => {});
     try {
       expect(host.playEffects({ 'roof#2': defaultSettings('fireworks') })).toEqual({ devices: ['roof-device'], objects: 1 });
     } finally {

@@ -1230,16 +1230,24 @@ export const GAME_UNSEEN_RGB: [number, number, number] = [40, 48, 70];
 let hiddenCache: { layout: Layout; area: string; key: string; hidden: Map<string, Uint8Array> } | null = null;
 
 /**
+ * A text that changes when the yard's shape or its LEDs change (where they are, how many, which
+ * device and LED numbers), and not when only effects or names do. Caches of things built from a
+ * layout (a Stage, its device maps) key on it, as editors send a new layout object each time.
+ */
+export function layoutShapeKey(layout: Layout): string {
+  return JSON.stringify([layout.width, layout.height, layout.scale, layout.groundY, layout.fixtures.map(({ effect: _e, segmentEffects: _s, name: _n, ...f }) => f)]);
+}
+
+/**
  * For each roof object: 1 for each LED (from the first point) that cannot be seen from the
  * street, as games see it (see roofTrack).
  */
 export function roofHidden(layout: Layout, area: GameArea | null | undefined): Map<string, Uint8Array> {
-  // The Games page sends its layout with every change (a new object each time): what matters
-  // is the shape of the yard, not its effects or names, so a new object with the same shape
-  // does not build the stage again.
+  // The Games page sends its layout with every change (a new object each time): a new object
+  // with the same shape does not build the stage again.
   const areaKey = JSON.stringify(area ?? null);
   if (hiddenCache?.layout === layout && hiddenCache.area === areaKey) return hiddenCache.hidden;
-  const key = JSON.stringify([areaKey, layout.width, layout.height, layout.scale, layout.groundY, layout.fixtures.map(({ effect: _e, segmentEffects: _s, name: _n, ...f }) => f)]);
+  const key = areaKey + layoutShapeKey(layout);
   if (hiddenCache?.key === key) {
     hiddenCache.layout = layout;
     hiddenCache.area = areaKey;
