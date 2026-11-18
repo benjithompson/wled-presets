@@ -1,5 +1,6 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { Roof } from './kit.ts';
 import type { Game, GameInput } from './types.ts';
 
 // Comet Catcher: a comet races along the roofline. Tap to stop it inside the glowing gate.
@@ -25,11 +26,12 @@ const GATE: Rgb = [0.15, 1, 0.45];
 const RED: Rgb = [1, 0.06, 0.02];
 
 export function catcherGame(stage: Stage): Game {
-  // "The roof" is every roof object joined in strip order; gaps between runs are skipped.
-  const path = stage.roofPath;
-  const roof = path.length ? { corners: stage.roofCorners } : undefined;
+  // "The roof" is every roof object joined in strip order, measured as it looks from the street,
+  // so the comet crosses the front of the house at an even speed (see Roof).
+  const track = new Roof(stage);
+  const roof = track.n ? track : undefined;
   const bushes = stage.fixtures.filter((f) => f.kind === 'bush');
-  const n = path.length;
+  const n = track.n;
   const goal = bushes.length || GOAL_WITHOUT_BUSHES;
 
   let phase: Phase = 'ready';
@@ -143,14 +145,9 @@ export function catcherGame(stage: Stage): Game {
       phaseTime += dt;
       frame.clear();
       if (!roof || n < 10) return;
-      const at = (i: number, color: Rgb, amount = 1) => {
-        if (i >= 0 && i < n) frame.add(path[Math.floor(i)], color, amount);
-      };
-      const splat = (p: number, color: Rgb, width = 1.5, amount = 1) => {
-        const lo = Math.max(0, Math.floor(p - width * 2));
-        const hi = Math.min(n - 1, Math.ceil(p + width * 2));
-        for (let i = lo; i <= hi; i++) at(i, color, Math.exp(-(((i - p) / width) ** 2)) * amount);
-      };
+      const put = (i: number, color: Rgb, amount: number) => frame.add(i, color, amount);
+      const at = (i: number, color: Rgb, amount = 1) => track.at(put, i, color, amount);
+      const splat = (p: number, color: Rgb, width = 1.5, amount = 1) => track.splat(put, p, color, width, amount, 2);
 
       // Comet motion.
       if (phase === 'running') {

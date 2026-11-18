@@ -13,7 +13,7 @@
 //     with a combo.
 // Any of them can be missing; a game still plays on a roof alone.
 
-import type { Stage, StageFixture } from '../../../shared/layout.ts';
+import { roofTrack, type RoofTrack, type Stage, type StageFixture } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 
 /** Colors with the same meaning in every game. */
@@ -85,42 +85,60 @@ function makePart(stage: Stage, f: StageFixture): Part {
   return { fixture: f, offset: f.offset, count: f.count, x: (left + right) / 2, top, bottom, left, right, up, across, bottomUp };
 }
 
-/** "The roof": every roof LED in strip order, with where each one is and how steep it is there. */
+/** Where light goes: one stage LED, a color and an amount. */
+export type Sink = (i: number, color: Rgb, amount: number) => void;
+
+/**
+ * "The roof": every roof object joined in strip order, as a track measured in the front view
+ * (see roofTrack). Positions are steps along the track, from 0 to n - 1: something that moves
+ * at a steady speed moves evenly across the front of the house, and stretches that cannot be
+ * seen from the street (back along the side, behind another part) are passed over and stay dark.
+ */
 export class Roof {
+  /** The track's length, in steps (about one LED of a stretch that faces the street). */
   readonly n: number;
-  readonly path: Int32Array;
+  readonly track: RoofTrack;
+  /** Per step: the front-view point. */
   readonly x: Float32Array;
   readonly y: Float32Array;
   /**
-   * Per LED: the sine of the roof's slope toward higher positions. Positive: the roof climbs as
-   * the position grows; negative: it falls. Gravity pulls a ball along the roof by -g * slope.
+   * Per step: the sine of the roof's slope toward higher positions, as seen from the street.
+   * Positive: the roof climbs as the position grows; negative: it falls. Gravity pulls a ball
+   * along the roof by -g * slope.
    */
   readonly slope: Float32Array;
   readonly corners: number[];
   /** True when position 0 is at the left of the house (as seen from the street). */
   readonly startsLeft: boolean;
+  /** The roof LEDs (indexes into track.leds) nearest each step: bucket i is first[i] to first[i + 1]. */
+  private first: Int32Array;
+  private bucket: Int32Array;
 
   constructor(stage: Stage) {
-    this.path = stage.roofPath;
-    this.n = this.path.length;
-    this.corners = stage.roofCorners;
-    const n = this.n;
-    this.x = new Float32Array(n);
-    this.y = new Float32Array(n);
+    const track = roofTrack(stage);
+    this.track = track;
+    const n = (this.n = track.n);
+    this.x = track.x;
+    this.y = track.y;
+    this.corners = track.corners;
     this.slope = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      this.x[i] = stage.positions[this.path[i] * 2];
-      this.y[i] = stage.positions[this.path[i] * 2 + 1];
-    }
-    const p3 = stage.positions3;
-    for (let i = 0; i < n; i++) {
-      const a = this.path[Math.max(0, i - 2)];
-      const b = this.path[Math.min(n - 1, i + 2)];
-      const d = Math.hypot(p3[b * 3] - p3[a * 3], p3[b * 3 + 1] - p3[a * 3 + 1], p3[b * 3 + 2] - p3[a * 3 + 2]);
+      const a = Math.max(0, i - 2);
+      const b = Math.min(n - 1, i + 2);
+      const d = Math.hypot(this.x[b] - this.x[a], this.y[b] - this.y[a]);
       // y grows downward, so a climb has a smaller y ahead.
-      this.slope[i] = d > 1e-6 ? Math.max(-1, Math.min(1, (p3[a * 3 + 1] - p3[b * 3 + 1]) / d)) : 0;
+      this.slope[i] = d > 1e-6 ? Math.max(-1, Math.min(1, (this.y[a] - this.y[b]) / d)) : 0;
     }
     this.startsLeft = n < 2 || this.x[0] <= this.x[n - 1];
+    // LEDs that show, by the step they are nearest.
+    const m = track.leds.length;
+    this.first = new Int32Array(n + 1);
+    const step = (k: number) => Math.max(0, Math.min(n - 1, Math.round(track.at[k])));
+    for (let k = 0; k < m; k++) if (track.shows[k] > 0) this.first[step(k) + 1]++;
+    for (let i = 0; i < n; i++) this.first[i + 1] += this.first[i];
+    this.bucket = new Int32Array(this.first[n] ?? 0);
+    const fill = this.first.slice(0, n);
+    for (let k = 0; k < m; k++) if (track.shows[k] > 0) this.bucket[fill[step(k)]++] = k;
   }
 
   /** The slope at a fractional position. */
@@ -152,6 +170,38 @@ export class Roof {
     }
     return best;
   }
+
+  /** Lights the LEDs of one step of the track (each LED by how much it shows). */
+  at(put: Sink, pos: number, color: Rgb, amount = 1) {
+    const i = Math.round(pos);
+    if (amount <= 0 || i < 0 || i >= this.n) return;
+    const { leds, shows } = this.track;
+    for (let b = this.first[i]; b < this.first[i + 1]; b++) {
+      const k = this.bucket[b];
+      put(leds[k], color, amount * shows[k]);
+    }
+  }
+
+  /** A soft dot at a fractional position: each LED near it by its own place on the track. */
+  splat(put: Sink, pos: number, color: Rgb, width = 1.5, amount = 1, reach = 2.5) {
+    if (amount <= 0 || !this.n) return;
+    const lo = Math.max(0, Math.floor(pos - width * reach));
+    const hi = Math.min(this.n - 1, Math.ceil(pos + width * reach));
+    const { leds, shows, at } = this.track;
+    for (let b = this.first[lo]; b < this.first[hi + 1]; b++) {
+      const k = this.bucket[b];
+      const d = (at[k] - pos) / width;
+      put(leds[k], color, Math.exp(-d * d) * amount * shows[k]);
+    }
+  }
+
+  /** How much each stage LED shows from the street: roof LEDs by the track, every other LED fully. */
+  showing(pixelCount: number): Float32Array {
+    const out = new Float32Array(pixelCount).fill(1);
+    const { leds, shows } = this.track;
+    for (let k = 0; k < leds.length; k++) out[leds[k]] = shows[k];
+    return out;
+  }
 }
 
 /** The yard as the games see it: the roof, and each other object by what it is for. */
@@ -166,8 +216,10 @@ export class Yard {
   /** The middle of the house, as seen from the street. */
   readonly middle: number;
   readonly ground: number;
-  /** The LEDs that are in use (not in a skipped segment). */
+  /** The LEDs that are in use (not in a skipped segment, and not a roof LED hidden from the street). */
   readonly lit: Int32Array;
+  /** Per stage LED: how much of it shows from the street (0..1; see Roof). */
+  readonly shows: Float32Array;
   private grid = new Map<number, number[]>();
   private out: Frame | null = null;
   private static CELL = 48;
@@ -183,9 +235,10 @@ export class Yard {
     const roofXs = Array.from(this.roof.x);
     this.middle = roofXs.length ? (Math.min(...roofXs) + Math.max(...roofXs)) / 2 : stage.width / 2;
     this.ground = stage.groundY;
+    this.shows = this.roof.showing(stage.pixelCount);
     const lit: number[] = [];
     for (let i = 0; i < stage.pixelCount; i++) {
-      if (!stage.active[i]) continue;
+      if (!stage.active[i] || this.shows[i] <= 0) continue;
       lit.push(i);
       const key = this.cell(stage.positions[i * 2], stage.positions[i * 2 + 1]);
       const list = this.grid.get(key);
@@ -205,11 +258,14 @@ export class Yard {
     frame.clear();
   }
 
-  /** Adds light to one stage LED (skipped LEDs stay dark). */
+  /** Adds light to one stage LED (skipped LEDs stay dark, roof LEDs hidden from the street too). */
   add(i: number, color: Rgb, amount = 1) {
     if (amount <= 0 || !this.stage.active[i]) return;
-    this.out?.add(i, color, amount);
+    this.out?.add(i, color, amount * this.shows[i]);
   }
+
+  /** Straight into the frame: for the roof track, which already weighs each LED. */
+  private put: Sink = (i, color, amount) => this.out?.add(i, color, amount);
 
   /** A soft light at a point of the front view: every LED within `radius` catches some of it. */
   glow(x: number, y: number, radius: number, color: Rgb, amount = 1) {
@@ -222,7 +278,7 @@ export class Yard {
         if (!list) continue;
         for (const i of list) {
           const d2 = ((pos[i * 2] - x) ** 2 + (pos[i * 2 + 1] - y) ** 2) / (radius * radius);
-          if (d2 < 1) this.out?.add(i, color, amount * (1 - d2) * (1 - d2));
+          if (d2 < 1) this.out?.add(i, color, amount * (1 - d2) * (1 - d2) * this.shows[i]);
         }
       }
     }
@@ -233,30 +289,27 @@ export class Yard {
     const pos = this.stage.positions;
     for (const i of this.lit) {
       const d = (Math.hypot(pos[i * 2] - x, pos[i * 2 + 1] - y) - r) / width;
-      if (d > -2.5 && d < 2.5) this.out?.add(i, color, amount * Math.exp(-d * d));
+      if (d > -2.5 && d < 2.5) this.out?.add(i, color, amount * Math.exp(-d * d) * this.shows[i]);
     }
   }
 
   /** The same light on every LED of the yard. */
   wash(color: Rgb, amount = 1) {
-    for (const i of this.lit) this.out?.add(i, color, amount);
+    for (const i of this.lit) this.out?.add(i, color, amount * this.shows[i]);
   }
 
   fill(part: Part, color: Rgb, amount = 1) {
     for (let i = 0; i < part.count; i++) this.add(part.offset + i, color, amount);
   }
 
-  /** One roof LED, by position along the roof. */
+  /** One step of the roof track, by position along the roof. */
   roofAt(pos: number, color: Rgb, amount = 1) {
-    const i = Math.floor(pos);
-    if (i >= 0 && i < this.roof.n) this.add(this.roof.path[i], color, amount);
+    this.roof.at(this.put, pos, color, amount);
   }
 
   /** A soft dot on the roof at a fractional position. */
   roofSplat(pos: number, color: Rgb, width = 1.5, amount = 1) {
-    const lo = Math.max(0, Math.floor(pos - width * 2.5));
-    const hi = Math.min(this.roof.n - 1, Math.ceil(pos + width * 2.5));
-    for (let i = lo; i <= hi; i++) this.roofAt(i, color, Math.exp(-(((i - pos) / width) ** 2)) * amount);
+    this.roof.splat(this.put, pos, color, width, amount);
   }
 
   /** The point of the front view at the top of a part, where a rocket leaves from. */

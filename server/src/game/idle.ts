@@ -1,21 +1,23 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, type Frame } from './frame.ts';
+import { Roof } from './kit.ts';
 import type { Game } from './types.ts';
 
 /** Calm animation shown when nobody is playing: slow color waves on the roof; everything else breathes. */
 export function idleGame(stage: Stage): Game {
   let t = 0;
+  // The roof as one track, as it looks from the street, so the waves flow evenly across the house.
+  const { track } = new Roof(stage);
+  const span = Math.max(1, track.n - 1);
   return {
     id: 'idle',
     update(dt, frame) {
       t += dt;
       frame.clear();
-      // The roof as one strip, so the waves flow across every roof object.
-      const path = stage.roofPath;
-      for (let i = 0; i < path.length; i++) {
-        const x = i / Math.max(1, path.length - 1);
+      for (let k = 0; k < track.leds.length; k++) {
+        const x = track.at[k] / span;
         const wave = 0.5 + 0.5 * Math.sin(x * 9 - t * 0.6) * Math.sin(x * 3.1 + t * 0.23);
-        frame.set(path[i], hsv(0.08 + 0.06 * Math.sin(x * 4 + t * 0.1), 0.75, 0.12 + 0.35 * wave));
+        frame.set(track.leds[k], hsv(0.08 + 0.06 * Math.sin(x * 4 + t * 0.1), 0.75, (0.12 + 0.35 * wave) * track.shows[k]));
       }
       stage.fixtures.forEach((f, fi) => {
         for (let i = 0; i < f.count; i++) {
