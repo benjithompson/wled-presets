@@ -26,26 +26,54 @@ function clockLine(settings = DEFAULT_LINE) {
 const v = (id: string, admin = false): Visitor => ({ id, admin });
 const scene = (id: string) => ({ kind: 'scene' as const, id });
 const game = (id: string) => ({ kind: 'game' as const, game: id });
+const color = (hex: string) => ({ kind: 'color' as const, hex });
 
 describe('the line for the lights', () => {
-  it('plays a tap at once when the lights are free; a scene keeps them a minute, then the next in line plays', () => {
+  it('plays a tap at once when the lights are free; a scene picked alone keeps them 10 seconds, then the next in line plays', () => {
     const { line, shows, wait } = clockLine();
     expect(line.ask(v('a'), scene('red'), 'Red')).toEqual({ result: 'now' });
-    // Within the minute: B waits.
-    wait(20);
+    // Within the 10 seconds: B waits, and sees how long.
+    wait(4);
     expect(line.ask(v('b'), scene('blue'), 'Blue')).toEqual({ result: 'queued', place: 1 });
-    expect(line.view('b')).toMatchObject({ free: false, waiting: 1, you: { place: 1, label: 'Blue' }, now: { kind: 'scene', label: 'Red', you: false }, endsIn: 40_000 });
-    // A changes their own scene: it plays now, but the minute keeps running.
+    expect(line.view('b')).toMatchObject({ free: false, waiting: 1, you: { place: 1, label: 'Blue', startsIn: 6_000 }, now: { kind: 'scene', label: 'Red', you: false }, endsIn: 6_000 });
+    // A changes their own scene: it plays now, but the clock keeps running.
     expect(line.ask(v('a'), scene('green'), 'Green')).toEqual({ result: 'now' });
-    wait(39);
+    wait(5);
     expect(shows).toEqual([]);
     wait(1);
     expect(shows).toEqual(['blue']);
     expect(line.view('b').now).toMatchObject({ label: 'Blue', you: true });
-    // A minute later with nobody waiting, a tap plays at once again.
-    wait(60);
+    // Nobody else waited, so B's turn is short too: then a tap plays at once again.
+    wait(9);
+    expect(line.view('c').free).toBe(false);
+    wait(1);
     expect(line.view('c').free).toBe(true);
     expect(line.ask(v('c'), scene('red'), 'Red').result).toBe('now');
+  });
+
+  it('gives a scene a minute when its turn comes while others still wait', () => {
+    const { line, shows, wait } = clockLine();
+    line.ask(v('a'), scene('red'), 'Red');
+    line.ask(v('b'), scene('blue'), 'Blue');
+    line.ask(v('c'), game('slice'), 'Slice');
+    expect(line.view('c').you).toMatchObject({ place: 2, startsIn: 70_000 });
+    wait(10);
+    expect(shows).toEqual(['blue']);
+    expect(line.view('c')).toMatchObject({ endsIn: 60_000, you: { place: 1, startsIn: 60_000 } });
+    wait(59);
+    expect(line.view('c').offer).toBeNull();
+    wait(1);
+    expect(line.view('c').offer).toMatchObject({ game: 'slice' });
+  });
+
+  it('keeps someone who wants a game waiting no more than 10 seconds behind a scene', () => {
+    const { line, wait } = clockLine();
+    line.ask(v('a'), color('#ff0000'), 'Color #ff0000');
+    wait(3);
+    expect(line.ask(v('b'), game('beat'), 'Beat Drop')).toEqual({ result: 'queued', place: 1 });
+    expect(line.view('b').you).toMatchObject({ kind: 'game', startsIn: 7_000 });
+    wait(7);
+    expect(line.view('b').offer).toMatchObject({ game: 'beat', endsIn: 30_000 });
   });
 
   it('keeps one place per visitor: a second tap changes what it is for', () => {
@@ -54,7 +82,7 @@ describe('the line for the lights', () => {
     line.ask(v('b'), scene('red'), 'Red');
     line.ask(v('c'), scene('blue'), 'Blue');
     expect(line.ask(v('b'), game('beat'), 'Beat Drop')).toEqual({ result: 'queued', place: 1 });
-    expect(line.view('b').you).toEqual({ place: 1, kind: 'game', label: 'Beat Drop' });
+    expect(line.view('b').you).toEqual({ place: 1, kind: 'game', label: 'Beat Drop', startsIn: 5 * 60_000 });
     expect(line.view('c').you!.place).toBe(2);
     line.leave('b');
     expect(line.view('c').you!.place).toBe(1);
@@ -104,6 +132,14 @@ describe('the line for the lights', () => {
     line.ask(v('b'), scene('blue'), 'Blue');
     expect(line.ask(v('a'), game('slice'), 'Slice')).toEqual({ result: 'queued', place: 2 });
     expect(line.holder()).toBeNull();
+  });
+
+  it('lets the one with a scene on switch to a game at once while nobody else waits', () => {
+    const { line } = clockLine();
+    line.ask(v('a'), scene('red'), 'Red');
+    expect(line.ask(v('a'), game('slice'), 'Slice')).toEqual({ result: 'now' });
+    expect(line.holder()).toBe('a');
+    expect(line.view('a').endsIn).toBeNull();
   });
 
   it('never makes an admin wait, and is not there when switched off', () => {

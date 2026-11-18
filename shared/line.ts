@@ -8,7 +8,12 @@ export type LineWant = { kind: 'game'; game: string } | { kind: 'scene'; id: str
 export interface LineSettings {
   /** Off: no line, the last choice wins at once (fine at home, on the local network). */
   enabled: boolean;
-  /** A scene or a color plays at least this long before the next in line goes. */
+  /**
+   * A scene or a color picked while nobody else waits keeps the lights this long: someone who
+   * comes along next (for a scene or a game) waits no longer than that.
+   */
+  quickSeconds: number;
+  /** A scene or a color whose turn comes while others still wait plays this long. */
   showSeconds: number;
   /**
    * When someone is waiting, a game turn ends when its game ends, or this long after the wait
@@ -19,7 +24,7 @@ export interface LineSettings {
   offerSeconds: number;
 }
 
-export const DEFAULT_LINE: LineSettings = { enabled: true, showSeconds: 60, turnMinutes: 5, offerSeconds: 30 };
+export const DEFAULT_LINE: LineSettings = { enabled: true, quickSeconds: 10, showSeconds: 60, turnMinutes: 5, offerSeconds: 30 };
 
 /** The most people in line at once. */
 export const LINE_MAX = 30;
@@ -35,8 +40,11 @@ export interface LineView {
   waiting: number;
   /** True when a tap plays at once: nobody has the lights, or a scene's time is up and nobody waits. */
   free: boolean;
-  /** This visitor's place in line (1: next) and what for. */
-  you: { place: number; kind: LineWant['kind']; label: string } | null;
+  /**
+   * This visitor's place in line (1: next) and what for. startsIn: about when their turn comes,
+   * when that can be told (not with a game ahead of them, which may end any time).
+   */
+  you: { place: number; kind: LineWant['kind']; label: string; startsIn: number | null } | null;
   /** It is this visitor's turn to play: they have until then to tap Play. */
   offer: { game: string; label: string; endsIn: number } | null;
   /** Someone else is being asked to play (the lights wait for them). */

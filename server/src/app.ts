@@ -19,7 +19,7 @@ import { rateLimit } from './rateLimit.ts';
 import { readGameArea, readSettings, writeGameArea, writeLineSettings, writeSettings } from './settings.ts';
 import { visitorCookie, visitorId } from './visitor.ts';
 import type { Visitor } from './line.ts';
-import { ordinal } from '../../shared/line.ts';
+import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
 import type { GameHost } from './game/host.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
@@ -724,6 +724,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // The line for the lights: its settings, who waits, and taking turns away.
   const lineSettings = z.object({
     enabled: z.boolean(),
+    quickSeconds: z.number().int().min(3).max(600).default(DEFAULT_LINE.quickSeconds),
     showSeconds: z.number().int().min(10).max(3600),
     turnMinutes: z.number().min(1).max(60),
     offerSeconds: z.number().int().min(10).max(300)
@@ -737,7 +738,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const input = await body(c, lineSettings);
     needLine().configure(input);
     writeLineSettings(db, input);
-    lights.log('info', 'config', input.enabled ? `Line on: scenes ${input.showSeconds} s, game turns ${input.turnMinutes} min when someone waits` : 'Line off: the last choice wins', null, actor(c));
+    lights.log('info', 'config', input.enabled ? `Line on: scenes ${input.quickSeconds} s (${input.showSeconds} s when others wait), game turns ${input.turnMinutes} min when someone waits` : 'Line off: the last choice wins', null, actor(c));
     return c.json(line!.adminView());
   });
   admin.delete('/line/:id', (c) => {

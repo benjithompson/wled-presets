@@ -3,7 +3,8 @@ import { hsv, mix, WHITE, type Rgb } from './frame.ts';
 import { bounce, Motes, Recent, Sparks, Trail, Yard } from './kit.ts';
 import type { Game, GameInput } from './types.ts';
 
-// Comet Catcher: a comet races along the roofline. Tap to stop it inside the glowing gate.
+// Comet Catcher: a comet races along the roofline. Tap to stop it inside the glowing gate, which
+// slowly closes in while you wait.
 // Each catch sends a streak of light down into the next bush, which fills with color; light
 // every bush to win a yard-wide finale.
 
@@ -15,6 +16,10 @@ const GOAL_WITHOUT_BUSHES = 8;
 const GRACE = 0.12;
 /** How long the streak takes from the gate to its bush, in seconds. */
 const STREAK = 0.55;
+/** While the comet runs, the gate closes in by this share of its starting width each second… */
+const SHRINK = 0.05;
+/** …down to this share of it (and never under two LEDs either side). */
+const SMALLEST = 0.4;
 
 const BUSH_COLORS: Rgb[] = [hsv(0.0), hsv(0.12), hsv(0.33), hsv(0.55), hsv(0.75), hsv(0.9)];
 const COMET: Rgb = [0.55, 0.85, 1];
@@ -48,6 +53,9 @@ export function catcherGame(stage: Stage): Game {
   let dir = 1;
   let speed = 0;
   let gate = 0;
+  /** How wide each new gate starts (half of it): narrower after every catch. */
+  let startHalf = 0;
+  /** How wide the gate is now: it closes in while the comet runs. */
   let halfWidth = 0;
   let missAt = 0;
   /** 0..1 fill of each bush (left to right); it follows litTarget. */
@@ -58,7 +66,8 @@ export function catcherGame(stage: Stage): Game {
     score = 0;
     lives = LIVES;
     speed = n / 3.2;
-    halfWidth = Math.max(5, Math.round(n * 0.04));
+    startHalf = Math.max(5, Math.round(n * 0.04));
+    halfWidth = startHalf;
     pos = 0;
     dir = 1;
     lit.fill(0);
@@ -68,7 +77,8 @@ export function catcherGame(stage: Stage): Game {
   }
 
   function placeGate() {
-    const margin = halfWidth + 4;
+    halfWidth = startHalf;
+    const margin = startHalf + 4;
     const corners = roof.corners.filter((c) => c > margin && c < n - margin);
     for (let tries = 0; tries < 20; tries++) {
       const atCorner = corners.length > 0 && Math.random() < 0.6;
@@ -110,7 +120,7 @@ export function catcherGame(stage: Stage): Game {
       if (bushes.length) lightBush(score - 1);
       if (score >= goal) return setPhase('won');
       speed = Math.min(n / 0.9, speed / 0.9);
-      halfWidth = Math.max(3, Math.round(halfWidth * 0.88));
+      startHalf = Math.max(3, Math.round(startHalf * 0.88));
       setPhase('hit');
     } else {
       lives--;
@@ -124,12 +134,17 @@ export function catcherGame(stage: Stage): Game {
     if (phase === 'running') {
       ({ pos, dir } = bounce(pos, dir, speed * dt, n));
       seen.push(clock, pos);
+      halfWidth = Math.max(Math.max(2, startHalf * SMALLEST), halfWidth - startHalf * SHRINK * dt);
     }
     if (phase === 'hit' && phaseTime > 0.9) {
       placeGate();
       setPhase('running');
     }
-    if (phase === 'miss' && phaseTime > 1.3) setPhase('running');
+    if (phase === 'miss' && phaseTime > 1.3) {
+      // A fresh try: the gate opens back up.
+      halfWidth = startHalf;
+      setPhase('running');
+    }
     if (phase === 'over' && phaseTime > 4) setPhase('ready');
     if (phase === 'won' && phaseTime > 9) {
       reset();
@@ -149,7 +164,7 @@ export function catcherGame(stage: Stage): Game {
       const flashRed = (phase === 'miss' || phase === 'over') && Math.floor(phaseTime * 6) % 2 === 0;
       const color = flashRed ? RED : GATE;
       const breathe = 0.6 + 0.4 * Math.sin(clock * 6);
-      for (let i = gate - halfWidth; i <= gate + halfWidth; i++) yard.roofAt(i, color, 0.14 + 0.08 * breathe);
+      for (let i = Math.ceil(gate - halfWidth); i <= gate + halfWidth; i++) yard.roofAt(i, color, 0.14 + 0.08 * breathe);
       yard.roofSplat(gate - halfWidth, color, 1, 0.9 * breathe + 0.3);
       yard.roofSplat(gate + halfWidth, color, 1, 0.9 * breathe + 0.3);
     }
@@ -206,7 +221,7 @@ export function catcherGame(stage: Stage): Game {
       if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score, lives, goal };
       const message: Record<Phase, string> = {
         ready: 'Tap to start!',
-        running: 'Stop the comet in the green gate!',
+        running: 'Stop the comet in the green gate before it closes in!',
         hit: bushes.length ? 'Got it! A bush lights up!' : 'Got it!',
         miss: lives === 1 ? 'So close! Last try!' : 'So close! Try again!',
         won: 'You lit up the whole yard!',

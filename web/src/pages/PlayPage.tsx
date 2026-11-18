@@ -23,8 +23,11 @@ export function PlayPage() {
   const playing = !!status?.game && canPlay;
   const watching = !!status?.game && !canPlay;
   const offer = line?.offer ?? null;
-  // Picking a game joins the line when the lights are busy.
-  const joins = lined && !!line && !line.free && !line.now?.you;
+  // Picking a game joins the line when the lights are busy (your own scene becomes a game at
+  // once, unless others wait).
+  const joins = lined && !!line && !line.free && !(line.now?.you && (line.now.kind === 'game' || !line.waiting));
+  /** The game picked on the public page, waiting for a tap here when the lights are busy. */
+  const [suggested, setSuggested] = useState<string | null>(null);
   const [shownNotice, setShownNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!notice) return;
@@ -41,16 +44,18 @@ export function PlayPage() {
     document.title = 'Play';
   }, []);
 
-  // Opened from a game on the public page (/play?game=cascade): start it, unless a game is on.
+  // Opened from a game on the public page (/play?game=cascade): start it when the lights are free.
+  // When they are busy, it is only pointed out: joining the line is the visitor's own tap.
   const wanted = useRef(new URLSearchParams(location.search).get('game'));
   useEffect(() => {
     const id = wanted.current;
     if (!id || !connected || !status || !games.length) return;
     wanted.current = null;
     history.replaceState(null, '', location.pathname);
-    // Busy: this joins the line for it.
-    if (!(status.game && status.canPlay !== false) && games.some((g) => g.id === id)) send({ type: 'start', game: id });
-  }, [connected, status, games, send]);
+    if (!games.some((g) => g.id === id) || (status.game && status.canPlay !== false)) return;
+    if (joins && !isAdmin) setSuggested(id);
+    else send({ type: 'start', game: id });
+  }, [connected, status, games, send, joins, isAdmin]);
 
   // Each button is held for as long as its finger (or key) is down: some games pour while you
   // hold. Several can be down at once (one finger per button).
@@ -273,9 +278,15 @@ export function PlayPage() {
                       <button
                         key={g.id}
                         type="button"
-                        onClick={() => send({ type: 'start', game: g.id })}
+                        onClick={() => {
+                          setSuggested(null);
+                          send({ type: 'start', game: g.id });
+                        }}
                         aria-pressed={line?.you?.kind === 'game' && line.you.label === g.name}
-                        className="group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]"
+                        className={cn(
+                          'group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]',
+                          suggested === g.id && !line?.you && 'ring-2 ring-amber-300/70'
+                        )}
                       >
                         <span className={cn('grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white shadow-lg', look.className)}>
                           <Icon className="size-6" />

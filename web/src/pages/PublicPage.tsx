@@ -247,6 +247,7 @@ function GamesSection() {
 /** The line for the lights: what plays now, your place in line, or that it's your turn to play. */
 function LineBanner({ line }: { line: LineView }) {
   const left = useCountdown(line.endsIn);
+  const mine = useCountdown(line.you?.startsIn ?? null);
   const leave = useMutation({ mutationFn: api.leaveLine, onError: (e) => toast.error(errorText(e)) });
   if (!line.enabled || (line.free && !line.you && !line.offer)) return null;
   const now = line.now;
@@ -288,7 +289,8 @@ function LineBanner({ line }: { line: LineView }) {
       {line.you ? (
         <span className="flex basis-full flex-wrap items-center justify-between gap-2">
           <span>
-            <b className="text-stone-900 dark:text-white">You're {ordinal(line.you.place)} in line</b> for {line.you.label}.{' '}
+            <b className="text-stone-900 dark:text-white">You're {ordinal(line.you.place)} in line</b> for {line.you.label}
+            {mine != null ? <span className="tabular-nums">, your turn {mine ? `within ${clock(mine)}` : 'any moment'}</span> : null}.{' '}
             {line.you.kind === 'game' ? (
               <a href="/play" className="underline underline-offset-2">
                 Wait on the Play page
