@@ -11,6 +11,7 @@ import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { YardView } from '../../yard/YardView.tsx';
+import { LineCard } from './LineCard.tsx';
 
 const AREA = ['admin', 'game-area'];
 
@@ -127,6 +128,8 @@ export function GamesPage() {
           </>
         }
       />
+
+      <LineCard />
 
       {isLoading ? (
         <Card className="grid place-items-center py-16">

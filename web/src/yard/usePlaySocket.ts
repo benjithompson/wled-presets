@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameInfo, GameStatus, Layout } from '../../../shared/layout.ts';
 
-export type PlayMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
+export type PlayMessage = { type: 'start'; game: string } | { type: 'accept' } | { type: 'leaveLine' } | { type: 'stop' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
 
 /** Whether this browser can unpack compressed frames (all current ones can). */
 const DEFLATE = typeof DecompressionStream !== 'undefined';
@@ -22,6 +22,8 @@ export function usePlaySocket() {
   const [games, setGames] = useState<GameInfo[]>([]);
   const [status, setStatus] = useState<GameStatus | null>(null);
   const [connected, setConnected] = useState(false);
+  /** A note from the server (the line is full), with when it came so the same text shows again. */
+  const [notice, setNotice] = useState<{ text: string; at: number } | null>(null);
   const frame = useRef<Uint8Array | null>(null);
   const socket = useRef<WebSocket | null>(null);
 
@@ -46,6 +48,7 @@ export function usePlaySocket() {
         if (m.type === 'layout') setLayout(m.layout);
         else if (m.type === 'games') setGames(m.games);
         else if (m.type === 'status') setStatus(m.status);
+        else if (m.type === 'notice') setNotice({ text: String(m.text), at: Date.now() });
       };
       ws.onclose = () => {
         setConnected(false);
@@ -73,5 +76,5 @@ export function usePlaySocket() {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(m));
   }, []);
 
-  return { layout, games, status, connected, frame, send };
+  return { layout, games, status, connected, frame, send, notice };
 }

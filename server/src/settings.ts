@@ -1,6 +1,7 @@
 import type { GameArea } from '../../shared/layout.ts';
 import type { Settings } from '../../shared/types.ts';
 import type { Db } from './db.ts';
+import { DEFAULT_LINE, type LineSettings } from '../../shared/line.ts';
 
 // Keys match v1 where the concept existed.
 export const KEY = {
@@ -13,7 +14,8 @@ export const KEY = {
   currentScene: 'currentPresetId',
   currentColor: 'currentColor',
   revertAt: 'revertAt',
-  gameArea: 'gameArea'
+  gameArea: 'gameArea',
+  line: 'lineSettings'
 } as const;
 
 export const DEFAULT_TITLE = 'Lights';
@@ -66,4 +68,18 @@ export function readGameArea(db: Db): GameArea | null {
 
 export function writeGameArea(db: Db, area: GameArea | null) {
   db.setSetting(KEY.gameArea, area ? JSON.stringify(area) : '');
+}
+
+/** The line for the lights (see shared/line.ts). On by default: the site may be open to anyone. */
+export function readLineSettings(db: Db): LineSettings {
+  try {
+    const v = JSON.parse(db.getSetting(KEY.line) || '{}');
+    return { ...DEFAULT_LINE, ...(v && typeof v === 'object' ? v : {}) };
+  } catch {
+    return { ...DEFAULT_LINE };
+  }
+}
+
+export function writeLineSettings(db: Db, s: LineSettings) {
+  db.setSetting(KEY.line, JSON.stringify(s));
 }

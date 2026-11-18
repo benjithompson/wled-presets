@@ -1,5 +1,6 @@
 import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
+import type { LineAdmin, LineSettings } from '../../../shared/line.ts';
 import type {
   AudioFile,
   ApplyResult,
@@ -48,6 +49,13 @@ async function request<T>(path: string, init: { method?: string; body?: unknown 
   if (!res.ok) throw new ApiError(res.status, json?.error ?? `Request failed (${res.status})`);
   return json as T;
 }
+
+/** A scene or color that waits in line (the lights are busy). */
+export interface Queued {
+  queued: { place: number; message: string };
+}
+
+export const isQueued = (r: unknown): r is Queued => !!r && typeof r === 'object' && 'queued' in r;
 
 export interface Overview {
   devices: DeviceWithStatus[];
@@ -108,8 +116,13 @@ export const api = {
   },
 
   state: () => request<PublicState>('/api/state'),
-  applyScene: (id: string) => request<ApplyResult>(`/api/scenes/${encodeURIComponent(id)}/apply`, { method: 'POST' }),
-  applyColor: (color: string) => request<ApplyResult>('/api/color', { body: { color } }),
+  applyScene: (id: string) => request<ApplyResult | Queued>(`/api/scenes/${encodeURIComponent(id)}/apply`, { method: 'POST' }),
+  applyColor: (color: string) => request<ApplyResult | Queued>('/api/color', { body: { color } }),
+  leaveLine: () => request<{ ok: true }>('/api/line/leave', { method: 'POST' }),
+  line: () => request<LineAdmin>('/api/admin/line'),
+  saveLine: (s: LineSettings) => request<LineAdmin>('/api/admin/line', { method: 'PUT', body: s }),
+  removeFromLine: (id: number) => request<LineAdmin>(`/api/admin/line/${id}`, { method: 'DELETE' }),
+  passTurn: () => request<LineAdmin>('/api/admin/line/pass', { method: 'POST' }),
 
   session: () => request<SessionInfo>('/api/auth/session'),
   login: (username: string, password: string) => request<{ user: SessionInfo['user'] }>('/api/auth/login', { body: { username, password } }),

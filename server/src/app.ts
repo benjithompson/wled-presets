@@ -16,7 +16,10 @@ import type { Bus } from './events.ts';
 import type { Lights } from './lights.ts';
 import { isValidCidr } from './net.ts';
 import { rateLimit } from './rateLimit.ts';
-import { readGameArea, readSettings, writeGameArea, writeSettings } from './settings.ts';
+import { readGameArea, readSettings, writeGameArea, writeLineSettings, writeSettings } from './settings.ts';
+import { visitorCookie, visitorId } from './visitor.ts';
+import type { Visitor } from './line.ts';
+import { ordinal } from '../../shared/line.ts';
 import type { GameHost } from './game/host.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
@@ -172,6 +175,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     await next();
     if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
   });
+  // A visitor id for the line for the lights.
+  app.use('*', visitorCookie(config.secureCookie));
+  const visitor = (c: Context): Visitor => ({ id: visitorId(c), admin: !!auth.currentUser(c), actor: actor(c) });
+  /** The line for the lights: with no game host (tests), there is none and the last choice wins. */
+  const line = host?.line ?? null;
 
   // No limits for requests from this computer (localhost): that is you, testing.
   const publicLimiter = rateLimit({ windowMs: 60_000, max: 120, clientIp, skip: isLoopback });
@@ -185,8 +193,9 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.get('/api/state', publicLimiter, (c) => c.json(lights.publicState()));
 
-  app.get('/api/events', (c) =>
-    streamSSE(c, async (stream) => {
+  app.get('/api/events', (c) => {
+    const me = visitorId(c);
+    return streamSSE(c, async (stream) => {
       let timer: NodeJS.Timeout | null = null;
       const send = () => {
         if (timer) return;
@@ -196,15 +205,27 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
           void stream.writeSSE({ event: 'state', data: JSON.stringify(lights.publicState()) });
         }, 50);
       };
+      // This visitor's view of the line: who has the lights, and their place.
+      let lastLine = '';
+      const sendLine = () => {
+        if (!line) return;
+        const v = JSON.stringify(line.view(me));
+        if (v === lastLine) return;
+        lastLine = v;
+        void stream.writeSSE({ event: 'line', data: v });
+      };
       bus.on('state', send);
+      bus.on('line', sendLine);
       await stream.writeSSE({ event: 'state', data: JSON.stringify(lights.publicState()) });
+      sendLine();
       const ping = setInterval(() => void stream.writeSSE({ event: 'ping', data: '' }), 25_000);
       await new Promise<void>((resolve) => stream.onAbort(resolve));
       clearInterval(ping);
       if (timer) clearTimeout(timer);
       bus.off('state', send);
-    })
-  );
+      bus.off('line', sendLine);
+    });
+  });
 
   /** A color or scene chosen on the public page wins over a game or a layout preview. */
   const takeLights = (what: string) => {
@@ -212,9 +233,35 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     preview?.stop();
   };
 
+  // Scenes and colors from the line, when their turn comes.
+  if (line) {
+    line.subscribe(() => bus.emit('line'));
+    line.onShow = (want, who) => {
+      takeLights(want.kind === 'scene' ? 'a scene from the line' : 'a color from the line');
+      void (want.kind === 'scene' ? lights.applyScene(want.id, who.actor) : lights.applyColor(want.hex, who.actor)).catch(() => {});
+    };
+  }
+
+  /**
+   * Asks the line for the lights. Null: play it now. Otherwise the answer for the browser: its
+   * place in line (202), or that the line is full (409).
+   */
+  const askLine = (c: Context, want: Parameters<NonNullable<typeof line>['ask']>[1], label: string) => {
+    if (!line) return null;
+    const asked = line.ask(visitor(c), want, label);
+    if (asked.result === 'now') return null;
+    if (asked.result === 'full') return c.json({ error: 'The line is full right now. Try again in a few minutes!' }, 409);
+    return c.json({ queued: { place: asked.place, message: `You're ${ordinal(asked.place)} in line. ${label} plays when it's your turn.` } }, 202);
+  };
+
   app.post('/api/scenes/:id/apply', applyLimiter, async (c) => {
+    const id = c.req.param('id');
+    const name = lights.publicState().scenes.find((s) => s.id === id)?.name;
+    if (!name) throw new HttpError(404, 'Unknown scene');
+    const queued = askLine(c, { kind: 'scene', id }, name);
+    if (queued) return queued;
     takeLights('a scene');
-    const result = await lights.applyScene(c.req.param('id'), actor(c));
+    const result = await lights.applyScene(id, actor(c));
     if (!result) throw new HttpError(404, 'Unknown scene');
     if (result.applied.length === 0 && !result.effects) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
@@ -222,10 +269,19 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.post('/api/color', applyLimiter, async (c) => {
     const { color } = await body(c, z.object({ color: z.string().regex(/^#?[0-9a-fA-F]{6}$/, 'Use a hex color like #ff8800') }));
+    const hex = `#${color.replace('#', '').toLowerCase()}`;
+    const queued = askLine(c, { kind: 'color', hex }, `Color ${hex}`);
+    if (queued) return queued;
     takeLights('a color');
     const result = await lights.applyColor(color, actor(c));
     if (!result || result.applied.length === 0) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
+  });
+
+  // Leave the line (the public page's "Leave the line").
+  app.post('/api/line/leave', applyLimiter, (c) => {
+    line?.leave(visitorId(c));
+    return c.json({ ok: true });
   });
 
   // ---------------- Yard layout (public read) ----------------
@@ -663,6 +719,36 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     if (!Number.isInteger(id) || !host?.removeScore(id)) throw new HttpError(404, 'Unknown score');
     lights.log('info', 'game', `High score ${id} removed`, null, actor(c));
     return c.json({ ok: true });
+  });
+
+  // The line for the lights: its settings, who waits, and taking turns away.
+  const lineSettings = z.object({
+    enabled: z.boolean(),
+    showSeconds: z.number().int().min(10).max(3600),
+    turnMinutes: z.number().min(1).max(60),
+    offerSeconds: z.number().int().min(10).max(300)
+  });
+  const needLine = () => {
+    if (!line) throw new HttpError(409, 'Games are not running on this server');
+    return line;
+  };
+  admin.get('/line', (c) => c.json(needLine().adminView()));
+  admin.put('/line', async (c) => {
+    const input = await body(c, lineSettings);
+    needLine().configure(input);
+    writeLineSettings(db, input);
+    lights.log('info', 'config', input.enabled ? `Line on: scenes ${input.showSeconds} s, game turns ${input.turnMinutes} min when someone waits` : 'Line off: the last choice wins', null, actor(c));
+    return c.json(line!.adminView());
+  });
+  admin.delete('/line/:id', (c) => {
+    if (!needLine().remove(Number(c.req.param('id')))) throw new HttpError(404, 'Not in the line');
+    lights.log('info', 'game', 'Someone was taken out of the line', null, actor(c));
+    return c.json(line!.adminView());
+  });
+  admin.post('/line/pass', (c) => {
+    needLine().pass('an admin ended the turn');
+    lights.log('info', 'game', 'Turn ended by an admin', null, actor(c));
+    return c.json(line!.adminView());
   });
 
   admin.get('/play/output', (c) => c.json(host?.output?.info() ?? null));

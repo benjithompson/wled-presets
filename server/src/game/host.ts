@@ -6,6 +6,8 @@ import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
 import { buildStage, CONTROL_ID, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
 import { endRun, nameScore, pendingInitials, removeScore, scoreboard } from './kit.ts';
+import { DEFAULT_LINE } from '../../../shared/line.ts';
+import { Line, type Visitor } from '../line.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
 import { duelGame } from './duel.ts';
@@ -40,7 +42,13 @@ export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({
 /** A game with no input for this long goes back to the idle animation. */
 const IDLE_AFTER_MS = 3 * 60_000;
 
-type ClientMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'leave' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
+type ClientMessage =
+  | { type: 'start'; game: string }
+  | { type: 'accept' }
+  | { type: 'leaveLine' }
+  | { type: 'stop' }
+  | { type: 'leave' }
+  | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
 
 /** What a scene plays on the lights: effects on the yard and its objects, or a sequence (it loops). */
 export interface Show {
@@ -66,6 +74,22 @@ const SHOWS_BOARD = new Set(['ready', 'over']);
 /** How often the host checks that each browser is still there (WebSocket ping). */
 const HEARTBEAT_MS = 4000;
 
+/** Phases at the end of a game. */
+const ENDED = new Set(['over', 'won']);
+/** With someone waiting: the turn ends this long after the game ended (the board is on the phone)… */
+const BOARD_MS = 8000;
+/** …or, while initials are being typed, this long. */
+const NAMING_MS = 40_000;
+/** With someone waiting, a turn with no input for this long ends. */
+const IDLE_WAITING_MS = 45_000;
+/** A player whose phone lost its connection (without saying goodbye) keeps the turn this long. */
+const AWAY_MS = 20_000;
+/** How often the host checks the turn. */
+const TURN_CHECK_MS = 500;
+
+/** Who a browser is: a visitor id from its cookie (so a reload keeps its place in line), and whether an admin. */
+export type Identify = (req: IncomingMessage) => Visitor | null;
+
 /**
  * Runs games and scenes on the stage. Browsers connect over a WebSocket to watch the simulated
  * yard (binary RGB frames, one byte triple per LED, see ViewStream) and to send input. It is a source of the
@@ -84,7 +108,17 @@ export class GameHost implements FrameSource {
   private frame: Frame;
   private bytes: Uint8Array<ArrayBuffer>;
   private game: Game;
-  private clients = new Map<WebSocket, Viewer & { id: string }>();
+  private clients = new Map<WebSocket, Viewer & { id: string; visitor: Visitor }>();
+  /**
+   * The line for the lights: one turn at a time (see line.ts). Off until configured: then the
+   * last choice wins, as before.
+   */
+  readonly line = new Line({ ...DEFAULT_LINE, enabled: false });
+  private turnTimer: NodeJS.Timeout | null = null;
+  /** When the player with the turn lost their connection. */
+  private awaySince: number | null = null;
+  /** When the game of the turn now ended (its board shows), until the next game starts. */
+  private overSince: number | null = null;
   /** The simulated yard for the browsers. */
   private view = new ViewStream();
   /** Where the stage's LEDs go on the devices. */
@@ -131,6 +165,12 @@ export class GameHost implements FrameSource {
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     this.game = idleGame(this.gameStage);
+    this.line.onEndGame = (reason) => this.endGame(reason);
+    this.line.subscribe(() => this.sendStatus(true));
+    this.line.log = log;
+    // The line's timers (a scene's minute, a player who does not tap Play) run with nobody here too.
+    this.turnTimer = setInterval(() => this.checkTurn(), TURN_CHECK_MS);
+    this.turnTimer.unref();
   }
 
   private buildGameStage(): Stage {
@@ -150,13 +190,14 @@ export class GameHost implements FrameSource {
     this.sendStatus(true);
   }
 
-  /** Accepts WebSocket upgrades on the given path. */
-  attach(server: Server, path: string) {
+  /** Accepts WebSocket upgrades on the given path. `identify`: who each browser is (no cookie: a new visitor each time). */
+  attach(server: Server, path: string, identify?: Identify) {
     server.on('upgrade', (req: IncomingMessage, socket, head) => {
       if (!req.url || new URL(req.url, 'http://x').pathname !== path) return;
       // ?frames=deflate: the browser takes compressed frames (see ViewStream).
       const deflate = new URL(req.url, 'http://x').searchParams.get('frames') === 'deflate';
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws, deflate));
+      const who = identify?.(req) ?? null;
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws, deflate, who));
     });
   }
 
@@ -224,6 +265,8 @@ export class GameHost implements FrameSource {
     else this.pipeline.remove(this);
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
+    if (this.turnTimer) clearInterval(this.turnTimer);
+    this.turnTimer = null;
     for (const ws of this.clients.keys()) ws.close();
     this.wss.close();
   }
@@ -239,14 +282,20 @@ export class GameHost implements FrameSource {
    * connection through a proxy can stay half-open after the page closed, and the game would
    * otherwise keep running on the real lights for nobody.
    */
-  private drop(ws: WebSocket, hard = false) {
+  private drop(ws: WebSocket, hard = false, goodbye = false) {
     const client = this.clients.get(ws);
     if (!client || !this.clients.delete(ws)) return;
     this.game.leave?.(client.id);
     // A goodbye closes politely; a browser that stopped answering is cut off.
     if (hard) ws.terminate();
     else if (ws.readyState === ws.OPEN) ws.close(1000);
-    if (this.clients.size === 0) {
+    const holder = this.line.settings.enabled ? this.line.holder() : null;
+    const stillHere = [...this.clients.values()].some((c) => c.visitor.id === client.visitor.id);
+    if (holder && holder === client.visitor.id && !stillHere) {
+      // The player with the turn: a goodbye ends it now. A lost connection (a phone that went to
+      // sleep) keeps it for a little while, paused if nobody else watches (see checkTurn).
+      if (goodbye) this.line.release(holder, 'the player left');
+    } else if (this.clients.size === 0 && !holder) {
       // Nobody is playing: end the game, so the next visitor starts at the game picker.
       // A scene's effects keep playing for the people outside: they take the lights back on
       // the next frame, and devices that play a preset get it back.
@@ -257,8 +306,9 @@ export class GameHost implements FrameSource {
     this.sendStatus(true);
   }
 
-  private connect(ws: WebSocket, deflate = false) {
-    this.clients.set(ws, { id: crypto.randomUUID(), deflate, fresh: true });
+  private connect(ws: WebSocket, deflate = false, who: Visitor | null = null) {
+    const id = crypto.randomUUID();
+    this.clients.set(ws, { id, deflate, fresh: true, visitor: who ?? { id: `c:${id}` } });
     this.alive.add(ws);
     ws.on('pong', () => this.alive.add(ws));
     if (!this.heartbeat) {
@@ -299,24 +349,46 @@ export class GameHost implements FrameSource {
   private onMessage(ws: WebSocket, msg: ClientMessage) {
     const client = this.clients.get(ws);
     if (!client) return;
-    if (msg.type === 'leave') return this.drop(ws);
-    this.lastInput = Date.now();
+    if (msg.type === 'leave') return this.drop(ws, false, true);
+    const who = client.visitor;
+    const line = this.line;
+    const lined = line.settings.enabled;
+    // With the line on, only the player with the turn plays; in a game with sides (Duel), anyone
+    // watching can take the free side.
+    const theirs = !lined || line.holder() === who.id;
+    const mayInput = theirs || !!this.game.playerStatus;
     // A new game (a game started, or a press that starts the next one) is a new run: the last
     // one's score can no longer be named.
     const before = this.game.status().phase;
     if (msg.type === 'start') {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;
-      endRun();
-      this.game = g.create(this.gameStage);
-      this.log(`Game started: ${g.name}`);
+      const asked = line.ask(who, { kind: 'game', game: g.id }, g.name);
+      if (asked.result === 'now') this.startGame(g.id);
+      else if (asked.result === 'full') this.notice(ws, 'The line is full right now. Try again in a few minutes!');
+    } else if (msg.type === 'accept') {
+      const game = line.accept(who.id);
+      if (game) this.startGame(game);
+    } else if (msg.type === 'leaveLine') {
+      line.leave(who.id);
     } else if (msg.type === 'stop') {
+      if (!theirs) return;
       if (this.game.id !== 'idle') this.log('Game stopped');
+      if (lined) line.release(who.id, 'the player stopped');
       this.game = idleGame(this.gameStage);
     } else if (msg.type === 'input' && (msg.action === 'press' || msg.action === 'release')) {
+      if (!mayInput) return;
+      this.lastInput = Date.now();
+      // Someone is waiting and this game is over: the press ends the turn, not a new game.
+      if (lined && theirs && msg.action === 'press' && this.overSince != null && line.waitingCount()) {
+        line.release(who.id, 'the game ended');
+        return;
+      }
       const button = typeof msg.button === 'string' && CONTROL_ID.test(msg.button) && msg.button !== 'main' ? msg.button : undefined;
       this.game.input({ playerId: client.id, action: msg.action, ...(button ? { button } : {}) });
     } else if (msg.type === 'initials' && typeof msg.id === 'number' && typeof msg.initials === 'string') {
+      if (!theirs) return;
+      this.lastInput = Date.now();
       const result = nameScore(msg.id, msg.initials.slice(0, 8));
       if (result === 'ok') {
         this.freshScore = { id: msg.id, until: Date.now() + 60_000 };
@@ -324,10 +396,56 @@ export class GameHost implements FrameSource {
         this.log(`High score named: ${msg.initials.slice(0, 3).toUpperCase()}`);
       } else if (result === 'refused') this.refused.add(client.id);
     } else if (msg.type === 'setting' && typeof msg.id === 'string' && typeof msg.value === 'string' && CONTROL_ID.test(msg.id) && CONTROL_ID.test(msg.value)) {
+      if (!theirs) return;
+      this.lastInput = Date.now();
       this.game.setting?.(msg.id, msg.value);
     }
     if (msg.type === 'input' && SHOWS_BOARD.has(before) && !SHOWS_BOARD.has(this.game.status().phase)) endRun();
     this.sendStatus(true);
+  }
+
+  private startGame(id: string) {
+    const g = GAMES.find((x) => x.id === id)!;
+    endRun();
+    this.game = g.create(this.gameStage);
+    this.lastInput = Date.now();
+    this.overSince = null;
+    this.awaySince = null;
+    this.log(`Game started: ${g.name}`);
+  }
+
+  private notice(ws: WebSocket, text: string) {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'notice', text }));
+  }
+
+  /**
+   * Ends the turn of the player with the lights when it is over: they left (and did not come
+   * back), stopped playing, or someone is waiting and their game ended.
+   */
+  private checkTurn() {
+    const line = this.line;
+    line.tick();
+    const holder = line.settings.enabled ? line.holder() : null;
+    if (!holder) {
+      this.awaySince = this.overSince = null;
+      return;
+    }
+    const now = Date.now();
+    // The game is gone (the layout changed, a scene took the lights): so is the turn.
+    if (this.game.id === 'idle') return line.release(holder, 'the game ended');
+    if ([...this.clients.values()].some((c) => c.visitor.id === holder)) this.awaySince = null;
+    else if (now - (this.awaySince ??= now) > AWAY_MS) return line.release(holder, 'the player left');
+    const waiting = line.waitingCount() > 0;
+    if (now - this.lastInput > (waiting ? IDLE_WAITING_MS : IDLE_AFTER_MS)) return line.release(holder, 'nobody played');
+    const phase = this.game.status().phase;
+    if (ENDED.has(phase)) this.overSince ??= now;
+    else if (!SHOWS_BOARD.has(phase)) this.overSince = null;
+    if (waiting && this.overSince != null) {
+      const board = this.game.scoreBoard?.();
+      const naming = board ? !!pendingInitials(board.key) : false;
+      const t = now - this.overSince;
+      if ((!naming && t > BOARD_MS) || t > NAMING_MS) line.release(holder, 'the game ended');
+    }
   }
 
   // ---------- Frames ----------
@@ -397,16 +515,25 @@ export class GameHost implements FrameSource {
     this.sendStatus(true);
   }
 
-  /** Sends each browser its status: the game's, with that player's own side and button on top. */
+  /**
+   * Sends each browser its status: the game's, with that player's own side and button on top,
+   * and their place in the line.
+   */
   private sendStatus(force: boolean) {
     const base = this.status();
-    const shared = this.game.playerStatus ? null : JSON.stringify({ type: 'status', status: base });
+    const lined = this.line.settings.enabled;
+    const holder = this.line.holder();
+    const waiting = this.line.waitingCount() > 0;
     for (const [ws, client] of this.clients) {
       if (ws.readyState !== ws.OPEN) continue;
       const own = this.game.playerStatus?.(client.id);
+      const theirs = !lined || holder === client.visitor.id;
       // Initials this phone tried that are not allowed: it asks again.
       const refused = base.enterInitials && this.refused.has(client.id) ? { enterInitials: { ...base.enterInitials, refused: true } } : null;
-      const s = !own && !refused && shared ? shared : JSON.stringify({ type: 'status', status: { ...base, ...own, ...refused } });
+      // Someone waits and the game is over: the button ends the turn.
+      const done = lined && theirs && waiting && this.overSince != null ? { button: 'DONE', tone: 'calm' as const } : null;
+      const canPlay = theirs || !!this.game.playerStatus;
+      const s = JSON.stringify({ type: 'status', status: { ...base, ...own, ...refused, ...done, canPlay, ...(theirs ? {} : { enterInitials: undefined }), line: this.line.view(client.visitor.id) } });
       if (!force && s === this.lastStatus.get(ws)) continue;
       this.lastStatus.set(ws, s);
       ws.send(s);

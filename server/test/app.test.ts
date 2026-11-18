@@ -38,8 +38,15 @@ async function setup() {
       headers: { host: 'lights.lan', ...(body ? { 'content-type': 'application/json' } : {}), ...(cookie ? { cookie } : {}), ...extra },
       body: body ? JSON.stringify(body) : undefined
     });
-    const set = res.headers.get('set-cookie');
-    if (set) cookie = set.split(';')[0];
+    // A small cookie jar: the session and the visitor id.
+    const jar = new Map(cookie ? cookie.split('; ').map((p) => p.split('=') as [string, string]) : []);
+    for (const set of res.headers.getSetCookie()) {
+      const [kv, ...attrs] = set.split(';');
+      const [k, v] = kv.split('=');
+      if (attrs.some((a) => /max-age=0/i.test(a.trim())) || !v) jar.delete(k);
+      else jar.set(k, v);
+    }
+    cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
     const text = await res.text();
     return { status: res.status, json: text ? JSON.parse(text) : null };
   };

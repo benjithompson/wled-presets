@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.ts';
-import { createAuth } from './auth.ts';
+import { COOKIE, createAuth } from './auth.ts';
 import { loadConfig } from './config.ts';
 import { openDatabase } from './db.ts';
 import { useScoreStore } from './game/kit.ts';
@@ -8,7 +8,8 @@ import { databaseScores } from './scoreStore.ts';
 import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
-import { migrateV1Settings, readGameArea, readSettings } from './settings.ts';
+import { migrateV1Settings, readGameArea, readLineSettings, readSettings } from './settings.ts';
+import { upgradeVisitor } from './visitor.ts';
 import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
 import { readLayout } from './layoutStore.ts';
@@ -42,6 +43,8 @@ const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout'
 useScoreStore(databaseScores(db.raw));
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), pipeline);
 host.setGameArea(readGameArea(db));
+// One turn at a time with the lights: everyone else waits in line.
+host.line.configure(readLineSettings(db));
 // Scenes with effects: the game host draws them and sends them to the lights.
 lights.setEffectPlayer((show) => host.playShow(show));
 const app = createApp({ config, db, bus, lights, host, preview });
@@ -49,7 +52,8 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);
 });
 
-host.attach(server as unknown as Server, '/api/play');
+const auth = createAuth(db, { secureCookie: config.secureCookie });
+host.attach(server as unknown as Server, '/api/play', (req) => upgradeVisitor(req, { trustProxy: config.trustProxy, sessionCookie: COOKIE, isAdmin: (t) => !!auth.userForToken(t) }));
 lights.start(config.statusIntervalMs);
 // A scene with effects that was playing before a restart plays again.
 lights.resumeEffects();

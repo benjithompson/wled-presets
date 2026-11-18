@@ -41,8 +41,15 @@ export function createAuth(db: Db, opts: { secureCookie: boolean }) {
     });
   }
 
+  /** The user of a session token (a WebSocket's cookie), without renewing the session. */
+  function userForToken(token: string) {
+    const s = db.getSession(hash(token));
+    return s && s.expiresAt >= Date.now() ? db.getUserById(s.userId) : null;
+  }
+
   return {
     currentUser,
+    userForToken,
 
     async verify(username: string, password: string) {
       const user = db.getUserByName(username.trim());

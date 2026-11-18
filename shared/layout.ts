@@ -2,6 +2,7 @@
 // the house, and where each LED of each object sits. Shared by the server (games) and the
 // web client (editor and simulator), so both agree on every pixel's position.
 
+import type { LineView } from './line.ts';
 import type { EffectSettings } from './effects.ts';
 import type { LightType } from './lights.ts';
 
@@ -1194,6 +1195,12 @@ export const CONTROL_ID = /^[a-z0-9]{1,16}$/;
 
 export interface GameStatus {
   game: string | null;
+  /**
+   * False: someone else has the turn, so this phone watches (see LineView). Not set: it plays.
+   */
+  canPlay?: boolean;
+  /** This phone's view of the line for the lights (who plays now, its place, its turn). */
+  line?: LineView;
   phase: string;
   /** Short text for the play screen, for example "Tap to start!". */
   message: string;
