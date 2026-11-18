@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type React from 'react';
 import { AERIAL_OPACITY, buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
@@ -12,6 +12,36 @@ export function viewSize(layout: Layout, side: ViewSide, zRange: [number, number
   return side === 'front' ? { w: layout.width, h: layout.height } : { w: layout.width, h: zRange[1] - zRange[0] };
 }
 
+/**
+ * What a view shows when nothing else is asked for: the yard, grown to take in every LED (a
+ * roof peak above the picture, a line past its edge) with room for the glow of the outer bulbs.
+ */
+export function fitBox(layout: Layout, side: ViewSide, zRange: [number, number]): Box {
+  const size = viewSize(layout, side, zRange);
+  const p = buildStage(layout).positions3;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let i = 0; i < p.length; i += 3) {
+    const u = p[i];
+    const v = side === 'front' ? p[i + 1] : p[i + 2] - zRange[0];
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    x0 = Math.min(x0, u);
+    x1 = Math.max(x1, u);
+    y0 = Math.min(y0, v);
+    y1 = Math.max(y1, v);
+  }
+  if (x0 > x1) return { x: 0, y: 0, w: size.w, h: size.h };
+  // Room for the glow of the outermost bulbs.
+  const pad = 0.025 * Math.max(size.w, size.h);
+  const bx0 = Math.min(0, x0 - pad);
+  const by0 = Math.min(0, y0 - pad);
+  const bx1 = Math.max(size.w, x1 + pad);
+  const by1 = Math.max(size.h, y1 + pad);
+  return { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 };
+}
+
 /** A point in view coordinates (u to the right, v down). */
 export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: number } {
   return side === 'front' ? { u: p.x, v: p.y } : { u: p.x, v: (p.z ?? 0) - zMin };
@@ -22,8 +52,8 @@ export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: 
  * object, and every LED as a glowing bulb in the color of the current frame.
  * `getFrame` is called on every animation frame and returns RGB bytes, one triple per LED.
  * The top view shows the front wall of the house instead, over the picture from above
- * (Layout.aerial) when there is one. `grid` draws a grid
- * (1 m, or 5 ft) from the left edge and from the ground (front) or the front wall (top).
+ * (Layout.aerial) when there is one. `grid` draws a grid (every `gridStep` layout units, by
+ * default 1 m or 5 ft) from the left edge and from the ground (front) or the front wall (top).
  *
  * By default the view keeps the shape of the yard and shows all of it. With `fill`, it fills
  * its parent, and `viewBox` (view units) sets what it shows: a CAD camera that pans and zooms.
@@ -40,6 +70,8 @@ export function YardView({
   fill = false,
   viewBox,
   grid,
+  gridStep: gridStepProp,
+  gridMajor = 5,
   onPick,
   onHover
 }: {
@@ -60,6 +92,10 @@ export function YardView({
   viewBox?: Box;
   /** Draw a grid. Default: in the top view only. */
   grid?: boolean;
+  /** Layout units between grid lines. Default: 1 m, or 5 ft. */
+  gridStep?: number;
+  /** Every this many grid lines, one is brighter. */
+  gridMajor?: number;
   /** A click on (or near) an LED: its object. A click on nothing: null. `add`: Ctrl, ⌘ or Shift was down. */
   onPick?: (id: string | null, add: boolean) => void;
   /** The object under the pointer (null: none), and where the pointer is in the view (CSS pixels). */
@@ -67,6 +103,8 @@ export function YardView({
 }) {
   const [zMin, zMax] = zRange;
   const size = viewSize(layout, side, zRange);
+  // Everything always fits: the default box takes in every LED, even outside the yard.
+  const fit = useMemo(() => fitBox(layout, side, [zMin, zMax]), [layout, side, zMin, zMax]);
   const canvas = useRef<HTMLCanvasElement>(null);
   const getFrameRef = useRef(getFrame);
   getFrameRef.current = getFrame;
@@ -75,10 +113,12 @@ export function YardView({
   /** What the last frame drew, to find the LED under the pointer. */
   const hitRef = useRef<{ stage: ReturnType<typeof buildStage>; pos: Float32Array; vb: Box; w: number; h: number } | null>(null);
   // Read on every frame, so panning and zooming do not restart the drawing loop.
-  const boxRef = useRef<Box>({ x: 0, y: 0, w: size.w, h: size.h });
-  boxRef.current = viewBox ?? { x: 0, y: 0, w: size.w, h: size.h };
+  const boxRef = useRef<Box>(fit);
+  boxRef.current = viewBox ?? fit;
   const gridRef = useRef(grid ?? side === 'top');
   gridRef.current = grid ?? side === 'top';
+  const gridSizeRef = useRef({ step: gridStepProp, major: gridMajor });
+  gridSizeRef.current = { step: gridStepProp, major: gridMajor };
 
   useEffect(() => {
     const cv = canvas.current;
@@ -96,7 +136,7 @@ export function YardView({
     }
     const view = (p: Point) => toView(p, side, zMin);
     const scale = layoutScale(layout);
-    const gridStep = layout.units === 'm' ? scale : (scale * 5) / FEET_PER_METER;
+    const defaultGridStep = layout.units === 'm' ? scale : (scale * 5) / FEET_PER_METER;
     // Grid lines count from the left edge, and from the ground (front) or the front wall (top).
     const gridV0 = top ? -zMin : layoutGround(layout);
     const bloom = document.createElement('canvas');
@@ -177,11 +217,13 @@ export function YardView({
         ctx.fillRect(0, 0, w, Math.max(0, Y(-zMin)));
       }
       if (gridRef.current) {
-        // Grid lines; every fifth line is brighter. Lines closer than 6 pixels are left out.
+        // Grid lines; every `gridMajor`th line is brighter. Lines closer than 6 pixels are left out.
         const u0 = vb.x;
         const v0 = vb.y;
+        const { step: setStep, major: every } = gridSizeRef.current;
+        const gridStep = setStep && setStep > 0 ? setStep : defaultGridStep;
         const lines = (major: boolean) => {
-          const step = gridStep * (major ? 5 : 1);
+          const step = gridStep * (major ? Math.max(1, Math.round(every)) : 1);
           if (step * sx < 6 * dpr) return;
           ctx.beginPath();
           for (let u = Math.ceil(u0 / step) * step; u <= u0 + vb.w; u += step) (ctx.moveTo(X(u), 0), ctx.lineTo(X(u), h));
@@ -351,7 +393,7 @@ export function YardView({
   return (
     <div
       className={cn('relative mx-auto w-full overflow-hidden rounded-2xl bg-[#05070f] ring-1 ring-white/10', className)}
-      style={{ aspectRatio: `${size.w} / ${size.h}`, maxWidth: maxHeight ? `calc(${maxHeight} * ${size.w / size.h})` : undefined }}
+      style={{ aspectRatio: `${fit.w} / ${fit.h}`, maxWidth: maxHeight ? `calc(${maxHeight} * ${fit.w / fit.h})` : undefined }}
     >
       <canvas ref={canvas} className={cn('absolute inset-0 h-full w-full', onPick && 'cursor-pointer')} {...pointer} />
       {children}
