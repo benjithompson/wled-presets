@@ -63,6 +63,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         res.end(JSON.stringify(data));
       };
       if (req.url === '/json/info') return json({ ver: '0.15.0', name, mac: `aabbcc${port}`, arch: 'esp32', leds: { count: ledCount }, wifi: { signal: 80 }, udpport: actualPort, ddpport: ddpPort, live: realtime.at > 0 && Date.now() - realtime.at < 2500 });
+      if (req.url === '/json/cfg') return json({ hw: { led: { ins: [{ start: 0, len: ledCount, type: 22, pin: [2] }] } } });
       if (req.url === '/presets.json') return json(presets);
       if (req.url === '/json/state' && req.method === 'POST') {
         // Individual LEDs ("i": hex colors from LED 0), as the HTTP fallback sends them.

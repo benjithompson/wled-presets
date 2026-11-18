@@ -72,6 +72,15 @@ export const wled = {
     return { ok: true, status: r.status, data: pickInfo(r.data) };
   },
 
+  /** The LED outputs (see DeviceInfo.outputs), from the device's settings. */
+  async outputs(ep: Endpoint, timeoutMs = 3000): Promise<FetchResult<NonNullable<DeviceInfo['outputs']>>> {
+    const r = await requestJson<{ hw?: { led?: { ins?: { len?: unknown; type?: unknown }[] } } }>(`${baseUrl(ep)}/json/cfg`, { timeoutMs });
+    if (!r.ok) return r;
+    const ins = r.data?.hw?.led?.ins;
+    if (!Array.isArray(ins)) return { ok: false, status: r.status, error: 'No LED outputs in the settings' };
+    return { ok: true, status: r.status, data: ins.filter((o) => typeof o?.len === 'number' && typeof o?.type === 'number').map((o) => ({ len: o.len as number, type: o.type as number })) };
+  },
+
   setState(ep: Endpoint, state: Record<string, unknown>) {
     return requestJson(`${baseUrl(ep)}/json/state`, { method: 'POST', body: state, timeoutMs: 2000 });
   },

@@ -303,6 +303,54 @@ describe('DDP', () => {
   });
 });
 
+describe('how fast a device can show frames', () => {
+  it('follows the longest one-wire output, its LED type, and leaves fast outputs alone', async () => {
+    const { maxFps } = await import('../src/ledTiming.ts');
+    // 1,500 WS2812B LEDs on one output: 45 ms of data a frame.
+    expect(maxFps({ outputs: [{ len: 1500, type: 22 }] })).toBeCloseTo(22, 0);
+    // The same LEDs on four outputs side by side: no limit below the pipeline's 60.
+    expect(maxFps({ outputs: [375, 375, 375, 375].map((len) => ({ len, type: 22 })) })).toBe(60);
+    // RGBW LEDs carry a third more bits; WS2811 at 400 kHz takes twice as long.
+    expect(maxFps({ outputs: [{ len: 1000, type: 30 }] })).toBeLessThan(maxFps({ outputs: [{ len: 1000, type: 22 }] }));
+    expect(maxFps({ outputs: [{ len: 500, type: 24 }] })).toBeCloseTo(maxFps({ outputs: [{ len: 1000, type: 22 }] }), 0);
+    // Two-wire SPI strips (APA102) and network outputs are not limited this way.
+    expect(maxFps({ outputs: [{ len: 3000, type: 51 }] })).toBe(60);
+    // Outputs not known: all LEDs on one output.
+    expect(maxFps({ leds: { count: 1000 } })).toBeCloseTo(32.9, 0);
+    expect(maxFps(null)).toBe(60);
+  });
+
+  it('reads the outputs from the device’s settings', async () => {
+    const { wled } = await import('../src/wled.ts');
+    const mock = await startMockWled(0, 'Roof', 600);
+    try {
+      expect(await wled.outputs({ host: '127.0.0.1', port: mock.port })).toMatchObject({ ok: true, data: [{ len: 600, type: 22 }] });
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('sends a long strip only the frames it can show, the newest each time', async () => {
+    const mock = await startMockWled(0, 'Long', 1500);
+    await new Promise((r) => setTimeout(r, 50));
+    const sender = new LightSender();
+    const device = { id: 'd', name: 'Long', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 1500 }, outputs: [{ len: 1500, type: 22 }], udpport: mock.port, ddpport: mock.ddpPort() } };
+    try {
+      // 30 different frames at 60 a second: a 1,500-LED output shows about 22 of them a second.
+      for (let i = 0; i < 30; i++) {
+        sender.send(device, new Uint8Array(1500 * 3).fill(10 + i));
+        await new Promise((r) => setTimeout(r, 1000 / 60));
+      }
+      await new Promise((r) => setTimeout(r, 60));
+      expect(mock.realtime.ddpFrames).toBeGreaterThanOrEqual(8);
+      expect(mock.realtime.ddpFrames).toBeLessThanOrEqual(13);
+    } finally {
+      sender.close();
+      await mock.close();
+    }
+  });
+});
+
 describe('the frame loop', () => {
   it('holds 60 frames a second on average, where setInterval rounds to whole milliseconds', async () => {
     const { FrameLoop } = await import('../src/frameLoop.ts');

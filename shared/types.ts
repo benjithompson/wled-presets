@@ -29,6 +29,11 @@ export interface DeviceInfo {
   /** Not in real WLED (it always uses 4048): the DDP port of a fake device in development. */
   ddpport?: number;
   wifi?: { signal?: number };
+  /**
+   * Not in /json/info: the device's LED outputs, from /json/cfg (LEDs on each and their LED
+   * type, as WLED numbers it). They set how fast the device can show frames.
+   */
+  outputs?: { len: number; type: number }[];
 }
 
 /** A preset stored on a WLED device (from /presets.json). */

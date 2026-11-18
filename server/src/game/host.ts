@@ -13,6 +13,7 @@ import { LightSender } from '../lightSender.ts';
 import { Frame } from './frame.ts';
 import { idleGame } from './idle.ts';
 import { GameOutput } from './output.ts';
+import { ViewStream, type Viewer } from './viewStream.ts';
 import { overflowGame } from './overflow.ts';
 import type { Game, GameFactory } from './types.ts';
 
@@ -48,7 +49,7 @@ const HEARTBEAT_MS = 4000;
 
 /**
  * Runs games and scenes on the stage. Browsers connect over a WebSocket to watch the simulated
- * yard (binary RGB frames, one byte triple per LED) and to send input. It is a source of the
+ * yard (binary RGB frames, one byte triple per LED, see ViewStream) and to send input. It is a source of the
  * FramePipeline, which ticks it and sends its frames to the real lights: a running game (unless
  * the debug switch is off), or else a scene's effects.
  */
@@ -64,7 +65,9 @@ export class GameHost implements FrameSource {
   private frame: Frame;
   private bytes: Uint8Array<ArrayBuffer>;
   private game: Game;
-  private clients = new Map<WebSocket, { id: string }>();
+  private clients = new Map<WebSocket, Viewer & { id: string }>();
+  /** The simulated yard for the browsers. */
+  private view = new ViewStream();
   /** Where the stage's LEDs go on the devices. */
   private maps: DeviceMap[] = [];
   private pipeline: FramePipeline;
@@ -127,7 +130,9 @@ export class GameHost implements FrameSource {
   attach(server: Server, path: string) {
     server.on('upgrade', (req: IncomingMessage, socket, head) => {
       if (!req.url || new URL(req.url, 'http://x').pathname !== path) return;
-      this.wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws));
+      // ?frames=deflate: the browser takes compressed frames (see ViewStream).
+      const deflate = new URL(req.url, 'http://x').searchParams.get('frames') === 'deflate';
+      this.wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws, deflate));
     });
   }
 
@@ -228,8 +233,8 @@ export class GameHost implements FrameSource {
     this.sendStatus(true);
   }
 
-  private connect(ws: WebSocket) {
-    this.clients.set(ws, { id: crypto.randomUUID() });
+  private connect(ws: WebSocket, deflate = false) {
+    this.clients.set(ws, { id: crypto.randomUUID(), deflate, fresh: true });
     this.alive.add(ws);
     ws.on('pong', () => this.alive.add(ws));
     if (!this.heartbeat) {
@@ -306,10 +311,7 @@ export class GameHost implements FrameSource {
       for (const i of this.outside) d[i * 3] = d[i * 3 + 1] = d[i * 3 + 2] = 0;
     }
     this.frame.toBytes(this.bytes);
-    for (const ws of this.clients.keys()) {
-      // Skip a frame for a slow client instead of queueing a backlog.
-      if (ws.readyState === ws.OPEN && ws.bufferedAmount < 64 * 1024) ws.send(this.bytes);
-    }
+    this.view.push(this.bytes, this.clients);
     this.sendStatus(false);
     // A scene goes to the devices that play its effects, at full brightness (each effect has
     // its own); the other devices keep their preset. A game goes everywhere, if switched on.
