@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { buildStage, sampleLayout, segmentLeds, type GameStatus } from '../../shared/layout.ts';
+import { buildStage, GAME_UNSEEN_RGB, paintGameArea, roofTrack, sampleLayout, segmentLeds, type Fixture, type GameStatus, type Layout, type Point } from '../../shared/layout.ts';
+import { catcherGame } from '../src/game/catcher.ts';
 import { cascadeGame } from '../src/game/cascade.ts';
 import { duelGame } from '../src/game/duel.ts';
 import { Frame } from '../src/game/frame.ts';
@@ -53,6 +54,107 @@ describe('the yard as games see it', () => {
     const lit = (from: number, count: number) => Array.from({ length: count }, (_, i) => frame.data[(from + i) * 3]).filter((v) => v > 0).length;
     expect(lit(bush.offset, bush.count)).toBeGreaterThan(10);
     expect(lit(yard.bushes[2].offset, yard.bushes[2].count)).toBe(0);
+  });
+});
+
+describe('the roof as it looks from the street', () => {
+  /** A layout with one roof line through these points (z: toward the street), 3 LEDs per 10 units. */
+  function roofLayout(points: Point[]): Layout {
+    const layout = sampleLayout();
+    let length = 0;
+    for (let i = 1; i < points.length; i++) length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y, (points[i].z ?? 0) - (points[i - 1].z ?? 0));
+    const roof: Fixture = { ...layout.fixtures[0], points, pixels: Math.round(length * 0.3) };
+    layout.fixtures = [roof, ...layout.fixtures.slice(1)];
+    return layout;
+  }
+  /** The roof LEDs that show from the street, and the ones that do not. */
+  function split(stage: ReturnType<typeof buildStage>) {
+    const t = roofTrack(stage);
+    const seen = Array.from(t.leds).filter((_, k) => t.shows[k] > 0.5);
+    const hidden = Array.from(t.leds).filter((_, k) => t.shows[k] === 0);
+    return { t, seen, hidden };
+  }
+
+  it('passes over a stretch that runs back along the side of the house, and keeps it dark', () => {
+    // Along the front, then 6 m straight back along the right side, then along the back.
+    const stage = buildStage(roofLayout([{ x: 200, y: 470 }, { x: 1000, y: 470 }, { x: 1000, y: 470, z: -600 }, { x: 200, y: 470, z: -600 }]));
+    const { t, hidden } = split(stage);
+    const roof = stage.fixtures[0];
+    // The track is as long as the front: the side and the back (behind the front) are hidden.
+    expect(t.n).toBeGreaterThan(235);
+    expect(t.n).toBeLessThan(250);
+    expect(hidden.length).toBeGreaterThan(roof.count * 0.6);
+    // Along the track, the front-view x grows evenly.
+    for (let k = 0; k < t.leds.length; k++) {
+      if (t.shows[k] < 1) continue;
+      expect(Math.abs(stage.positions[t.leds[k] * 2] - (200 + (t.at[k] / (t.n - 1)) * 800))).toBeLessThan(6);
+    }
+    // No game light reaches the hidden LEDs: not the roof's own, not the light through the yard.
+    const yard = new Yard(stage);
+    const frame = new Frame(stage.pixelCount);
+    yard.begin(frame);
+    for (let p = 0; p < yard.roof.n; p += 0.5) yard.roofSplat(p, [1, 1, 1]);
+    for (let p = 0; p < yard.roof.n; p++) yard.roofAt(p, [1, 1, 1]);
+    yard.wash([1, 1, 1]);
+    yard.glow(1000, 470, 200, [1, 1, 1]);
+    yard.ring(1000, 470, 30, 20, [1, 1, 1]);
+    for (const i of hidden) expect(frame.data[i * 3]).toBe(0);
+  });
+
+  it('moves evenly across a stretch at an angle to the street, which looks shorter', () => {
+    // The middle stretch turns 60° away from the street: 3 m long, 1.5 m wide from the front.
+    const c = Math.cos(Math.PI / 3);
+    const s = Math.sin(Math.PI / 3);
+    const stage = buildStage(roofLayout([{ x: 200, y: 470 }, { x: 500, y: 470 }, { x: 500 + 300 * c, y: 470, z: -300 * s }, { x: 950 - 300 * (1 - c), y: 470, z: -300 * s }]));
+    const { t, hidden } = split(stage);
+    expect(hidden).toHaveLength(0);
+    const width = 300 + 300 * c + 300 - 300 * (1 - c);
+    for (let k = 0; k < t.leds.length; k++) expect(Math.abs(stage.positions[t.leds[k] * 2] - (200 + (t.at[k] / (t.n - 1)) * width))).toBeLessThan(6);
+    // Fewer steps than LEDs: the turned stretch takes half its LEDs' worth.
+    expect(t.n).toBeLessThan(t.leds.length * 0.9);
+  });
+
+  it('sends the comet across the front at an even speed', () => {
+    const stage = buildStage(roofLayout([{ x: 200, y: 470 }, { x: 600, y: 470 }, { x: 600, y: 470, z: -400 }, { x: 600, y: 300, z: -400 }, { x: 1000, y: 300, z: -400 }]));
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const game = catcherGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    const { t } = split(stage);
+    press(game);
+    // Where the comet's head is, as seen from the street, each frame (the brightest roof LED in
+    // red: the comet is blue-white, the gate green), until it has gone past the side stretch and
+    // up the rake behind it.
+    const heads: { x: number; y: number }[] = [];
+    for (let f = 0; f < 140; f++) {
+      game.update(1 / 60, frame);
+      let best = -1;
+      let at = 0;
+      for (const i of t.leds) {
+        const v = frame.data[i * 3];
+        if (v > best) {
+          best = v;
+          at = i;
+        }
+      }
+      heads.push({ x: stage.positions[at * 2], y: stage.positions[at * 2 + 1] });
+    }
+    expect(heads.at(-1)!.y).toBeLessThan(300.5);
+    expect(heads.at(-1)!.x).toBeGreaterThan(620);
+    // It moves about the same distance across the front every frame: it does not stop at the
+    // corner while it runs through the LEDs that go back along the side.
+    const window = 6;
+    const moves = heads.slice(window).map((h, i) => Math.hypot(h.x - heads[i].x, h.y - heads[i].y));
+    const mid = [...moves].sort((a, b) => a - b)[moves.length >> 1];
+    expect(Math.min(...moves)).toBeGreaterThan(mid * 0.6);
+    expect(Math.max(...moves)).toBeLessThan(mid * 1.4);
+  });
+
+  it('shows the hidden stretch on the Games page in its own color', () => {
+    const layout = roofLayout([{ x: 200, y: 470 }, { x: 1000, y: 470 }, { x: 1000, y: 470, z: -600 }]);
+    const colors = new Map<string, number>();
+    paintGameArea(layout, null, null, false, (fi, _i, rgb) => fi === 0 && colors.set(rgb.join(), (colors.get(rgb.join()) ?? 0) + 1));
+    const unseen = GAME_UNSEEN_RGB.map((v) => Math.round(v * 0.55)).join();
+    expect(colors.get(unseen)).toBeGreaterThan(100);
   });
 });
 

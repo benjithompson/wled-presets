@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Gamepad2, Radio, RotateCcw, Save } from 'lucide-react';
 import { toast } from 'sonner';
-import { activeLeds, buildStage, editorPulse, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, isLine, paintGameArea, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
+import { activeLeds, buildStage, editorPulse, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofShows, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
 import { Badge, Button, Card, CardHeader, Empty, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
@@ -100,12 +100,19 @@ export function GamesPage() {
   const inGame = (f: Fixture) => gameLeds(f, area).reduce((n, v) => n + v, 0);
   const total = fixtures.reduce((n, f) => n + activeLeds(f).reduce((m, v) => m + v, 0), 0);
   const used = fixtures.reduce((n, f) => n + inGame(f), 0);
+  // Roof LEDs that cannot be seen from the street: games pass over them on their own.
+  const unseen = useMemo(() => {
+    if (!layout) return 0;
+    let n = 0;
+    for (const shows of roofShows(layout, area).values()) for (const v of shows) if (v < 0.5) n++;
+    return n;
+  }, [layout, area]);
 
   return (
     <>
       <PageHeader
         title="Games"
-        description="Choose the lights that games play on. Leave out lights that cannot be seen, for example around a corner of the house: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light."
+        description="Choose the lights that games play on. Games follow the roof as it looks from the street: where it runs back along the side of the house or behind another part of the roof, they pass over it and keep it dark, so things move evenly across the front. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light."
         actions={
           <>
             <Button onClick={() => setOnLights((v) => !v)} title="Show this picture on the real lights, so you can see which lights are in">
@@ -148,6 +155,12 @@ export function GamesPage() {
                 <span className="size-2.5 rounded-full" style={{ background: css(GAME_OUT_RGB.map((v) => v * 2.5) as [number, number, number]) }} />
                 <b className="font-medium text-stone-800 dark:text-stone-200">Left out</b> stays dark in games
               </span>
+              {unseen > 0 && (
+                <span className="inline-flex items-center gap-1.5" title="Found from the layout's 3-D positions: roof LEDs that run away from the street, or sit behind other roof LEDs as seen from the front">
+                  <span className="size-2.5 rounded-full" style={{ background: css(GAME_UNSEEN_RGB.map((v) => v * 2.5) as [number, number, number]) }} />
+                  <b className="font-medium text-stone-800 dark:text-stone-200">Not seen from the street</b> {unseen} roof lights games pass over
+                </span>
+              )}
               <span className="ml-auto tabular-nums">
                 {used} of {total} lights in games
                 {onLights ? ` · on ${lightNames.length ? lightNames.join(', ') : 'no device (give objects a device in the layout)'}` : ''}

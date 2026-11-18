@@ -283,6 +283,8 @@ function bush(id: string, name: string, x: number, y: number, radius: number): F
 /** Hues for objects in the editor, in list order. */
 export const FIXTURE_HUES = [0.08, 0.55, 0.33, 0.85, 0.15, 0.7, 0.0, 0.45];
 
+const mixRgb = (a: [number, number, number], b: [number, number, number], t: number): [number, number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
 /** RGB bytes for an HSV color. */
 export function hsvBytes(h: number, v = 1): [number, number, number] {
   const f = (n: number) => {
@@ -934,6 +936,123 @@ function roofPath(layout: Layout, stageFixtures: StageFixture[], active: Uint8Ar
   return { path: Int32Array.from(path), corners: [...new Set(corners)].sort((a, b) => a - b) };
 }
 
+/**
+ * The roof as games play on it: a track measured in the front view (as the house looks from the
+ * street), not in LEDs. Something that moves along it at a steady speed moves evenly across the
+ * front of the house, whatever the LEDs do behind it:
+ *   - where the roof line runs away from the street (back along the side of the house), its LEDs
+ *     pile up on one spot of the front view: the track passes them in a moment, and they dim,
+ *     dark when they run straight back;
+ *   - where it runs behind other roof LEDs (seen from the street, at the same spot but further
+ *     back), the track skips it and its LEDs stay dark;
+ *   - a stretch at an angle to the street is shorter on the track, as it looks shorter.
+ * So hidden stretches need no leaving out on the Games page.
+ */
+export interface RoofTrack {
+  /** The track's length, in steps. A step is about one LED of a stretch that faces the street. */
+  n: number;
+  /** Stage index of each roof LED, in strip order (the stage's roofPath). */
+  leds: Int32Array;
+  /** Per roof LED: its place on the track, in steps (0 to n - 1, never decreasing). */
+  at: Float32Array;
+  /** Per roof LED: how much of it shows from the street, 0 (hidden) to 1. */
+  shows: Float32Array;
+  /** Per step: the point of the front view. */
+  x: Float32Array;
+  y: Float32Array;
+  /** Steps at the corners, and where one roof object (or a left-out stretch) joins the next. */
+  corners: number[];
+}
+
+/** Front-view length per real length below which a stretch counts as edge-on (dark)... */
+const EDGE_ON = 0.2;
+/** ...and above which it shows fully. */
+const FACING = 0.5;
+
+const median = (a: number[]) => {
+  if (!a.length) return 0;
+  const s = [...a].sort((p, q) => p - q);
+  return s[Math.floor(s.length / 2)];
+};
+
+export function roofTrack(stage: Pick<Stage, 'roofPath' | 'roofCorners' | 'positions3' | 'scale'>): RoofTrack {
+  const leds = stage.roofPath;
+  const m = leds.length;
+  const P = stage.positions3;
+  const X = (k: number) => P[leds[k] * 3];
+  const Y = (k: number) => P[leds[k] * 3 + 1];
+  const Z = (k: number) => P[leds[k] * 3 + 2];
+  // Between each LED and the next: the front-view distance and the real one.
+  const front = new Float32Array(Math.max(0, m - 1));
+  const real = new Float32Array(Math.max(0, m - 1));
+  for (let k = 0; k < m - 1; k++) {
+    front[k] = Math.hypot(X(k + 1) - X(k), Y(k + 1) - Y(k));
+    real[k] = Math.hypot(front[k], Z(k + 1) - Z(k));
+  }
+  const spacing = median(Array.from(real).filter((d) => d > 1e-6)) || 1;
+  // A jump much longer than an LED's spacing is a join (between objects, or over a left-out stretch).
+  const joined = (k: number) => real[k] > spacing * 3 || real[k] <= 1e-6;
+  // How much each LED faces the street: the best of the two stretches beside it, so a corner
+  // between a front stretch and a side stretch still shows.
+  const shows = new Float32Array(m);
+  for (let k = 0; k < m; k++) {
+    let facing = -1;
+    for (const p of [k - 1, k]) if (p >= 0 && p < m - 1 && !joined(p)) facing = Math.max(facing, front[p] / real[p]);
+    shows[k] = facing < 0 ? 1 : Math.max(0, Math.min(1, (facing - EDGE_ON) / (FACING - EDGE_ON)));
+  }
+  // The step: the front-view spacing of LEDs on stretches that face the street.
+  const faced: number[] = [];
+  for (let k = 0; k < m - 1; k++) if (!joined(k) && front[k] >= real[k] * 0.7) faced.push(front[k]);
+  const step = median(faced) || median(Array.from(front).filter((d) => d > 1e-6)) || spacing;
+  // Behind: another LED that shows sits at the same spot of the front view, nearer the street.
+  const near = step * 0.9;
+  const depth = (stage.scale || 1) * 0.3;
+  const grid = new Map<string, number[]>();
+  const cell = (x: number, y: number) => `${Math.floor(x / near)},${Math.floor(y / near)}`;
+  for (let k = 0; k < m; k++) {
+    if (shows[k] < 0.5) continue;
+    const key = cell(X(k), Y(k));
+    const list = grid.get(key);
+    if (list) list.push(k);
+    else grid.set(key, [k]);
+  }
+  const behind = new Uint8Array(m);
+  for (let k = 0; k < m; k++) {
+    const cx = Math.floor(X(k) / near);
+    const cy = Math.floor(Y(k) / near);
+    search: for (let i = cx - 1; i <= cx + 1; i++) {
+      for (let j = cy - 1; j <= cy + 1; j++) {
+        for (const o of grid.get(`${i},${j}`) ?? []) {
+          if (Z(o) > Z(k) + depth && (X(o) - X(k)) ** 2 + (Y(o) - Y(k)) ** 2 < near * near) {
+            behind[k] = 1;
+            break search;
+          }
+        }
+      }
+    }
+  }
+  for (let k = 0; k < m; k++) if (behind[k]) shows[k] = 0;
+  // Places on the track: front-view length, where both ends show (hidden stretches take none).
+  const at = new Float32Array(m);
+  for (let k = 1; k < m; k++) at[k] = at[k - 1] + (joined(k - 1) || !shows[k - 1] || !shows[k] ? 0 : front[k - 1]);
+  const length = m ? at[m - 1] : 0;
+  const n = !m ? 0 : length > 0 ? Math.max(2, Math.round(length / step) + 1) : 1;
+  for (let k = 0; k < m; k++) at[k] = length > 0 ? (at[k] / length) * (n - 1) : 0;
+  // The front-view point at each step: between the LEDs on either side of it.
+  const x = new Float32Array(n);
+  const y = new Float32Array(n);
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    while (k < m - 2 && at[k + 1] <= i) k++;
+    const j = Math.min(m - 1, k + 1);
+    const t = at[j] > at[k] ? Math.max(0, Math.min(1, (i - at[k]) / (at[j] - at[k]))) : 1;
+    x[i] = X(k) + (X(j) - X(k)) * t;
+    y[i] = Y(k) + (Y(j) - Y(k)) * t;
+  }
+  const corners = [...new Set(stage.roofCorners.filter((c) => c < m).map((c) => Math.round(at[c])))].sort((a, b) => a - b);
+  return { n, leds, at, shows, x, y, corners };
+}
+
 /** Game sessions shown on the play page. */
 export interface GameInfo {
   id: string;
@@ -1008,11 +1127,33 @@ export const GAME_ROLE_RGB: Record<FixtureKind, [number, number, number]> = {
 };
 /** LEDs that games leave out. */
 export const GAME_OUT_RGB: [number, number, number] = [70, 0, 0];
+/** Roof LEDs that games pass over because they cannot be seen from the street (see roofTrack). */
+export const GAME_UNSEEN_RGB: [number, number, number] = [40, 48, 70];
+
+let seenCache: { layout: Layout; area: string; shows: Map<string, Float32Array> } | null = null;
+
+/**
+ * For each roof object: how much of each LED (from the first point) shows from the street, as
+ * games see it (see roofTrack). Objects that are not roofs show fully.
+ */
+export function roofShows(layout: Layout, area: GameArea | null | undefined): Map<string, Float32Array> {
+  const key = JSON.stringify(area ?? null);
+  if (seenCache?.layout === layout && seenCache.area === key) return seenCache.shows;
+  const stage = buildStage(layout, area);
+  const track = roofTrack(stage);
+  const byLed = new Float32Array(stage.pixelCount).fill(1);
+  for (let k = 0; k < track.leds.length; k++) byLed[track.leds[k]] = track.shows[k];
+  const shows = new Map<string, Float32Array>();
+  for (const f of stage.fixtures) if (f.kind === 'roof') shows.set(f.id, byLed.slice(f.offset, f.offset + f.count));
+  seenCache = { layout, area: key, shows };
+  return shows;
+}
 
 /**
  * The Games page's view of the yard: the LEDs games use in the color of their part (roof, bush,
- * tree, the rest), the ones left out faint red, skipped ones dark. `focus` (an object, or one
- * of its segments) is brighter, and blinks with `pulse`, so it can be found on the house.
+ * tree, the rest), roof LEDs that cannot be seen from the street gray-blue, the ones left out
+ * faint red, skipped ones dark. `focus` (an object, or one of its segments) is brighter, and
+ * blinks with `pulse`, so it can be found on the house.
  */
 export function paintGameArea(
   layout: Layout,
@@ -1022,11 +1163,13 @@ export function paintGameArea(
   put: (fixtureIndex: number, led: number, rgb: [number, number, number]) => void
 ) {
   const k = (c: [number, number, number], m: number): [number, number, number] => [Math.round(c[0] * m), Math.round(c[1] * m), Math.round(c[2] * m)];
+  const shows = roofShows(layout, area);
   layout.fixtures.forEach((f, fi) => {
     const n = Math.max(0, Math.floor(f.pixels));
     if (!n) return;
     const lit = activeLeds(f);
     const game = gameLeds(f, area);
+    const seen = shows.get(f.id);
     const seg = focus?.id === f.id && focus.segment != null && isLine(f) ? segmentLeds(f, focus.segment) : null;
     const dim = focus && focus.id !== f.id ? 0.35 : 1;
     for (let i = 0; i < n; i++) {
@@ -1035,7 +1178,8 @@ export function paintGameArea(
         continue;
       }
       const focused = focus?.id === f.id && (!seg || (i >= seg.lo && i <= seg.hi));
-      const base = game[i] ? GAME_ROLE_RGB[f.kind] : GAME_OUT_RGB;
+      const see = game[i] ? (seen?.[i] ?? 1) : 1;
+      const base = game[i] ? mixRgb(GAME_UNSEEN_RGB, GAME_ROLE_RGB[f.kind], see) : GAME_OUT_RGB;
       put(fi, i, focused ? (pulse ? k(base, game[i] ? 1 : 3) : k(base, game[i] ? 0.45 : 1.5)) : k(base, (game[i] ? 0.55 : 1) * dim));
     }
   });
