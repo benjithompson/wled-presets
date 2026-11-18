@@ -18,6 +18,40 @@ export function viewSize(layout: Layout, side: ViewSide, zRange: [number, number
  */
 export function fitBox(layout: Layout, side: ViewSide, zRange: [number, number]): Box {
   const size = viewSize(layout, side, zRange);
+  const b = ledBounds(layout, side, zRange);
+  if (!b) return { x: 0, y: 0, w: size.w, h: size.h };
+  const { x0, y0, x1, y1 } = b;
+  // Room for the glow of the outermost bulbs.
+  const pad = 0.025 * Math.max(size.w, size.h);
+  const bx0 = Math.min(0, x0 - pad);
+  const by0 = Math.min(0, y0 - pad);
+  const bx1 = Math.max(size.w, x1 + pad);
+  const by1 = Math.max(size.h, y1 + pad);
+  return { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 };
+}
+
+/** Just the LEDs, with room for their glow (a game zooms in on them). */
+export function ledBox(layout: Layout, side: ViewSide, zRange: [number, number]): Box {
+  const b = ledBounds(layout, side, zRange);
+  if (!b) return fitBox(layout, side, zRange);
+  const size = viewSize(layout, side, zRange);
+  const pad = Math.max(0.06 * Math.max(b.x1 - b.x0, b.y1 - b.y0), 0.02 * Math.max(size.w, size.h));
+  return { x: b.x0 - pad, y: b.y0 - pad, w: b.x1 - b.x0 + 2 * pad, h: b.y1 - b.y0 + 2 * pad };
+}
+
+/** A box grown about its middle to a shape (width over height), so it fills a view of that shape. */
+export function coverBox(b: Box, aspect: number): Box {
+  if (!(aspect > 0)) return b;
+  if (b.w / b.h < aspect) {
+    const w = b.h * aspect;
+    return { x: b.x - (w - b.w) / 2, y: b.y, w, h: b.h };
+  }
+  const h = b.w / aspect;
+  return { x: b.x, y: b.y - (h - b.h) / 2, w: b.w, h };
+}
+
+/** Where the LEDs are, in view units (null: none placed). */
+function ledBounds(layout: Layout, side: ViewSide, zRange: [number, number]) {
   const p = buildStage(layout).positions3;
   let x0 = Infinity;
   let y0 = Infinity;
@@ -32,14 +66,7 @@ export function fitBox(layout: Layout, side: ViewSide, zRange: [number, number])
     y0 = Math.min(y0, v);
     y1 = Math.max(y1, v);
   }
-  if (x0 > x1) return { x: 0, y: 0, w: size.w, h: size.h };
-  // Room for the glow of the outermost bulbs.
-  const pad = 0.025 * Math.max(size.w, size.h);
-  const bx0 = Math.min(0, x0 - pad);
-  const by0 = Math.min(0, y0 - pad);
-  const bx1 = Math.max(size.w, x1 + pad);
-  const by1 = Math.max(size.h, y1 + pad);
-  return { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 };
+  return x0 > x1 ? null : { x0, y0, x1, y1 };
 }
 
 /** A point in view coordinates (u to the right, v down). */
@@ -68,6 +95,7 @@ export function YardView({
   side = 'front',
   zRange = [-480, 480],
   fill = false,
+  edge = true,
   viewBox,
   grid,
   gridStep: gridStepProp,
@@ -88,6 +116,8 @@ export function YardView({
   zRange?: [number, number];
   /** Fill the parent (which must be positioned) instead of keeping the shape of the yard. */
   fill?: boolean;
+  /** With `fill`: outline the edge of the picture. */
+  edge?: boolean;
   /** What the view shows, in view units. Default: the whole yard. */
   viewBox?: Box;
   /** Draw a grid. Default: in the top view only. */
@@ -205,7 +235,7 @@ export function YardView({
         ctx.drawImage(aerialImg, -aw / 2, -ah / 2, aw, ah);
         ctx.restore();
       }
-      if (fill && !top) {
+      if (fill && edge && !top) {
         // The edge of the picture.
         ctx.strokeStyle = 'rgba(255,255,255,0.12)';
         ctx.lineWidth = dpr;
@@ -345,7 +375,7 @@ export function YardView({
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [layout, side, zMin, zMax, fill]);
+  }, [layout, side, zMin, zMax, fill, edge]);
 
   /** The object of the LED nearest to the pointer, within 14 pixels. */
   const hit = (e: { clientX: number; clientY: number }) => {

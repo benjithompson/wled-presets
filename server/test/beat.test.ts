@@ -523,41 +523,39 @@ describe('Beat Drop', () => {
     expect(checked).toBeGreaterThan(20);
   });
 
-  it('celebrates a new multiplier on the lights: warm light sweeps the whole roof and the bushes strobe', () => {
+  it('celebrates a new multiplier in the yard, and only softly on the roof where the notes come', () => {
     seeded(2);
     const stage = buildStage(sampleLayout());
     const game = beatGame(stage);
     const frame = new Frame(stage.pixelCount);
     const yard = new Yard(stage);
     const n = yard.roof.n;
-    const warmth = () => {
-      // Gold, not the backdrop's indigo: red and green over blue, on the far half of the roof.
-      let w = 0;
-      for (let i = Math.round(n / 2); i < n; i++) {
-        const [r, g, b] = stepLight(yard, frame, i);
-        w += Math.max(0, Math.min(r, g) - b);
-      }
-      return w;
+    // The roof past the zone's half, where the next notes come: its total light.
+    const roof = () => {
+      let t = 0;
+      for (let i = Math.round(n / 2); i < n; i++) t += stepLight(yard, frame, i).reduce((a, v) => a + v, 0);
+      return t;
     };
     const bushes = () => stage.fixtures.filter((f) => f.kind === 'bush').reduce((t, f) => t + Array.from(frame.data.subarray(f.offset * 3, (f.offset + f.count) * 3)).reduce((a, v) => a + v, 0), 0);
     press(game);
-    let before = 0;
+    let roofBefore = 0;
     let bushBefore = 0;
     while (game.status().arcade?.ups !== 1) {
-      before = warmth();
+      roofBefore = roof();
       bushBefore = bushes();
       bot(game, frame, 1 / 60);
     }
-    let most = 0;
+    let roofMost = 0;
     let bushMost = 0;
     for (let f = 0; f < 30; f++) {
       bot(game, frame, 1 / 60);
-      most = Math.max(most, warmth());
+      roofMost = Math.max(roofMost, roof());
       bushMost = Math.max(bushMost, bushes());
     }
     expect(game.status().arcade).toMatchObject({ mult: 2, ups: 1 });
-    expect(most).toBeGreaterThan(before + 5);
     expect(bushMost).toBeGreaterThan(bushBefore * 1.5);
+    // The roof brightens a little at most: the notes on it stay what stands out.
+    expect(roofMost).toBeLessThan(roofBefore * 1.5);
   });
 
   it('sends red out along the whole roof on a miss', () => {

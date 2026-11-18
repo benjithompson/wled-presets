@@ -46,74 +46,55 @@
 }
 .led-pulse { animation: led-pulse 1s linear infinite; }
 
-/* Beat Drop's arcade display (pages/ArcadeHud.tsx). */
+/* Beat Drop's arcade cabinet around the yard (pages/ArcadeHud.tsx). */
 @keyframes hud-pop {
-  0% { transform: scale(0.3); opacity: 0; }
-  14% { transform: scale(1.3); opacity: 1; }
-  28% { transform: scale(0.95); }
-  40% { transform: scale(1); }
+  0% { transform: scale(0.4); opacity: 0; }
+  15% { transform: scale(1.15); opacity: 1; }
+  30% { transform: scale(1); }
   75% { opacity: 1; }
-  100% { transform: translateY(-10px) scale(1); opacity: 0; }
+  100% { opacity: 0; }
 }
 @keyframes hud-float {
-  0% { transform: translateY(8px) scale(0.8); opacity: 0; }
-  20% { transform: translateY(0) scale(1.1); opacity: 1; }
-  100% { transform: translateY(-34px) scale(1); opacity: 0; }
+  0% { transform: translateY(6px) scale(0.8); opacity: 0; }
+  20% { transform: translateY(0) scale(1.05); opacity: 1; }
+  100% { transform: translateY(-18px) scale(1); opacity: 0; }
 }
 @keyframes hud-bump {
   0% { transform: scale(1); }
-  30% { transform: scale(1.22); }
+  30% { transform: scale(1.2); }
   100% { transform: scale(1); }
 }
 @keyframes hud-shake {
-  0%, 100% { transform: translate(0, 0) rotate(0); }
-  15% { transform: translate(-10px, 2px) rotate(-1.5deg); }
-  30% { transform: translate(9px, -2px) rotate(1.5deg); }
-  45% { transform: translate(-7px, 1px) rotate(-1deg); }
-  60% { transform: translate(5px, 0) rotate(0.5deg); }
-  80% { transform: translate(-2px, 0); }
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-5px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(1px); }
 }
 @keyframes hud-power {
-  0% { transform: scale(3.2); opacity: 0; filter: blur(10px); }
-  16% { transform: scale(0.88); opacity: 1; filter: blur(0); }
-  26% { transform: scale(1.1); }
-  36% { transform: scale(1); }
-  72% { transform: scale(1.04); opacity: 1; }
-  100% { transform: scale(1.7); opacity: 0; }
-}
-@keyframes hud-ring {
-  0% { transform: scale(0.15); opacity: 1; }
-  100% { transform: scale(2.8); opacity: 0; }
+  0% { transform: scale(1.8); opacity: 0; }
+  18% { transform: scale(0.95); opacity: 1; }
+  30% { transform: scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
 }
 @keyframes hud-flash {
-  0% { opacity: 0.85; }
+  0% { opacity: 0.9; }
   100% { opacity: 0; }
-}
-@keyframes hud-scrim {
-  0% { opacity: 0; }
-  10%, 65% { opacity: 1; }
-  100% { opacity: 0; }
-}
-@keyframes hud-ray {
-  0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-  100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0.3); opacity: 0; }
 }
 @keyframes hud-rainbow {
   to { background-position: 200% center; }
 }
 @keyframes hud-charge {
   0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.6); }
+  50% { filter: brightness(1.5); }
 }
-.hud-pop { animation: hud-pop 1.1s cubic-bezier(0.2, 0.8, 0.3, 1) forwards; }
-.hud-float { animation: hud-float 0.9s ease-out forwards; }
+.hud-pop { animation: hud-pop 0.9s cubic-bezier(0.2, 0.8, 0.3, 1) forwards; }
+.hud-float { animation: hud-float 0.8s ease-out forwards; }
 .hud-bump { animation: hud-bump 0.35s ease-out; }
-.hud-shake { animation: hud-shake 0.5s ease-out; }
-.hud-power { animation: hud-power 1.5s cubic-bezier(0.2, 0.8, 0.3, 1) forwards; }
-.hud-ring { animation: hud-ring 0.9s ease-out forwards; }
-.hud-flash { animation: hud-flash 0.6s ease-out forwards; }
-.hud-scrim { animation: hud-scrim 1.5s ease-out forwards; }
-.hud-ray { animation: hud-ray 0.9s cubic-bezier(0.1, 0.7, 0.3, 1) forwards; }
+.hud-shake { animation: hud-shake 0.4s ease-out; }
+.hud-power { animation: hud-power 1.4s cubic-bezier(0.2, 0.8, 0.3, 1) forwards; }
+.hud-flash { animation: hud-flash 0.7s ease-out forwards; }
 .hud-charge { animation: hud-charge 0.5s ease-in-out infinite; }
 .hud-rainbow {
   background-image: linear-gradient(90deg, #fde047, #fb923c, #f472b6, #a78bfa, #38bdf8, #4ade80, #fde047);
