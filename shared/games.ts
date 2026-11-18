@@ -62,7 +62,7 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     id: 'beat',
     name: 'Beat Drop',
     tagline: 'Hit the colors on the beat',
-    description: 'Notes in four colors slide along the roof to the posts: press the button in each note\'s color as it arrives, hold the long ones to their end. Pick 1, 2 or 4 colors and Easy, Normal or Hard; the beat never stops and keeps getting faster.',
+    description: 'Notes in four colors slide along the roof to the lit zone: press the button in each note\'s color as it passes through, hold the long ones to their end. Pick 1, 2 or 4 colors and Easy, Normal or Hard; the beat never stops, keeps getting faster, and every 8 bars the whole roofline changes its look.',
     players: '1 player'
   }
 ];
