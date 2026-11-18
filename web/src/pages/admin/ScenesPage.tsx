@@ -8,7 +8,7 @@ import type { Layout } from '../../../../shared/layout.ts';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, Scene } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Select, Spinner, StatusDot } from '../../components/ui.tsx';
-import { api, type Overview } from '../../lib/api.ts';
+import { api, type Overview, isQueued } from '../../lib/api.ts';
 import { downloadJson, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { EFFECT_GROUPS, EffectProps, PaletteSwatch } from './effectProps.tsx';
@@ -76,7 +76,7 @@ export function ScenesPage() {
 
   const apply = useMutation({
     mutationFn: (id: string) => api.applyScene(id),
-    onSuccess: (r) => (r.failed.length ? toast.warning(`Applied to ${r.applied.length} device(s). ${r.failed.length} did not respond.`) : toast.success('Scene applied')),
+    onSuccess: (r) => (isQueued(r) ? toast.info(r.queued.message) : r.failed.length ? toast.warning(`Applied to ${r.applied.length} device(s). ${r.failed.length} did not respond.`) : toast.success('Scene applied')),
     onError: (e) => toast.error(errorText(e))
   });
 

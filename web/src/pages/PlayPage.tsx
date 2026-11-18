@@ -8,14 +8,30 @@ import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { InitialsEntry, Scoreboard } from './HighScores.tsx';
+import { LineCard, OfferCard, TurnBanner } from './LineParts.tsx';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
 export function PlayPage() {
-  const { layout, games, status, connected, frame, send } = usePlaySocket();
+  const { layout, games, status, connected, frame, send, notice } = usePlaySocket();
   /** The buttons held down now, by id ('main': the big button). */
   const [pressed, setPressed] = useState<ReadonlySet<string>>(new Set());
-  const playing = !!status?.game;
+  // The line for the lights: with someone else's turn, this phone watches.
+  const line = status?.line;
+  const lined = !!line?.enabled;
+  const canPlay = status?.canPlay !== false;
+  const playing = !!status?.game && canPlay;
+  const watching = !!status?.game && !canPlay;
+  const offer = line?.offer ?? null;
+  // Picking a game joins the line when the lights are busy.
+  const joins = lined && !!line && !line.free && !line.now?.you;
+  const [shownNotice, setShownNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    setShownNotice(notice.text);
+    const t = setTimeout(() => setShownNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
   const { data: session } = useQuery({ queryKey: ['session'], queryFn: api.session, retry: false });
   const isAdmin = !!session?.user;
   const [debugOpen, setDebugOpen] = useState(false);
@@ -32,7 +48,8 @@ export function PlayPage() {
     if (!id || !connected || !status || !games.length) return;
     wanted.current = null;
     history.replaceState(null, '', location.pathname);
-    if (!status.game && games.some((g) => g.id === id)) send({ type: 'start', game: id });
+    // Busy: this joins the line for it.
+    if (!(status.game && status.canPlay !== false) && games.some((g) => g.id === id)) send({ type: 'start', game: id });
   }, [connected, status, games, send]);
 
   // Each button is held for as long as its finger (or key) is down: some games pour while you
@@ -131,7 +148,7 @@ export function PlayPage() {
               <Bug className="size-4" /> Debug
             </button>
           ) : null}
-          {playing ? (
+          {playing && (!lined || line?.now?.you) ? (
             <button
               type="button"
               onClick={() => send({ type: 'stop' })}
@@ -158,8 +175,13 @@ export function PlayPage() {
 
             {layout ? <YardView layout={layout} getFrame={() => frame.current} maxHeight={playing ? '42dvh' : '60dvh'} className="shadow-2xl shadow-black/60" /> : null}
 
-            {playing ? (
+            {shownNotice ? <p className="mt-3 self-center rounded-full bg-amber-400/15 px-4 py-1.5 text-sm text-amber-200">{shownNotice}</p> : null}
+
+            {offer ? (
+              <OfferCard offer={offer} onPlay={() => send({ type: 'accept' })} onPass={() => send({ type: 'leaveLine' })} />
+            ) : playing ? (
               <section className="flex flex-1 flex-col items-center justify-center gap-5 py-5">
+                {line ? <TurnBanner line={line} /> : null}
                 {you ? (
                   <p className="-mb-2 rounded-full px-4 py-1 text-sm font-bold tracking-widest uppercase" style={{ backgroundColor: `color-mix(in srgb, ${you.color} 25%, transparent)`, color: you.color }}>
                     You're {you.name}
@@ -234,8 +256,15 @@ export function PlayPage() {
               </section>
             ) : (
               <section className="flex-1 py-6">
-                <h1 className="mb-1 text-2xl font-bold tracking-tight">Pick a game</h1>
-                <p className="mb-5 text-white/60">The lights on the house become the game.</p>
+                {watching ? (
+                  <p className="mb-4 text-center text-lg text-white/80">
+                    Watching <b className="text-white">{games.find((g) => g.id === status?.game)?.name ?? 'the game'}</b>
+                    {status?.score ? <span className="text-white/60 tabular-nums"> · score {status.score}</span> : null}
+                  </p>
+                ) : null}
+                {line ? <LineCard line={line} onLeave={() => send({ type: 'leaveLine' })} className="mb-6" /> : null}
+                <h1 className="mb-1 text-2xl font-bold tracking-tight">{joins ? 'Join the line' : 'Pick a game'}</h1>
+                <p className="mb-5 text-white/60">{joins ? 'The lights are busy. Pick a game to wait for your turn.' : 'The lights on the house become the game.'}</p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {games.map((g) => {
                     const look = gameLook(g.id);
@@ -245,13 +274,21 @@ export function PlayPage() {
                         key={g.id}
                         type="button"
                         onClick={() => send({ type: 'start', game: g.id })}
+                        aria-pressed={line?.you?.kind === 'game' && line.you.label === g.name}
                         className="group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]"
                       >
                         <span className={cn('grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white shadow-lg', look.className)}>
                           <Icon className="size-6" />
                         </span>
                         <span>
-                          <span className="block text-lg font-semibold">{g.name}</span>
+                          <span className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+                            {g.name}
+                            {line?.you?.kind === 'game' && line.you.label === g.name ? (
+                              <span className="rounded-full bg-amber-300/15 px-2 py-0.5 text-xs font-semibold text-amber-200">In line · {line.you.place}</span>
+                            ) : joins ? (
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-white/60">Join the line</span>
+                            ) : null}
+                          </span>
                           <span className="mt-0.5 block text-sm text-white/60">{g.description}</span>
                           {g.players ? (
                             <span className="mt-2 inline-flex items-center gap-1 text-xs text-white/45">

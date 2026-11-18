@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Clock, Gamepad2, Loader2, Sparkles, WifiOff } from 'lucide-react';
+import { Check, Clock, Gamepad2, Loader2, Sparkles, Users, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PublicState } from '../../../shared/types.ts';
 import { burst } from '../components/Burst.tsx';
@@ -11,7 +11,9 @@ import type { Look } from '../lightfield/engine.ts';
 import { useTheme } from '../lib/theme.ts';
 import { useBackgroundSpeed } from '../lib/backgroundSpeed.ts';
 import { SpeedControl } from '../components/SpeedControl.tsx';
-import { api } from '../lib/api.ts';
+import { api, isQueued } from '../lib/api.ts';
+import { clock, ordinal, type LineView } from '../../../shared/line.ts';
+import { useCountdown } from '../lib/useCountdown.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
 import { useEvents } from '../lib/useEvents.ts';
@@ -24,8 +26,10 @@ export function PublicPage() {
   const { data: state, isLoading, error } = useQuery({ queryKey: KEY, queryFn: api.state, refetchInterval: 60_000 });
   const [pending, setPending] = useState<string | null>(null);
 
+  // The line for the lights: who has them, and this visitor's place.
+  const [line, setLine] = useState<LineView | null>(null);
   // The server pushes the full state on every change.
-  useEvents('/api/events', { state: (d) => qc.setQueryData(KEY, JSON.parse(d) as PublicState) });
+  useEvents('/api/events', { state: (d) => qc.setQueryData(KEY, JSON.parse(d) as PublicState), line: (d) => setLine(JSON.parse(d) as LineView) });
 
   useEffect(() => {
     if (state?.title) document.title = state.title;
@@ -41,6 +45,12 @@ export function PublicPage() {
       optimistic({ currentSceneId: id, currentColor: null });
       return { prev };
     },
+    onSuccess: (r, _id, ctx) => {
+      // The lights are busy: it waits in line, and the page shows what plays now.
+      if (!isQueued(r)) return;
+      if (ctx?.prev) qc.setQueryData(KEY, ctx.prev);
+      toast.success(r.queued.message);
+    },
     onError: (e, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(KEY, ctx.prev);
       toast.error(errorText(e));
@@ -55,6 +65,12 @@ export function PublicPage() {
       const prev = qc.getQueryData<PublicState>(KEY);
       optimistic({ currentSceneId: null, currentColor: hex });
       return { prev };
+    },
+    onSuccess: (r, _hex, ctx) => {
+      // The lights are busy: it waits in line, and the page shows what plays now.
+      if (!isQueued(r)) return;
+      if (ctx?.prev) qc.setQueryData(KEY, ctx.prev);
+      toast.success(r.queued.message);
     },
     onError: (e, _hex, ctx) => {
       if (ctx?.prev) qc.setQueryData(KEY, ctx.prev);
@@ -86,6 +102,7 @@ export function PublicPage() {
         </header>
 
         {state ? <StatusLine state={state} /> : null}
+        {line ? <LineBanner line={line} /> : null}
 
         {isLoading ? (
           <div className="grid place-items-center py-32">
@@ -224,6 +241,70 @@ function GamesSection() {
         })}
       </div>
     </section>
+  );
+}
+
+/** The line for the lights: what plays now, your place in line, or that it's your turn to play. */
+function LineBanner({ line }: { line: LineView }) {
+  const left = useCountdown(line.endsIn);
+  const leave = useMutation({ mutationFn: api.leaveLine, onError: (e) => toast.error(errorText(e)) });
+  if (!line.enabled || (line.free && !line.you && !line.offer)) return null;
+  const now = line.now;
+  const box = 'mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl px-4 py-3 text-sm ring-1 backdrop-blur-md';
+  if (line.offer) {
+    return (
+      <div className={cn(box, 'bg-amber-100/80 text-amber-950 ring-amber-300 dark:bg-amber-400/15 dark:text-amber-100 dark:ring-amber-400/40')} aria-live="assertive">
+        <Gamepad2 className="size-4" />
+        <span>
+          <b>It's your turn</b> to play {line.offer.label}!
+        </span>
+        <a href="/play" className="ml-auto rounded-full bg-amber-500 px-4 py-1.5 font-semibold text-white shadow hover:bg-amber-600">
+          Play now
+        </a>
+      </div>
+    );
+  }
+  return (
+    <div className={cn(box, 'bg-white/65 text-stone-700 ring-stone-900/10 dark:bg-stone-900/45 dark:text-stone-300 dark:ring-white/10')} aria-live="polite">
+      {now ? (
+        <span className="inline-flex items-center gap-2">
+          {now.kind === 'game' ? <Gamepad2 className="size-4 text-accent-500" /> : <Sparkles className="size-4 text-accent-500" />}
+          {now.you ? 'Your pick is on: ' : now.kind === 'game' ? 'Someone is playing ' : 'On now: '}
+          <b className="font-semibold text-stone-900 dark:text-white">{now.label}</b>
+        </span>
+      ) : line.calling ? (
+        <span>Waiting for the next player…</span>
+      ) : null}
+      {line.waiting ? (
+        <span className="inline-flex items-center gap-1 text-stone-500 dark:text-stone-400">
+          <Users className="size-3.5" /> {line.waiting} in line
+        </span>
+      ) : null}
+      {left != null && (line.waiting || !line.free) ? (
+        <span className="inline-flex items-center gap-1 text-stone-500 tabular-nums dark:text-stone-400">
+          <Clock className="size-3.5" /> {now?.kind === 'game' ? `ends after this game, or in ${clock(left)}` : `next in ${clock(left)}`}
+        </span>
+      ) : null}
+      {line.you ? (
+        <span className="flex basis-full flex-wrap items-center justify-between gap-2">
+          <span>
+            <b className="text-stone-900 dark:text-white">You're {ordinal(line.you.place)} in line</b> for {line.you.label}.{' '}
+            {line.you.kind === 'game' ? (
+              <a href="/play" className="underline underline-offset-2">
+                Wait on the Play page
+              </a>
+            ) : (
+              'It plays on its own when your turn comes.'
+            )}
+          </span>
+          <button type="button" onClick={() => leave.mutate()} disabled={leave.isPending} className="rounded-full px-3 py-1 text-stone-500 ring-1 ring-stone-900/10 hover:bg-white/80 dark:text-stone-400 dark:ring-white/10 dark:hover:bg-white/10">
+            Leave the line
+          </button>
+        </span>
+      ) : !now?.you ? (
+        <span className="basis-full text-xs text-stone-500 dark:text-stone-400">Tap a scene, a color or a game to join the line: one turn at a time.</span>
+      ) : null}
+    </div>
   );
 }
 

@@ -7,6 +7,8 @@ interface Events {
   /** Device list or device status changed. */
   devices: [];
   log: [LogEntry | null];
+  /** The line for the lights changed. */
+  line: [];
 }
 
 export class Bus extends EventEmitter<Events> {
