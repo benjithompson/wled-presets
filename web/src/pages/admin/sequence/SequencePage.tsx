@@ -39,6 +39,7 @@ import { activeAt, clipEnd, emptySequence, newId, SequencePlayer, transitionInfo
 import { ConfirmDialog, Spinner } from '../../../components/ui.tsx';
 import { api } from '../../../lib/api.ts';
 import { cn, errorText } from '../../../lib/utils.ts';
+import { useInFront } from '../../../lib/useInFront.ts';
 import { YardView } from '../../../yard/YardView.tsx';
 import { OVERVIEW } from '../AdminLayout.tsx';
 import { PaletteSwatch } from '../effectProps.tsx';
@@ -387,7 +388,11 @@ export function SequencePage() {
   // ---------- The lights ----------
 
   const mapped = !!layout?.fixtures.some((f) => f.deviceId);
-  const previewing = lightsOn && mapped && !!seq;
+  // Only while this window is in front: a sequence editor left in a background tab still sends
+  // now and then (timers there run about once a minute), and each time it took every light for
+  // 8 seconds, showing the paused moment of the sequence (often dark).
+  const inFront = useInFront();
+  const previewing = lightsOn && mapped && !!seq && inFront;
   const sendLights = useRef<() => void>(() => {});
   sendLights.current = () => {
     const s = seqRef.current;

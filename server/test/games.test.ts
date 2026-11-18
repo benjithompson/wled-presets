@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { buildStage, sampleLayout, type GameStatus } from '../../shared/layout.ts';
+import { buildStage, sampleLayout, segmentLeds, type GameStatus } from '../../shared/layout.ts';
 import { cascadeGame } from '../src/game/cascade.ts';
 import { duelGame } from '../src/game/duel.ts';
 import { Frame } from '../src/game/frame.ts';
@@ -289,6 +289,56 @@ describe('game host with sides', () => {
     expect(a.last.status!.phase).not.toBe('pour');
     a.ws.close();
     b.ws.close();
+    host.stop();
+    server.close();
+  });
+});
+
+describe('the game area', () => {
+  const layout = sampleLayout();
+  const roof = layout.fixtures.find((f) => f.kind === 'roof')!;
+  const bush = layout.fixtures.find((f) => f.kind === 'bush')!;
+  const full = buildStage(layout);
+
+  it('keeps the LEDs in place but leaves the hidden ones out of the roof and the yard', () => {
+    const { lo, hi } = segmentLeds(roof, 1);
+    const stage = buildStage(layout, { exclude: [bush.id], skip: { [roof.id]: [1] }, trim: { [roof.id]: [5, 7] } });
+    expect(stage.pixelCount).toBe(full.pixelCount);
+    expect(stage.roofPath.length).toBe(full.roofPath.length - (hi - lo + 1) - 12);
+    expect(stage.fixtures.some((f) => f.id === bush.id)).toBe(false);
+    const r = full.fixtures.find((f) => f.id === roof.id)!;
+    expect(stage.active[r.offset]).toBe(0);
+    expect(stage.active[r.offset + lo]).toBe(0);
+    expect(stage.active[r.offset + hi + 1]).toBe(1);
+    expect(new Yard(stage).bushes.some((p) => p.fixture.id === bush.id)).toBe(false);
+  });
+
+  it('keeps the lights outside the area dark while a game runs', async () => {
+    const server = http.createServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const host = new GameHost(layout, () => {});
+    host.setGameArea({ exclude: [roof.id] });
+    host.attach(server, '/api/play');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/play`);
+    let lit = 0;
+    let frames = 0;
+    const r = full.fixtures.find((f) => f.id === roof.id)!;
+    ws.on('message', (data, isBinary) => {
+      if (!isBinary) return;
+      const b = data as Buffer;
+      frames++;
+      for (let i = r.offset; i < r.offset + r.count; i++) lit += b[i * 3] + b[i * 3 + 1] + b[i * 3 + 2];
+    });
+    await new Promise((res) => ws.on('open', res));
+    ws.send(JSON.stringify({ type: 'start', game: 'catcher' }));
+    await new Promise((res) => setTimeout(res, 50));
+    frames = lit = 0;
+    ws.send(JSON.stringify({ type: 'input', action: 'press' }));
+    await new Promise((res) => setTimeout(res, 400));
+    expect(frames).toBeGreaterThan(5);
+    expect(lit).toBe(0);
+    ws.close();
     host.stop();
     server.close();
   });

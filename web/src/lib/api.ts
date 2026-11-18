@@ -1,4 +1,4 @@
-import type { Layout, OutputInfo } from '../../../shared/layout.ts';
+import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type {
   AudioFile,
@@ -72,6 +72,8 @@ export const api = {
   previewLayout: (body: string) => request<{ devices: string[] }>('/api/admin/layout/preview', { method: 'POST', body: JSON.parse(body) }),
   // keepalive: the request still goes out when the page is closing.
   stopLayoutPreview: () => fetch('/api/admin/layout/preview', { method: 'DELETE', credentials: 'same-origin', keepalive: true }),
+  gameArea: () => request<{ area: GameArea | null }>('/api/admin/games/area'),
+  saveGameArea: (area: GameArea) => request<{ area: GameArea | null }>('/api/admin/games/area', { method: 'PUT', body: area }),
   playOutput: () => request<OutputInfo | null>('/api/admin/play/output'),
   setPlayOutput: (body: { enabled?: boolean; brightness?: number }) => request<OutputInfo>('/api/admin/play/output', { method: 'PUT', body }),
   removeBackground: () => request<Layout>('/api/admin/layout/background', { method: 'DELETE' }),

@@ -1,3 +1,4 @@
+import type { GameArea } from '../../shared/layout.ts';
 import type { Settings } from '../../shared/types.ts';
 import type { Db } from './db.ts';
 
@@ -11,7 +12,8 @@ export const KEY = {
   subnets: 'discoverySubnets',
   currentScene: 'currentPresetId',
   currentColor: 'currentColor',
-  revertAt: 'revertAt'
+  revertAt: 'revertAt',
+  gameArea: 'gameArea'
 } as const;
 
 export const DEFAULT_TITLE = 'Lights';
@@ -50,4 +52,18 @@ export function migrateV1Settings(db: Db) {
     db.setSetting(KEY.title, 'Christmas Lights');
     db.setSetting(KEY.subtitle, 'Tap a color or preset.');
   }
+}
+
+/** The part of the yard that games use (see GameArea). Null: all of it. */
+export function readGameArea(db: Db): GameArea | null {
+  try {
+    const v = JSON.parse(db.getSetting(KEY.gameArea) || 'null');
+    return v && typeof v === 'object' ? (v as GameArea) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeGameArea(db: Db, area: GameArea | null) {
+  db.setSetting(KEY.gameArea, area ? JSON.stringify(area) : '');
 }

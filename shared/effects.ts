@@ -251,11 +251,18 @@ export function effectDirection(s: Pick<EffectSettings, 'effect' | 'direction'>)
 }
 
 /**
- * Where an effect plays: the whole yard ("*"), a whole object ("roof"), or one segment of a line
- * ("roof#2": segment 2, from point 2 to point 3). Scenes store their effects under these keys.
- * An object's own effect wins over the yard's, and a segment's wins over its object's.
+ * Where an effect plays: the whole yard ("*"), every object of one WLED device ("@<device id>"),
+ * a whole object ("roof"), or one segment of a line ("roof#2": segment 2, from point 2 to
+ * point 3). Scenes store their effects under these keys. A segment's effect wins over its
+ * object's, an object's over its device's, and a device's over the yard's.
  */
 export const YARD = '*';
+
+/** The key of an effect that plays on every object of a WLED device. */
+export const deviceKey = (deviceId: string) => `@${deviceId}`;
+
+/** The device a device key names, or null for any other key. */
+export const keyDevice = (key: string): string | null => (key.startsWith('@') ? key.slice(1) : null);
 
 export const effectKey = (fixtureId: string, segment?: number | null) => (segment == null ? fixtureId : `${fixtureId}#${segment}`);
 
@@ -270,10 +277,20 @@ export function effectObjects(layout: Pick<Layout, 'fixtures'>, keys: Iterable<s
   const out = new Set<string>();
   for (const key of keys) {
     if (key === YARD) return [...ids];
+    const device = keyDevice(key);
+    if (device) {
+      for (const f of layout.fixtures) if (f.deviceId === device) out.add(f.id);
+      continue;
+    }
     const id = effectTarget(key).id;
     if (ids.has(id)) out.add(id);
   }
   return [...out];
+}
+
+/** The effects of a scene that play on whole devices (picked in the scene dialog, not the layout editor). */
+export function deviceEffects(effects: Record<string, EffectSettings> | undefined): Record<string, EffectSettings> {
+  return Object.fromEntries(Object.entries(effects ?? {}).filter(([k]) => keyDevice(k)));
 }
 
 /** The effects of the yard, a layout's objects and segments, by effect key (the editor's working copy). */
@@ -1883,11 +1900,12 @@ function activeOffsets(f: Fixture, count: number): number[] {
 }
 
 /**
- * Plays effects on the yard, its objects and their segments, into one frame for every LED of
- * the stage. A segment's effect wins over its object's, and an object's over the yard's ("*").
+ * Plays effects on the yard, its devices, objects and their segments, into one frame for every
+ * LED of the stage. A segment's effect wins over its object's, an object's over its device's
+ * ("@<id>"), and a device's over the yard's ("*").
  * LEDs with no effect stay dark, and so do LEDs in skipped segments: a 1-D effect runs over the
  * lit LEDs only, so it flows across a skipped stretch without a gap. A 1-D effect on the yard
- * plays on every object, along its own string; a 3-D one is one picture over the whole yard.
+ * or a device plays on each of its objects, along its own string; a 3-D one is one picture.
  */
 export class EffectScene {
   private stage: Stage | null = null;
@@ -1928,9 +1946,7 @@ export class EffectScene {
     const layout = this.layout;
     if (!stage || !layout) return;
     const yard = this.effects[YARD];
-    const yard3 = yard && isSpatial(yard.effect);
-    const yardLeds: number[] = [];
-    const yardFixtures: string[] = [];
+    const spatial = new Map<string, { leds: number[]; fixtures: string[] }>();
     const allActive: number[] = [];
     this.runs.begin();
     layout.fixtures.forEach((f, fi) => {
@@ -1960,14 +1976,22 @@ export class EffectScene {
         this.runs.add(stage, f.id, f.id, s, rest, on, [f.id]);
         return;
       }
-      if (!yard || !rest.length) return;
-      // The yard's effect: a 1-D one along this object's string, a 3-D one in the yard's picture.
-      if (yard3) {
-        for (const i of rest) yardLeds.push(i);
-        yardFixtures.push(f.id);
-      } else this.runs.add(stage, `${YARD}:${f.id}`, YARD, yard, rest, on, [f.id], `${YARD}:${f.id}`);
+      if (!rest.length) return;
+      // The device's effect, else the yard's: a 1-D one along this object's string, a 3-D one in
+      // one picture over all the objects it reaches.
+      const dk = f.deviceId ? deviceKey(f.deviceId) : null;
+      const src = dk && this.effects[dk] ? dk : yard ? YARD : null;
+      if (!src) return;
+      const fs = this.effects[src];
+      if (isSpatial(fs.effect)) {
+        const g = spatial.get(src) ?? { leds: [], fixtures: [] };
+        for (const i of rest) g.leds.push(i);
+        g.fixtures.push(f.id);
+        spatial.set(src, g);
+      } else this.runs.add(stage, `${src}:${f.id}`, src, fs, rest, on, [f.id], `${src}:${f.id}`);
     });
-    if (yard3 && yardLeds.length) this.runs.add(stage, YARD, YARD, yard, yardLeds, allActive, yardFixtures);
+    // A 3-D effect is placed in the box of the whole yard, so devices with the same one line up.
+    for (const [src, g] of spatial) this.runs.add(stage, src, src, this.effects[src], g.leds, allActive, g.fixtures);
     this.runs.commit();
   }
 

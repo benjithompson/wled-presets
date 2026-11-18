@@ -87,7 +87,7 @@ import {
   type Point,
   type Units
 } from '../../../../shared/layout.ts';
-import { EFFECTS, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
+import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { Stage } from '../../../../shared/layout.ts';
 import type { Scene } from '../../../../shared/types.ts';
 import { Badge, Button, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
@@ -101,6 +101,7 @@ import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, Pr
 import { closestOnSegment, emptyTargets, snapPoint, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
+import { useInFront } from '../../lib/useInFront.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
@@ -849,21 +850,8 @@ export function LayoutPage() {
   const [showOnLights, setShowOnLights] = useState(readShowOnLights);
   const [previewDevices, setPreviewDevices] = useState<string[]>([]);
   const mapped = !!layout?.fixtures.some((f) => f.deviceId);
-  // Only while this window has focus: a layout editor left open behind other windows or in a
-  // background tab must not take the real lights from a game or from the public page's colors.
-  // (A window behind others can still count as "visible", and its timers still run now and then.)
-  const [inFront, setInFront] = useState(() => document.visibilityState === 'visible' && document.hasFocus());
-  useEffect(() => {
-    const on = () => setInFront(document.visibilityState === 'visible' && document.hasFocus());
-    document.addEventListener('visibilitychange', on);
-    window.addEventListener('focus', on);
-    window.addEventListener('blur', on);
-    return () => {
-      document.removeEventListener('visibilitychange', on);
-      window.removeEventListener('focus', on);
-      window.removeEventListener('blur', on);
-    };
-  }, []);
+  // Only while this window has focus (see useInFront).
+  const inFront = useInFront();
   const previewing = showOnLights && mapped && inFront;
   const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 }) : null;
   useEffect(() => {
@@ -1348,7 +1336,8 @@ export function LayoutPage() {
       const fx = layoutEffects(layout);
       const prev = 'id' in target ? overview?.scenes.find((x) => x.id === target.id) : null;
       const sc = prev
-        ? await api.updateScene(prev.id, { name: prev.name, devicePresets: prev.devicePresets, effects: fx })
+        ? // Effects picked for whole devices in the scene dialog stay.
+          await api.updateScene(prev.id, { name: prev.name, devicePresets: prev.devicePresets, effects: { ...deviceEffects(prev.effects), ...fx } })
         : await api.createScene({ name: 'name' in target ? target.name : 'Effects', devicePresets: {}, effects: fx });
       setSceneRef({ id: sc.id, name: sc.name });
       setNewScene(null);
@@ -1361,7 +1350,8 @@ export function LayoutPage() {
     }
   }
 
-  const effectScenes = (overview?.scenes ?? []).filter((x) => x.effects && Object.keys(x.effects).length);
+  // Scenes with effects on objects (effects on whole devices are picked in the scene dialog).
+  const effectScenes = (overview?.scenes ?? []).filter((x) => Object.keys(x.effects ?? {}).some((k) => keyDevice(k) == null));
   const editingScene = sceneRef && overview?.scenes.some((x) => x.id === sceneRef.id) ? sceneRef : null;
   function scenesMenu(e: RMouseEvent<HTMLElement>) {
     const r = e.currentTarget.getBoundingClientRect();

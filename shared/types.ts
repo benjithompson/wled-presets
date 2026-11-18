@@ -52,7 +52,7 @@ export interface Scene {
   sortOrder: number;
   /** deviceId -> WLED preset id */
   devicePresets: Record<string, number>;
-  /** Effect key (see effectKey: "*", an object id, or "<object id>#<segment>") -> the effect it plays. */
+  /** Effect key (see effectKey: "*", "@<device id>", an object id, or "<object id>#<segment>") -> the effect it plays. */
   effects?: Record<string, EffectSettings>;
   /** A sequence that plays (and loops) on the lights instead of the effects. */
   sequenceId?: string | null;

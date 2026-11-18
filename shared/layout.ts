@@ -563,6 +563,44 @@ export function activeLeds(f: Fixture): Uint8Array {
 }
 
 /**
+ * The part of the yard that games play on, set by an admin (Games page). Effects and scenes
+ * still use every LED: this only keeps games off lights that are hidden, for example around a
+ * corner of the house. Ids of objects that are not in the layout are ignored.
+ */
+export interface GameArea {
+  /** Objects that games leave out (they stay dark during a game). */
+  exclude?: string[];
+  /** Lines and roofs: segments that games leave out, by object id (segment k: point k to k + 1). */
+  skip?: Record<string, number[]>;
+  /** Lines and roofs: how many LEDs games leave out at the first point's end and at the last point's end. */
+  trim?: Record<string, [number, number]>;
+}
+
+/** For each LED of the object (from the first point): 1 when games use it. */
+export function gameLeds(f: Fixture, area: GameArea | null | undefined): Uint8Array {
+  const on = activeLeds(f);
+  if (!area) return on;
+  if (area.exclude?.includes(f.id)) return on.fill(0);
+  if (!isLine(f)) return on;
+  const skip = area.skip?.[f.id];
+  if (skip?.length && f.points.length > 1) {
+    for (const k of skip) {
+      if (k < 0 || k >= f.points.length - 1) continue;
+      const { lo, hi } = segmentLeds(f, k);
+      for (let i = lo; i <= hi && i < on.length; i++) on[i] = 0;
+    }
+  }
+  const [a, b] = area.trim?.[f.id] ?? [0, 0];
+  for (let i = 0; i < Math.min(a, on.length); i++) on[i] = 0;
+  for (let i = Math.max(0, on.length - b); i < on.length; i++) on[i] = 0;
+  return on;
+}
+
+/** True when the area leaves something out. */
+export const gameAreaSet = (a: GameArea | null | undefined) =>
+  !!a && (!!a.exclude?.length || Object.values(a.skip ?? {}).some((x) => x.length) || Object.values(a.trim ?? {}).some(([x, y]) => x > 0 || y > 0));
+
+/**
  * Moves segment effects to new segment indexes after the points changed. `to(k)` gives the
  * new index (or indexes) of old segment k; none drops it. When two land on one segment, the
  * first one wins.
@@ -821,7 +859,12 @@ export interface Stage {
   active: Uint8Array;
 }
 
-export function buildStage(layout: Layout): Stage {
+/**
+ * The LEDs of the layout, in one list. With a game area: the stage that games play on. It has
+ * the same LEDs at the same places (so frames go to the lights the same way), but the LEDs left
+ * out are not active, the roof path skips them, and objects left out are not in `fixtures`.
+ */
+export function buildStage(layout: Layout, area?: GameArea | null): Stage {
   const fixtures: StageFixture[] = [];
   const pos: number[] = [];
   const pos3: number[] = [];
@@ -834,7 +877,7 @@ export function buildStage(layout: Layout): Stage {
       pos.push(p.x, p.y);
       pos3.push(p.x, p.y, p.z);
     }
-    const on = activeLeds(f);
+    const on = gameLeds(f, area);
     for (let i = 0; i < pts.length; i++) active.push(on[i] ?? 1);
     const mean = (k: 'x' | 'y' | 'z') => pts.reduce((a, p) => a + p[k], 0) / (pts.length || 1);
     fixtures.push({ id: f.id, name: f.name, kind: f.kind, offset, count: pts.length, corners: cornerPixels(f), center: { x: mean('x'), y: mean('y'), z: mean('z') } });
@@ -849,7 +892,7 @@ export function buildStage(layout: Layout): Stage {
     positions3: new Float32Array(pos3),
     scale: layoutScale(layout),
     groundY: layoutGround(layout),
-    fixtures,
+    fixtures: area?.exclude?.length ? fixtures.filter((f) => !area.exclude!.includes(f.id)) : fixtures,
     roofPath: path,
     roofCorners: corners,
     active: activeMask
@@ -954,6 +997,49 @@ export const CORNER_RGB: [number, number, number] = [255, 150, 0];
  * 0.5 s), so the editor's drawing and the real lights pulse together.
  */
 export const editorPulse = (nowMs: number) => Math.floor(nowMs / 500) % 2 === 0;
+
+/** The Games page's colors: what each part of the yard is in a game (see server/src/game/kit.ts). */
+export const GAME_ROLE_RGB: Record<FixtureKind, [number, number, number]> = {
+  roof: [255, 196, 110],
+  bush: [40, 220, 110],
+  tree: [30, 200, 180],
+  line: [150, 110, 255],
+  custom: [150, 110, 255]
+};
+/** LEDs that games leave out. */
+export const GAME_OUT_RGB: [number, number, number] = [70, 0, 0];
+
+/**
+ * The Games page's view of the yard: the LEDs games use in the color of their part (roof, bush,
+ * tree, the rest), the ones left out faint red, skipped ones dark. `focus` (an object, or one
+ * of its segments) is brighter, and blinks with `pulse`, so it can be found on the house.
+ */
+export function paintGameArea(
+  layout: Layout,
+  area: GameArea | null,
+  focus: { id: string; segment: number | null } | null,
+  pulse: boolean,
+  put: (fixtureIndex: number, led: number, rgb: [number, number, number]) => void
+) {
+  const k = (c: [number, number, number], m: number): [number, number, number] => [Math.round(c[0] * m), Math.round(c[1] * m), Math.round(c[2] * m)];
+  layout.fixtures.forEach((f, fi) => {
+    const n = Math.max(0, Math.floor(f.pixels));
+    if (!n) return;
+    const lit = activeLeds(f);
+    const game = gameLeds(f, area);
+    const seg = focus?.id === f.id && focus.segment != null && isLine(f) ? segmentLeds(f, focus.segment) : null;
+    const dim = focus && focus.id !== f.id ? 0.35 : 1;
+    for (let i = 0; i < n; i++) {
+      if (!lit[i]) {
+        put(fi, i, [0, 0, 0]);
+        continue;
+      }
+      const focused = focus?.id === f.id && (!seg || (i >= seg.lo && i <= seg.hi));
+      const base = game[i] ? GAME_ROLE_RGB[f.kind] : GAME_OUT_RGB;
+      put(fi, i, focused ? (pulse ? k(base, game[i] ? 1 : 3) : k(base, game[i] ? 0.45 : 1.5)) : k(base, (game[i] ? 0.55 : 1) * dim));
+    }
+  });
+}
 
 /**
  * Paints the layout editor's view: the selected object in bright blue with its first LED green,
