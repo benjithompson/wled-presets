@@ -6,9 +6,9 @@ import { bestScore, COLORS, css, Flare, heat, Motes, record, scale, Sparks, Wave
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Beat Drop: a rhythm game on the roofline, with four colors. Notes in green, cyan, blue and
-// magenta slide along the roof toward the hit zone near its start: a softly lit band between two
-// bright posts. The phone has a button in each color (on a keyboard: the arrow keys, ← ↓ ↑ →, or
-// D F J K). Press the button in a note's color as its head passes through the zone. Long notes are
+// magenta slide along the roof toward the hit zone near its start: a lit band between two bright
+// posts, drawn over everything so they show through every explosion. The phone has a button in
+// each color (on a keyboard: the arrow keys, ← ↓ ↑ →, or D F J K). Press the button in a note's color as its head passes through the zone. Long notes are
 // holds: press as the head arrives, keep that button down while the body slides through, and let
 // go as the bright end cap reaches the zone.
 //
@@ -188,6 +188,7 @@ interface Ripple {
 
 const NIGHT: Rgb = [0.02, 0.008, 0.045];
 const MISSED: Rgb = [0.12, 0.1, 0.16];
+const DARK: Rgb = [0, 0, 0];
 /** The one-color game's look: white heads and end caps, cyan tails, blue bodies, a blue-white zone. */
 const TAIL: Rgb = [0, 0.75, 1];
 const BODY_FAR: Rgb = [0.1, 0.1, 1];
@@ -655,6 +656,48 @@ export function beatGame(stage: Stage): BeatGame {
 
   // ---------- Drawing ----------
 
+  /** The zone's color: a warm white (blue-white with one color), tinting toward the next note's color as it comes near. */
+  function zoneTint(due: BeatNote | null): Rgb {
+    const near = due && phase !== 'over' ? Math.max(0, 1 - (due.time - song) / Math.max(0.3, travel * 0.4)) : 0;
+    const base = single() ? COLORS.hint : POST;
+    return near > 0 && due && !single() ? mix(base, toneColor(due.tone), 0.5 * near) : base;
+  }
+
+  /**
+   * The zone's two posts, two steps thick with a dark step either side, drawn last and over
+   * everything else (sparks, flashes, ripples), so the zone stays easy to see through every explosion. A hit flashes them in the
+   * note's color, a miss red. A note's head passing over a post shows through it.
+   */
+  function drawPosts(frame: Frame) {
+    let due: BeatNote | null = null;
+    for (const x of notes) if (x.state === 'coming' && (!due || x.time < due.time)) due = x;
+    const half = zoneHalf();
+    const hitK = Math.max(0, 1 - hitFlash / 0.25);
+    const missK = Math.max(0, 1 - missFlash / 0.35);
+    let color = zoneTint(due);
+    if (hitK) color = mix(color, hitColor, 0.6 * hitK);
+    if (missK) color = mix(color, COLORS.bad, missK);
+    // Full brightness always: the glow around them (in the backdrop) breathes on the beat.
+    const amount = 1;
+    const set = (led: number, c: Rgb, a: number) => frame.set(led, [c[0] * a, c[1] * a, c[2] * a]);
+    const heads = notes.filter((x) => x.state === 'coming' || (x.hold && x.state !== 'done')).flatMap((x) => (x.hold ? [posAt(x.time), posAt(x.end)] : [posAt(x.time)]));
+    for (const [at, out] of [
+      [Math.round(line - half - 1), -1],
+      [Math.round(line + half + 1), 1]
+    ]) {
+      // A dark step either side of each post keeps it crisp inside the sparks.
+      for (const [pos, c] of [
+        [at - out, DARK],
+        [at, color],
+        [at + out, color],
+        [at + 2 * out, DARK]
+      ] as const) {
+        if (pos < 0 || pos >= n || heads.some((h) => Math.abs(h - pos) < 2.5)) continue;
+        roof.at(set, pos, c, amount);
+      }
+    }
+  }
+
   /** The half width of the zone's band, in steps: the PERFECT window at the notes' speed now. */
   const zoneHalf = () => Math.max(2.5, cfg().perfect * speed());
 
@@ -738,25 +781,20 @@ export function beatGame(stage: Stage): BeatGame {
     clearOver(line - half - 1, line + half + 1, 0.15);
     for (let i = 0; i < Math.floor(line - half - CLEAR - 1); i++) keep[i] = Math.min(keep[i], 0.25);
     for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) bg[i * 3 + c] *= keep[i];
-    const near = due && phase !== 'over' ? Math.max(0, 1 - (due.time - song) / Math.max(0.3, travel * 0.4)) : 0;
-    const base = single() ? COLORS.hint : POST;
-    const zoneColor = near > 0 && due && !single() ? mix(base, toneColor(due.tone), 0.5 * near) : base;
+    const zoneColor = zoneTint(due);
     const add = (i: number, c: Rgb, a: number) => {
       bg[i * 3] += c[0] * a;
       bg[i * 3 + 1] += c[1] * a;
       bg[i * 3 + 2] += c[2] * a;
     };
     for (let i = Math.max(0, Math.ceil(line - half)); i <= Math.min(n - 1, Math.floor(line + half)); i++) {
-      add(i, zoneColor, 0.05 + 0.05 * beat);
+      add(i, zoneColor, 0.12 + 0.06 * beat);
       if (hitK) add(i, hitColor, 0.25 * hitK);
       if (zoneMissK) add(i, COLORS.bad, 0.3 * zoneMissK);
     }
     for (let i = 0; i < Math.ceil(line - half - 1); i++) add(i, COLORS.bad, 0.045);
-    for (const at of [line - half - 1.2, line + half + 1.2]) {
-      bgDot(at, zoneColor, 0.8, 0.4 + 0.25 * beat);
-      if (hitK) bgDot(at, COLORS.gold, 1, hitK * 0.8);
-      if (zoneMissK) bgDot(at, COLORS.bad, 1.2, zoneMissK);
-    }
+    // A glow around the posts (the posts themselves are drawn last, over everything: see drawPosts).
+    for (const at of [line - half - 1.5, line + half + 1.5]) bgDot(at, zoneColor, 1.6, 0.25 + 0.15 * beat);
 
     // Under and around every note: the backdrop (and the zone) give way, so the note stands alone.
     keep.fill(1);
@@ -962,6 +1000,7 @@ export function beatGame(stage: Stage): BeatGame {
       if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
       motes.draw();
       waves.draw();
+      drawPosts(frame);
     },
 
     status(): GameStatusFields {
