@@ -13,6 +13,8 @@ import { DEFAULT_LINE, LINE_MAX, type LineAdmin, type LineSettings, type LineVie
 //   after the wait began.
 // - The next player in line is asked to tap Play first (they may have walked off): they have
 //   offerSeconds, or the line moves on without them.
+// - Throttle: after a scene or a color of theirs plays, a visitor cannot pick another for
+//   quickSeconds (not even to change their own turn), so nobody can flick the lights about.
 // - A signed-in admin never waits: their tap takes the lights at once.
 // - Switched off, there is no line: the last tap wins at once, as on a home network.
 
@@ -40,7 +42,7 @@ interface Turn {
   deadline: number | null;
 }
 
-export type Asked = { result: 'now' } | { result: 'queued'; place: number } | { result: 'full' };
+export type Asked = { result: 'now' } | { result: 'queued'; place: number } | { result: 'full' } | { result: 'wait'; retryIn: number };
 
 export type ShowWant = Exclude<LineWant, { kind: 'game' }>;
 
@@ -60,6 +62,8 @@ export class Line {
   private turn: Turn | null = null;
   private offerTo: { entry: Entry; until: number } | null = null;
   private nextId = 1;
+  /** When each visitor's last scene or color began to play (for the throttle). */
+  private changedAt = new Map<string, number>();
   /** Whether the lights were free at the last tick: a scene's time running out frees them. */
   private wasFree = true;
   private now: () => number;
@@ -107,6 +111,8 @@ export class Line {
     const now = this.now();
     const t = this.turn;
     const mine = t?.who.id === who.id;
+    const retryIn = isShow(want) && !who.admin ? this.cooldown(who.id, now) : 0;
+    if (retryIn > 0) return { result: 'wait', retryIn };
     if (!this.settings.enabled || who.admin || this.free(now)) {
       // A fresh turn: the clock starts again, unless it is the same player picking another game.
       this.begin(who, want, label, now, mine && !isShow(t!.want) && !isShow(want));
@@ -138,6 +144,7 @@ export class Line {
     const turn: Turn = { who, want, label, since: keepClock && prev ? prev.since : now, deadline: keepClock && prev ? prev.deadline : null };
     turn.deadline = this.deadline(turn, now, !keepClock || isShow(want) !== isShow(prev!.want));
     this.turn = turn;
+    if (isShow(want) && !who.admin) this.changedAt.set(who.id, now);
     // Playing now: they no longer wait.
     this.queue = this.queue.filter((e) => e.who.id !== who.id);
     if (this.offerTo?.entry.who.id === who.id) this.offerTo = null;
@@ -149,6 +156,13 @@ export class Line {
     if (isShow(t.want)) return !fresh && t.deadline != null ? t.deadline : t.since + this.showLength();
     if (!this.waitingCount()) return null;
     return !fresh && t.deadline != null ? t.deadline : now + this.settings.turnMinutes * 60_000;
+  }
+
+  /** How long until this visitor may pick a scene or a color again (0: now). */
+  private cooldown(visitor: string, now: number) {
+    const at = this.changedAt.get(visitor);
+    if (at == null || !this.settings.enabled) return 0;
+    return Math.max(0, at + this.settings.quickSeconds * 1000 - now);
   }
 
   /** How long a scene or a color starting now plays: short with nobody else waiting. */
@@ -227,6 +241,7 @@ export class Line {
       return;
     }
     this.turn = { who: e.who, want: e.want, label: e.label, since: now, deadline: now + this.showLength() };
+    if (!e.who.admin) this.changedAt.set(e.who.id, now);
     this.log(`From the line: ${e.label}`);
     this.onShow(e.want, e.who);
   }
@@ -252,6 +267,14 @@ export class Line {
       this.next();
       this.changed();
     }
+    // A throttle that runs out: that visitor sees they can pick again.
+    let cooled = false;
+    for (const [id] of this.changedAt) {
+      if (this.cooldown(id, now) > 0) continue;
+      this.changedAt.delete(id);
+      cooled = true;
+    }
+    if (cooled) this.changed();
     const free = this.free(now);
     if (free !== this.wasFree) {
       this.wasFree = free;
@@ -312,7 +335,8 @@ export class Line {
       free: this.free(now),
       you: at >= 0 ? { place: at + 1, kind: this.queue[at].want.kind, label: this.queue[at].label, startsIn: this.startsIn(at, now) } : null,
       offer: o && o.entry.who.id === visitor && o.entry.want.kind === 'game' ? { game: o.entry.want.game, label: o.entry.label, endsIn: this.left(o.until, now) } : null,
-      calling: !!o && o.entry.who.id !== visitor
+      calling: !!o && o.entry.who.id !== visitor,
+      cooldown: this.cooldown(visitor, now) > 0 ? this.left(now + this.cooldown(visitor, now), now) : null
     };
   }
 

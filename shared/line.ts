@@ -10,7 +10,8 @@ export interface LineSettings {
   enabled: boolean;
   /**
    * A scene or a color picked while nobody else waits keeps the lights this long: someone who
-   * comes along next (for a scene or a game) waits no longer than that.
+   * comes along next (for a scene or a game) waits no longer than that. It is also a throttle:
+   * after a scene or a color of theirs plays, a visitor cannot pick another for this long.
    */
   quickSeconds: number;
   /** A scene or a color whose turn comes while others still wait plays this long. */
@@ -49,6 +50,8 @@ export interface LineView {
   offer: { game: string; label: string; endsIn: number } | null;
   /** Someone else is being asked to play (the lights wait for them). */
   calling: boolean;
+  /** This visitor changed the lights lately: they can pick a scene or a color again after this. */
+  cooldown: number | null;
 }
 
 /** The line as an admin sees it (Admin → Games). */

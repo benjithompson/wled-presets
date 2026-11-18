@@ -251,6 +251,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const asked = line.ask(visitor(c), want, label);
     if (asked.result === 'now') return null;
     if (asked.result === 'full') return c.json({ error: 'The line is full right now. Try again in a few minutes!' }, 409);
+    if (asked.result === 'wait') {
+      const s = Math.ceil(asked.retryIn / 1000);
+      c.header('Retry-After', String(s));
+      return c.json({ error: `You just changed the lights. Pick again in ${s} second${s === 1 ? '' : 's'}.`, retryIn: asked.retryIn }, 429);
+    }
     return c.json({ queued: { place: asked.place, message: `You're ${ordinal(asked.place)} in line. ${label} plays when it's your turn.` } }, 202);
   };
 
