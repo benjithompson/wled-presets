@@ -1,4 +1,6 @@
 import dgram from 'node:dgram';
+import dns from 'node:dns';
+import net from 'node:net';
 
 /** WLED's default port for real-time UDP (Settings → Sync Interfaces). */
 export const WLED_UDP_PORT = 21324;
@@ -13,6 +15,8 @@ const DDP_ID_DISPLAY = 0x01;
 /** DNRGB: protocol 4, up to 489 LEDs per packet, with a start index. */
 const DNRGB = 4;
 const MAX_PER_PACKET = 489;
+/** A device's host name is looked up again this often (its address can change). */
+const RESOLVE_MS = 60_000;
 
 /**
  * Sends LED colors to WLED devices with the real-time UDP protocol (DNRGB). The device shows
@@ -22,14 +26,40 @@ const MAX_PER_PACKET = 489;
 export class RealtimeOut {
   private socket = dgram.createSocket('udp4');
   private seq = 0;
+  /** Host names and their addresses (see address). */
+  private ips = new Map<string, { ip: string | null; at: number; pending: boolean }>();
 
   constructor() {
     this.socket.on('error', () => {});
     this.socket.unref();
   }
 
+  /**
+   * The address to send to. Given a host name (wled-roof.local), each packet would wait for its
+   * own name lookup, on a thread pool shared with files, and the lookups can finish out of
+   * order: the packet that shows the frame could go before the rest of it. So the name is
+   * looked up once (and again now and then), and packets go to the address.
+   */
+  private address(host: string): string {
+    if (net.isIP(host)) return host;
+    let e = this.ips.get(host);
+    if (!e) this.ips.set(host, (e = { ip: null, at: 0, pending: false }));
+    const entry = e;
+    if (!entry.pending && Date.now() - entry.at > RESOLVE_MS) {
+      entry.pending = true;
+      dns.lookup(host, { family: 4 }, (err, ip) => {
+        entry.pending = false;
+        // A failed lookup is tried again after 5 s; until then, packets go to the name.
+        entry.at = err ? Date.now() - RESOLVE_MS + 5000 : Date.now();
+        if (!err) entry.ip = ip;
+      });
+    }
+    return entry.ip ?? host;
+  }
+
   /** `rgb` holds one byte triple per LED, starting at device LED 0. */
   send(host: string, port: number, rgb: Uint8Array, timeoutSec = 2) {
+    host = this.address(host);
     const count = Math.floor(rgb.length / 3);
     for (let start = 0; start < count; start += MAX_PER_PACKET) {
       const n = Math.min(MAX_PER_PACKET, count - start);
@@ -50,11 +80,13 @@ export class RealtimeOut {
    * its real-time timeout (WLED: 2.5 s by default).
    */
   sendDdp(host: string, port: number, rgb: Uint8Array) {
+    host = this.address(host);
     this.seq = (this.seq % 15) + 1;
     for (let offset = 0; offset < rgb.length; offset += DDP_MAX_BYTES) {
       const len = Math.min(DDP_MAX_BYTES, rgb.length - offset);
       const last = offset + len >= rgb.length;
-      const packet = Buffer.alloc(10 + len);
+      // Every byte is written below, so the packet can come from Node's buffer pool unzeroed.
+      const packet = Buffer.allocUnsafe(10 + len);
       packet[0] = DDP_VERSION_1 | (last ? DDP_PUSH : 0);
       packet[1] = this.seq;
       packet[2] = DDP_TYPE_RGB24;

@@ -3,7 +3,6 @@ import { defaultSettings, YARD, type EffectSettings } from '../../shared/effects
 import { buildStage, sampleLayout } from '../../shared/layout.ts';
 import { emptySequence, neighbours, SequencePlayer, targetLeds, type SeqClip, type Sequence } from '../../shared/sequence.ts';
 import { GameHost } from '../src/game/host.ts';
-import { LightsOutput } from '../src/game/output.ts';
 import { sequenceInput } from '../src/sequenceStore.ts';
 
 const layout = sampleLayout();
@@ -138,7 +137,7 @@ describe('sequences', () => {
   it('play on the real lights from a scene, looping, with nobody watching', async () => {
     const l = sampleLayout();
     l.fixtures[1] = { ...l.fixtures[1], deviceId: 'bush-device' };
-    const host = new GameHost(l, () => {}, new LightsOutput(() => []));
+    const host = new GameHost(l, () => {});
     try {
       const s = seq([{ clips: [{ targets: ['bush-1', 'bush-2'] }] }]);
       expect(host.playShow({ sequence: s })).toEqual({ devices: ['bush-device'], objects: 2 });

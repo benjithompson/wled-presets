@@ -290,8 +290,16 @@ export class Yard {
   /** A ring of light at distance r from a point: one frame of a shockwave through the yard. */
   ring(x: number, y: number, r: number, width: number, color: Rgb, amount = 1) {
     const pos = this.stage.positions;
+    // Only LEDs within 2.5 widths of the ring light up: test the squared distance first.
+    const inner = r - 2.5 * width;
+    const in2 = inner > 0 ? inner * inner : -1;
+    const out2 = (r + 2.5 * width) ** 2;
     for (const i of this.lit) {
-      const d = (Math.hypot(pos[i * 2] - x, pos[i * 2 + 1] - y) - r) / width;
+      const dx = pos[i * 2] - x;
+      const dy = pos[i * 2 + 1] - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= in2 || d2 >= out2) continue;
+      const d = (Math.sqrt(d2) - r) / width;
       if (d > -2.5 && d < 2.5) this.out?.add(i, color, amount * Math.exp(-d * d));
     }
   }
@@ -325,6 +333,102 @@ export class Yard {
     let best: Part | null = null;
     for (const p of parts) if (!best || Math.abs(p.x - x) < Math.abs(best.x - x)) best = p;
     return best;
+  }
+}
+
+// ---------- Motion and timing on the roof ----------
+
+/** Moves a position `step` along the roof in direction `dir` (1 or -1), bouncing off both ends. */
+export function bounce(pos: number, dir: number, step: number, n: number): { pos: number; dir: number } {
+  const end = n - 1;
+  const p = pos + dir * step;
+  if (p >= end) return { pos: 2 * end - p, dir: -1 };
+  if (p <= 0) return { pos: -p, dir: 1 };
+  return { pos: p, dir };
+}
+
+/**
+ * What happened over the last moments, by time (where the comet was). A press arrives late,
+ * after Wi-Fi, so games judge it by what the player saw then, not by where things are now.
+ */
+export class Recent<T> {
+  private list: { t: number; v: T }[] = [];
+  private keep: number;
+
+  /** Keeps `keep` seconds. */
+  constructor(keep: number) {
+    this.keep = keep;
+  }
+
+  push(t: number, v: T) {
+    this.list.push({ t, v });
+    let old = 0;
+    while (old < this.list.length && t - this.list[old].t > this.keep) old++;
+    if (old) this.list.splice(0, old);
+  }
+
+  /** The values from time t on, oldest first. */
+  since(t: number): T[] {
+    return this.list.filter((e) => e.t >= t).map((e) => e.v);
+  }
+
+  /** The value at time t: the last one at or before it. */
+  at(t: number): T | undefined {
+    for (let i = this.list.length - 1; i >= 0; i--) if (this.list[i].t <= t) return this.list[i].v;
+    return undefined;
+  }
+
+  get latest(): T | undefined {
+    return this.list.at(-1)?.v;
+  }
+
+  clear() {
+    this.list.length = 0;
+  }
+}
+
+/** The light a fast thing leaves on the roof: a soft head, fading behind it. */
+export class Trail {
+  /** Per roof step: how bright, 0..1. */
+  readonly level: Float32Array;
+  /** Per roof step: whose light it is (a team, for its color). */
+  readonly tag: Uint8Array;
+
+  constructor(n: number) {
+    this.level = new Float32Array(n);
+    this.tag = new Uint8Array(n);
+  }
+
+  /** Fades by `rate` per second. */
+  fade(dt: number, rate: number) {
+    const k = Math.exp(-dt * rate);
+    for (let i = 0; i < this.level.length; i++) this.level[i] *= k;
+  }
+
+  /** The head, at a position between steps: it lights the two steps on each side. */
+  mark(pos: number, tag = 0) {
+    const n = this.level.length;
+    const lo = Math.max(0, Math.floor(pos - 2));
+    const hi = Math.min(n - 1, Math.ceil(pos + 2));
+    for (let i = lo; i <= hi; i++) {
+      const v = Math.exp(-((i - pos) ** 2) / 1.5);
+      if (v > this.level[i]) {
+        this.level[i] = v;
+        this.tag[i] = tag;
+      }
+    }
+  }
+
+  /** Draws every step brighter than `min`, at `gain` times its level. */
+  draw(yard: Yard, color: (level: number, tag: number) => Rgb, gain = 1, min = 0.01) {
+    for (let i = 0; i < this.level.length; i++) {
+      const v = this.level[i];
+      if (v > min) yard.roofAt(i, color(v, this.tag[i]), v * gain);
+    }
+  }
+
+  clear() {
+    this.level.fill(0);
   }
 }
 

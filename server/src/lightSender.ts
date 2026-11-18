@@ -13,11 +13,13 @@ const MIN_CHANNEL = 4;
  * glow" shows as scattered red, green and blue dots. Such pixels go out as off, and a tiny
  * channel in a brighter pixel goes out as 0, so it does not tint the color.
  */
-export function blackLevel(rgb: Uint8Array): Uint8Array {
-  const out = new Uint8Array(rgb.length);
+export function blackLevel(rgb: Uint8Array, out: Uint8Array = new Uint8Array(rgb.length)): Uint8Array {
   for (let i = 0; i + 2 < rgb.length; i += 3) {
     const r = rgb[i], g = rgb[i + 1], b = rgb[i + 2];
-    if (Math.max(r, g, b) < MIN_PIXEL) continue;
+    if (r < MIN_PIXEL && g < MIN_PIXEL && b < MIN_PIXEL) {
+      out[i] = out[i + 1] = out[i + 2] = 0;
+      continue;
+    }
     out[i] = r < MIN_CHANNEL ? 0 : r;
     out[i + 1] = g < MIN_CHANNEL ? 0 : g;
     out[i + 2] = b < MIN_CHANNEL ? 0 : b;
@@ -42,6 +44,11 @@ const PROBE_AFTER_MS = 700;
 const HTTP_FPS = 12;
 /** A stream with no frames for this long has ended; HTTP streams then give the device back. */
 const IDLE_MS = 2500;
+/**
+ * A frame the device already shows is not sent again, but at least this often, well within
+ * WLED's real-time timeout (2.5 s), so the device keeps showing the stream.
+ */
+const RESEND_MS = 1000;
 
 const HTTP_NOTE = (d: DeviceTarget) =>
   `Real-time UDP (DDP, port ${d.info?.ddpport ?? DDP_PORT}) did not reach the device, so frames go over HTTP: slower, about ${HTTP_FPS} per second.`;
@@ -59,7 +66,15 @@ interface Link {
   note: string;
   /** Smoothed time for one HTTP frame to reach the device, in ms. */
   httpMs: number;
+  /** When the device last got a frame from this link (0: not yet, or it must get the next one). */
+  sentAt: number;
 }
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
 
 /**
  * Sends LED colors to WLED devices. It uses DDP over UDP (fast; the device returns to normal
@@ -70,6 +85,11 @@ interface Link {
 export class LightSender {
   private udp = new RealtimeOut();
   private links = new Map<string, Link>();
+  /**
+   * For each device: the frame it shows (after blackLevel) and the next one. The two swap, so
+   * no frame needs a new buffer; a frame is copied into packets as it is sent.
+   */
+  private frames = new Map<string, { shown: Uint8Array; next: Uint8Array }>();
   /** Devices that UDP did not reach, and until when to go straight to HTTP for them. */
   private httpUntil = new Map<string, number>();
   /** When we last told a device to show its own state over a real-time stream (lor: 1). */
@@ -82,11 +102,13 @@ export class LightSender {
 
   /** `rgb`: one byte triple per LED, from device LED 0. */
   send(d: DeviceTarget, input: Uint8Array) {
-    const rgb = blackLevel(input);
+    let f = this.frames.get(d.id);
+    if (!f || f.next.length !== input.length) this.frames.set(d.id, (f = { shown: new Uint8Array(input.length), next: new Uint8Array(input.length) }));
+    const rgb = blackLevel(input, f.next);
     const now = Date.now();
     let link = this.links.get(d.id);
     if (!link) {
-      link = { mode: 'checking', startedAt: now, lastFrame: now, probing: false, inflight: false, lastHttp: 0, wasOn: null, idleTimer: null, httpMs: 80, note: 'Checking that real-time UDP (DDP) reaches the device.' };
+      link = { mode: 'checking', startedAt: now, lastFrame: now, probing: false, inflight: false, lastHttp: 0, wasOn: null, idleTimer: null, httpMs: 80, sentAt: 0, note: 'Checking that real-time UDP (DDP) reaches the device.' };
       // We may have told the device to ignore real-time data a moment ago (see end()); a new
       // stream must undo that, or the device would keep ignoring it.
       if (now - (this.overrideAt.get(d.id) ?? 0) < 10_000) {
@@ -101,10 +123,15 @@ export class LightSender {
     }
     link.lastFrame = now;
     this.armIdle(d, link);
-
-    if (link.mode === 'http') return this.sendHttp(d, link, rgb);
-    this.udp.sendDdp(d.host, d.info?.ddpport ?? DDP_PORT, rgb);
     if (link.mode === 'checking' && !link.probing && now - link.startedAt > PROBE_AFTER_MS) void this.probe(d, link);
+
+    // The device already shows this frame (an editor view between blinks, a still scene).
+    if (link.sentAt && now - link.sentAt < RESEND_MS && sameBytes(rgb, f.shown)) return;
+    const sent = link.mode === 'http' ? this.sendHttp(d, link, rgb) : (this.udp.sendDdp(d.host, d.info?.ddpport ?? DDP_PORT, rgb), true);
+    if (!sent) return;
+    link.sentAt = now;
+    f.next = f.shown;
+    f.shown = rgb;
   }
 
   /**
@@ -172,14 +199,17 @@ export class LightSender {
     }
     link.mode = 'http';
     link.note = HTTP_NOTE(d);
+    // The frames sent over UDP did not arrive: send the next one, even if it is the same.
+    link.sentAt = 0;
     // Check UDP again after a while, in case the network changes.
     this.httpUntil.set(d.id, Date.now() + 10 * 60_000);
     this.log('warn', `Real-time UDP did not reach "${d.name}" (${d.host}). Sending frames over HTTP instead, about ${HTTP_FPS} per second. A router or firewall between the networks can drop UDP.`);
   }
 
-  private sendHttp(d: DeviceTarget, link: Link, rgb: Uint8Array) {
+  /** Returns false when the frame is skipped (one is on its way, or the frame limit). */
+  private sendHttp(d: DeviceTarget, link: Link, rgb: Uint8Array): boolean {
     const now = Date.now();
-    if (link.inflight || now - link.lastHttp < 1000 / HTTP_FPS) return;
+    if (link.inflight || now - link.lastHttp < 1000 / HTTP_FPS) return false;
     link.inflight = true;
     link.lastHttp = now;
     const hex: string[] = [];
@@ -195,6 +225,7 @@ export class LightSender {
       if (r.ok) link.httpMs = link.httpMs * 0.8 + (Date.now() - t0) * 0.2;
       link.inflight = false;
     })();
+    return true;
   }
 
   private armIdle(d: DeviceTarget, link: Link) {

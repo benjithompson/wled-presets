@@ -1,6 +1,6 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, css, Flare, heat, Motes, Sparks, Waves, Yard } from './kit.ts';
+import { COLORS, css, Flare, heat, Motes, Recent, Sparks, Trail, Waves, Yard } from './kit.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Roof Duel: Fire (the left end of the roof) against Ice (the right end). A ball of light flies
@@ -45,8 +45,8 @@ export function duelGame(stage: Stage): Game {
   const baseSpeed = n / 2.6;
   const topSpeed = n / 0.75;
   const gravity = n * 0.25;
-  const trail = new Float32Array(n);
-  const trailSide = new Uint8Array(n);
+  /** The ball's trail, tagged with the side that hit it last (for its color). */
+  const trail = new Trail(n);
 
   // Each bush LED belongs to the side of the house it is on; they fill bottom up.
   const sideLeds: number[][] = [[], []];
@@ -77,7 +77,8 @@ export function duelGame(stage: Stage): Game {
   let lastHit = '';
   let lastScorer = 0;
   const lockout = [0, 0];
-  const history: { t: number; pos: number; vel: number }[] = [];
+  /** Where the ball was lately: a swing is judged by what the player saw. */
+  const seen = new Recent<{ pos: number; vel: number }>(0.4);
   /** The house's plan for the ball coming at it: how deep to hit, or to miss. */
   let housePlan: { depth: number; miss: boolean } | null = null;
 
@@ -113,8 +114,8 @@ export function duelGame(stage: Stage): Game {
     owner = server;
     rally = 0;
     rallySpeed = baseSpeed;
-    trail.fill(0);
-    history.length = 0;
+    trail.clear();
+    seen.clear();
     housePlan = null;
     setPhase('serve');
   }
@@ -175,7 +176,7 @@ export function duelGame(stage: Stage): Game {
         waves.add(target.x, target.y, c, { amount: 0.6, reach: stage.scale * 6 });
       }
     });
-    trail.fill(0);
+    trail.clear();
     server = loser;
     setPhase('point');
   }
@@ -191,9 +192,9 @@ export function duelGame(stage: Stage): Game {
     if (phase === 'serve' && side === server && phaseTime > 0.3) return launch();
     if (phase !== 'rally') return;
     // Where the ball was when the player saw it; past the end counts as the deepest hit.
-    const seen = history.find((h) => h.t >= clock - LAG) ?? history.at(-1);
-    const recent = history.filter((h) => clock - h.t <= GRACE && inZone(side, h));
-    const h = seen && inZone(side, seen) ? seen : recent.at(-1);
+    const then = seen.since(clock - LAG)[0] ?? seen.latest;
+    const recent = seen.since(clock - GRACE).filter((h) => inZone(side, h));
+    const h = then && inZone(side, then) ? then : recent.at(-1);
     if (!h) return whiff(side);
     hit(side, 1 - fromEnd(side, Math.max(0, Math.min(n - 1, h.pos))) / zone);
   }
@@ -248,8 +249,7 @@ export function duelGame(stage: Stage): Game {
     if (Math.sign(vel) !== dir || Math.abs(vel) < minSpeed) vel = dir * minSpeed;
     vel = Math.max(-topSpeed * 1.2, Math.min(topSpeed * 1.2, vel));
     pos += vel * dt;
-    history.push({ t: clock, pos, vel });
-    while (history.length && clock - history[0].t > 0.4) history.shift();
+    seen.push(clock, { pos, vel });
 
     const target = heading();
     // The house plays its side.
@@ -268,7 +268,7 @@ export function duelGame(stage: Stage): Game {
 
   // ---------- Drawing ----------
 
-  function drawRoof() {
+  function drawRoof(dt: number) {
     // The roof is split between the teams; the line moves toward whoever is losing.
     const front = 0.5 + (0.4 * (score[0] - score[1])) / WIN;
     for (let i = 0; i < n; i++) {
@@ -292,26 +292,17 @@ export function duelGame(stage: Stage): Game {
       }
     }
     // The ball and its trail, in the color of whoever hit it last.
-    const fadeRate = Math.exp(-(1 / 60) * (4 + Math.abs(vel) / n * 4));
-    for (let i = 0; i < n; i++) trail[i] *= fadeRate;
+    trail.fade(dt, 4 + (Math.abs(vel) / n) * 4);
     if (phase === 'rally' || phase === 'serve') {
       const p = Math.max(0, Math.min(n - 1, pos));
-      const lo = Math.max(0, Math.floor(p - 2));
-      const hi = Math.min(n - 1, Math.ceil(p + 2));
-      for (let i = lo; i <= hi; i++) {
-        const v = Math.exp(-((i - p) ** 2) / 1.5);
-        if (v > trail[i]) {
-          trail[i] = v;
-          trailSide[i] = owner;
-        }
-      }
+      trail.mark(p, owner);
       const hot = Math.min(1, Math.abs(vel) / topSpeed);
       const c = mix(TEAMS[owner].color, WHITE, 0.25 + hot * 0.6);
       const pulse = phase === 'serve' ? 0.6 + 0.4 * Math.sin(clock * 8) : 1;
       yard.roofSplat(p, c, 1.4, pulse);
       if (hot > 0.6 && Math.random() < hot * 0.5) sparks.burst(p, [TEAMS[owner].color], 1, n * 0.08, 0.4);
     }
-    for (let i = 0; i < n; i++) if (trail[i] > 0.02) yard.roofAt(i, TEAMS[trailSide[i]].color, trail[i] * 0.8);
+    trail.draw(yard, (_, side) => TEAMS[side].color, 0.8, 0.02);
     if (phase === 'countdown') {
       // Three beats run out from the middle of the roof to both ends.
       const beat = phaseTime % 1;
@@ -403,7 +394,7 @@ export function duelGame(stage: Stage): Game {
       waves.update(dt);
       for (const f of flare) f.update(dt);
 
-      drawRoof();
+      drawRoof(dt);
       drawBushes();
       drawTreesAndDecor();
       if (phase === 'won') drawWin();

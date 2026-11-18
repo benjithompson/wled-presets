@@ -11,25 +11,30 @@ export const propInput =
 
 const SELECT_CHEVRON = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a8a29e' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`;
 
-function readOpen(id: string, fallback: boolean) {
-  try {
-    const v = localStorage.getItem(`layout.section.${id}`);
-    return v == null ? fallback : v === 'open';
-  } catch {
-    return fallback;
-  }
+/** Whether a folding part of the inspector is open, remembered in this browser by `id`. */
+function useOpen(id: string, fallback: boolean): [boolean, () => void] {
+  const key = `layout.section.${id}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      const v = localStorage.getItem(key);
+      return v == null ? fallback : v === 'open';
+    } catch {
+      return fallback;
+    }
+  });
+  const toggle = () =>
+    setOpen((v) => {
+      try {
+        localStorage.setItem(key, v ? 'closed' : 'open');
+      } catch {}
+      return !v;
+    });
+  return [open, toggle];
 }
 
 /** A section of the inspector that folds away. It remembers if it is open. */
 export function PropSection({ id, title, actions, children, defaultOpen = true }: { id: string; title: ReactNode; actions?: ReactNode; children: ReactNode; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(() => readOpen(id, defaultOpen));
-  const toggle = () =>
-    setOpen((v) => {
-      try {
-        localStorage.setItem(`layout.section.${id}`, v ? 'closed' : 'open');
-      } catch {}
-      return !v;
-    });
+  const [open, toggle] = useOpen(id, defaultOpen);
   return (
     <section className="border-b border-stone-200 dark:border-stone-800">
       <div className="flex h-8 items-center gap-1 pr-2">
@@ -46,6 +51,28 @@ export function PropSection({ id, title, actions, children, defaultOpen = true }
       </div>
       {open ? <div className="space-y-1.5 px-3 pb-3">{children}</div> : null}
     </section>
+  );
+}
+
+/**
+ * Settings that most people do not need, folded away inside a section (closed at first). It
+ * remembers if it is open.
+ */
+export function PropAdvanced({ id, label = 'Advanced', children }: { id: string; label?: ReactNode; children: ReactNode }) {
+  const [open, toggle] = useOpen(`advanced.${id}`, false);
+  return (
+    <div className="pt-0.5">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="flex items-center gap-1 text-[11px] font-medium text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white"
+      >
+        <ChevronDown className={cn('size-3 shrink-0 transition', !open && '-rotate-90')} />
+        {label}
+      </button>
+      {open ? <div className="mt-1.5 space-y-1.5 border-l-2 border-stone-200 pl-2 dark:border-stone-700">{children}</div> : null}
+    </div>
   );
 }
 

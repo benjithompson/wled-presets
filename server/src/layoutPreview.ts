@@ -1,13 +1,8 @@
 import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
-import { buildStage, deviceLed, editorPulse, paintEditor, paintGameArea, type GameArea, type Layout, type Stage } from '../../shared/layout.ts';
+import { buildStage, deviceLed, editorPulse, layoutShapeKey, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
-import type { Device, DeviceInfo } from '../../shared/types.ts';
-import type { LightSender } from './lightSender.ts';
+import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
 
-/** Often enough that a changed number shows on the lights at once. */
-const TICK_MS = 50;
-/** While the effects play: every frame, as smooth as a scene. */
-const PLAY_TICK_MS = 1000 / 60;
 /** The preview stops when the editor has not refreshed it for this long. */
 const EXPIRE_MS = 8_000;
 
@@ -21,6 +16,8 @@ export interface PreviewRequest {
   play?: boolean;
   /** The Games page: show the game area (see paintGameArea), with `selected` and `segment` in focus. */
   area?: GameArea | null;
+  /** The editor's "match to the lights" wizard: one LED of the selected line blinks red (see paintMatch). */
+  probe?: MatchProbe | null;
 }
 
 /** The sequence editor's preview: a sequence, the time the editor shows, and whether it plays. */
@@ -30,175 +27,177 @@ export interface SequencePreviewRequest {
   playing: boolean;
 }
 
-/** Colors for one device from a whole stage frame (RGB bytes in stage order). */
-export function stageFrame(layout: Layout, stage: Stage, bytes: Uint8Array, deviceId: string, ledCount: number): Uint8Array {
-  const fixtures = layout.fixtures.filter((f) => f.deviceId === deviceId);
-  const size = Math.max(ledCount, ...fixtures.map((f) => f.startPixel + f.pixels));
-  const out = new Uint8Array(size * 3);
-  layout.fixtures.forEach((f, fi) => {
-    if (f.deviceId !== deviceId) return;
-    const sf = stage.fixtures[fi];
-    for (let i = 0; i < sf.count; i++) {
-      const led = deviceLed(f, i);
-      if (led >= 0 && led < size) out.set(bytes.subarray((sf.offset + i) * 3, (sf.offset + i) * 3 + 3), led * 3);
-    }
-  });
-  return out;
+/** A layout as the lights need it: its stage, and where the stage's LEDs go on each device. */
+interface View {
+  key: string;
+  stage: Stage;
+  maps: DeviceMap[];
 }
 
-/** Colors for one device: the editor's view (see paintEditor), mapped to the device's LED numbers. */
-export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: number, pulse: boolean): Uint8Array {
-  const fixtures = req.layout.fixtures.filter((f) => f.deviceId === deviceId);
-  const size = Math.max(ledCount, ...fixtures.map((f) => f.startPixel + f.pixels));
-  const out = new Uint8Array(size * 3);
+const viewOf = (layout: Layout, key = layoutShapeKey(layout)): View => {
+  const stage = buildStage(layout);
+  return { key, stage, maps: deviceMaps(layout, stage) };
+};
+
+/**
+ * The editor's view of the layout as a frame for the lights (see paintEditor, paintGameArea
+ * and paintMatch). LEDs past the end of a line (the wizard's) are set by device number.
+ */
+export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'maps'>, pulse: boolean): LightFrame {
+  const { stage } = view;
+  const bytes = new Uint8Array(stage.pixelCount * 3);
+  const extra: ExtraLed[] = [];
   const put = (fi: number, i: number, rgb: [number, number, number]) => {
+    const sf = stage.fixtures[fi];
+    if (i >= 0 && i < sf.count) return bytes.set(rgb, (sf.offset + i) * 3);
     const f = req.layout.fixtures[fi];
-    if (f.deviceId !== deviceId) return;
-    const led = deviceLed(f, i);
-    if (led >= 0 && led < size) out.set(rgb, led * 3);
+    if (f.deviceId) extra.push({ deviceId: f.deviceId, led: deviceLed(f, i), rgb });
   };
-  if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
+  if (req.probe && req.selected) paintMatch(req.layout, req.selected, req.probe, pulse, put);
+  else if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
   else paintEditor(req.layout, req.selected, req.corner, req.segment ?? null, pulse, put);
-  return out;
+  return { maps: view.maps, bytes, extra };
 }
 
-/** Shows the layout being edited on the real lights, while the editor asks for it. */
-export class LayoutPreview {
+/** One device's colors for the editor's view (see editorFrame). */
+export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: number, pulse: boolean): Uint8Array {
+  const view = viewOf(req.layout);
+  const m = view.maps.find((x) => x.deviceId === deviceId) ?? { deviceId, size: 0, pairs: new Int32Array(), objects: [] };
+  return renderDevice(editorFrame(req, view, pulse), m, ledCount);
+}
+
+/**
+ * Shows the layout being edited on the real lights while an editor asks for it: the layout
+ * editor's colors or effects, the Games page's game area, or the sequence editor's sequence.
+ * A source of the FramePipeline that wins over games and scenes; when the editor stops asking,
+ * they get the lights back.
+ */
+export class LayoutPreview implements FrameSource {
   private req: PreviewRequest | null = null;
   private until = 0;
-  private timer: NodeJS.Timeout | null = null;
-  private sender: LightSender;
-
-  private devices: () => (Device & { info: DeviceInfo | null })[];
+  private pipeline: FramePipeline;
   private log: (msg: string) => void;
-  /** While the effects play: the stage, the running effects, and the last frame's time. */
-  private fx: { key: string; stage: Stage; scene: EffectScene; data: Float32Array; bytes: Uint8Array; last: number } | null = null;
-  private tickMs = 0;
+  /** The layout being shown, as the lights need it. Rebuilt only when its shape changes. */
+  private view: View | null = null;
+  /** While the effects play: the running effects, and their frame. */
+  private fx: { stage: Stage; scene: EffectScene; data: Float32Array; bytes: Uint8Array } | null = null;
   /** The sequence editor's preview: the player, and whether it plays or shows one moment. */
-  private seq: { key: string; player: SequencePlayer; stage: Stage; layout: Layout; data: Float32Array; bytes: Uint8Array; playing: boolean; last: number } | null = null;
+  private seq: { stage: Stage; player: SequencePlayer; data: Float32Array; bytes: Uint8Array; playing: boolean } | null = null;
+  /** The editor's colors change only with a request or a blink: painted once for each. */
+  private painted: { req: PreviewRequest; pulse: boolean; frame: LightFrame } | null = null;
 
-  constructor(devices: () => (Device & { info: DeviceInfo | null })[], log: (msg: string) => void, sender: LightSender) {
-    this.devices = devices;
-    this.sender = sender;
+  constructor(pipeline: FramePipeline, log: (msg: string) => void) {
     this.log = log;
+    this.pipeline = pipeline;
+    pipeline.add(this, PRIORITY.editor);
   }
 
   /** Starts or updates the preview. Returns the names of the devices it lights. */
   show(req: PreviewRequest): string[] {
     this.seq = null;
+    const view = this.viewFor(req.layout);
+    if (req.play) this.syncEffects(req.layout, view.stage);
+    else this.fx = null;
     return this.start(req);
   }
 
   /**
    * Plays a sequence on the lights for the sequence editor, from `time`. While it plays, the
-   * server keeps its own clock; a time far from it (a jump) moves it. Paused, it shows `time`.
+   * pipeline's clock moves it on; a time far from it (a jump) moves it. Paused, it shows `time`.
    */
   showSequence(req: SequencePreviewRequest, layout: Layout): string[] {
+    const { stage } = this.viewFor(layout);
     const cur = this.seq;
-    const key = JSON.stringify(layout);
-    if (!cur || cur.key !== key) {
-      const stage = buildStage(layout);
+    if (!cur || cur.stage !== stage) {
       const player = new SequencePlayer(stage, layout, req.sequence);
       player.seek(req.time);
-      this.seq = { key, player, stage, layout, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), playing: req.playing, last: performance.now() };
+      this.seq = { stage, player, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), playing: req.playing };
     } else {
       cur.player.setSequence(req.sequence);
       // Small differences are the network delay; only a jump (or a paused editor) moves the clock.
       if (!req.playing || !cur.playing || Math.abs(cur.player.time - req.time) > 0.25) cur.player.seek(req.time, req.playing ? 2.5 : 1);
       cur.playing = req.playing;
-      cur.last = performance.now();
     }
     this.fx = null;
     return this.start({ layout, selected: null, corner: null, play: true });
+  }
+
+  /** True while an editor shows a preview on the lights. */
+  get active() {
+    return !!this.req;
+  }
+
+  get running() {
+    return this.active;
+  }
+
+  stop() {
+    if (!this.req) return;
+    this.req = null;
+    this.fx = null;
+    this.seq = null;
+    this.painted = null;
+    // On the next frame, a game or scene takes the lights back, or each device gets its own state back.
+    this.pipeline.wake();
+    this.log('Editor preview on the lights stopped');
+  }
+
+  close() {
+    this.stop();
+    this.pipeline.remove(this);
+  }
+
+  tick(dt: number, showAt: number): LightFrame | null {
+    const req = this.req;
+    if (!req || !this.view) return null;
+    if (Date.now() > this.until) {
+      this.stop();
+      return null;
+    }
+    const sq = this.seq;
+    if (sq) {
+      sq.player.update(sq.playing ? dt : 0, sq.data);
+      toBytes(sq.data, sq.bytes);
+      return { maps: this.view.maps, bytes: sq.bytes };
+    }
+    const fx = this.fx;
+    if (fx) {
+      fx.scene.update(dt, fx.data);
+      toBytes(fx.data, fx.bytes);
+      return { maps: this.view.maps, bytes: fx.bytes };
+    }
+    // Drawn for when it shows, so the lights blink in step with the editor.
+    const pulse = editorPulse(showAt);
+    if (this.painted?.req !== req || this.painted.pulse !== pulse) this.painted = { req, pulse, frame: editorFrame(req, this.view, pulse) };
+    return this.painted.frame;
   }
 
   private start(req: PreviewRequest): string[] {
     const started = !this.req;
     this.req = req;
     this.until = Date.now() + EXPIRE_MS;
-    if (this.seq) this.fx = null;
-    else if (req.play) this.syncEffects(req.layout);
-    else this.fx = null;
-    const tick = req.play ? PLAY_TICK_MS : TICK_MS;
-    if (this.timer && this.tickMs !== tick) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (!this.timer) {
-      this.timer = setInterval(() => this.send(), tick);
-      this.tickMs = tick;
-    }
-    this.send();
-    const names = this.targets().map((d) => d.name);
+    this.pipeline.wake();
+    const ids = new Set(req.layout.fixtures.map((f) => f.deviceId).filter(Boolean));
+    const names = this.pipeline
+      .deviceList()
+      .filter((d) => d.enabled && ids.has(d.id))
+      .map((d) => d.name);
     if (started && names.length) this.log(`Editor preview on the lights started (${names.join(', ')})`);
     return names;
   }
 
-  /** True while the editor shows a preview on the lights. */
-  get active() {
-    return !!this.req;
+  private viewFor(layout: Layout): View {
+    const key = layoutShapeKey(layout);
+    if (this.view?.key !== key) this.view = viewOf(layout, key);
+    return this.view;
   }
 
-  stop() {
-    if (!this.req) return;
-    const targets = this.targets();
-    this.req = null;
-    this.fx = null;
-    this.seq = null;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    // Put each device's own color, scene or preset back at once.
-    for (const d of targets) this.sender.end(d);
-    this.log('Editor preview on the lights stopped');
-  }
-
-  close() {
-    this.stop();
-  }
-
-  private targets() {
-    const ids = new Set(this.req?.layout.fixtures.map((f) => f.deviceId).filter(Boolean));
-    return this.devices().filter((d) => d.enabled && ids.has(d.id));
-  }
-
-  /** Keeps the effects running across edits: only a changed shape or LED count restarts one. */
-  private syncEffects(layout: Layout) {
-    const key = JSON.stringify(layout.fixtures.map(({ effect: _e, segmentEffects: _s, name: _n, deviceId: _d, ...f }) => f));
+  /** Keeps the effects running across edits: a changed yard moves them to its new stage. */
+  private syncEffects(layout: Layout, stage: Stage) {
     const effects = layoutEffects(layout);
-    if (!this.fx || this.fx.key !== key) {
-      const stage = buildStage(layout);
-      const scene = this.fx ? (this.fx.scene.setStage(stage, layout), this.fx.scene) : new EffectScene(stage, layout, effects);
-      this.fx = { key, stage, scene, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), last: performance.now() };
-    } else this.fx.scene.setStage(this.fx.stage, layout);
+    if (!this.fx) this.fx = { stage, scene: new EffectScene(stage, layout, effects), data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
+    else if (this.fx.stage !== stage) this.fx = { ...this.fx, stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
+    this.fx.scene.setStage(stage, layout);
     this.fx.scene.setEffects(effects);
-  }
-
-  private send() {
-    if (!this.req) return;
-    if (Date.now() > this.until) return this.stop();
-    const sq = this.seq;
-    if (sq) {
-      const now = performance.now();
-      const dt = sq.playing ? Math.min(0.1, (now - sq.last) / 1000) : 0;
-      sq.last = now;
-      sq.player.update(dt, sq.data);
-      toBytes(sq.data, sq.bytes);
-      for (const d of this.targets()) this.sender.send(d, stageFrame(sq.layout, sq.stage, sq.bytes, d.id, d.info?.leds?.count ?? 0));
-      return;
-    }
-    const fx = this.fx;
-    if (fx) {
-      const now = performance.now();
-      fx.scene.update((now - fx.last) / 1000, fx.data);
-      fx.last = now;
-      toBytes(fx.data, fx.bytes);
-      for (const d of this.targets()) this.sender.send(d, stageFrame(this.req.layout, fx.stage, fx.bytes, d.id, d.info?.leds?.count ?? 0));
-      return;
-    }
-    for (const d of this.targets()) {
-      // Draw ahead by the time the frame takes to arrive, so the lights pulse in step with the editor.
-      const frame = previewFrame(this.req, d.id, d.info?.leds?.count ?? 0, editorPulse(Date.now() + this.sender.delay(d.id)));
-      this.sender.send(d, frame);
-    }
   }
 }

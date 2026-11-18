@@ -4,13 +4,11 @@ import type { Frame } from './frame.ts';
 export interface GameInput {
   playerId: string;
   action: 'press' | 'release';
-  /** Server time of the input, in seconds since the game started. */
-  at: number;
 }
 
 export type GameStatusFields = Omit<GameStatus, 'players' | 'game'>;
 
-/** A game or an animation that draws the stage. The host calls update() 60 times a second. */
+/** A game or an animation that draws the stage. The host calls update() on every frame (see FRAME_HZ). */
 export interface Game {
   readonly id: string;
   update(dt: number, frame: Frame): void;
@@ -23,8 +21,6 @@ export interface Game {
   playerStatus?(playerId: string): Partial<GameStatusFields>;
   /** A player closed the page. */
   leave?(playerId: string): void;
-  /** True when the game is over and the host can return to the idle animation. */
-  readonly finished?: boolean;
 }
 
 export type GameFactory = (stage: Stage) => Game;
