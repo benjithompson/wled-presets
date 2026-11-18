@@ -23,6 +23,7 @@ import { layoutSchema } from '../src/layoutStore.ts';
 import { catcherGame } from '../src/game/catcher.ts';
 import { Frame } from '../src/game/frame.ts';
 import { GameHost } from '../src/game/host.ts';
+import { defaultSettings } from '../../shared/effects.ts';
 
 describe('layout geometry', () => {
   it('spreads roof LEDs evenly from the first point to the last', () => {
@@ -361,6 +362,41 @@ describe('game host', () => {
     expect(seen.layout).toBe(true);
     expect(seen.frames).toBeGreaterThan(5);
     expect(seen.statuses.at(-1)).toMatchObject({ game: 'catcher', phase: 'ready', players: 1 });
+    ws.close();
+    host.stop();
+    server.close();
+  });
+
+  it('streams compressed frames 30 times a second to a browser that asks, and nothing while the yard is still', async () => {
+    const zlib = await import('node:zlib');
+    const server = http.createServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const host = new GameHost(sampleLayout(), () => {});
+    host.attach(server, '/api/play');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/play?frames=deflate`);
+    const sizes: number[] = [];
+    let last: Buffer | null = null;
+    ws.on('message', (data, isBinary) => {
+      if (!isBinary) return;
+      sizes.push((data as Buffer).length);
+      last = zlib.inflateRawSync(data as Buffer);
+    });
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'start', game: 'catcher' }));
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(sizes.length).toBeGreaterThanOrEqual(25);
+    expect(sizes.length).toBeLessThanOrEqual(32);
+    expect(last!.length).toBe((450 + 180) * 3);
+    // Mostly dark: far smaller than the raw frame.
+    expect(Math.max(...sizes)).toBeLessThan(((450 + 180) * 3) / 3);
+    // A still yard (a solid color scene) sends one frame, then nothing until it changes.
+    ws.send(JSON.stringify({ type: 'stop' }));
+    host.playEffects({ '*': { ...defaultSettings('solid'), brightness: 1 } });
+    await new Promise((r) => setTimeout(r, 300));
+    const before = sizes.length;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sizes.length).toBe(before);
     ws.close();
     host.stop();
     server.close();

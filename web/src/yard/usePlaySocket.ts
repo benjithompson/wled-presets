@@ -3,9 +3,19 @@ import type { GameInfo, GameStatus, Layout } from '../../../shared/layout.ts';
 
 export type PlayMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'input'; action: 'press' | 'release' };
 
+/** Whether this browser can unpack compressed frames (all current ones can). */
+const DEFLATE = typeof DecompressionStream !== 'undefined';
+
+/** Unpacks one compressed frame (raw deflate). */
+async function inflate(data: ArrayBuffer): Promise<Uint8Array> {
+  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 /**
- * Connects to the game host. Keeps the latest frame in a ref (it changes 60 times a second,
- * too often for React state) and the layout, games and status in state.
+ * Connects to the game host. Keeps the latest frame in a ref (it changes up to 30 times a
+ * second, too often for React state) and the layout, games and status in state. Frames come
+ * compressed where the browser can unpack them.
  */
 export function usePlaySocket() {
   const [layout, setLayout] = useState<Layout | null>(null);
@@ -19,13 +29,17 @@ export function usePlaySocket() {
     let closed = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     const open = () => {
-      const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/play`);
+      const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/play${DEFLATE ? '?frames=deflate' : ''}`);
       ws.binaryType = 'arraybuffer';
       socket.current = ws;
       ws.onopen = () => setConnected(true);
+      // Compressed frames are unpacked one after another, so a later frame never shows first.
+      let unpacking = Promise.resolve();
       ws.onmessage = (e) => {
         if (e.data instanceof ArrayBuffer) {
-          frame.current = new Uint8Array(e.data);
+          const data = e.data;
+          if (!DEFLATE) frame.current = new Uint8Array(data);
+          else unpacking = unpacking.then(() => inflate(data).then((f) => void (frame.current = f), () => {}));
           return;
         }
         const m = JSON.parse(e.data);

@@ -1,4 +1,5 @@
 import type { Device, DeviceInfo } from '../../shared/types.ts';
+import { MAX_FPS, maxFps } from './ledTiming.ts';
 import { DDP_PORT, RealtimeOut } from './realtime.ts';
 import { baseUrl, requestJson } from './wled.ts';
 
@@ -125,8 +126,14 @@ export class LightSender {
     this.armIdle(d, link);
     if (link.mode === 'checking' && !link.probing && now - link.startedAt > PROBE_AFTER_MS) void this.probe(d, link);
 
-    // The device already shows this frame (an editor view between blinks, a still scene).
-    if (link.sentAt && now - link.sentAt < RESEND_MS && sameBytes(rgb, f.shown)) return;
+    if (link.sentAt) {
+      // The device already shows this frame (an editor view between blinks, a still scene).
+      if (now - link.sentAt < RESEND_MS && sameBytes(rgb, f.shown)) return;
+      // It is still drawing the last one: a long strip cannot show every frame. A later
+      // frame goes instead (the clock's ticks jitter by a few ms, hence the margin).
+      const fps = maxFps(d.info);
+      if (fps < MAX_FPS - 2 && now - link.sentAt < 1000 / fps - 4) return;
+    }
     const sent = link.mode === 'http' ? this.sendHttp(d, link, rgb) : (this.udp.sendDdp(d.host, d.info?.ddpport ?? DDP_PORT, rgb), true);
     if (!sent) return;
     link.sentAt = now;

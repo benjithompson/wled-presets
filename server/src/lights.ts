@@ -115,10 +115,23 @@ export class Lights {
     if (this.revertTimer) clearTimeout(this.revertTimer);
   }
 
+  /**
+   * A device's info, with its LED outputs (see DeviceInfo.outputs). The outputs are read once,
+   * and again when the LED count changes: they live in the device's settings.
+   */
+  private async readInfo(d: Device): Promise<FetchResult<DeviceInfo>> {
+    const r = await wled.info(d, 3000);
+    if (!r.ok) return r;
+    const prev = this.status.get(d.id)?.info;
+    if (prev?.outputs && prev.leds?.count === r.data.leds?.count) return { ...r, data: { ...r.data, outputs: prev.outputs } };
+    const o = await wled.outputs(d);
+    return o.ok ? { ...r, data: { ...r.data, outputs: o.data } } : r;
+  }
+
   async refreshStatus(): Promise<void> {
     const devices = this.db.listDevices().filter((d) => d.enabled);
     // A device busy with real-time frames over Wi-Fi can answer slowly; allow 3 s.
-    const results = await Promise.all(devices.map((d) => wled.info(d, 3000)));
+    const results = await Promise.all(devices.map((d) => this.readInfo(d)));
     let changed = false;
     const seen = new Set<string>();
     devices.forEach((d, i) => {
