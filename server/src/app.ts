@@ -657,6 +657,14 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   });
 
   // Debug mode: send the games to the real lights too.
+  // A line that should not be on a scoreboard (rude initials, a test game).
+  admin.delete('/play/scores/:id', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !host?.removeScore(id)) throw new HttpError(404, 'Unknown score');
+    lights.log('info', 'game', `High score ${id} removed`, null, actor(c));
+    return c.json({ ok: true });
+  });
+
   admin.get('/play/output', (c) => c.json(host?.output?.info() ?? null));
   admin.put('/play/output', async (c) => {
     const input = await body(c, z.object({ enabled: z.boolean().optional(), brightness: z.number().min(0.05).max(1).optional() }));

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameInfo, GameStatus, Layout } from '../../../shared/layout.ts';
 
-export type PlayMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string };
+export type PlayMessage = { type: 'start'; game: string } | { type: 'stop' } | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
 
 /** Whether this browser can unpack compressed frames (all current ones can). */
 const DEFLATE = typeof DecompressionStream !== 'undefined';

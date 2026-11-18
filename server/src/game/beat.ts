@@ -694,6 +694,8 @@ export function beatGame(stage: Stage): BeatGame {
   return {
     id: 'beat',
 
+    scoreBoard: () => ({ key: bestKey(), title: `Beat Drop: ${LEVEL_NAMES[level]}, ${COLOR_NAMES[colors]}` }),
+
     input(e: GameInput) {
       if (e.action === 'press') press(e.playerId, e.button);
       else release(e.playerId, e.button);

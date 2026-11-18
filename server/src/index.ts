@@ -3,6 +3,8 @@ import { createApp } from './app.ts';
 import { createAuth } from './auth.ts';
 import { loadConfig } from './config.ts';
 import { openDatabase } from './db.ts';
+import { useScoreStore } from './game/kit.ts';
+import { databaseScores } from './scoreStore.ts';
 import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
@@ -37,6 +39,7 @@ const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg))
 // over games and scenes.
 const pipeline = new FramePipeline(() => lights.liveDevices(), sender);
 const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout', msg));
+useScoreStore(databaseScores(db.raw));
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), pipeline);
 host.setGameArea(readGameArea(db));
 // Scenes with effects: the game host draws them and sends them to the lights.

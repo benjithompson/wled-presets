@@ -350,6 +350,8 @@ export function colorgateGame(stage: Stage): Game {
   return {
     id: 'colorgate',
 
+    scoreBoard: () => ({ key: 'colorgate', title: 'Color Gate' }),
+
     input,
 
     update(dt: number, frame: Frame) {

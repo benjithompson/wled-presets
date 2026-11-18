@@ -7,6 +7,7 @@ import { api } from '../lib/api.ts';
 import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
 import { gameLook } from '../lib/gameLooks.ts';
+import { InitialsEntry, Scoreboard } from './HighScores.tsx';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
@@ -69,7 +70,9 @@ export function PlayPage() {
 
   // On a computer: the space bar or Enter is the big button; a row of buttons has its own keys.
   const keyMap = useRef(new Map<string, string>());
-  keyMap.current = new Map(controls ? controls.flatMap((c) => (c.keys ?? []).map((k) => [k, c.id] as const)) : [['Space', 'main'], ['Enter', 'main']]);
+  // While initials are typed, the keys are for the letters.
+  const entering = playing && !!status?.enterInitials;
+  keyMap.current = entering ? new Map() : new Map(controls ? controls.flatMap((c) => (c.keys ?? []).map((k) => [k, c.id] as const)) : [['Space', 'main'], ['Enter', 'main']]);
   useEffect(() => {
     if (!playing) return;
     const down = (e: KeyboardEvent) => {
@@ -166,6 +169,7 @@ export function PlayPage() {
                 <p className="text-center text-2xl font-bold tracking-tight text-balance sm:text-3xl" aria-live="polite">
                   {status?.message}
                 </p>
+                {status?.enterInitials ? <InitialsEntry entry={status.enterInitials} onSave={(initials) => send({ type: 'initials', id: status.enterInitials!.id, initials })} /> : null}
                 <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
                   {status?.progress ? (
                     <Progress {...status.progress} />
@@ -226,6 +230,7 @@ export function PlayPage() {
                 <p className="hidden text-sm text-white/40 sm:block">
                   {controls?.length ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
                 </p>
+                {status?.scoreboard ? <Scoreboard board={status.scoreboard} onRemove={isAdmin ? (id) => void api.removeScore(id).catch(() => {}) : undefined} /> : null}
               </section>
             ) : (
               <section className="flex-1 py-6">

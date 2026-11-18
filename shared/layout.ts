@@ -1224,6 +1224,18 @@ export interface GameStatus {
   keysHint?: string;
   /** Choices for the next game (on the start and game-over screens). */
   settings?: GameSetting[];
+  /** The game's high scores (on the start and game-over screens). */
+  scoreboard?: Scoreboard;
+  /** The last game's score made the board: the phone asks for initials. */
+  enterInitials?: { id: number; rank: number; score: number; refused?: boolean };
+}
+
+/** An arcade high-score table: the best scores of one game (and its settings), with initials. */
+export interface Scoreboard {
+  title: string;
+  entries: { id: number; rank: number; initials: string; score: number }[];
+  /** The line just named, to light up. */
+  fresh?: number;
 }
 
 /** Debug mode state: games sent to the real lights. */

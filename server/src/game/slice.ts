@@ -373,6 +373,8 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   return {
     id: 'slice',
 
+    scoreBoard: () => ({ key: 'slice', title: 'Slice' }),
+
     input,
 
     peek: () => ({ bar, lo, hi, time: timeLeft, crossing: crossing() }),
