@@ -5,7 +5,9 @@ import { DEFAULT_LINE, LINE_MAX, type LineAdmin, type LineSettings, type LineVie
 // - A tap when the lights are free plays at once and becomes the turn now.
 // - Otherwise it joins the end of the line (one place per visitor: a second tap changes what the
 //   place is for, and keeps the place).
-// - A scene or a color is a turn of showSeconds: then the next in line goes, if anyone waits.
+// - A scene or a color is a short turn (quickSeconds) when nobody else waits, so the next one to
+//   come along is not kept waiting for nothing; one whose turn comes while others still wait
+//   plays showSeconds. Then the next in line goes, if anyone waits.
 // - A game is a turn for one player. With nobody waiting it lasts as long as they like. Once
 //   someone waits, it ends when the game ends (the game host tells the line), or turnMinutes
 //   after the wait began.
@@ -93,7 +95,7 @@ export class Line {
     if (!this.settings.enabled) return true;
     if (this.offerTo || this.queue.length) return false;
     if (!this.turn) return true;
-    return isShow(this.turn.want) && now >= this.turn.since + this.settings.showSeconds * 1000;
+    return isShow(this.turn.want) && this.turn.deadline != null && now >= this.turn.deadline;
   }
 
   /**
@@ -112,8 +114,8 @@ export class Line {
     }
     // The one with the lights can change what plays during their turn, but its clock keeps
     // running: another game in a game turn, or a scene or a color in place of either. Turning a
-    // scene's minute into a game turn has to wait in line like everyone else.
-    if (mine && !(isShow(t!.want) && !isShow(want))) {
+    // scene's turn into a game turn while others wait has to wait in line like everyone else.
+    if (mine && !(isShow(t!.want) && !isShow(want) && this.waitingCount())) {
       this.begin(who, want, label, now, true);
       return { result: 'now' };
     }
@@ -142,11 +144,16 @@ export class Line {
     this.changed();
   }
 
-  /** When the turn has to end: a scene's minute; a game's turn from when someone began to wait. */
+  /** When the turn has to end: a scene's time; a game's turn from when someone began to wait. */
   private deadline(t: Turn, now: number, fresh = false): number | null {
-    if (isShow(t.want)) return t.since + this.settings.showSeconds * 1000;
+    if (isShow(t.want)) return !fresh && t.deadline != null ? t.deadline : t.since + this.showLength();
     if (!this.waitingCount()) return null;
     return !fresh && t.deadline != null ? t.deadline : now + this.settings.turnMinutes * 60_000;
+  }
+
+  /** How long a scene or a color starting now plays: short with nobody else waiting. */
+  private showLength() {
+    return (this.waitingCount() ? this.settings.showSeconds : this.settings.quickSeconds) * 1000;
   }
 
   /** The player being asked to play takes their turn. Returns the game, or null if it was not theirs. */
@@ -219,7 +226,7 @@ export class Line {
       this.log(`Next up: ${e.label}`);
       return;
     }
-    this.turn = { who: e.who, want: e.want, label: e.label, since: now, deadline: now + this.settings.showSeconds * 1000 };
+    this.turn = { who: e.who, want: e.want, label: e.label, since: now, deadline: now + this.showLength() };
     this.log(`From the line: ${e.label}`);
     this.onShow(e.want, e.who);
   }
@@ -274,6 +281,23 @@ export class Line {
     return Math.max(0, Math.ceil((at - now) / 1000) * 1000);
   }
 
+  /**
+   * At the latest, when the one at this place in line gets their turn: what plays now, then each
+   * turn ahead at its longest (a game may end sooner). Null while a game has no end yet.
+   */
+  private startsIn(at: number, now: number): number | null {
+    const t = this.turn;
+    let ms = 0;
+    if (t) {
+      if (t.deadline == null) return null;
+      ms += Math.max(0, t.deadline - now);
+    }
+    const game = this.settings.offerSeconds * 1000 + this.settings.turnMinutes * 60_000;
+    if (this.offerTo) ms += Math.max(0, this.offerTo.until - now) + this.settings.turnMinutes * 60_000;
+    for (const e of this.queue.slice(0, at)) ms += e.want.kind === 'game' ? game : this.settings.showSeconds * 1000;
+    return this.left(now + ms, now);
+  }
+
   view(visitor: string): LineView {
     const now = this.now();
     const t = this.turn;
@@ -286,7 +310,7 @@ export class Line {
       endsIn: counts ? this.left(t!.deadline!, now) : null,
       waiting: this.queue.length,
       free: this.free(now),
-      you: at >= 0 ? { place: at + 1, kind: this.queue[at].want.kind, label: this.queue[at].label } : null,
+      you: at >= 0 ? { place: at + 1, kind: this.queue[at].want.kind, label: this.queue[at].label, startsIn: this.startsIn(at, now) } : null,
       offer: o && o.entry.who.id === visitor && o.entry.want.kind === 'game' ? { game: o.entry.want.game, label: o.entry.label, endsIn: this.left(o.until, now) } : null,
       calling: !!o && o.entry.who.id !== visitor
     };

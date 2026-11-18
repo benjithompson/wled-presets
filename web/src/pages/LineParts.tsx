@@ -51,6 +51,7 @@ export function OfferCard({ offer, onPlay, onPass }: { offer: NonNullable<LineVi
 /** Who has the lights now, and your place in line. Nothing when the lights are free and you do not wait. */
 export function LineCard({ line, onLeave, className }: { line: LineView; onLeave: () => void; className?: string }) {
   const left = useCountdown(line.endsIn);
+  const mine = useCountdown(line.you?.startsIn ?? null);
   if (!line.enabled || (line.free && !line.you)) return null;
   const now = line.now;
   return (
@@ -77,6 +78,11 @@ export function LineCard({ line, onLeave, className }: { line: LineView; onLeave
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-amber-300/10 px-3 py-2 ring-1 ring-amber-300/30">
           <p>
             <b className="text-amber-200">You're {ordinal(line.you.place)} in line</b> for {line.you.label}.{' '}
+            {mine != null ? (
+              <b className="inline-flex items-center gap-1 text-white tabular-nums">
+                <Clock className="size-3.5" /> Your turn {mine ? `within ${clock(mine)}` : 'any moment'}.
+              </b>
+            ) : null}{' '}
             <span className="text-white/60">{line.you.kind === 'game' ? 'Keep this page open: when your turn comes, tap Play.' : 'It plays on its own when your turn comes.'}</span>
           </p>
           <button type="button" onClick={onLeave} className="rounded-full px-3 py-1 text-white/60 ring-1 ring-white/15 hover:bg-white/10 hover:text-white">

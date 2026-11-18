@@ -59,8 +59,11 @@ export function LineCard() {
         }
       />
       {s.enabled ? (
-        <div className="grid gap-4 px-5 py-4 sm:grid-cols-3">
-          <Field label="Scene or color turn (seconds)" hint="It plays at least this long before the next in line.">
+        <div className="grid gap-4 px-5 py-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="Quick turn (seconds)" hint="A scene or a color picked while nobody else waits keeps the lights this long.">
+            {(id) => <Input id={id} type="number" min={3} max={600} value={s.quickSeconds} onChange={num('quickSeconds')} />}
+          </Field>
+          <Field label="Busy turn (seconds)" hint="A scene or a color whose turn comes while others still wait plays this long.">
             {(id) => <Input id={id} type="number" min={10} max={3600} value={s.showSeconds} onChange={num('showSeconds')} />}
           </Field>
           <Field label="Game turn (minutes)" hint="Once someone waits, a turn ends with its game, or this long after the wait began.">

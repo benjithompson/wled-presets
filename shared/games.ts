@@ -6,7 +6,7 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     id: 'catcher',
     name: 'Comet Catcher',
     tagline: 'Stop the comet in the gate',
-    description: 'Stop the comet inside the green gate. Every catch lights up a bush.',
+    description: 'Stop the comet inside the green gate before it closes in. Every catch lights up a bush.',
     players: '1 player'
   },
   {

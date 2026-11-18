@@ -329,6 +329,30 @@ describe('Comet Catcher', () => {
     expect(game.status()).toMatchObject({ phase: 'miss', lives: 2 });
   });
 
+  it('closes the gate in slowly while the comet runs', () => {
+    const stage = buildStage(sampleLayout());
+    const game = catcherGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    const roof = stage.fixtures[0];
+    // How wide the green gate looks: from post to post.
+    const gateWidth = () => {
+      const green: number[] = [];
+      for (let p = 0; p < roof.count; p++) {
+        const g = frame.data[(roof.offset + p) * 3 + 1];
+        const b = frame.data[(roof.offset + p) * 3 + 2];
+        if (g > 0.4 && g > b * 1.6) green.push(p);
+      }
+      return Math.max(...green) - Math.min(...green);
+    };
+    game.input({ playerId: 'p', action: 'press' });
+    game.update(1 / 60, frame);
+    const before = gateWidth();
+    for (let i = 0; i < 8 * 60; i++) game.update(1 / 60, frame);
+    const after = gateWidth();
+    expect(after).toBeLessThan(before * 0.75);
+    expect(after).toBeGreaterThan(before * 0.3);
+  });
+
   it('asks for a roofline when there is none', () => {
     const layout = sampleLayout();
     layout.fixtures = layout.fixtures.filter((f) => f.kind !== 'roof');
