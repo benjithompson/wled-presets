@@ -1,12 +1,13 @@
 // Snapping for the layout editor, as in CAD programs: the pointer jumps to points, midpoints,
 // lines and alignments with other points, and an angle step (Shift: 45°; Ortho: 90°) keeps a
-// line at a multiple of that angle.
+// line at a multiple of that angle. With a grid, the pointer also jumps to grid crossings where
+// nothing else is near.
 // Everything works in view coordinates (u to the right, v down), in layout units.
 
 export type UV = { u: number; v: number };
 
 /** What the pointer snapped to. */
-export type SnapKind = 'point' | 'center' | 'mid' | 'on' | 'align' | 'angle' | 'free';
+export type SnapKind = 'point' | 'center' | 'mid' | 'on' | 'align' | 'grid' | 'angle' | 'free';
 
 export interface SnapTargets {
   /** Points of lines (and points of the line being drawn). */
@@ -24,10 +25,22 @@ export interface Snapped {
   guides: [UV, UV][];
 }
 
+/** A snapping grid: lines every `step` layout units, counted from `origin`. */
+export interface SnapGrid {
+  step: number;
+  origin: UV;
+}
+
 export const emptyTargets = (): SnapTargets => ({ points: [], segments: [], centers: [] });
 
 const dist = (a: UV, b: UV) => Math.hypot(a.u - b.u, a.v - b.v);
 const round = (p: UV): UV => ({ u: Math.round(p.u), v: Math.round(p.v) });
+/** Grid steps are rarely whole layout units: keep grid positions to 1/100 of a unit. */
+const fine = (x: number) => Math.round(x * 100) / 100;
+const roundFine = (p: UV): UV => ({ u: fine(p.u), v: fine(p.v) });
+
+/** The grid line nearest to x along one axis. */
+export const onGrid = (x: number, grid: SnapGrid, axis: 'u' | 'v') => fine(grid.origin[axis] + Math.round((x - grid.origin[axis]) / grid.step) * grid.step);
 
 /** The point on a ray from `from`, at a multiple of `stepDeg`, closest to `to`. */
 export function constrainAngle(from: UV, to: UV, stepDeg = 45): UV {
@@ -81,21 +94,24 @@ function alignOn(p: UV, list: UV[], tol: number, axis: 'u' | 'v'): UV | null {
 /**
  * Snaps a pointer position. `tol` is the snap distance in layout units (a few screen pixels).
  * `angle`: keep the direction from `from` at a multiple of this many degrees (true: 45°).
- * `snap` false: no snapping. Order: points, centers, midpoints, lines, then alignment with other points.
+ * `snap` false: no snapping to objects. `grid`: snap to this grid where no object is near.
+ * Order: points, centers, midpoints, lines, alignment with other points, then the grid.
  */
-export function snapPoint(raw: UV, targets: SnapTargets, tol: number, opts: { from?: UV | null; angle?: boolean | number; snap?: boolean }): Snapped {
+export function snapPoint(raw: UV, targets: SnapTargets, tol: number, opts: { from?: UV | null; angle?: boolean | number; snap?: boolean; grid?: SnapGrid | null }): Snapped {
   const snapOn = opts.snap !== false;
+  const grid = opts.grid && opts.grid.step > 0 ? opts.grid : null;
   const step = opts.angle === true ? 45 : opts.angle || 0;
   if (step && opts.from) {
     const from = opts.from;
     const at = constrainAngle(from, raw, step);
-    const guides: [UV, UV][] = [[from, at]];
-    // Along a level or upright line, still line up with other points.
-    if (snapOn) {
-      const level = Math.abs(at.v - from.v) < 1e-6;
-      const upright = Math.abs(at.u - from.u) < 1e-6;
-      if (level || upright) {
-        const axis = level ? 'u' : 'v';
+    // Along a level or upright line, still line up with other points, or else with the grid.
+    const level = Math.abs(at.v - from.v) < 1e-6;
+    const upright = Math.abs(at.u - from.u) < 1e-6;
+    if (level || upright) {
+      const axis = level ? 'u' : 'v';
+      // The other coordinate stays exactly that of `from`, so the line (or the move) is truly level or upright.
+      const keep = (x: number): UV => (axis === 'u' ? { u: x, v: from.v } : { u: from.u, v: x });
+      if (snapOn) {
         const q = alignOn(
           at,
           targets.points.filter((p) => dist(p, from) > 1e-6),
@@ -103,15 +119,21 @@ export function snapPoint(raw: UV, targets: SnapTargets, tol: number, opts: { fr
           axis
         );
         if (q) {
-          at[axis] = q[axis];
-          guides.push([q, { ...at }]);
-          return { at: round(at), kind: 'align', guides };
+          const a = keep(q[axis]);
+          return { at: a, kind: 'align', guides: [[from, a], [q, a]] };
         }
       }
+      if (grid) {
+        const g = keep(onGrid(at[axis], grid, axis));
+        return { at: g, kind: 'grid', guides: [[from, g]] };
+      }
+      const a = keep(Math.round(at[axis]));
+      return { at: a, kind: 'angle', guides: [[from, a]] };
     }
-    return { at: round(at), kind: 'angle', guides };
+    return { at: round(at), kind: 'angle', guides: [[from, at]] };
   }
-  if (!snapOn) return { at: round(raw), kind: 'free', guides: [] };
+  const onTheGrid = (): Snapped | null => (grid ? { at: { u: onGrid(raw.u, grid, 'u'), v: onGrid(raw.v, grid, 'v') }, kind: 'grid', guides: [] } : null);
+  if (!snapOn) return onTheGrid() ?? { at: round(raw), kind: 'free', guides: [] };
 
   const point = nearest(raw, targets.points, tol);
   if (point) return { at: round(point), kind: 'point', guides: [] };
@@ -150,8 +172,9 @@ export function snapPoint(raw: UV, targets: SnapTargets, tol: number, opts: { fr
   if (on) return { at: round(on), kind: 'on', guides: [] };
 
   if (au || av) {
-    const at = { u: au ? au.u : raw.u, v: av ? av.v : raw.v };
-    return { at: round(at), kind: 'align', guides: [[(au ?? av)!, at]] };
+    // Lined up one way; the other way goes to the grid, when there is one.
+    const at = { u: au ? au.u : grid ? onGrid(raw.u, grid, 'u') : raw.u, v: av ? av.v : grid ? onGrid(raw.v, grid, 'v') : raw.v };
+    return { at: grid ? roundFine(at) : round(at), kind: 'align', guides: [[(au ?? av)!, at]] };
   }
-  return { at: round(raw), kind: 'free', guides: [] };
+  return onTheGrid() ?? { at: round(raw), kind: 'free', guides: [] };
 }

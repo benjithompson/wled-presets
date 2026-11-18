@@ -103,7 +103,7 @@ import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } fr
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
 import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
-import { closestOnSegment, emptyTargets, snapPoint, type Snapped, type SnapTargets } from '../../yard/snap.ts';
+import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
@@ -128,7 +128,7 @@ const UNDO_GROUP_MS = 600;
 /** A position in one view, in layout units: u to the right, v down. */
 type UV = { u: number; v: number };
 type Drag =
-  | { kind: 'vertex'; side: ViewSide; id: string; index: number }
+  | { kind: 'vertex'; side: ViewSide; id: string; index: number; start: UV }
   | { kind: 'move'; side: ViewSide; id: string; from: UV; original: Point[] }
   | { kind: 'radius'; side: ViewSide; id: string }
   | { kind: 'treeHeight'; id: string }
@@ -146,8 +146,29 @@ const VP_MODES: { mode: VpMode; label: string; icon: typeof House }[] = [
   { mode: 'rows', label: 'Two views, one above the other', icon: Rows2 },
   { mode: 'three', label: 'Three views', icon: LayoutPanelLeft }
 ];
-/** Snapping, the 90° lock and the grid: switches in the status bar. */
-type Drafting = { snap: boolean; ortho: boolean; grid: boolean };
+/** Units the grid can be set in, whatever the units of the layout. */
+type GridUnit = 'ft' | 'in' | 'm' | 'cm';
+const GRID_UNITS: { unit: GridUnit; label: string; meters: number }[] = [
+  { unit: 'ft', label: 'feet', meters: 1 / FEET_PER_METER },
+  { unit: 'in', label: 'inches', meters: 1 / (12 * FEET_PER_METER) },
+  { unit: 'm', label: 'meters', meters: 1 },
+  { unit: 'cm', label: 'centimeters', meters: 0.01 }
+];
+/**
+ * Snapping, the 90° lock and the grid: switches in the status bar. `gridSize` in `gridUnit`
+ * (null: 5 ft, or 1 m, in the units of the layout); every `gridMajor`th grid line is brighter.
+ */
+type Drafting = { snap: boolean; ortho: boolean; grid: boolean; gridSnap: boolean; gridSize: number | null; gridUnit: GridUnit | null; gridMajor: number };
+type DraftSwitch = 'snap' | 'ortho' | 'grid' | 'gridSnap';
+const DRAFTING_DEFAULTS: Drafting = { snap: true, ortho: false, grid: true, gridSnap: false, gridSize: null, gridUnit: null, gridMajor: 5 };
+
+/** The grid as set (or the default for the layout's units): its size, its unit, and its step in layout units. */
+function gridOf(d: Drafting, layout: Layout) {
+  const unit: GridUnit = d.gridUnit ?? (layout.units === 'm' ? 'm' : 'ft');
+  const size = d.gridSize && d.gridSize > 0 ? d.gridSize : unit === 'm' ? 1 : unit === 'ft' ? 5 : unit === 'in' ? 6 : 10;
+  const meters = GRID_UNITS.find((g) => g.unit === unit)!.meters;
+  return { unit, size, step: size * meters * layoutScale(layout), text: `${size} ${unit}` };
+}
 
 const LAYOUT_KEY = ['layout'];
 const HUES = FIXTURE_HUES;
@@ -181,9 +202,9 @@ function readViewport(): { mode: VpMode; panes: ViewName[] } {
 
 function readDrafting(): Drafting {
   try {
-    return { snap: true, ortho: false, grid: true, ...(JSON.parse(localStorage.getItem(DRAFTING_KEY) ?? '{}') as Partial<Drafting>) };
+    return { ...DRAFTING_DEFAULTS, ...(JSON.parse(localStorage.getItem(DRAFTING_KEY) ?? '{}') as Partial<Drafting>) };
   } catch {
-    return { snap: true, ortho: false, grid: true };
+    return { ...DRAFTING_DEFAULTS };
   }
 }
 
@@ -399,6 +420,18 @@ export function LayoutPage() {
   const [multi, setMulti] = useState<string[]>([]);
   /** Where a Shift-click range in the object list starts. */
   const listAnchor = useRef<string | null>(null);
+  /** The side panel, which scrolls (on wide screens) through the object list and the selected object's properties. */
+  const sidePanel = useRef<HTMLElement>(null);
+  // A newly selected object (in the views, too) scrolls to the top of the side panel, so its
+  // properties are in sight, unless its row is already near the top.
+  useEffect(() => {
+    const panel = sidePanel.current;
+    if (!selected || !panel || panel.scrollHeight <= panel.clientHeight) return;
+    const row = panel.querySelector<HTMLElement>(`[data-object-row="${CSS.escape(selected)}"]`);
+    if (!row) return;
+    const top = row.getBoundingClientRect().top - panel.getBoundingClientRect().top;
+    if (top < 0 || top > panel.clientHeight * 0.35) panel.scrollTo({ top: panel.scrollTop + top - 4, behavior: 'smooth' });
+  }, [selected]);
   /** Selects these items: one is a normal selection; two or more, a multi-selection. */
   const pickTargets = (keys: string[]) => {
     const list = [...new Set(keys)];
@@ -1099,9 +1132,27 @@ export function LayoutPage() {
     return t;
   };
 
-  /** The pointer position, snapped. Shift: 45° steps from `from`; Ortho: 90° steps. Alt turns snapping off (or on, when Snap is off). */
-  const snapAt = (e: { clientX: number; clientY: number; shiftKey: boolean; altKey: boolean }, side: ViewSide, from?: UV | null, exclude?: { id: string; index: number }) =>
-    snapPoint(viewPoint(e, side), targetsFor(side, exclude), tolFor(side), { from, angle: e.shiftKey ? 45 : drafting.ortho ? 90 : false, snap: drafting.snap !== e.altKey });
+  /** The snapping grid of a view, when Grid snap is on (Alt: off for now). It counts from the left edge, and from the ground (front) or the front wall (top), as drawn. */
+  const gridFor = (side: ViewSide, e: { altKey: boolean }): SnapGrid | null =>
+    layout && drafting.gridSnap && !e.altKey ? { step: gridOf(drafting, layout).step, origin: { u: 0, v: side === 'front' ? layoutGround(layout) : -zMin } } : null;
+
+  /**
+   * The pointer position, snapped. Shift: 45° steps from `from`; Ortho: 90° steps (`angle`
+   * overrides both). Alt turns snapping off (or on, when Snap is off), and grid snapping off.
+   */
+  const snapAt = (
+    e: { clientX: number; clientY: number; shiftKey: boolean; altKey: boolean },
+    side: ViewSide,
+    from?: UV | null,
+    exclude?: { id: string; index: number },
+    angle?: number
+  ) =>
+    snapPoint(viewPoint(e, side), targetsFor(side, exclude), tolFor(side), {
+      from,
+      angle: angle ?? (e.shiftKey ? 45 : drafting.ortho ? 90 : false),
+      snap: drafting.snap !== e.altKey,
+      grid: gridFor(side, e)
+    });
 
   /** The end of a line near this spot, for continuing that line. */
   const lineEndAt = (side: ViewSide, at: UV): { f: Fixture; at: 'first' | 'last' } | null => {
@@ -1138,7 +1189,7 @@ export function LayoutPage() {
     if (drag) {
       drag.stopPropagation();
       svgs.current[side]?.setPointerCapture(drag.pointerId);
-      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1 });
+      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1, start: toView(pointOnLine(f, k, raw, side), side, zMin) });
     }
   };
 
@@ -1288,9 +1339,11 @@ export function LayoutPage() {
     if (drag.kind === 'vertex' && f) {
       const i = drag.index;
       const V = (q: Point) => toView(q, side, zMin);
-      // Shift keeps the segment to the point before (or after, for the first point) at 45° steps.
+      // Shift: move the point straight across or straight up and down from where it was (to
+      // raise the middle of a roofline into a peak, say). Ortho: keep the segment to the point
+      // before (or after, for the first point) level or upright.
       const neighbour = f.points[i - 1] ?? f.points[i + 1];
-      const s = snapAt(e, side, neighbour ? V(neighbour) : null, { id: f.id, index: i });
+      const s = e.shiftKey ? snapAt(e, side, drag.start, { id: f.id, index: i }, 90) : snapAt(e, side, neighbour ? V(neighbour) : null, { id: f.id, index: i });
       setSnapHint({ ...s, side });
       // On another point: take that point's position in 3D, so the two points join.
       const hit = s.kind === 'point' ? pointAtView(side, s.at, { id: f.id, index: i }) : undefined;
@@ -1299,9 +1352,17 @@ export function LayoutPage() {
       let du = p.u - drag.from.u;
       let dv = p.v - drag.from.v;
       // Shift: move straight across, or straight up and down (toward the street in the top view).
+      const across = Math.abs(du) >= Math.abs(dv);
       if (e.shiftKey) {
-        if (Math.abs(du) >= Math.abs(dv)) dv = 0;
+        if (across) dv = 0;
         else du = 0;
+      }
+      // Grid snap: the first point of the object (the middle of a bush, the base of a tree) goes to the grid.
+      const grid = gridFor(side, e);
+      if (grid && drag.original[0]) {
+        const a = toView(drag.original[0], side, zMin);
+        if (!e.shiftKey || across) du = onGrid(a.u + du, grid, 'u') - a.u;
+        if (!e.shiftKey || !across) dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
       update(drag.id, {
         points: drag.original.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : { ...q, x: q.x + du, z: (q.z ?? 0) + dv }))
@@ -1617,7 +1678,7 @@ export function LayoutPage() {
           ? 'Click the next corner. Enter, Esc or a double-click finishes the line. Backspace removes the last point. Shift: 45° steps. Alt: no snapping.'
           : `Click the first point of the ${tool === 'roof' ? 'roofline' : 'line'}, or click the end of a line to continue it (Alt-click: a new line from there).`
         : tool === 'edit'
-          ? 'Click a line to add a point, then drag it into place. Drag a point to move it. Delete removes the selected point. Ctrl-click (⌘-click) an end to continue the line.'
+          ? 'Click a line to add a point, then drag it into place. Drag a point to move it (Shift: straight across or straight up). Delete removes the selected point. Ctrl-click (⌘-click) an end to continue the line.'
           : tool === 'split'
             ? 'Click a corner, or a spot on a line, to cut the line in two there.'
             : tool === 'bush'
@@ -1628,7 +1689,7 @@ export function LayoutPage() {
                   ? 'Click two points to measure the distance between them. Then type the real distance to set the scale (or, in the top view, the scale of the picture from above).'
                   : tool === 'align'
                     ? ALIGN_STEPS[alignPts.length]
-                  : 'Click to select; drag to move (Shift: straight). Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
+                  : 'Click to select; drag an object or a point to move it (Shift: straight across or straight up). Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
 
   const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
   const coords: [string, string][] | null = cursor
@@ -1655,7 +1716,7 @@ export function LayoutPage() {
       <circle key={key} cx={at.u} cy={at.v} r={9 * k} className={cn('stroke-stone-950', className)} strokeWidth={3 * k} onPointerDown={onDown} onDoubleClick={onDouble} />
     );
     return (
-      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing || probe ? null : selected} fill viewBox={vb} grid={drafting.grid}>
+      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing || probe ? null : selected} fill viewBox={vb} grid={drafting.grid} gridStep={gridOf(drafting, layout).step} gridMajor={drafting.gridMajor}>
         <svg
           ref={(el) => void (svgs.current[side] = el)}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -1831,7 +1892,7 @@ export function LayoutPage() {
                                 else splitAt(f, i);
                                 return;
                               }
-                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i }, f.id, side);
+                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i, start: toView(f.points[i], side, zMin) }, f.id, side);
                               if (tool === 'select' || tool === 'edit') {
                                 if (f.id !== selected) keepPart.current = true;
                                 setCorner(i);
@@ -2078,7 +2139,7 @@ export function LayoutPage() {
         </select>
         <span className="pointer-events-none truncate">
           {VIEW_NOTES[v]}
-          {v === 'top' ? ` · grid ${m.units === 'm' ? '1 m' : '5 ft'}` : ''}
+          {side && (drafting.grid || drafting.gridSnap) ? ` · grid ${gridOf(drafting, layout).text}${drafting.gridSnap ? ', snap' : ''}` : ''}
         </span>
         <span className="ml-auto" />
         {side ? (
@@ -2134,7 +2195,6 @@ export function LayoutPage() {
         ? 'Paused while this window is not in front'
         : 'The selected object glows on its WLED device. Click to stop.';
 
-  const SelIcon = sel ? KIND_ICONS[sel.kind] : null;
 
   // The multi-selection's items that still exist, with their names and effects.
   const multiItems = multi.flatMap((key) => {
@@ -2174,6 +2234,250 @@ export function LayoutPage() {
       })
     }));
   }
+
+  /** The properties of the selected object, shown in the object list right under it. */
+  const selPanel = () =>
+    sel ? (
+      <>
+        {matching && probe ? (
+          <PropSection key="match" id="match" title="Match to the lights">
+            <MatchWizard
+              f={matching}
+              probe={probe}
+              ledCount={ledCountOf(matching)}
+              device={devices.find((d) => d.id === matching.deviceId)?.name ?? null}
+              perStrand={lightsOf(layout, matching.lights)?.perStrand ?? null}
+              lights={!showOnLights ? 'Lights are off: turn them on in the toolbar to see the blinking LED.' : !inFront ? 'Paused while this window is not in front.' : previewDevices.length ? null : 'Waiting for the device to answer…'}
+              onSet={setProbe}
+              onMove={moveProbe}
+              onStrand={(dir) => strandJump(matching, dir)}
+              onGo={(point) => matchGo(point)}
+              onFound={matchFound}
+              onStop={() => setMatch(null)}
+            />
+          </PropSection>
+        ) : (
+          <>
+          {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+            <PropSection
+              key="segment"
+              id="segment"
+              title={`Segment ${segment + 1}`}
+              actions={
+                <div className="flex">
+                  <button
+                    type="button"
+                    className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                    onClick={() => setSegment(segment - 1)}
+                    disabled={segment === 0}
+                    aria-label="Previous segment"
+                    title="Previous segment"
+                  >
+                    <ChevronLeft />
+                  </button>
+                  <button
+                    type="button"
+                    className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                    onClick={() => setSegment(segment + 1)}
+                    disabled={segment >= sel.points.length - 2}
+                    aria-label="Next segment"
+                    title="Next segment"
+                  >
+                    <ChevronRight />
+                  </button>
+                </div>
+              }
+            >
+              <SegmentProps
+                f={sel}
+                index={segment}
+                onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
+                onToggle={(on) =>
+                  update(sel.id, {
+                    skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
+                  })
+                }
+                onClose={() => setSegment(null)}
+                lights={lightsOf(layout, sel.lights)}
+                length={lineLengths(sel)[segment] ?? 0}
+                scale={scale}
+                m={m}
+                onResize={(count) => update(sel.id, resizeSegment(sel, segment, count))}
+              />
+            </PropSection>
+          ) : null}
+
+          {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+            <PropSection
+              key="segment-effect"
+              id="segment-effect"
+              title={sel.segmentEffects?.[segment] ? `Segment ${segment + 1} effect · ${EFFECT_NAMES[sel.segmentEffects[segment].effect]}` : `Segment ${segment + 1} effect`}
+            >
+              <EffectProps
+                effect={sel.segmentEffects?.[segment]}
+                objectCount={sel.points.length - 1}
+                noneLabel={sel.effect ? `Same as the line (${EFFECT_NAMES[sel.effect.effect]})` : 'Same as the line (dark)'}
+                copyLabel="Use on every segment"
+                copyTitle="Every segment of this line plays this effect on its own"
+                emptyNote={
+                  sel.skip?.includes(segment)
+                    ? 'This segment is off (skipped): it stays dark, whatever its effect.'
+                    : 'This segment plays the whole line’s effect. Pick an effect to give it its own: it runs from the segment’s first LED to its last, and the line’s effect fills the rest.'
+                }
+                onChange={(effect) => {
+                  update(sel.id, { segmentEffects: setSegmentEffect(sel.segmentEffects, segment, effect) });
+                  if (effect && !sel.segmentEffects?.[segment]) setPlaying(true);
+                }}
+                onCopyToAll={() => {
+                  const fx = sel.segmentEffects?.[segment];
+                  update(sel.id, { segmentEffects: fx ? Object.fromEntries(sel.points.slice(1).map((_, k) => [k, fx])) : undefined });
+                  setPlaying(true);
+                }}
+              />
+            </PropSection>
+          ) : null}
+
+          {isLine(sel) && segment == null && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
+            <PropSection key="corner" id="corner" title={`Corner ${corner}`}>
+              <CornerProps f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} onFind={sel.deviceId ? () => startMatch(sel, corner) : undefined} />
+            </PropSection>
+          ) : null}
+
+          <PropSection key="object" id="object" title="Object">
+            <PropText label="Name" value={sel.name} maxLength={60} onChange={(name) => update(sel.id, { name })} />
+            {isLine(sel) ? (
+              <PropSelect<FixtureKind>
+                label="Kind"
+                hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations."
+                value={sel.kind}
+                options={[
+                  ['roof', 'Roofline'],
+                  ['line', 'Other line of lights']
+                ]}
+                onChange={(kind) => update(sel.id, { kind })}
+              />
+            ) : null}
+            <PropSelect
+              label="WLED device"
+              hint="The device that drives these LEDs."
+              value={sel.deviceId ?? ''}
+              options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
+              onChange={(id) => update(sel.id, { deviceId: id || null })}
+            />
+            {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
+              <PropNote>Click a segment of the line to turn it off or give it its own effect, or a corner to split the line there.</PropNote>
+            ) : null}
+          </PropSection>
+
+          <PropSection key="leds" id="leds" title="LEDs">
+            <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} />
+          </PropSection>
+
+          <PropSection
+            key="effect"
+            id="effect"
+            title={`${isLine(sel) && segment != null ? 'Whole line effect' : 'Effect'}${sel.effect ? ` · ${EFFECT_NAMES[sel.effect.effect]}` : ''}`}
+          >
+            <EffectProps
+              effect={sel.effect}
+              objectCount={layout.fixtures.length}
+              onChange={(effect) => {
+                update(sel.id, { effect });
+                if (effect && !sel.effect) setPlaying(true);
+              }}
+              onCopyToAll={() => {
+                const fx = sel.effect;
+                edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => ({ ...f, effect: fx })) }));
+                setPlaying(true);
+              }}
+            />
+          </PropSection>
+
+          {sel.kind === 'custom' ? (
+            <PropSection key="design" id="design" title="Design">
+              <CustomProps
+                layout={layout}
+                f={sel}
+                lenText={m.text}
+                onChange={(patch) => update(sel.id, patch)}
+                onEditDesign={() => {
+                  const d = layout.designs?.find((x) => x.id === sel.designId);
+                  setDesigning(d ?? { id: uid(), name: sel.name, strokes: sel.design ?? [], pixels: sel.pixels, lights: sel.lights });
+                }}
+              />
+            </PropSection>
+          ) : null}
+
+          <PropSection key="lights" id="lights" title={`Made of${lightsOf(layout, sel.lights) ? ` · ${lightsOf(layout, sel.lights)!.name}` : ''}`}>
+            <LightsProps
+              layout={layout}
+              f={sel}
+              lenText={m.text}
+              onPick={(id) => pickLights(sel.id, id)}
+              onNew={() => setLightEdit({ type: null, forObject: sel.id })}
+              onEdit={(lt) => setLightEdit({ type: lt })}
+              onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
+            />
+          </PropSection>
+
+          <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
+            <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
+          </PropSection>
+
+          {!isLine(sel) && sel.kind !== 'custom' ? (
+            <PropSection key="shape" id="shape" title="Shape">
+              <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
+              {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
+              {sel.kind === 'bush' ? (
+                <PropSelect<NonNullable<Fixture['pattern']>>
+                  label="LED pattern"
+                  value={sel.pattern ?? 'fill'}
+                  options={[
+                    ['fill', 'Net over the bush'],
+                    ['ring', 'Ring around the edge'],
+                    ['spiral', 'Spiral from the middle']
+                  ]}
+                  onChange={(pattern) => update(sel.id, { pattern })}
+                />
+              ) : (
+                <>
+                  <PropSelect<NonNullable<Fixture['pattern']>>
+                    label="LED pattern"
+                    hint={
+                      sel.pattern === 'strands'
+                        ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
+                        : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
+                    }
+                    value={sel.pattern === 'strands' ? 'strands' : 'spiral'}
+                    options={[
+                      ['spiral', 'Spiral around the tree'],
+                      ['strands', 'Strands, base to top']
+                    ]}
+                    onChange={(pattern) => update(sel.id, { pattern })}
+                  />
+                  {sel.pattern === 'strands' ? (
+                    <PropNumber label="Strands" value={sel.strands ?? 12} min={1} max={64} onChange={(n) => update(sel.id, { strands: Math.round(n) })} />
+                  ) : (
+                    <PropNumber
+                      label="Turns"
+                      hint="Turns of the spiral from the base to the top"
+                      decimal
+                      value={sel.turns ?? 8}
+                      min={0.5}
+                      max={100}
+                      step={0.5}
+                      onChange={(n) => update(sel.id, { turns: n })}
+                    />
+                  )}
+                </>
+              )}
+              <PropNote>{sel.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'}</PropNote>
+            </PropSection>
+          ) : null}
+          </>
+        )}
+      </>
+    ) : null;
 
   return (
     <div className="flex flex-col bg-stone-100 lg:h-full dark:bg-stone-950">
@@ -2403,9 +2707,9 @@ export function LayoutPage() {
           ) : null}
         </div>
 
-        {/* The side panel: the object list, and the properties of the selection. */}
-        <aside className="flex shrink-0 flex-col border-stone-200 bg-white text-sm lg:w-80 lg:border-l dark:border-stone-800 dark:bg-stone-900">
-          <div className="flex flex-col border-b border-stone-200 lg:max-h-[40%] lg:min-h-32 dark:border-stone-800">
+        {/* The side panel: the object list. The selected object opens in the list, with its properties right under it. */}
+        <aside ref={sidePanel} className="flex shrink-0 flex-col border-stone-200 bg-white text-sm lg:w-80 lg:overflow-y-auto lg:border-l dark:border-stone-800 dark:bg-stone-900">
+          <div className="flex shrink-0 flex-col border-b border-stone-200 dark:border-stone-800">
             <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-b border-stone-100 px-3 dark:border-stone-800">
               <span className="text-[11px] font-semibold tracking-wide text-stone-600 uppercase dark:text-stone-400">Objects</span>
               <span className="text-[11px] text-stone-500 tabular-nums">
@@ -2413,52 +2717,81 @@ export function LayoutPage() {
               </span>
             </div>
             {layout.fixtures.length ? (
-              <ul role="listbox" aria-label="Objects" className="min-h-0 flex-1 overflow-y-auto py-1">
+              <ul aria-label="Objects" className="py-1">
                 {layout.fixtures.map((f, i) => {
                   const Icon = KIND_ICONS[f.kind];
                   const on = selected === f.id || multi.includes(f.id);
                   const partly = !on && multi.some((x) => effectTarget(x).id === f.id);
+                  /** The selected object opens: its row stays at the top while you scroll through its properties. */
+                  const open = sel?.id === f.id;
                   return (
-                    <li
-                      key={f.id}
-                      role="option"
-                      aria-selected={on}
-                      title={partly ? 'Some of its segments are selected' : undefined}
-                      onClick={(e) => {
-                        if (tool !== 'select') chooseTool('select');
-                        if (e.ctrlKey || e.metaKey) {
-                          toggleTarget(f.id);
-                        } else if (e.shiftKey && listAnchor.current) {
-                          // A range, from the item clicked before to this one.
-                          const ids = layout.fixtures.map((x) => x.id);
-                          const a = ids.indexOf(listAnchor.current);
-                          const b = ids.indexOf(f.id);
-                          if (a >= 0) return pickTargets(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
-                          setSelected(f.id);
-                        } else setSelected(f.id);
-                        listAnchor.current = f.id;
-                      }}
-                      onMouseDown={(e) => e.shiftKey && e.preventDefault()}
-                      onDoubleClick={() => setRenaming(f.id)}
-                      onContextMenu={(e) => objectMenu(e, f)}
-                      className={cn(
-                        'mx-1 flex h-7 cursor-default items-center gap-2 rounded-md px-2 text-[13px]',
-                        on
-                          ? 'bg-sky-600 text-white'
-                          : partly
-                            ? 'bg-sky-600/15 text-stone-900 dark:text-white'
-                            : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
-                      )}
-                    >
-                      <Icon className="size-3.5 shrink-0" style={{ color: on ? undefined : `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
-                      {renaming === f.id ? (
-                        <RenameInput value={f.name} onDone={(name) => (setRenaming(null), name != null && name.trim() && update(f.id, { name: name.trim() }))} />
-                      ) : (
-                        <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                      )}
-                      <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
-                        {ledRange(f).first}–{ledRange(f).last}
-                      </span>
+                    <li key={f.id} className={cn(open && 'my-1')}>
+                      <div
+                        data-object-row={f.id}
+                        aria-current={on ? 'true' : undefined}
+                        aria-expanded={open}
+                        title={partly ? 'Some of its segments are selected' : undefined}
+                        onClick={(e) => {
+                          if (tool !== 'select') chooseTool('select');
+                          if (e.ctrlKey || e.metaKey) {
+                            toggleTarget(f.id);
+                          } else if (e.shiftKey && listAnchor.current) {
+                            // A range, from the item clicked before to this one.
+                            const ids = layout.fixtures.map((x) => x.id);
+                            const a = ids.indexOf(listAnchor.current);
+                            const b = ids.indexOf(f.id);
+                            if (a >= 0) return pickTargets(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
+                            setSelected(f.id);
+                          } else setSelected(f.id);
+                          listAnchor.current = f.id;
+                        }}
+                        onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+                        onDoubleClick={() => setRenaming(f.id)}
+                        onContextMenu={(e) => objectMenu(e, f)}
+                        className={cn(
+                          'mx-1 flex cursor-default items-center gap-2 rounded-md px-2 text-[13px]',
+                          open ? 'sticky top-0 z-10 min-h-11 rounded-b-none py-1.5 shadow-sm' : 'h-7',
+                          on
+                            ? 'bg-sky-600 text-white'
+                            : partly
+                              ? 'bg-sky-600/15 text-stone-900 dark:text-white'
+                              : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
+                        )}
+                      >
+                        <Icon className="size-3.5 shrink-0" style={{ color: on ? undefined : `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
+                        {renaming === f.id ? (
+                          <RenameInput value={f.name} onDone={(name) => (setRenaming(null), name != null && name.trim() && update(f.id, { name: name.trim() }))} />
+                        ) : open ? (
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-semibold">{f.name}</span>
+                            <span className="block truncate text-[11px] text-white/75">
+                              {KIND_LABELS[f.kind]}
+                              {isLine(f) && segment != null ? ` · segment ${segment + 1} of ${f.points.length - 1}` : ''}
+                              {isLine(f) && segment == null && corner != null ? ` · ${pointName(f, corner)}` : ''}
+                              {` · LEDs ${ledRange(f).first}–${ledRange(f).last}`}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                        )}
+                        {open ? (
+                          <span className="flex shrink-0" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                            <button type="button" onClick={() => frameSelection()} title="Zoom to this object (F)" aria-label="Zoom to this object" className="grid size-7 place-items-center rounded-md hover:bg-white/15 [&_svg]:size-4">
+                              <Scan />
+                            </button>
+                            <button type="button" onClick={() => remove(f.id)} title="Delete this object (Delete)" aria-label="Delete this object" className="grid size-7 place-items-center rounded-md hover:bg-red-500/80 [&_svg]:size-4">
+                              <Trash2 />
+                            </button>
+                          </span>
+                        ) : (
+                          <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
+                            {ledRange(f).first}–{ledRange(f).last}
+                          </span>
+                        )}
+                      </div>
+                      {open ? (
+                        <div className="mx-1 rounded-b-md border border-t-0 border-sky-600/50 bg-stone-50/70 dark:border-sky-400/40 dark:bg-stone-950/40 [&>section:last-child]:border-b-0">{selPanel()}</div>
+                      ) : null}
                     </li>
                   );
                 })}
@@ -2468,266 +2801,8 @@ export function LayoutPage() {
             )}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {sel && SelIcon ? (
-              <>
-                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
-                  <SelIcon className="size-4 shrink-0 text-stone-500" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] font-semibold">{sel.name}</p>
-                    <p className="truncate text-[11px] text-stone-500">
-                      {KIND_LABELS[sel.kind]}
-                      {isLine(sel) && segment != null ? ` · segment ${segment + 1} of ${sel.points.length - 1}` : ''}
-                      {isLine(sel) && segment == null && corner != null ? ` · ${pointName(sel, corner)}` : ''}
-                    </p>
-                  </div>
-                  <Button size="sm" variant="ghost" onClick={() => frameSelection()} title="Zoom to this object (F)" aria-label="Zoom to this object" className="px-2">
-                    <Scan />
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => remove(sel.id)} title="Delete this object (Delete)" aria-label="Delete this object" className="px-2 hover:text-red-600">
-                    <Trash2 />
-                  </Button>
-                </div>
-
-                {matching && probe ? (
-                  <PropSection key="match" id="match" title="Match to the lights">
-                    <MatchWizard
-                      f={matching}
-                      probe={probe}
-                      ledCount={ledCountOf(matching)}
-                      device={devices.find((d) => d.id === matching.deviceId)?.name ?? null}
-                      perStrand={lightsOf(layout, matching.lights)?.perStrand ?? null}
-                      lights={!showOnLights ? 'Lights are off: turn them on in the toolbar to see the blinking LED.' : !inFront ? 'Paused while this window is not in front.' : previewDevices.length ? null : 'Waiting for the device to answer…'}
-                      onSet={setProbe}
-                      onMove={moveProbe}
-                      onStrand={(dir) => strandJump(matching, dir)}
-                      onGo={(point) => matchGo(point)}
-                      onFound={matchFound}
-                      onStop={() => setMatch(null)}
-                    />
-                  </PropSection>
-                ) : (
-                  <>
-                  {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
-                    <PropSection
-                      key="segment"
-                      id="segment"
-                      title={`Segment ${segment + 1}`}
-                      actions={
-                        <div className="flex">
-                          <button
-                            type="button"
-                            className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
-                            onClick={() => setSegment(segment - 1)}
-                            disabled={segment === 0}
-                            aria-label="Previous segment"
-                            title="Previous segment"
-                          >
-                            <ChevronLeft />
-                          </button>
-                          <button
-                            type="button"
-                            className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
-                            onClick={() => setSegment(segment + 1)}
-                            disabled={segment >= sel.points.length - 2}
-                            aria-label="Next segment"
-                            title="Next segment"
-                          >
-                            <ChevronRight />
-                          </button>
-                        </div>
-                      }
-                    >
-                      <SegmentProps
-                        f={sel}
-                        index={segment}
-                        onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
-                        onToggle={(on) =>
-                          update(sel.id, {
-                            skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
-                          })
-                        }
-                        onClose={() => setSegment(null)}
-                        lights={lightsOf(layout, sel.lights)}
-                        length={lineLengths(sel)[segment] ?? 0}
-                        scale={scale}
-                        m={m}
-                        onResize={(count) => update(sel.id, resizeSegment(sel, segment, count))}
-                      />
-                    </PropSection>
-                  ) : null}
-
-                  {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
-                    <PropSection
-                      key="segment-effect"
-                      id="segment-effect"
-                      title={sel.segmentEffects?.[segment] ? `Segment ${segment + 1} effect · ${EFFECT_NAMES[sel.segmentEffects[segment].effect]}` : `Segment ${segment + 1} effect`}
-                    >
-                      <EffectProps
-                        effect={sel.segmentEffects?.[segment]}
-                        objectCount={sel.points.length - 1}
-                        noneLabel={sel.effect ? `Same as the line (${EFFECT_NAMES[sel.effect.effect]})` : 'Same as the line (dark)'}
-                        copyLabel="Use on every segment"
-                        copyTitle="Every segment of this line plays this effect on its own"
-                        emptyNote={
-                          sel.skip?.includes(segment)
-                            ? 'This segment is off (skipped): it stays dark, whatever its effect.'
-                            : 'This segment plays the whole line’s effect. Pick an effect to give it its own: it runs from the segment’s first LED to its last, and the line’s effect fills the rest.'
-                        }
-                        onChange={(effect) => {
-                          update(sel.id, { segmentEffects: setSegmentEffect(sel.segmentEffects, segment, effect) });
-                          if (effect && !sel.segmentEffects?.[segment]) setPlaying(true);
-                        }}
-                        onCopyToAll={() => {
-                          const fx = sel.segmentEffects?.[segment];
-                          update(sel.id, { segmentEffects: fx ? Object.fromEntries(sel.points.slice(1).map((_, k) => [k, fx])) : undefined });
-                          setPlaying(true);
-                        }}
-                      />
-                    </PropSection>
-                  ) : null}
-
-                  {isLine(sel) && segment == null && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
-                    <PropSection key="corner" id="corner" title={`Corner ${corner}`}>
-                      <CornerProps f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} onFind={sel.deviceId ? () => startMatch(sel, corner) : undefined} />
-                    </PropSection>
-                  ) : null}
-
-                  <PropSection key="object" id="object" title="Object">
-                    <PropText label="Name" value={sel.name} maxLength={60} onChange={(name) => update(sel.id, { name })} />
-                    {isLine(sel) ? (
-                      <PropSelect<FixtureKind>
-                        label="Kind"
-                        hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations."
-                        value={sel.kind}
-                        options={[
-                          ['roof', 'Roofline'],
-                          ['line', 'Other line of lights']
-                        ]}
-                        onChange={(kind) => update(sel.id, { kind })}
-                      />
-                    ) : null}
-                    <PropSelect
-                      label="WLED device"
-                      hint="The device that drives these LEDs."
-                      value={sel.deviceId ?? ''}
-                      options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
-                      onChange={(id) => update(sel.id, { deviceId: id || null })}
-                    />
-                    {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
-                      <PropNote>Click a segment of the line to turn it off or give it its own effect, or a corner to split the line there.</PropNote>
-                    ) : null}
-                  </PropSection>
-
-                  <PropSection key="leds" id="leds" title="LEDs">
-                    <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} />
-                  </PropSection>
-
-                  <PropSection
-                    key="effect"
-                    id="effect"
-                    title={`${isLine(sel) && segment != null ? 'Whole line effect' : 'Effect'}${sel.effect ? ` · ${EFFECT_NAMES[sel.effect.effect]}` : ''}`}
-                  >
-                    <EffectProps
-                      effect={sel.effect}
-                      objectCount={layout.fixtures.length}
-                      onChange={(effect) => {
-                        update(sel.id, { effect });
-                        if (effect && !sel.effect) setPlaying(true);
-                      }}
-                      onCopyToAll={() => {
-                        const fx = sel.effect;
-                        edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => ({ ...f, effect: fx })) }));
-                        setPlaying(true);
-                      }}
-                    />
-                  </PropSection>
-
-                  {sel.kind === 'custom' ? (
-                    <PropSection key="design" id="design" title="Design">
-                      <CustomProps
-                        layout={layout}
-                        f={sel}
-                        lenText={m.text}
-                        onChange={(patch) => update(sel.id, patch)}
-                        onEditDesign={() => {
-                          const d = layout.designs?.find((x) => x.id === sel.designId);
-                          setDesigning(d ?? { id: uid(), name: sel.name, strokes: sel.design ?? [], pixels: sel.pixels, lights: sel.lights });
-                        }}
-                      />
-                    </PropSection>
-                  ) : null}
-
-                  <PropSection key="lights" id="lights" title={`Made of${lightsOf(layout, sel.lights) ? ` · ${lightsOf(layout, sel.lights)!.name}` : ''}`}>
-                    <LightsProps
-                      layout={layout}
-                      f={sel}
-                      lenText={m.text}
-                      onPick={(id) => pickLights(sel.id, id)}
-                      onNew={() => setLightEdit({ type: null, forObject: sel.id })}
-                      onEdit={(lt) => setLightEdit({ type: lt })}
-                      onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
-                    />
-                  </PropSection>
-
-                  <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
-                    <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
-                  </PropSection>
-
-                  {!isLine(sel) && sel.kind !== 'custom' ? (
-                    <PropSection key="shape" id="shape" title="Shape">
-                      <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
-                      {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
-                      {sel.kind === 'bush' ? (
-                        <PropSelect<NonNullable<Fixture['pattern']>>
-                          label="LED pattern"
-                          value={sel.pattern ?? 'fill'}
-                          options={[
-                            ['fill', 'Net over the bush'],
-                            ['ring', 'Ring around the edge'],
-                            ['spiral', 'Spiral from the middle']
-                          ]}
-                          onChange={(pattern) => update(sel.id, { pattern })}
-                        />
-                      ) : (
-                        <>
-                          <PropSelect<NonNullable<Fixture['pattern']>>
-                            label="LED pattern"
-                            hint={
-                              sel.pattern === 'strands'
-                                ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
-                                : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
-                            }
-                            value={sel.pattern === 'strands' ? 'strands' : 'spiral'}
-                            options={[
-                              ['spiral', 'Spiral around the tree'],
-                              ['strands', 'Strands, base to top']
-                            ]}
-                            onChange={(pattern) => update(sel.id, { pattern })}
-                          />
-                          {sel.pattern === 'strands' ? (
-                            <PropNumber label="Strands" value={sel.strands ?? 12} min={1} max={64} onChange={(n) => update(sel.id, { strands: Math.round(n) })} />
-                          ) : (
-                            <PropNumber
-                              label="Turns"
-                              hint="Turns of the spiral from the base to the top"
-                              decimal
-                              value={sel.turns ?? 8}
-                              min={0.5}
-                              max={100}
-                              step={0.5}
-                              onChange={(n) => update(sel.id, { turns: n })}
-                            />
-                          )}
-                        </>
-                      )}
-                      <PropNote>{sel.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'}</PropNote>
-                    </PropSection>
-                  ) : null}
-                  </>
-                )}
-              </>
-            ) : multiItems.length >= 2 ? (
+          <div>
+            {sel ? null : multiItems.length >= 2 ? (
               <>
                 <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
                   <div className="min-w-0 flex-1">
@@ -2936,8 +3011,9 @@ export function LayoutPage() {
             [
               ['snap', 'Snap', 'Snap to points, midpoints, lines and alignments (Alt: the other way)'],
               ['ortho', 'Ortho', 'Keep lines level or upright (Shift: 45° steps)'],
-              ['grid', 'Grid', 'Show the grid']
-            ] as [keyof Drafting, string, string][]
+              ['grid', 'Grid', 'Show the grid'],
+              ['gridSnap', 'Grid snap', 'Snap to the grid where no point or line is near (Alt: not now)']
+            ] as [DraftSwitch, string, string][]
           ).map(([key, label, title]) => (
             <button
               key={key}
@@ -2953,6 +3029,7 @@ export function LayoutPage() {
               {label}
             </button>
           ))}
+          <GridSettings drafting={drafting} layout={layout} onChange={setDrafting} />
         </span>
       </div>
       {menu ? <ContextMenu menu={menu} onClose={() => setMenu(null)} /> : null}
@@ -3826,9 +3903,9 @@ function EndMarkers({ a, b, V, k }: { a?: Point; b?: Point; V: (p: Point) => { u
   );
 }
 
-const SNAP_LABELS: Record<Snapped['kind'], string> = { point: 'Point', center: 'Center', mid: 'Midpoint', on: 'On line', align: 'Aligned', angle: '', free: '' };
+const SNAP_LABELS: Record<Snapped['kind'], string> = { point: 'Point', center: 'Center', mid: 'Midpoint', on: 'On line', align: 'Aligned', grid: 'Grid', angle: '', free: '' };
 
-/** Where the pointer snaps: a marker in the CAD style (square: point, triangle: midpoint, cross: on a line), dashed guides, and a label. */
+/** Where the pointer snaps: a marker in the CAD style (square: point, triangle: midpoint, cross: on a line, plus: the grid), dashed guides, and a label. */
 function SnapMarker({ s, k }: { s: Snapped & { label?: string }; k: number }) {
   if (s.kind === 'free' && !s.label) return null;
   const { u, v } = s.at;
@@ -3836,10 +3913,11 @@ function SnapMarker({ s, k }: { s: Snapped & { label?: string }; k: number }) {
   const common = { fill: 'none', stroke: color, strokeWidth: 2 * k };
   const d = 8 * k;
   let label = s.label ?? SNAP_LABELS[s.kind];
-  if (!s.label && s.kind === 'angle' && s.guides[0]) {
+  if (!s.label && (s.kind === 'angle' || s.kind === 'grid') && s.guides[0]) {
     const [a, b] = s.guides[0];
     const deg = Math.round((Math.atan2(-(b.v - a.v), b.u - a.u) * 180) / Math.PI);
-    label = `${(deg + 360) % 180 === 0 ? 'Level' : Math.abs(deg) === 90 ? 'Upright' : '45°'}`;
+    const dir = (deg + 360) % 180 === 0 ? 'Level' : Math.abs(deg) === 90 ? 'Upright' : '45°';
+    label = s.kind === 'grid' ? `${dir} · Grid` : dir;
   }
   return (
     <g pointerEvents="none">
@@ -3851,6 +3929,7 @@ function SnapMarker({ s, k }: { s: Snapped & { label?: string }; k: number }) {
       {s.kind === 'mid' ? <polygon points={`${u},${v - d * 1.1} ${u + d},${v + d * 0.75} ${u - d},${v + d * 0.75}`} {...common} /> : null}
       {s.kind === 'on' ? <path d={`M${u - d},${v - d}L${u + d},${v + d}M${u + d},${v - d}L${u - d},${v + d}`} {...common} /> : null}
       {s.kind === 'align' || s.kind === 'angle' ? <circle cx={u} cy={v} r={4 * k} fill={color} /> : null}
+      {s.kind === 'grid' ? <path d={`M${u - d},${v}L${u + d},${v}M${u},${v - d}L${u},${v + d}`} {...common} /> : null}
       {label ? (
         <text x={u + 12 * k} y={v - 12 * k} fontSize={13 * k} fontWeight={600} fill="#a5f3fc" stroke="#0c0a09" strokeWidth={3.5 * k} paintOrder="stroke">
           {label}
@@ -3861,6 +3940,124 @@ function SnapMarker({ s, k }: { s: Snapped & { label?: string }; k: number }) {
 }
 
 /** The right-click menu: actions for the point, segment or object under the pointer. */
+/** Quick grid sizes, for layouts in feet and in meters. */
+const GRID_PRESETS: Record<Units, [number, GridUnit][]> = {
+  ft: [
+    [3, 'in'],
+    [6, 'in'],
+    [1, 'ft'],
+    [2, 'ft'],
+    [5, 'ft']
+  ],
+  m: [
+    [5, 'cm'],
+    [10, 'cm'],
+    [25, 'cm'],
+    [50, 'cm'],
+    [1, 'm']
+  ]
+};
+
+/** The grid size in the status bar; a click opens the grid settings: size, units, brighter lines, show and snap. */
+function GridSettings({ drafting, layout, onChange }: { drafting: Drafting; layout: Layout; onChange: (patch: Partial<Drafting>) => void }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+  const g = gridOf(drafting, layout);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && (e.stopPropagation(), setOpen(false));
+    document.addEventListener('pointerdown', away);
+    window.addEventListener('keydown', esc, true);
+    return () => {
+      document.removeEventListener('pointerdown', away);
+      window.removeEventListener('keydown', esc, true);
+    };
+  }, [open]);
+  /** Another unit keeps about the same size, rounded to two figures (5 ft is 1.5 m). */
+  const setUnit = (unit: GridUnit) => {
+    const from = GRID_UNITS.find((x) => x.unit === g.unit)!.meters;
+    const to = GRID_UNITS.find((x) => x.unit === unit)!.meters;
+    onChange({ gridUnit: unit, gridSize: Number(((g.size * from) / to).toPrecision(2)) });
+  };
+  const row = 'flex items-center justify-between gap-3';
+  return (
+    <span ref={box} className="relative">
+      <button
+        type="button"
+        title="Grid settings: size, units and snapping"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-0.5 rounded px-1.5 py-0.5 font-semibold tabular-nums transition hover:bg-stone-200/70 hover:text-stone-800 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+      >
+        {g.text}
+        <ChevronDown className="size-3" />
+      </button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Grid settings"
+          className="absolute right-0 bottom-full z-50 mb-2 w-64 space-y-2.5 rounded-xl bg-white p-3 text-xs text-stone-700 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:text-stone-200 dark:ring-stone-700"
+        >
+          <p className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Grid</p>
+          <label className={row}>
+            <span>Show the grid</span>
+            <Switch checked={drafting.grid} onChange={(v) => onChange({ grid: v })} label="Show the grid" />
+          </label>
+          <label className={row}>
+            <span>Snap to the grid</span>
+            <Switch checked={drafting.gridSnap} onChange={(v) => onChange({ gridSnap: v })} label="Snap to the grid" />
+          </label>
+          <div className={row}>
+            <span>Size</span>
+            <span className="flex w-36 gap-1">
+              <NumberInput compact decimal value={g.size} min={0.01} max={1000} step={g.unit === 'cm' || g.unit === 'in' ? 1 : 0.5} onCommit={(n) => onChange({ gridSize: n, gridUnit: g.unit })} className="w-16" />
+              <select
+                value={g.unit}
+                onChange={(e) => setUnit(e.target.value as GridUnit)}
+                aria-label="Grid units"
+                className="h-7 min-w-0 flex-1 rounded-md bg-white px-1.5 text-xs ring-1 ring-stone-200 ring-inset focus:ring-2 focus:ring-sky-500 focus:outline-none dark:bg-stone-950 dark:ring-stone-700"
+              >
+                {GRID_UNITS.map((x) => (
+                  <option key={x.unit} value={x.unit}>
+                    {x.label}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {GRID_PRESETS[layout.units ?? 'ft'].map(([size, unit]) => (
+              <button
+                key={`${size}${unit}`}
+                type="button"
+                onClick={() => onChange({ gridSize: size, gridUnit: unit })}
+                className={cn(
+                  'rounded-md px-2 py-0.5 tabular-nums ring-1 ring-stone-200 transition hover:bg-stone-100 dark:ring-stone-700 dark:hover:bg-stone-800',
+                  g.size === size && g.unit === unit && 'bg-sky-600/15 text-sky-700 ring-sky-600/30 dark:text-sky-300'
+                )}
+              >
+                {size} {unit}
+              </button>
+            ))}
+          </div>
+          <div className={row}>
+            <span title="Every this many lines, one is brighter">Bright line every</span>
+            <span className="flex w-36 items-center gap-1.5">
+              <NumberInput compact value={drafting.gridMajor} min={1} max={50} onCommit={(n) => onChange({ gridMajor: Math.round(n) })} className="w-16" />
+              <span className="text-stone-500">lines</span>
+            </span>
+          </div>
+          <p className="text-[11px] leading-snug text-stone-500">
+            The grid counts from the left edge, and from the ground (front view) or the front wall (top view). Alt (Option) turns grid snap off while you hold it. Lines closer than a few pixels are not drawn: zoom in to see them.
+          </p>
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
 function ContextMenu({ menu, onClose }: { menu: { x: number; y: number; title: string; items: MenuItem[] }; onClose: () => void }) {
   // Keep it on screen.
   const x = Math.min(menu.x, window.innerWidth - 260);
@@ -3962,8 +4159,9 @@ const SHORTCUTS: [string, string][] = [
   ['F', 'Zoom to the selection'],
   ['Home', 'Zoom to fit'],
   ['+  −', 'Zoom in, zoom out'],
-  ['Shift', '45° steps; move straight'],
-  ['Alt (Option)', 'Snapping the other way'],
+  ['Shift while drawing', '45° steps'],
+  ['Shift-drag', 'Move a point or object straight across or straight up'],
+  ['Alt (Option)', 'Snapping the other way; no grid snap'],
   ['Enter, Esc', 'Finish the line'],
   ['Backspace', 'Remove the last point drawn'],
   ['Delete', 'Delete the point or object'],

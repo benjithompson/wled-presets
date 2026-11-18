@@ -499,4 +499,48 @@ describe('line editing', () => {
     const diag = constrainAngle({ u: 0, v: 0 }, { u: 100, v: 90 });
     expect(diag.u).toBeCloseTo(diag.v);
   });
+
+  it('snaps to the grid where nothing else is near, and moves a point straight up exactly', async () => {
+    const { snapPoint, onGrid } = await import('../../web/src/yard/snap.ts');
+    const none = { points: [], segments: [], centers: [] };
+    const grid = { step: 24.38, origin: { u: 0, v: 300 } };
+    // The nearest crossing, counted from the origin (the ground in the front view).
+    expect(snapPoint({ u: 30, v: 260 }, none, 8, { grid })).toMatchObject({ kind: 'grid', at: { u: 24.38, v: 251.24 } });
+    expect(onGrid(-13, grid, 'u')).toBe(-24.38);
+    // Points and lines win over the grid; without a grid, nothing changes.
+    const roof = { points: [{ u: 100, v: 100 }], segments: [], centers: [] };
+    expect(snapPoint({ u: 97, v: 103 }, roof, 8, { grid }).kind).toBe('point');
+    expect(snapPoint({ u: 30, v: 260 }, none, 8, {}).kind).toBe('free');
+    // Lined up with a point one way, on the grid the other way.
+    expect(snapPoint({ u: 103, v: 160 }, roof, 8, { grid })).toMatchObject({ kind: 'align', at: { u: 100, v: 153.72 } });
+    // Snapping to objects off: the grid still holds.
+    expect(snapPoint({ u: 97, v: 103 }, roof, 8, { grid, snap: false }).kind).toBe('grid');
+
+    // A move locked to 90° from where the point started (Shift-drag): the other coordinate stays exactly the same,
+    // even when the point is not on a whole unit.
+    const start = { u: 50.37, v: 200.5 };
+    const up = snapPoint({ u: 58, v: 120 }, none, 8, { from: start, angle: 90 });
+    expect(up).toMatchObject({ kind: 'angle', at: { u: 50.37, v: 120 } });
+    expect(snapPoint({ u: 58, v: 120 }, none, 8, { from: start, angle: 90, grid })).toMatchObject({ kind: 'grid', at: { u: 50.37, v: 129.34 } });
+    expect(snapPoint({ u: 140, v: 205 }, none, 8, { from: start, angle: 90, grid }).at.v).toBe(200.5);
+  });
+
+  it('fits the whole roof in the yard view, even a peak above the picture', async () => {
+    const { fitBox } = await import('../../web/src/yard/YardView.tsx');
+    const layout = sampleLayout();
+    const inside = fitBox(layout, 'front', [-480, 480]);
+    expect(inside.x).toBeLessThanOrEqual(0);
+    expect(inside.y).toBeLessThanOrEqual(0);
+    expect(inside.x + inside.w).toBeGreaterThanOrEqual(layout.width);
+    // Raise the middle of the roof above the top of the picture, and past its right edge.
+    const roof = layout.fixtures[0];
+    const pts = roof.points.map((p) => ({ ...p }));
+    pts[1] = { ...pts[1], y: -120 };
+    pts[pts.length - 1] = { ...pts[pts.length - 1], x: layout.width + 200 };
+    layout.fixtures[0] = { ...roof, points: pts };
+    const b = fitBox(layout, 'front', [-480, 480]);
+    expect(b.y).toBeLessThan(-120);
+    expect(b.x + b.w).toBeGreaterThan(layout.width + 200);
+    expect(b.y + b.h).toBeGreaterThanOrEqual(layout.height);
+  });
 });
