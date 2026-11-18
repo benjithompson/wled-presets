@@ -393,6 +393,35 @@ describe('Beat Drop', () => {
     expect(late[0]).toBeGreaterThan(late[2]);
   });
 
+  it('keeps the zone posts bright through the explosions of a perfect run', () => {
+    seeded(4);
+    const stage = buildStage(sampleLayout());
+    const game = beatGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    const yard = new Yard(stage);
+    press(game);
+    let checked = 0;
+    for (let f = 0; f < 60 * 25; f++) {
+      bot(game, frame, 1 / 60);
+      const { line, zone } = game.look();
+      const { song, notes } = game.chart();
+      for (const [post, out] of [
+        [Math.round(line - zone - 1), -1],
+        [Math.round(line + zone + 1), 1]
+      ]) {
+        // A note's head or end cap passing over a post shows through it: skip those moments (roughly, by time).
+        if (notes.some((x) => x.state !== 'done' && (Math.abs(x.time - song) < 0.15 || Math.abs(x.end - song) < 0.15))) continue;
+        expect(sum(stepLight(yard, frame, post))).toBeGreaterThan(1.2);
+        // A dark step on its inner side keeps it crisp against the sparks in the band.
+        expect(sum(stepLight(yard, frame, post - out))).toBeLessThan(0.05);
+        checked++;
+      }
+    }
+    // The run climbed the multiplier, with sparks, flashes and gold shockwaves at the zone all the way.
+    expect(String(game.status().stats!.find((x) => x.label === 'Multiplier')!.value)).toMatch(/×[34]/);
+    expect(checked).toBeGreaterThan(500);
+  });
+
   it('says whether a GOOD was early or late', () => {
     // Halfway between the PERFECT and GOOD windows, on either side of a note's moment.
     const off = (PERFECT + GOOD) / 2;
