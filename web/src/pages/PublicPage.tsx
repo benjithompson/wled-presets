@@ -79,7 +79,10 @@ export function PublicPage() {
     onSettled: () => setPending(null)
   });
 
-  const busy = pending !== null;
+  // Right after a change of theirs, a visitor waits a few seconds before the next (a throttle).
+  const cooling = useCountdown(line?.cooldown ?? null);
+  const locked = !!cooling;
+  const busy = pending !== null || locked;
   const theme = useTheme();
   const speed = useBackgroundSpeed();
   const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
@@ -103,6 +106,11 @@ export function PublicPage() {
 
         {state ? <StatusLine state={state} /> : null}
         {line ? <LineBanner line={line} /> : null}
+        {locked ? (
+          <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/65 px-3 py-1 text-sm text-stone-600 tabular-nums ring-1 ring-stone-900/10 backdrop-blur-md dark:bg-stone-900/45 dark:text-stone-300 dark:ring-white/10" aria-live="polite">
+            <Clock className="size-3.5" /> You can change the lights again in {clock(cooling)}
+          </p>
+        ) : null}
 
         {isLoading ? (
           <div className="grid place-items-center py-32">
@@ -169,7 +177,8 @@ export function PublicPage() {
                               ? 'animate-glow bg-stone-900/90 text-white dark:bg-white/90 dark:text-stone-950'
                               : 'bg-white/65 ring-1 ring-stone-900/10 hover:-translate-y-0.5 hover:bg-white/80 hover:shadow-lg dark:bg-stone-900/45 dark:ring-white/10 dark:hover:bg-stone-900/60',
                             !s.online && 'opacity-50',
-                            busy && !loading && s.online && 'opacity-70'
+                            busy && !loading && s.online && 'opacity-70',
+                            locked && 'hover:translate-y-0 hover:shadow-none'
                           )}
                         >
                           <span className="flex items-center justify-between">

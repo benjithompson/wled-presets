@@ -36,8 +36,9 @@ describe('the line for the lights', () => {
     wait(4);
     expect(line.ask(v('b'), scene('blue'), 'Blue')).toEqual({ result: 'queued', place: 1 });
     expect(line.view('b')).toMatchObject({ free: false, waiting: 1, you: { place: 1, label: 'Blue', startsIn: 6_000 }, now: { kind: 'scene', label: 'Red', you: false }, endsIn: 6_000 });
-    // A changes their own scene: it plays now, but the clock keeps running.
-    expect(line.ask(v('a'), scene('green'), 'Green')).toEqual({ result: 'now' });
+    // A cannot change the lights again so soon (a throttle), not even their own turn.
+    expect(line.view('a').cooldown).toBe(6_000);
+    expect(line.ask(v('a'), scene('green'), 'Green')).toEqual({ result: 'wait', retryIn: 6_000 });
     wait(5);
     expect(shows).toEqual([]);
     wait(1);
@@ -49,6 +50,23 @@ describe('the line for the lights', () => {
     wait(1);
     expect(line.view('c').free).toBe(true);
     expect(line.ask(v('c'), scene('red'), 'Red').result).toBe('now');
+  });
+
+  it('lets a visitor change their own turn once their throttle runs out, keeping its clock', () => {
+    const { line, wait } = clockLine();
+    line.ask(v('a'), scene('red'), 'Red');
+    line.ask(v('b'), scene('blue'), 'Blue');
+    line.ask(v('c'), scene('white'), 'White');
+    wait(10);
+    // B's turn is a minute (C waits); B may change it every 10 seconds, and its clock keeps running.
+    expect(line.ask(v('b'), color('#00ff00'), 'Color #00ff00')).toEqual({ result: 'wait', retryIn: 10_000 });
+    wait(10);
+    expect(line.view('b').cooldown).toBeNull();
+    expect(line.ask(v('b'), color('#00ff00'), 'Color #00ff00')).toEqual({ result: 'now' });
+    expect(line.view('b')).toMatchObject({ now: { label: 'Color #00ff00', you: true }, endsIn: 50_000, cooldown: 10_000 });
+    // Admins are never throttled.
+    expect(line.ask(v('boss', true), scene('red'), 'Red').result).toBe('now');
+    expect(line.ask(v('boss', true), scene('blue'), 'Blue').result).toBe('now');
   });
 
   it('gives a scene a minute when its turn comes while others still wait', () => {
@@ -262,6 +280,11 @@ describe('taking turns on the public page', () => {
     host.line.release('player-player-player', 'the game ended');
     expect(applied).toHaveBeenCalledWith('#ff0000', expect.objectContaining({ ip: expect.any(String) }));
     expect(host.line.view('neighbor-neighbor-01').now).toMatchObject({ kind: 'color', you: true });
+    // Right away again: too soon (the throttle).
+    const soon = await color('neighbor-neighbor-01', '#0000ff');
+    expect(soon.status).toBe(429);
+    expect(soon.headers.get('retry-after')).toBe('10');
+    expect((await soon.json()).error).toBe('You just changed the lights. Pick again in 10 seconds.');
     // A new browser gets a visitor id.
     const first = await app.request('/api/state', { headers: { host: 'lights.lan' } });
     expect(first.headers.getSetCookie().some((c) => c.startsWith('wled_visitor='))).toBe(true);
