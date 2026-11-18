@@ -70,8 +70,9 @@ export function catcherGame(stage: Stage): Game {
     for (let tries = 0; tries < 20; tries++) {
       const atCorner = corners.length > 0 && Math.random() < 0.6;
       const g = atCorner ? corners[Math.floor(Math.random() * corners.length)] : margin + Math.random() * (n - margin * 2);
-      // Not right next to the comet, so every gate takes a little waiting.
-      if (Math.abs(g - pos) > n * 0.2 || tries === 19) {
+      // Not right next to the comet, so every gate takes a little waiting, and where it can be
+      // seen from the street (the comet hurries through the rest).
+      if ((Math.abs(g - pos) > n * 0.2 && !track.hiddenAt(g)) || tries === 19) {
         gate = Math.round(g);
         return;
       }

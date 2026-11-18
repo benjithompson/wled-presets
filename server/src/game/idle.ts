@@ -17,7 +17,7 @@ export function idleGame(stage: Stage): Game {
       for (let k = 0; k < track.leds.length; k++) {
         const x = track.at[k] / span;
         const wave = 0.5 + 0.5 * Math.sin(x * 9 - t * 0.6) * Math.sin(x * 3.1 + t * 0.23);
-        frame.set(track.leds[k], hsv(0.08 + 0.06 * Math.sin(x * 4 + t * 0.1), 0.75, (0.12 + 0.35 * wave) * track.shows[k]));
+        frame.set(track.leds[k], hsv(0.08 + 0.06 * Math.sin(x * 4 + t * 0.1), 0.75, 0.12 + 0.35 * wave));
       }
       stage.fixtures.forEach((f, fi) => {
         for (let i = 0; i < f.count; i++) {

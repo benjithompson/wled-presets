@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { buildStage, GAME_UNSEEN_RGB, paintGameArea, roofTrack, sampleLayout, segmentLeds, type Fixture, type GameStatus, type Layout, type Point } from '../../shared/layout.ts';
+import { buildStage, GAME_UNSEEN_RGB, MAX_SPEEDUP, paintGameArea, roofTrack, sampleLayout, segmentLeds, type Fixture, type GameStatus, type Layout, type Point } from '../../shared/layout.ts';
 import { catcherGame } from '../src/game/catcher.ts';
 import { cascadeGame } from '../src/game/cascade.ts';
 import { duelGame } from '../src/game/duel.ts';
@@ -70,35 +70,38 @@ describe('the roof as it looks from the street', () => {
   /** The roof LEDs that show from the street, and the ones that do not. */
   function split(stage: ReturnType<typeof buildStage>) {
     const t = roofTrack(stage);
-    const seen = Array.from(t.leds).filter((_, k) => t.shows[k] > 0.5);
-    const hidden = Array.from(t.leds).filter((_, k) => t.shows[k] === 0);
+    const seen = Array.from(t.leds).filter((_, k) => !t.hidden[k]);
+    const hidden = Array.from(t.leds).filter((_, k) => t.hidden[k]);
     return { t, seen, hidden };
   }
 
-  it('passes over a stretch that runs back along the side of the house, and keeps it dark', () => {
+  it('runs very quickly, but not in one jump, through a stretch that cannot be seen from the street', () => {
     // Along the front, then 6 m straight back along the right side, then along the back.
     const stage = buildStage(roofLayout([{ x: 200, y: 470 }, { x: 1000, y: 470 }, { x: 1000, y: 470, z: -600 }, { x: 200, y: 470, z: -600 }]));
-    const { t, hidden } = split(stage);
-    const roof = stage.fixtures[0];
-    // The track is as long as the front: the side and the back (behind the front) are hidden.
-    expect(t.n).toBeGreaterThan(235);
-    expect(t.n).toBeLessThan(250);
-    expect(hidden.length).toBeGreaterThan(roof.count * 0.6);
-    // Along the track, the front-view x grows evenly.
-    for (let k = 0; k < t.leds.length; k++) {
-      if (t.shows[k] < 1) continue;
-      expect(Math.abs(stage.positions[t.leds[k] * 2] - (200 + (t.at[k] / (t.n - 1)) * 800))).toBeLessThan(6);
+    const { t, seen, hidden } = split(stage);
+    // The side, and the back (behind the front as seen from the street), are hidden.
+    expect(hidden.length).toBeGreaterThan(stage.fixtures[0].count * 0.6);
+    expect(seen.length).toBeGreaterThan(230);
+    // Along the front, one step per LED (less for the pair across the corner, which is partly
+    // on the side); through the hidden stretch, 1 / MAX_SPEEDUP of a step.
+    let odd = 0;
+    for (let k = 1; k < t.leds.length; k++) {
+      const d = t.at[k] - t.at[k - 1];
+      if (t.hidden[k] || t.hidden[k - 1]) expect(d).toBeCloseTo(1 / MAX_SPEEDUP, 2);
+      else if (Math.abs(d - 1) > 0.05) odd++;
     }
-    // No game light reaches the hidden LEDs: not the roof's own, not the light through the yard.
+    expect(odd).toBeLessThanOrEqual(1);
+    expect(t.n).toBeCloseTo(seen.length + hidden.length / MAX_SPEEDUP, -1);
+    // A dot that moves along the roof lights every LED as it passes, hidden ones too.
     const yard = new Yard(stage);
     const frame = new Frame(stage.pixelCount);
-    yard.begin(frame);
-    for (let p = 0; p < yard.roof.n; p += 0.5) yard.roofSplat(p, [1, 1, 1]);
-    for (let p = 0; p < yard.roof.n; p++) yard.roofAt(p, [1, 1, 1]);
-    yard.wash([1, 1, 1]);
-    yard.glow(1000, 470, 200, [1, 1, 1]);
-    yard.ring(1000, 470, 30, 20, [1, 1, 1]);
-    for (const i of hidden) expect(frame.data[i * 3]).toBe(0);
+    const most = new Float32Array(stage.pixelCount);
+    for (let p = 0; p < yard.roof.n; p += 0.25) {
+      yard.begin(frame);
+      yard.roofSplat(p, [1, 1, 1]);
+      for (const i of t.leds) most[i] = Math.max(most[i], frame.data[i * 3]);
+    }
+    for (const i of t.leds) expect(most[i]).toBeGreaterThan(0.8);
   });
 
   it('moves evenly across a stretch at an angle to the street, which looks shorter', () => {
@@ -114,37 +117,50 @@ describe('the roof as it looks from the street', () => {
     expect(t.n).toBeLessThan(t.leds.length * 0.9);
   });
 
-  it('sends the comet across the front at an even speed', () => {
+  it('sends the comet across the front at an even speed, and quickly through the side', () => {
     const stage = buildStage(roofLayout([{ x: 200, y: 470 }, { x: 600, y: 470 }, { x: 600, y: 470, z: -400 }, { x: 600, y: 300, z: -400 }, { x: 1000, y: 300, z: -400 }]));
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     const game = catcherGame(stage);
     const frame = new Frame(stage.pixelCount);
-    const { t } = split(stage);
+    const { t, hidden } = split(stage);
+    const isHidden = new Set(hidden);
+    expect(hidden.length).toBeGreaterThan(100);
     press(game);
-    // Where the comet's head is, as seen from the street, each frame (the brightest roof LED in
-    // red: the comet is blue-white, the gate green), until it has gone past the side stretch and
-    // up the rake behind it.
-    const heads: { x: number; y: number }[] = [];
-    for (let f = 0; f < 140; f++) {
+    // Where the comet's head is each frame (the brightest roof LED in red: the comet is
+    // blue-white, the gate green), until it has gone past the side stretch and up the rake.
+    const heads: { x: number; y: number; hidden: boolean }[] = [];
+    const lit = new Set<number>();
+    for (let f = 0; f < 150; f++) {
       game.update(1 / 60, frame);
       let best = -1;
       let at = 0;
       for (const i of t.leds) {
         const v = frame.data[i * 3];
+        if (v > 0.3) lit.add(i);
         if (v > best) {
           best = v;
           at = i;
         }
       }
-      heads.push({ x: stage.positions[at * 2], y: stage.positions[at * 2 + 1] });
+      heads.push({ x: stage.positions[at * 2], y: stage.positions[at * 2 + 1], hidden: isHidden.has(at) });
     }
     expect(heads.at(-1)!.y).toBeLessThan(300.5);
     expect(heads.at(-1)!.x).toBeGreaterThan(620);
-    // It moves about the same distance across the front every frame: it does not stop at the
-    // corner while it runs through the LEDs that go back along the side.
+    // It runs through every LED of the side, quickly but over several frames: 120 LEDs at most
+    // six times the speed along the front (about 140 LEDs a second there).
+    for (const i of hidden) expect(lit.has(i)).toBe(true);
+    const inSide = heads.filter((h) => h.hidden).length;
+    expect(inSide).toBeGreaterThan(4);
+    expect(inSide).toBeLessThan(20);
+    // Everywhere else it moves about the same distance across the front every frame.
     const window = 6;
-    const moves = heads.slice(window).map((h, i) => Math.hypot(h.x - heads[i].x, h.y - heads[i].y));
+    const moves: number[] = [];
+    for (let i = window; i < heads.length; i++) {
+      if (heads.slice(i - window, i + 1).some((h) => h.hidden)) continue;
+      moves.push(Math.hypot(heads[i].x - heads[i - window].x, heads[i].y - heads[i - window].y));
+    }
     const mid = [...moves].sort((a, b) => a - b)[moves.length >> 1];
+    expect(moves.length).toBeGreaterThan(80);
     expect(Math.min(...moves)).toBeGreaterThan(mid * 0.6);
     expect(Math.max(...moves)).toBeLessThan(mid * 1.4);
   });
