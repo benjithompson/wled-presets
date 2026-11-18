@@ -4,10 +4,13 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
 import { buildStage, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
+import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
+import { duelGame } from './duel.ts';
 import { Frame } from './frame.ts';
 import { idleGame } from './idle.ts';
 import type { LightsOutput } from './output.ts';
+import { overflowGame } from './overflow.ts';
 import type { Game, GameFactory } from './types.ts';
 
 export const GAMES: (GameInfo & { create: GameFactory })[] = [
@@ -15,7 +18,29 @@ export const GAMES: (GameInfo & { create: GameFactory })[] = [
     id: 'catcher',
     name: 'Comet Catcher',
     description: 'Stop the comet inside the green gate. Every catch lights up a bush.',
+    players: '1 player',
     create: catcherGame
+  },
+  {
+    id: 'cascade',
+    name: 'Cascade',
+    description: 'Glowing orbs roll along the roof. One tap sets off a blast: catch them in a chain reaction.',
+    players: '1 player',
+    create: cascadeGame
+  },
+  {
+    id: 'overflow',
+    name: 'Overflow',
+    description: 'Hold to pour light into each bush and tree. Let go so it settles inside the ring, not over it.',
+    players: '1 player',
+    create: overflowGame
+  },
+  {
+    id: 'duel',
+    name: 'Roof Duel',
+    description: 'Fire against Ice: hit the ball back when it reaches your end of the roof. The later the hit, the faster it flies.',
+    players: '2 players, or play the house',
+    create: duelGame
   }
 ];
 
@@ -61,7 +86,10 @@ export class GameHost {
   private timer: NodeJS.Timeout | null = null;
   private last = 0;
   private lastInput = Date.now();
-  private lastStatus = '';
+  /** The last status sent to each browser, so an unchanged one is not sent again. */
+  private lastStatus = new WeakMap<WebSocket, string>();
+  /** When the running game started, for GameInput.at. */
+  private started = performance.now();
   private wss = new WebSocketServer({ noServer: true });
   private log: (msg: string) => void;
   /** Debug mode: the same frames also go to the real lights. */
@@ -178,7 +206,9 @@ export class GameHost {
    * otherwise keep running on the real lights for nobody.
    */
   private drop(ws: WebSocket, hard = false) {
-    if (!this.clients.delete(ws)) return;
+    const client = this.clients.get(ws);
+    if (!client || !this.clients.delete(ws)) return;
+    this.game.leave?.(client.id);
     // A goodbye closes politely; a browser that stopped answering is cut off.
     if (hard) ws.terminate();
     else if (ws.readyState === ws.OPEN) ws.close(1000);
@@ -214,7 +244,7 @@ export class GameHost {
       this.heartbeat.unref();
     }
     ws.send(JSON.stringify({ type: 'layout', layout: this.layout }));
-    ws.send(JSON.stringify({ type: 'games', games: GAMES.map(({ id, name, description }) => ({ id, name, description })) }));
+    ws.send(JSON.stringify({ type: 'games', games: GAMES.map(({ id, name, description, players }) => ({ id, name, description, players })) }));
     this.sendStatus(true);
     ws.on('message', (raw, isBinary) => {
       if (isBinary) return;
@@ -240,12 +270,13 @@ export class GameHost {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;
       this.game = g.create(this.stage);
+      this.started = performance.now();
       this.log(`Game started: ${g.name}`);
     } else if (msg.type === 'stop') {
       if (this.game.id !== 'idle') this.log('Game stopped');
       this.game = idleGame(this.stage);
     } else if (msg.type === 'input' && (msg.action === 'press' || msg.action === 'release')) {
-      this.game.input({ playerId: client.id, action: msg.action, at: 0 });
+      this.game.input({ playerId: client.id, action: msg.action, at: (performance.now() - this.started) / 1000 });
     }
     this.sendStatus(true);
   }
@@ -308,15 +339,21 @@ export class GameHost {
     this.sendStatus(true);
   }
 
+  /** Sends each browser its status: the game's, with that player's own side and button on top. */
   private sendStatus(force: boolean) {
-    const s = JSON.stringify({ type: 'status', status: this.status() });
-    if (!force && s === this.lastStatus) return;
-    this.lastStatus = s;
-    this.broadcastJson(null, s);
+    const base = this.status();
+    const shared = this.game.playerStatus ? null : JSON.stringify({ type: 'status', status: base });
+    for (const [ws, client] of this.clients) {
+      if (ws.readyState !== ws.OPEN) continue;
+      const s = shared ?? JSON.stringify({ type: 'status', status: { ...base, ...this.game.playerStatus!(client.id) } });
+      if (!force && s === this.lastStatus.get(ws)) continue;
+      this.lastStatus.set(ws, s);
+      ws.send(s);
+    }
   }
 
-  private broadcastJson(msg: unknown, raw?: string) {
-    const text = raw ?? JSON.stringify(msg);
+  private broadcastJson(msg: unknown) {
+    const text = JSON.stringify(msg);
     for (const ws of this.clients.keys()) if (ws.readyState === ws.OPEN) ws.send(text);
   }
 }

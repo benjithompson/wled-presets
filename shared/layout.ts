@@ -896,7 +896,12 @@ export interface GameInfo {
   id: string;
   name: string;
   description: string;
+  /** For the game picker, for example "1 player" or "1–2 players". */
+  players?: string;
 }
+
+/** The big button's color on the play screen. */
+export type ButtonTone = 'go' | 'good' | 'bad' | 'calm' | 'wait';
 
 export interface GameStatus {
   game: string | null;
@@ -909,6 +914,18 @@ export interface GameStatus {
   players: number;
   /** Debug mode: names of the real WLED devices that show the game too. Empty: simulator only. */
   realLights?: string[];
+  /** The big button's label. Not set: GO! or STOP!, by phase. */
+  button?: string;
+  /** The big button's color. Not set: by phase. */
+  tone?: ButtonTone;
+  /** How far along the player is (for example orbs popped of the target). Shown instead of score of goal. */
+  progress?: { value: number; max: number };
+  /** Short facts under the message, for example Level 3 or Best 120. */
+  stats?: { label: string; value: string | number }[];
+  /** Team scores, for games with sides. Colors are CSS colors. */
+  scores?: { name: string; color: string; value: number }[];
+  /** This player's side in a game with sides (each phone gets its own). */
+  you?: { name: string; color: string } | null;
 }
 
 /** Debug mode state: games sent to the real lights. */
