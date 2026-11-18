@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fromLedRange, sampleLayout } from '../../shared/layout.ts';
+import { fromLedRange, matchPoint, matchRange, pointOffsets, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
 import { RealtimeOut } from '../src/realtime.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
@@ -34,6 +34,83 @@ describe('layout preview on the lights', () => {
     expect(rgb(mock.realtime.leds, 87)).toEqual([255, 0, 0]);
     out.close();
     await mock.close();
+  });
+});
+
+describe('matching a drawn line to the real lights', () => {
+  // A rough roof drawn in four segments, a string of 50 LEDs from device LED 5.
+  const line = (patch: Partial<Fixture> = {}): Fixture => ({
+    id: 'r',
+    name: 'Roof',
+    kind: 'roof',
+    points: [
+      { x: 0, y: 300 },
+      { x: 200, y: 100 },
+      { x: 400, y: 300 },
+      { x: 600, y: 100 },
+      { x: 800, y: 300 }
+    ],
+    pixels: 50,
+    deviceId: 'd',
+    startPixel: 5,
+    reversed: false,
+    ...patch
+  });
+  const step = (f: Fixture, point: number, offset: number) => ({ ...f, ...matchPoint(f, point, offset) });
+
+  it('walks the start, each corner and the end, and the line takes those LEDs', () => {
+    let f = line();
+    expect(pointOffsets(f)).toEqual([0, 12, 25, 37, 49]);
+    f = step(f, 0, -2); // the string really starts two LEDs earlier
+    expect(f).toMatchObject({ startPixel: 3, pixels: 52 });
+    f = step(f, 1, 9);
+    f = step(f, 2, 30);
+    f = step(f, 3, 33);
+    f = step(f, 4, 47); // and ends sooner
+    expect(f).toMatchObject({ startPixel: 3, pixels: 48, reversed: false });
+    expect(pointOffsets(f)).toEqual([0, 9, 30, 33, 47]);
+  });
+
+  it('keeps device LED numbers on a string that counts down', () => {
+    let f = line({ reversed: true });
+    const atCorner = (g: Fixture, i: number) => g.startPixel + g.pixels - 1 - pointOffsets(g)[i];
+    f = step(f, 1, 10);
+    expect(atCorner(f, 1)).toBe(44);
+    f = step(f, 4, 52); // three more LEDs at the end, down to device LED 2
+    expect(f).toMatchObject({ startPixel: 2, pixels: 53, reversed: true });
+    expect(atCorner(f, 1)).toBe(44);
+  });
+
+  it('keeps the points in order, and unpins later corners a new pin passes', () => {
+    let f = step(line(), 3, 40);
+    f = step(f, 2, 20);
+    expect(pointOffsets(f)).toEqual([0, 10, 20, 40, 49]);
+    // Corner 1 is really past corner 2 and 3 as drawn: they give way, to be matched next.
+    f = step(f, 1, 45);
+    expect(pointOffsets(f)[1]).toBe(45);
+    expect(f.pointLeds?.[2] ?? null).toBeNull();
+    expect(f.pointLeds?.[3] ?? null).toBeNull();
+    // A corner leaves one LED for each segment after it, and stays after the point before.
+    expect(matchRange(f, 1)).toEqual({ lo: 1, hi: 46 });
+    expect(matchRange(f, 2)).toEqual({ lo: 46, hi: 47 });
+    // The start never goes below device LED 0.
+    expect(matchRange(line(), 0).lo).toBe(-5);
+    expect(matchRange(line({ reversed: true }), 4).hi).toBe(54);
+  });
+
+  it('blinks the LED on the device, also past the end of the line', () => {
+    const f = line();
+    const lay: Layout = { width: 1600, height: 900, background: null, fixtures: [f] };
+    const req = (offset: number) => ({ layout: lay, selected: 'r', corner: 1, probe: { point: 1, offset } });
+    const on = previewFrame(req(20), 'd', 50, true);
+    expect(rgb(on, 25)).toEqual([255, 0, 0]);
+    expect(rgb(previewFrame(req(20), 'd', 50, false), 25)).toEqual([0, 0, 0]);
+    // From the start up to the blinking LED is brighter than the rest, so it can be followed.
+    expect(rgb(on, 15)[2]).toBeGreaterThan(rgb(on, 40)[2]);
+    expect(Math.max(...rgb(on, 40))).toBeGreaterThan(0);
+    const past = previewFrame({ ...req(55), corner: 4, probe: { point: 4, offset: 55 } }, 'd', 50, true);
+    expect(past.length).toBe(61 * 3);
+    expect(rgb(past, 60)).toEqual([255, 0, 0]);
   });
 });
 

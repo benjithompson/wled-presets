@@ -19,6 +19,7 @@ import {
   LayoutPanelLeft,
   Lightbulb,
   LightbulbOff,
+  LocateFixed,
   Maximize2,
   Minimize2,
   MousePointer2,
@@ -68,7 +69,10 @@ import {
   isPinned,
   LAYOUT_WIDTH,
   ledRange,
+  matchPoint,
+  matchRange,
   MAX_FIXTURE_PIXELS,
+  paintMatch,
   pointOffsets,
   designPaths,
   designReach,
@@ -84,6 +88,7 @@ import {
   type Fixture,
   type FixtureKind,
   type Layout,
+  type MatchProbe,
   type Point,
   type Units
 } from '../../../../shared/layout.ts';
@@ -222,6 +227,12 @@ export function LayoutPage() {
   const [corner, setCorner] = useState<number | null>(null);
   /** Index of the selected segment (between point k and point k + 1) of the selected line. */
   const [segment, setSegment] = useState<number | null>(null);
+  /**
+   * The "match to the lights" wizard on a line: it walks its points (the selected point is the
+   * one being matched), and one LED blinks red on the house until you move it to the real spot.
+   * `offset` is that LED for `point`; another selected point starts from its own LED.
+   */
+  const [match, setMatch] = useState<{ id: string; point: number; offset: number } | null>(null);
   /** Set when a click selects an object and one of its segments at once. */
   const keepPart = useRef(false);
   const [tool, setTool] = useState<Tool>('select');
@@ -301,6 +312,12 @@ export function LayoutPage() {
   const dirty = !!layout && !!saved && JSON.stringify(layout) !== JSON.stringify(saved);
   const stage = useMemo(() => (layout ? buildStage(layout) : null), [layout]);
   const sel = layout?.fixtures.find((f) => f.id === selected) ?? null;
+  // The wizard runs while its line is selected with one of its points, and no segment.
+  const matching = match && sel && sel.id === match.id && isLine(sel) && segment == null && corner != null && corner < sel.points.length ? sel : null;
+  const probe: MatchProbe | null = matching && corner != null ? { point: corner, offset: match!.point === corner ? match!.offset : pointOffsets(matching)[corner] } : null;
+  useEffect(() => {
+    if (match && !probe) setMatch(null);
+  }, [match, probe]);
   const runs = useMemo(() => (layout ? deviceRuns(layout) : new Map()), [layout]);
   const overlapCount = [...runs.values()].reduce((n, r) => n + r.overlaps.length, 0);
 
@@ -476,6 +493,40 @@ export function LayoutPage() {
     const pins = f.points.map((_, i) => f.pointLeds?.[i] ?? null);
     pins[index] = null;
     update(f.id, { pointLeds: tidyPins(pins) });
+  };
+
+  /** Starts the wizard on a line at one of its points (default: the start). */
+  const startMatch = (f: Fixture, point = 0) => {
+    if (!showOnLights) toggleShow();
+    setPlaying(false);
+    setSelected(f.id);
+    setSegment(null);
+    setCorner(point);
+    setMatch({ id: f.id, point, offset: pointOffsets(f)[point] });
+  };
+  /** Moves the wizard to another point of its line, starting from that point's LED. */
+  const matchGo = (point: number, f: Fixture | null = matching) => {
+    if (!f || point < 0 || point >= f.points.length) return;
+    setCorner(point);
+    setMatch({ id: f.id, point, offset: pointOffsets(f)[point] });
+  };
+  const setProbe = (offset: number) => {
+    if (!matching || !probe) return;
+    const { lo, hi } = matchRange(matching, probe.point);
+    setMatch({ id: matching.id, point: probe.point, offset: Math.min(hi, Math.max(lo, Math.round(offset))) });
+  };
+  const moveProbe = (delta: number) => setProbe((probe?.offset ?? 0) + delta);
+  /** The blinking LED is at the real spot: the point takes it, and the wizard goes on to the next point. */
+  const matchFound = () => {
+    if (!matching || !probe) return;
+    const patch = matchPoint(matching, probe.point, probe.offset);
+    update(matching.id, patch);
+    const g = { ...matching, ...patch };
+    if (probe.point >= g.points.length - 1) {
+      setMatch(null);
+      setCorner(null);
+      toast.success(`${g.name} matches the lights: LEDs ${ledRange(g).first}–${ledRange(g).last}.`);
+    } else matchGo(probe.point + 1, g);
   };
 
   /** Cuts a line in two at a corner. The second part starts at the next LED; raise its first LED to leave a gap. */
@@ -760,6 +811,18 @@ export function LayoutPage() {
         return;
       }
       if (mod || e.altKey) return;
+      if (probe && matching) {
+        // The wizard: arrows move the blinking LED along the line, Enter takes it.
+        const step = e.shiftKey ? 10 : 1;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowUp') moveProbe(step);
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') moveProbe(-step);
+        else if (e.key === 'Enter') matchFound();
+        else if (e.key === 'Escape') setMatch(null);
+        else if (e.key === 'Backspace') matchGo(probe.point - 1);
+        else return;
+        e.preventDefault();
+        return;
+      }
       const drawing = isLineTool(tool) && draft.pts.length > 0;
       if (e.key === 'Escape') {
         if (menu) return setMenu(null);
@@ -853,7 +916,7 @@ export function LayoutPage() {
   // Only while this window has focus (see useInFront).
   const inFront = useInFront();
   const previewing = showOnLights && mapped && inFront;
-  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 }) : null;
+  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 && !probe, probe }) : null;
   useEffect(() => {
     if (!previewBody) return;
     let alive = true;
@@ -892,6 +955,15 @@ export function LayoutPage() {
   const getFrame = () => {
     if (!stage || !layout) return null;
     const fx = fxRef.current;
+    if (probe && selected) {
+      // The wizard: the same blinking LED as on the house, where the drawing puts it now.
+      const out = new Uint8Array(stage.pixelCount * 3);
+      paintMatch(layout, selected, probe, editorPulse(Date.now()), (fi, i, rgb) => {
+        const sf = stage.fixtures[fi];
+        if (i >= 0 && i < sf.count) out.set(rgb, (sf.offset + i) * 3);
+      });
+      return out;
+    }
     if (playing && fx && fx.stage === stage) {
       // Every view asks on each animation frame: draw once per frame.
       const now = performance.now();
@@ -1571,7 +1643,7 @@ export function LayoutPage() {
       <circle key={key} cx={at.u} cy={at.v} r={9 * k} className={cn('stroke-stone-950', className)} strokeWidth={3 * k} onPointerDown={onDown} onDoubleClick={onDouble} />
     );
     return (
-      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing ? null : selected} fill viewBox={vb} grid={drafting.grid}>
+      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing || probe ? null : selected} fill viewBox={vb} grid={drafting.grid}>
         <svg
           ref={(el) => void (svgs.current[side] = el)}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -1763,7 +1835,11 @@ export function LayoutPage() {
                         );
                       })
                     : null}
-                  {isSel ? <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} k={k} scale={scale} /> : null}
+                  {isSel && probe ? (
+                    <ProbeMarker f={f} probe={probe} V={V} k={k} scale={scale} />
+                  ) : isSel ? (
+                    <LedLabels f={f} corner={corner} segment={segment} V={V} side={side} k={k} scale={scale} />
+                  ) : null}
                   {isSel ? (
                     segment != null && f.points[segment + 1] ? (
                       <EndMarkers a={fixturePixels(f, scale)[segmentLeds(f, segment).lo]} b={fixturePixels(f, scale)[segmentLeds(f, segment).hi]} V={V} k={k} />
@@ -2232,7 +2308,7 @@ export function LayoutPage() {
                         fill
                         layout={layout}
                         getFrame={getFrame}
-                        selected={playing ? null : selected}
+                        selected={playing || probe ? null : selected}
                         onSelect={(id, add) => {
                           setTool('select');
                           if (add) return void (id && toggleTarget(id));
@@ -2401,222 +2477,246 @@ export function LayoutPage() {
                   </Button>
                 </div>
 
-                {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
-                  <PropSection
-                    key="segment"
-                    id="segment"
-                    title={`Segment ${segment + 1}`}
-                    actions={
-                      <div className="flex">
-                        <button
-                          type="button"
-                          className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
-                          onClick={() => setSegment(segment - 1)}
-                          disabled={segment === 0}
-                          aria-label="Previous segment"
-                          title="Previous segment"
-                        >
-                          <ChevronLeft />
-                        </button>
-                        <button
-                          type="button"
-                          className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
-                          onClick={() => setSegment(segment + 1)}
-                          disabled={segment >= sel.points.length - 2}
-                          aria-label="Next segment"
-                          title="Next segment"
-                        >
-                          <ChevronRight />
-                        </button>
-                      </div>
-                    }
-                  >
-                    <SegmentProps
-                      f={sel}
-                      index={segment}
-                      onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
-                      onToggle={(on) =>
-                        update(sel.id, {
-                          skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
-                        })
-                      }
-                      onClose={() => setSegment(null)}
-                      lights={lightsOf(layout, sel.lights)}
-                      length={lineLengths(sel)[segment] ?? 0}
-                      scale={scale}
-                      m={m}
-                      onResize={(count) => update(sel.id, resizeSegment(sel, segment, count))}
+                {matching && probe ? (
+                  <PropSection key="match" id="match" title="Match to the lights">
+                    <MatchWizard
+                      f={matching}
+                      probe={probe}
+                      lights={!showOnLights ? 'Lights are off: turn them on in the toolbar to see the blinking LED.' : !inFront ? 'Paused while this window is not in front.' : previewDevices.length ? null : 'Waiting for the device to answer…'}
+                      onSet={setProbe}
+                      onMove={moveProbe}
+                      onGo={(point) => matchGo(point)}
+                      onFound={matchFound}
+                      onStop={() => setMatch(null)}
                     />
                   </PropSection>
-                ) : null}
+                ) : (
+                  <>
+                  {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+                    <PropSection
+                      key="segment"
+                      id="segment"
+                      title={`Segment ${segment + 1}`}
+                      actions={
+                        <div className="flex">
+                          <button
+                            type="button"
+                            className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                            onClick={() => setSegment(segment - 1)}
+                            disabled={segment === 0}
+                            aria-label="Previous segment"
+                            title="Previous segment"
+                          >
+                            <ChevronLeft />
+                          </button>
+                          <button
+                            type="button"
+                            className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                            onClick={() => setSegment(segment + 1)}
+                            disabled={segment >= sel.points.length - 2}
+                            aria-label="Next segment"
+                            title="Next segment"
+                          >
+                            <ChevronRight />
+                          </button>
+                        </div>
+                      }
+                    >
+                      <SegmentProps
+                        f={sel}
+                        index={segment}
+                        onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
+                        onToggle={(on) =>
+                          update(sel.id, {
+                            skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
+                          })
+                        }
+                        onClose={() => setSegment(null)}
+                        lights={lightsOf(layout, sel.lights)}
+                        length={lineLengths(sel)[segment] ?? 0}
+                        scale={scale}
+                        m={m}
+                        onResize={(count) => update(sel.id, resizeSegment(sel, segment, count))}
+                      />
+                    </PropSection>
+                  ) : null}
 
-                {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+                  {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
+                    <PropSection
+                      key="segment-effect"
+                      id="segment-effect"
+                      title={sel.segmentEffects?.[segment] ? `Segment ${segment + 1} effect · ${EFFECT_NAMES[sel.segmentEffects[segment].effect]}` : `Segment ${segment + 1} effect`}
+                    >
+                      <EffectProps
+                        effect={sel.segmentEffects?.[segment]}
+                        objectCount={sel.points.length - 1}
+                        noneLabel={sel.effect ? `Same as the line (${EFFECT_NAMES[sel.effect.effect]})` : 'Same as the line (dark)'}
+                        copyLabel="Use on every segment"
+                        copyTitle="Every segment of this line plays this effect on its own"
+                        emptyNote={
+                          sel.skip?.includes(segment)
+                            ? 'This segment is off (skipped): it stays dark, whatever its effect.'
+                            : 'This segment plays the whole line’s effect. Pick an effect to give it its own: it runs from the segment’s first LED to its last, and the line’s effect fills the rest.'
+                        }
+                        onChange={(effect) => {
+                          update(sel.id, { segmentEffects: setSegmentEffect(sel.segmentEffects, segment, effect) });
+                          if (effect && !sel.segmentEffects?.[segment]) setPlaying(true);
+                        }}
+                        onCopyToAll={() => {
+                          const fx = sel.segmentEffects?.[segment];
+                          update(sel.id, { segmentEffects: fx ? Object.fromEntries(sel.points.slice(1).map((_, k) => [k, fx])) : undefined });
+                          setPlaying(true);
+                        }}
+                      />
+                    </PropSection>
+                  ) : null}
+
+                  {isLine(sel) && segment == null && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
+                    <PropSection key="corner" id="corner" title={`Corner ${corner}`}>
+                      <CornerProps f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} onFind={sel.deviceId ? () => startMatch(sel, corner) : undefined} />
+                    </PropSection>
+                  ) : null}
+
+                  <PropSection key="object" id="object" title="Object">
+                    <PropText label="Name" value={sel.name} maxLength={60} onChange={(name) => update(sel.id, { name })} />
+                    {isLine(sel) ? (
+                      <PropSelect<FixtureKind>
+                        label="Kind"
+                        hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations."
+                        value={sel.kind}
+                        options={[
+                          ['roof', 'Roofline'],
+                          ['line', 'Other line of lights']
+                        ]}
+                        onChange={(kind) => update(sel.id, { kind })}
+                      />
+                    ) : null}
+                    <PropSelect
+                      label="WLED device"
+                      hint="The device that drives these LEDs."
+                      value={sel.deviceId ?? ''}
+                      options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
+                      onChange={(id) => update(sel.id, { deviceId: id || null })}
+                    />
+                    {isLine(sel) ? (
+                      <PropRow label="" hint="One LED blinks red on the house. Move it to the start, to each corner and to the end of the real line, and the drawing takes those LEDs.">
+                        <PropButton onClick={() => startMatch(sel)} disabled={!sel.deviceId} title={sel.deviceId ? 'Step through the start, each corner and the end on the real lights' : 'Pick the WLED device first'}>
+                          <LocateFixed /> Match to the lights
+                        </PropButton>
+                      </PropRow>
+                    ) : null}
+                    {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
+                      <PropNote>Or click one segment of the line to set its first and last LED, or a corner to pin it or split the line there.</PropNote>
+                    ) : null}
+                  </PropSection>
+
                   <PropSection
-                    key="segment-effect"
-                    id="segment-effect"
-                    title={sel.segmentEffects?.[segment] ? `Segment ${segment + 1} effect · ${EFFECT_NAMES[sel.segmentEffects[segment].effect]}` : `Segment ${segment + 1} effect`}
+                    key="effect"
+                    id="effect"
+                    title={`${isLine(sel) && segment != null ? 'Whole line effect' : 'Effect'}${sel.effect ? ` · ${EFFECT_NAMES[sel.effect.effect]}` : ''}`}
                   >
                     <EffectProps
-                      effect={sel.segmentEffects?.[segment]}
-                      objectCount={sel.points.length - 1}
-                      noneLabel={sel.effect ? `Same as the line (${EFFECT_NAMES[sel.effect.effect]})` : 'Same as the line (dark)'}
-                      copyLabel="Use on every segment"
-                      copyTitle="Every segment of this line plays this effect on its own"
-                      emptyNote={
-                        sel.skip?.includes(segment)
-                          ? 'This segment is off (skipped): it stays dark, whatever its effect.'
-                          : 'This segment plays the whole line’s effect. Pick an effect to give it its own: it runs from the segment’s first LED to its last, and the line’s effect fills the rest.'
-                      }
+                      effect={sel.effect}
+                      objectCount={layout.fixtures.length}
                       onChange={(effect) => {
-                        update(sel.id, { segmentEffects: setSegmentEffect(sel.segmentEffects, segment, effect) });
-                        if (effect && !sel.segmentEffects?.[segment]) setPlaying(true);
+                        update(sel.id, { effect });
+                        if (effect && !sel.effect) setPlaying(true);
                       }}
                       onCopyToAll={() => {
-                        const fx = sel.segmentEffects?.[segment];
-                        update(sel.id, { segmentEffects: fx ? Object.fromEntries(sel.points.slice(1).map((_, k) => [k, fx])) : undefined });
+                        const fx = sel.effect;
+                        edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => ({ ...f, effect: fx })) }));
                         setPlaying(true);
                       }}
                     />
                   </PropSection>
-                ) : null}
 
-                {isLine(sel) && segment == null && corner != null && corner > 0 && corner < sel.points.length - 1 ? (
-                  <PropSection key="corner" id="corner" title={`Corner ${corner}`}>
-                    <CornerProps f={sel} index={corner} onPin={(led) => pinCorner(sel, corner, led)} onSplit={() => splitAt(sel, corner)} />
-                  </PropSection>
-                ) : null}
-
-                <PropSection key="object" id="object" title="Object">
-                  <PropText label="Name" value={sel.name} maxLength={60} onChange={(name) => update(sel.id, { name })} />
-                  {isLine(sel) ? (
-                    <PropSelect<FixtureKind>
-                      label="Kind"
-                      hint="Games run along the roofline. Other lines (windows, doors, a fence, a path) are for animations."
-                      value={sel.kind}
-                      options={[
-                        ['roof', 'Roofline'],
-                        ['line', 'Other line of lights']
-                      ]}
-                      onChange={(kind) => update(sel.id, { kind })}
-                    />
+                  {sel.kind === 'custom' ? (
+                    <PropSection key="design" id="design" title="Design">
+                      <CustomProps
+                        layout={layout}
+                        f={sel}
+                        lenText={m.text}
+                        onChange={(patch) => update(sel.id, patch)}
+                        onEditDesign={() => {
+                          const d = layout.designs?.find((x) => x.id === sel.designId);
+                          setDesigning(d ?? { id: uid(), name: sel.name, strokes: sel.design ?? [], pixels: sel.pixels, lights: sel.lights });
+                        }}
+                      />
+                    </PropSection>
                   ) : null}
-                  <PropSelect
-                    label="WLED device"
-                    hint="The device that drives these LEDs."
-                    value={sel.deviceId ?? ''}
-                    options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
-                    onChange={(id) => update(sel.id, { deviceId: id || null })}
-                  />
-                  {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
-                    <PropNote>Click one segment of the line to set its first and last LED. Click a corner to pin it, or to split the line there.</PropNote>
-                  ) : null}
-                </PropSection>
 
-                <PropSection
-                  key="effect"
-                  id="effect"
-                  title={`${isLine(sel) && segment != null ? 'Whole line effect' : 'Effect'}${sel.effect ? ` · ${EFFECT_NAMES[sel.effect.effect]}` : ''}`}
-                >
-                  <EffectProps
-                    effect={sel.effect}
-                    objectCount={layout.fixtures.length}
-                    onChange={(effect) => {
-                      update(sel.id, { effect });
-                      if (effect && !sel.effect) setPlaying(true);
-                    }}
-                    onCopyToAll={() => {
-                      const fx = sel.effect;
-                      edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => ({ ...f, effect: fx })) }));
-                      setPlaying(true);
-                    }}
-                  />
-                </PropSection>
-
-                {sel.kind === 'custom' ? (
-                  <PropSection key="design" id="design" title="Design">
-                    <CustomProps
+                  <PropSection key="lights" id="lights" title={`Made of${lightsOf(layout, sel.lights) ? ` · ${lightsOf(layout, sel.lights)!.name}` : ''}`}>
+                    <LightsProps
                       layout={layout}
                       f={sel}
                       lenText={m.text}
-                      onChange={(patch) => update(sel.id, patch)}
-                      onEditDesign={() => {
-                        const d = layout.designs?.find((x) => x.id === sel.designId);
-                        setDesigning(d ?? { id: uid(), name: sel.name, strokes: sel.design ?? [], pixels: sel.pixels, lights: sel.lights });
-                      }}
+                      onPick={(id) => pickLights(sel.id, id)}
+                      onNew={() => setLightEdit({ type: null, forObject: sel.id })}
+                      onEdit={(lt) => setLightEdit({ type: lt })}
+                      onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
                     />
                   </PropSection>
-                ) : null}
 
-                <PropSection key="lights" id="lights" title={`Made of${lightsOf(layout, sel.lights) ? ` · ${lightsOf(layout, sel.lights)!.name}` : ''}`}>
-                  <LightsProps
-                    layout={layout}
-                    f={sel}
-                    lenText={m.text}
-                    onPick={(id) => pickLights(sel.id, id)}
-                    onNew={() => setLightEdit({ type: null, forObject: sel.id })}
-                    onEdit={(lt) => setLightEdit({ type: lt })}
-                    onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
-                  />
-                </PropSection>
+                  <PropSection key="leds" id="leds" title="LEDs">
+                    <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} />
+                  </PropSection>
 
-                <PropSection key="leds" id="leds" title="LEDs">
-                  <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} />
-                </PropSection>
+                  <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
+                    <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
+                  </PropSection>
 
-                <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
-                  <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
-                </PropSection>
-
-                {!isLine(sel) && sel.kind !== 'custom' ? (
-                  <PropSection key="shape" id="shape" title="Shape">
-                    <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
-                    {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
-                    {sel.kind === 'bush' ? (
-                      <PropSelect<NonNullable<Fixture['pattern']>>
-                        label="LED pattern"
-                        value={sel.pattern ?? 'fill'}
-                        options={[
-                          ['fill', 'Net over the bush'],
-                          ['ring', 'Ring around the edge'],
-                          ['spiral', 'Spiral from the middle']
-                        ]}
-                        onChange={(pattern) => update(sel.id, { pattern })}
-                      />
-                    ) : (
-                      <>
+                  {!isLine(sel) && sel.kind !== 'custom' ? (
+                    <PropSection key="shape" id="shape" title="Shape">
+                      <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
+                      {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
+                      {sel.kind === 'bush' ? (
                         <PropSelect<NonNullable<Fixture['pattern']>>
                           label="LED pattern"
-                          hint={
-                            sel.pattern === 'strands'
-                              ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
-                              : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
-                          }
-                          value={sel.pattern === 'strands' ? 'strands' : 'spiral'}
+                          value={sel.pattern ?? 'fill'}
                           options={[
-                            ['spiral', 'Spiral around the tree'],
-                            ['strands', 'Strands, base to top']
+                            ['fill', 'Net over the bush'],
+                            ['ring', 'Ring around the edge'],
+                            ['spiral', 'Spiral from the middle']
                           ]}
                           onChange={(pattern) => update(sel.id, { pattern })}
                         />
-                        {sel.pattern === 'strands' ? (
-                          <PropNumber label="Strands" value={sel.strands ?? 12} min={1} max={64} onChange={(n) => update(sel.id, { strands: Math.round(n) })} />
-                        ) : (
-                          <PropNumber
-                            label="Turns"
-                            hint="Turns of the spiral from the base to the top"
-                            decimal
-                            value={sel.turns ?? 8}
-                            min={0.5}
-                            max={100}
-                            step={0.5}
-                            onChange={(n) => update(sel.id, { turns: n })}
+                      ) : (
+                        <>
+                          <PropSelect<NonNullable<Fixture['pattern']>>
+                            label="LED pattern"
+                            hint={
+                              sel.pattern === 'strands'
+                                ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
+                                : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
+                            }
+                            value={sel.pattern === 'strands' ? 'strands' : 'spiral'}
+                            options={[
+                              ['spiral', 'Spiral around the tree'],
+                              ['strands', 'Strands, base to top']
+                            ]}
+                            onChange={(pattern) => update(sel.id, { pattern })}
                           />
-                        )}
-                      </>
-                    )}
-                    <PropNote>{sel.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'}</PropNote>
-                  </PropSection>
-                ) : null}
+                          {sel.pattern === 'strands' ? (
+                            <PropNumber label="Strands" value={sel.strands ?? 12} min={1} max={64} onChange={(n) => update(sel.id, { strands: Math.round(n) })} />
+                          ) : (
+                            <PropNumber
+                              label="Turns"
+                              hint="Turns of the spiral from the base to the top"
+                              decimal
+                              value={sel.turns ?? 8}
+                              min={0.5}
+                              max={100}
+                              step={0.5}
+                              onChange={(n) => update(sel.id, { turns: n })}
+                            />
+                          )}
+                        </>
+                      )}
+                      <PropNote>{sel.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'}</PropNote>
+                    </PropSection>
+                  ) : null}
+                  </>
+                )}
               </>
             ) : multiItems.length >= 2 ? (
               <>
@@ -3155,7 +3255,127 @@ function LedProps({ f, onRange }: { f: Fixture; onRange: (first: number, last: n
   );
 }
 
-function CornerProps({ f, index, onPin, onSplit }: { f: Fixture; index: number; onPin: (led: number | null) => void; onSplit: () => void }) {
+/**
+ * The "match to the lights" wizard, one point at a time: one LED blinks red on the house, the
+ * buttons, the slider or the arrow keys move it along the line, and "Found it" gives the point
+ * that LED. The start and the end can move past the line's LEDs; corners stay in order.
+ */
+function MatchWizard({
+  f,
+  probe,
+  lights,
+  onSet,
+  onMove,
+  onGo,
+  onFound,
+  onStop
+}: {
+  f: Fixture;
+  probe: MatchProbe;
+  /** Why the lights do not show the blinking LED, if they do not. */
+  lights: string | null;
+  onSet: (offset: number) => void;
+  onMove: (delta: number) => void;
+  onGo: (point: number) => void;
+  onFound: () => void;
+  onStop: () => void;
+}) {
+  const L = f.points.length - 1;
+  const n = Math.max(1, Math.floor(f.pixels));
+  const { point, offset } = probe;
+  const { lo, hi } = matchRange(f, point);
+  const offs = pointOffsets(f);
+  // The slider spans the room the point has, or a little past the line for the ends.
+  const room = Math.max(10, Math.round(n * 0.2));
+  const sMin = Math.min(offset, point === 0 ? Math.max(lo, -room) : lo);
+  const sMax = Math.max(offset, point === L ? Math.min(hi, n - 1 + room) : hi);
+  const led = deviceLed(f, offset);
+  const name = point === 0 ? 'The start' : point === L ? 'The end' : `Corner ${point}`;
+  const since = point > 0 ? offset - offs[point - 1] : null;
+  const steps: [number, string][] = [
+    [-10, '−10'],
+    [-1, '−1'],
+    [1, '+1'],
+    [10, '+10']
+  ];
+  return (
+    <>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-semibold">{name}</span>
+        <span className="text-[11px] text-stone-500 tabular-nums">
+          step {point + 1} of {L + 1}
+        </span>
+      </div>
+      <p className="text-xs text-stone-600 dark:text-stone-400">
+        {point === 0
+          ? 'Move the blinking red LED to the first LED of this line on the house.'
+          : point === L
+            ? 'Move the blinking red LED to the last LED of this line.'
+            : 'Move the blinking red LED to the first LED after this corner.'}{' '}
+        The drawing shows where it is now.
+      </p>
+      <div className="flex items-center justify-between gap-2 rounded-md bg-stone-100 px-2.5 py-2 dark:bg-stone-800">
+        <span className="text-lg font-semibold text-red-600 tabular-nums dark:text-red-400">LED {led}</span>
+        <span className="text-[11px] text-stone-500 tabular-nums">{since != null ? `${since} LEDs after the ${point === 1 ? 'start' : `corner ${point - 1}`}` : `${n} LEDs in the line`}</span>
+      </div>
+      <div className="grid grid-cols-4 gap-1">
+        {steps.map(([d, label]) => (
+          <PropButton key={d} onClick={() => onMove(d)} disabled={d < 0 ? offset <= lo : offset >= hi} title={`${d < 0 ? 'Back toward the start' : 'On toward the end'} by ${Math.abs(d)}`}>
+            <span className="w-full text-center tabular-nums">{label}</span>
+          </PropButton>
+        ))}
+      </div>
+      <input
+        type="range"
+        aria-label="Blinking LED"
+        min={sMin}
+        max={sMax}
+        step={1}
+        value={offset}
+        onChange={(e) => onSet(Number(e.target.value))}
+        className="h-7 w-full cursor-pointer accent-red-600 dark:accent-red-400"
+      />
+      <div className="flex items-center gap-1">
+        <PropButton onClick={() => onGo(point - 1)} disabled={point === 0} title="The point before (Backspace)">
+          <ChevronLeft /> Back
+        </PropButton>
+        <PropButton onClick={() => onGo(point + 1)} disabled={point === L} title="Keep this point as it is">
+          Skip
+        </PropButton>
+        <span className="flex-1" />
+        <Button size="sm" variant="primary" onClick={onFound} title="This LED is the spot (Enter)">
+          {point === L ? 'Found it, done' : 'Found it'}
+        </Button>
+      </div>
+      <div className="flex flex-wrap gap-1 pt-1" aria-label="Points">
+        {f.points.map((_, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onGo(i)}
+            title={i === 0 ? 'The start' : i === L ? 'The end' : `Corner ${i}`}
+            aria-current={i === point}
+            className={cn(
+              'size-2.5 rounded-full ring-1 ring-stone-400 dark:ring-stone-500',
+              i < point && 'bg-emerald-500 ring-emerald-500',
+              i === point && 'bg-red-500 ring-2 ring-red-500',
+              isPinned(f, i) && i > point && 'bg-amber-400 ring-amber-400'
+            )}
+          />
+        ))}
+      </div>
+      {lights ? <PropNote tone="red">{lights}</PropNote> : null}
+      <PropNote>Arrow keys move the LED (Shift: 10 at a time), Enter takes it, Backspace goes back, Esc stops.</PropNote>
+      <PropRow label="">
+        <PropButton onClick={onStop}>
+          <X /> Stop
+        </PropButton>
+      </PropRow>
+    </>
+  );
+}
+
+function CornerProps({ f, index, onPin, onSplit, onFind }: { f: Fixture; index: number; onPin: (led: number | null) => void; onSplit: () => void; onFind?: () => void }) {
   const led = deviceLed(f, pointOffsets(f)[index]);
   const pinned = isPinned(f, index);
   const ignored = f.pointLeds?.[index] != null && !pinned;
@@ -3176,11 +3396,45 @@ function CornerProps({ f, index, onPin, onSplit }: { f: Fixture; index: number; 
           <PropButton onClick={onSplit}>
             <Scissors /> Split here
           </PropButton>
+          {onFind ? (
+            <PropButton onClick={onFind} title="Blink an LED on the house and move it to this corner">
+              <LocateFixed /> Find on the lights
+            </PropButton>
+          ) : null}
         </div>
       </PropRow>
       <PropNote>{pinned ? 'Pinned: this number stays when you edit other segments.' : 'Estimated from the line length. Type the real number to pin it.'}</PropNote>
       {ignored ? <PropNote tone="red">The pinned number is not between the numbers of the points on each side, so it is not used.</PropNote> : null}
     </>
+  );
+}
+
+/** The wizard's blinking LED on the drawing: where the line puts it now, with its device LED number. */
+function ProbeMarker({ f, probe, V, k, scale }: { f: Fixture; probe: MatchProbe; V: (p: Point) => { u: number; v: number }; k: number; scale: number }) {
+  const px = fixturePixels(f, scale);
+  if (!px.length) return null;
+  // Past either end of the line, it shows at that end.
+  const at = V(px[Math.min(px.length - 1, Math.max(0, probe.offset))]);
+  const point = V(f.points[probe.point]);
+  return (
+    <g pointerEvents="none">
+      <circle cx={point.u} cy={point.v} r={11 * k} fill="none" stroke="#fff" strokeWidth={2 * k} strokeDasharray={`${3 * k} ${3 * k}`} />
+      <circle cx={at.u} cy={at.v} r={8 * k} fill="none" stroke="#ef4444" strokeWidth={3 * k} className="animate-pulse" />
+      <text
+        x={at.u}
+        y={at.v - 16 * k}
+        textAnchor="middle"
+        fontSize={14 * k}
+        fontWeight={700}
+        fill="#f87171"
+        stroke="#0c0a09"
+        strokeWidth={4 * k}
+        paintOrder="stroke"
+        className="tabular-nums"
+      >
+        LED {deviceLed(f, probe.offset)}
+      </text>
+    </g>
   );
 }
 

@@ -603,7 +603,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     corner: z.number().int().nullable(),
     segment: z.number().int().nullable().optional(),
     play: z.boolean().optional(),
-    area: gameAreaInput.nullable().optional()
+    area: gameAreaInput.nullable().optional(),
+    probe: z
+      .object({ point: z.number().int().min(0).max(10_000), offset: z.number().int().min(-2000).max(4000) })
+      .nullable()
+      .optional()
   });
   admin.post('/layout/preview', async (c) => {
     const req = await body(c, previewSchema);

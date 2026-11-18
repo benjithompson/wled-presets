@@ -714,6 +714,96 @@ export function setPointLed(f: Fixture, index: number, led: number, lock: number
   return { ...range, pixels: Math.min(MAX_FIXTURE_PIXELS, range.pixels), pointLeds: pointLeds.some((p) => p != null && p > 0) ? pointLeds.map((p) => (p != null && p > 0 ? p : null)) : undefined };
 }
 
+// ---------- Matching a drawn line to the real lights ----------
+
+/**
+ * The "match to the lights" wizard: one LED blinks red on the house, you move it to the real
+ * start, corner or end of the line, and that point takes its LED. Offsets count from the first
+ * point of the object as it is now, and can lie outside it: the start or the end can move out.
+ */
+export interface MatchProbe {
+  /** The point being matched (0: the start, the last point: the end). */
+  point: number;
+  /** The LED that blinks, as an offset from the first point. */
+  offset: number;
+}
+
+/**
+ * The offsets the blinking LED can take for one point, so the points stay in order with at
+ * least one LED in each segment. The start stays before the next pinned corner; a corner stays
+ * after the point before it (later corners give way, see matchPoint); the end stays after the
+ * last pinned corner. Device LED numbers never go below 0, and the line stays within
+ * MAX_FIXTURE_PIXELS.
+ */
+export function matchRange(f: Fixture, point: number): { lo: number; hi: number } {
+  const L = f.points.length - 1;
+  const n = Math.max(1, Math.floor(f.pixels));
+  const offs = pointOffsets(f);
+  const anchors = anchorIndexes(f);
+  const before = [...anchors].reverse().find((a) => a < point) ?? 0;
+  const after = anchors.find((a) => a > point) ?? L;
+  let lo: number;
+  let hi: number;
+  if (point <= 0) {
+    lo = n - MAX_FIXTURE_PIXELS;
+    hi = offs[after] - after;
+  } else if (point >= L) {
+    lo = offs[before] + (L - before);
+    hi = MAX_FIXTURE_PIXELS - 1;
+  } else {
+    lo = offs[before] + (point - before);
+    hi = n - 1 - (L - point);
+  }
+  // Device LED 0 is as far as it goes.
+  if (f.reversed) hi = Math.min(hi, f.startPixel + n - 1);
+  else lo = Math.max(lo, -f.startPixel);
+  return { lo, hi: Math.max(lo, hi) };
+}
+
+/**
+ * Gives a point of a line the LED at `offset` (see MatchProbe): the start or the end moves
+ * there, a corner is pinned there. Every other pinned corner keeps its device LED number,
+ * except later corners the new pin passes: they are unpinned, to be matched next.
+ */
+export function matchPoint(f: Fixture, point: number, offset: number): Pick<Fixture, 'startPixel' | 'pixels' | 'reversed' | 'pointLeds'> {
+  const L = f.points.length - 1;
+  const { lo, hi } = matchRange(f, point);
+  const o = Math.min(hi, Math.max(lo, Math.round(offset)));
+  let g = f;
+  if (point > 0 && point < L && f.pointLeds) {
+    const pins = f.pointLeds.map((p, i) => (i > point && p != null && p <= o + (i - point) - 1 ? null : p));
+    g = { ...f, pointLeds: pins };
+  }
+  return setPointLed(g, point, deviceLed(g, o));
+}
+
+/**
+ * Paints the wizard's view: the matched line dim blue, the stretch from the point before up to
+ * the blinking LED brighter (so you can follow it along the roof), and the blinking LED red.
+ * Other objects stay dark. `put` can get LEDs outside the object (see MatchProbe).
+ */
+export function paintMatch(
+  layout: Layout,
+  selected: string,
+  probe: MatchProbe,
+  pulse: boolean,
+  put: (fixtureIndex: number, led: number, rgb: [number, number, number]) => void
+) {
+  const scale = (c: [number, number, number], k: number): [number, number, number] => [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k)];
+  layout.fixtures.forEach((f, fi) => {
+    const n = Math.max(0, Math.floor(f.pixels));
+    if (f.id !== selected) {
+      for (let i = 0; i < n; i++) put(fi, i, [0, 0, 0]);
+      return;
+    }
+    const from = probe.point > 0 ? pointOffsets(f)[probe.point - 1] : probe.offset;
+    const a = Math.min(from, probe.offset);
+    const b = Math.max(from, probe.offset);
+    for (let i = Math.min(0, a); i < Math.max(n, b + 1); i++) put(fi, i, i >= a && i <= b ? scale(SELECTED_RGB, 0.45) : i >= 0 && i < n ? scale(SELECTED_RGB, 0.08) : [0, 0, 0]);
+    put(fi, probe.offset, pulse ? LAST_LED_RGB : [0, 0, 0]);
+  });
+}
+
 /**
  * Limits a new LED number for one point of a roof line, so the points stay in order: every
  * segment keeps at least one LED, no segment can cross the one before or after it, and the

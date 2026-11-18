@@ -1,5 +1,5 @@
 import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
-import { buildStage, deviceLed, editorPulse, paintEditor, paintGameArea, type GameArea, type Layout, type Stage } from '../../shared/layout.ts';
+import { buildStage, deviceLed, editorPulse, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import type { Device, DeviceInfo } from '../../shared/types.ts';
 import type { LightSender } from './lightSender.ts';
@@ -21,6 +21,8 @@ export interface PreviewRequest {
   play?: boolean;
   /** The Games page: show the game area (see paintGameArea), with `selected` and `segment` in focus. */
   area?: GameArea | null;
+  /** The editor's "match to the lights" wizard: one LED of the selected line blinks red (see paintMatch). */
+  probe?: MatchProbe | null;
 }
 
 /** The sequence editor's preview: a sequence, the time the editor shows, and whether it plays. */
@@ -49,7 +51,10 @@ export function stageFrame(layout: Layout, stage: Stage, bytes: Uint8Array, devi
 /** Colors for one device: the editor's view (see paintEditor), mapped to the device's LED numbers. */
 export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: number, pulse: boolean): Uint8Array {
   const fixtures = req.layout.fixtures.filter((f) => f.deviceId === deviceId);
-  const size = Math.max(ledCount, ...fixtures.map((f) => f.startPixel + f.pixels));
+  const matched = req.probe && req.selected ? req.layout.fixtures.find((f) => f.id === req.selected && f.deviceId === deviceId) : undefined;
+  // The wizard's blinking LED can sit past the end of its line.
+  const probeLed = matched && req.probe ? deviceLed(matched, req.probe.offset) : -1;
+  const size = Math.max(ledCount, probeLed + 1, ...fixtures.map((f) => f.startPixel + f.pixels));
   const out = new Uint8Array(size * 3);
   const put = (fi: number, i: number, rgb: [number, number, number]) => {
     const f = req.layout.fixtures[fi];
@@ -57,7 +62,8 @@ export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: nu
     const led = deviceLed(f, i);
     if (led >= 0 && led < size) out.set(rgb, led * 3);
   };
-  if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
+  if (req.probe && req.selected) paintMatch(req.layout, req.selected, req.probe, pulse, put);
+  else if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
   else paintEditor(req.layout, req.selected, req.corner, req.segment ?? null, pulse, put);
   return out;
 }
