@@ -220,6 +220,40 @@ describe('Cascade', () => {
     expect(painted).toBeGreaterThan(0);
   });
 
+  it('burns a fuse while you aim, then the bomb goes off by itself', async () => {
+    const { FUSE } = await import('../src/game/cascade.ts');
+    const stage = buildStage(sampleLayout());
+    const game = cascadeGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    press(game);
+    run(game, frame, 1);
+    expect(game.status().stats).toContainEqual({ label: 'Fuse', value: `${FUSE - 1}s` });
+    run(game, frame, FUSE - 1.5);
+    expect(game.status().phase).toBe('aim');
+    run(game, frame, 1);
+    expect(game.status().phase).not.toBe('aim');
+  });
+
+  it('draws the bomb as the only white light on the roof', () => {
+    const stage = buildStage(sampleLayout());
+    const game = cascadeGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    press(game);
+    const roof = stage.fixtures.find((f) => f.kind === 'roof')!;
+    for (let t = 0; t < 20; t++) {
+      run(game, frame, 0.25);
+      // White: every channel bright. Only the bomb's head (a few LEDs in a row) is.
+      const white: number[] = [];
+      for (let i = 0; i < roof.count; i++) {
+        const k = (roof.offset + i) * 3;
+        if (Math.min(frame.data[k], frame.data[k + 1], frame.data[k + 2]) > 0.55) white.push(i);
+      }
+      expect(white.length).toBeGreaterThan(0);
+      expect(white.length).toBeLessThan(12);
+      expect(Math.max(...white) - Math.min(...white)).toBeLessThan(12);
+    }
+  });
+
   it('asks for a roofline when there is none', () => {
     const layout = sampleLayout();
     layout.fixtures = layout.fixtures.filter((f) => f.kind !== 'roof');

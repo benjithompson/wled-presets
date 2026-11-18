@@ -13,7 +13,7 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     id: 'cascade',
     name: 'Cascade',
     tagline: 'One tap, one chain reaction',
-    description: 'Glowing orbs roll along the roof. One tap sets off a blast: catch them in a chain reaction.',
+    description: 'Orbs in four colors roll along the roof. Tap to set off the white bomb before its fuse burns down: same colors set each other off for double.',
     players: '1 player'
   },
   {

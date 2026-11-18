@@ -1,13 +1,19 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, spreadHue, Waves, Yard, type Part } from './kit.ts';
+import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
-// Cascade: glowing orbs of every color roll along the roofline under real gravity: they speed up
-// down the slopes, slow down climbing, and bounce off each other and the ends. A white spark
-// sweeps the roof; one tap sets off a blast there. Every orb the blast touches bursts in its own
-// color and sets off the orbs it touches: pop enough of them in one chain reaction to clear the
-// level.
+// Cascade: glowing orbs in four colors roll along the roofline under real gravity: they speed up
+// down the slopes, slow down climbing, and bounce off each other and the ends. The bomb, a white
+// comet with a burning fuse for a tail, sweeps the roof, with the stretch its blast would cover
+// lit faintly and the orbs in it glowing brighter; one tap sets it off (when the fuse burns down,
+// it goes off by itself). Every orb the blast touches bursts in its own color and sets off the
+// orbs it touches: pop enough of them in one chain reaction to clear the level. A burst that
+// pops an orb of its own color is a combo: double points and a bigger blast. Popping every orb
+// is a clean sweep: a bonus, and a life back.
+//
+// Colors mean one thing each: white is only ever the bomb (and the flash of a blast), the orbs
+// are green, cyan, blue and magenta, gold is points, red is a miss.
 //
 // The yard: each popped orb drips its color off the gutter, past the windows, into the bush
 // below, so the bushes fill up with a picture of the chain (full bushes: the target is reached).
@@ -19,6 +25,8 @@ interface Orb {
   pos: number;
   vel: number;
   hue: number;
+  /** Which of ORB_COLORS (gold orbs: -1). */
+  tone: number;
   color: Rgb;
   /** Gold: worth more, and a bigger blast. */
   gold: boolean;
@@ -33,6 +41,8 @@ interface Blast {
   id: number;
   pos: number;
   color: Rgb;
+  /** The color of the orb that burst (ORB_COLORS index); the bomb and gold orbs: null. */
+  tone: number | null;
   radius: number;
   t: number;
   player: boolean;
@@ -53,6 +63,20 @@ const END = 1.35;
 const LAG = 0.08;
 const ORB_RADIUS = 1.4;
 const NIGHT: Rgb = [0.025, 0.008, 0.05];
+/**
+ * The orbs' colors: few, far apart on real LEDs, and none of the colors that mean something
+ * else (white: the bomb, gold: points, red: a miss).
+ */
+export const ORB_COLORS: Rgb[] = [
+  [0.05, 1, 0.12],
+  [0, 0.72, 1],
+  [0.14, 0.08, 1],
+  [1, 0, 0.7]
+];
+/** Seconds of fuse: then the bomb goes off where it is. */
+export const FUSE = 12;
+/** A combo (an orb popped by a burst of its own color) makes this much bigger a blast. */
+const COMBO_BLAST = 1.35;
 
 export function cascadeGame(stage: Stage): Game {
   const yard = new Yard(stage);
@@ -82,6 +106,14 @@ export function cascadeGame(stage: Stage): Game {
   let cursorDir = 1;
   let quietFor = 0;
   let newBest = false;
+  /** Seconds of fuse left while aiming. */
+  let fuse = FUSE;
+  /** Combos in this chain. */
+  let combos = 0;
+  /** The last chain popped every orb. */
+  let swept = false;
+  let sweepBonus = 0;
+  let lifeBack = false;
   /** Where the spark was lately: a tap sets off the blast where the player saw it. */
   const seen = new Recent<number>(0.4);
   /** The tree meter, smoothed. */
@@ -105,7 +137,13 @@ export function cascadeGame(stage: Stage): Game {
     orbs = [];
     blasts = [];
     chain = 0;
+    combos = 0;
+    swept = false;
+    lifeBack = false;
+    fuse = FUSE;
     meter = 0;
+    // The colors come round in turn from a random start, so each one has its share.
+    const first = Math.floor(Math.random() * ORB_COLORS.length);
     const goldAt = lv >= 3 && !demo ? Math.floor(Math.random() * count) : -1;
     for (let i = 0; i < count; i++) {
       let pos = 0;
@@ -113,14 +151,16 @@ export function cascadeGame(stage: Stage): Game {
         pos = 3 + Math.random() * (n - 6);
         if (orbs.every((o) => Math.abs(o.pos - pos) > 5)) break;
       }
-      const hue = spreadHue(i + lv * 3);
+      const tone = (first + i) % ORB_COLORS.length;
+      const hue = tone / ORB_COLORS.length;
       const gold = i === goldAt;
       const speed = n * (0.04 + Math.random() * 0.08) * (1 + lv * 0.05);
       orbs.push({
         pos,
         vel: (Math.random() < 0.5 ? -1 : 1) * speed,
         hue,
-        color: gold ? COLORS.gold : hsv(hue),
+        tone: gold ? -1 : tone,
+        color: gold ? COLORS.gold : ORB_COLORS[tone],
         gold,
         armor: !gold && lv >= 5 && !demo && i % 4 === 1,
         hits: new Set(),
@@ -150,8 +190,8 @@ export function cascadeGame(stage: Stage): Game {
 
   const cursorAt = (t: number) => seen.at(t) ?? cursor;
 
-  function detonate(pos: number, color: Rgb, player: boolean, radius: number) {
-    blasts.push({ id: blastId++, pos, color, radius, t: 0, player });
+  function detonate(pos: number, color: Rgb, player: boolean, radius: number, tone: number | null = null) {
+    blasts.push({ id: blastId++, pos, color, tone, radius, t: 0, player });
     const p = roof.point(pos);
     if (player) {
       sparks.burst(pos, [WHITE, [0.7, 0.8, 1]], 30, n * 0.35, 0.9);
@@ -184,25 +224,29 @@ export function cascadeGame(stage: Stage): Game {
     orbs = orbs.filter((x) => x !== o);
     chain++;
     longest = Math.max(longest, chain);
-    score += chain + (o.gold ? 10 : 0);
+    // A burst that pops an orb of its own color: a combo, worth double, with a bigger blast.
+    const combo = by.tone != null && by.tone === o.tone;
+    if (combo) combos++;
+    score += chain * (combo ? 2 : 1) + (o.gold ? 10 : 0);
     const p = roof.point(o.pos);
-    detonate(o.pos, o.color, false, blastRadius(level) * (o.gold ? 1.7 : 1));
-    sparks.burst(o.pos, [o.color, mix(o.color, WHITE, 0.5), by.color], o.gold ? 50 : 22, n * (o.gold ? 0.45 : 0.25), o.gold ? 1.4 : 1);
-    decorFlare.add(o.color, o.gold ? 1.2 : 0.45);
+    detonate(o.pos, o.color, false, blastRadius(level) * (o.gold ? 1.7 : combo ? COMBO_BLAST : 1), o.gold ? null : o.tone);
+    sparks.burst(o.pos, [o.color, mix(o.color, WHITE, 0.5), by.color], o.gold ? 50 : combo ? 40 : 22, n * (o.gold ? 0.45 : combo ? 0.35 : 0.25), o.gold || combo ? 1.4 : 1);
+    decorFlare.add(o.color, o.gold ? 1.2 : combo ? 0.9 : 0.45);
     if (o.gold) waves.add(p.x, p.y, COLORS.gold, { amount: 1 });
-    else if (chain % 5 === 0) waves.add(p.x, p.y, o.color, { amount: 0.8 });
+    else if (combo || chain % 5 === 0) waves.add(p.x, p.y, o.color, { amount: combo ? 1 : 0.8 });
     paintBush(p.x, p.y, o.color);
+  }
+
+  /** The bomb goes off where it was (a tap: where the player saw it). */
+  function fire(pos: number) {
+    detonate(pos, WHITE, true, blastRadius(level));
+    setPhase('chain');
   }
 
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
     if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return newGame();
-    if (phase === 'aim') {
-      const pos = cursorAt(clock - LAG);
-      detonate(pos, WHITE, true, blastRadius(level));
-      setPhase('chain');
-      return;
-    }
+    if (phase === 'aim') return fire(cursorAt(clock - LAG));
     if ((phase === 'clear' || phase === 'fail') && phaseTime > 1.2) next();
   }
 
@@ -216,6 +260,14 @@ export function cascadeGame(stage: Stage): Game {
   function judge() {
     if (chain >= target) {
       score += (chain - target) * 2;
+      // Every orb popped: a clean sweep, worth a bonus and a life back.
+      swept = orbs.length === 0;
+      if (swept) {
+        sweepBonus = 10 * level;
+        score += sweepBonus;
+        lifeBack = lives < LIVES;
+        lives = Math.min(LIVES, lives + 1);
+      }
       setPhase('clear');
       // The bushes erupt, the roof answers with fireworks.
       for (const b of yard.bushes) waves.add(b.x, b.top, COLORS.gold, { amount: 0.9 });
@@ -315,26 +367,51 @@ export function cascadeGame(stage: Stage): Game {
         if (core) yard.roofAt(i, WHITE, core * Math.exp(-((d / 3) ** 2)));
       }
     }
+    const aiming = phase === 'aim' || phase === 'ready';
+    const reach = blastRadius(level);
     for (const o of orbs) {
       if (o.age < 0) continue;
-      const arrive = o.age < 0.3 ? 1 - o.age / 0.3 : 0;
-      const shimmer = 0.85 + 0.15 * Math.sin(clock * 9 + o.hue * 20);
-      const color = arrive ? mix(o.color, WHITE, arrive) : o.armor && o.hits.size === 0 ? mix(o.color, WHITE, 0.35 + 0.25 * Math.sin(clock * 6)) : o.color;
-      yard.roofSplat(o.pos, color, ORB_RADIUS, shimmer);
-      yard.roofSplat(o.pos, o.color, 3.5, 0.12);
-      if (o.gold && Math.random() < 0.3) yard.roofAt(o.pos + (Math.random() - 0.5) * 6, WHITE, 0.6);
-      if (o.armor && o.hits.size) yard.roofSplat(o.pos, WHITE, 0.8, Math.random() < 0.5 ? 0.8 : 0.2);
+      const arrive = o.age < 0.2 ? 1 - o.age / 0.2 : 0;
+      // Orbs the bomb would catch now glow brighter, with a wider halo.
+      const aimed = aiming && Math.abs(o.pos - cursor) <= reach + ORB_RADIUS;
+      const shimmer = (aimed ? 1.2 : 0.85) + 0.15 * Math.sin(clock * 9 + o.hue * 20);
+      const cracked = o.armor && o.hits.size > 0;
+      // A new orb arrives with a flash in its own color (not white: white is the bomb).
+      yard.roofSplat(o.pos, o.color, ORB_RADIUS, (cracked ? shimmer * (Math.random() < 0.5 ? 1 : 0.35) : shimmer) + arrive);
+      yard.roofSplat(o.pos, o.color, 3.5, aimed ? 0.3 : 0.12 + arrive * 0.4);
+      // Armor: a shell of two dimmer dots in its own color; the first blast cracks it off.
+      if (o.armor && !cracked) {
+        yard.roofSplat(o.pos - 2.6, o.color, 0.7, 0.5);
+        yard.roofSplat(o.pos + 2.6, o.color, 0.7, 0.5);
+      }
+      if (o.gold && Math.random() < 0.3) yard.roofAt(o.pos + (Math.random() - 0.5) * 6, mix(COLORS.gold, WHITE, 0.4), 0.6);
     }
-    if (phase === 'aim' || phase === 'ready') {
-      // The spark, with faint marks where its blast would reach.
-      const r = blastRadius(level);
-      const pulse = 0.75 + 0.25 * Math.sin(clock * 12);
-      yard.roofSplat(cursor, WHITE, 1.3, pulse);
-      yard.roofSplat(cursor, [0.6, 0.7, 1], 4, 0.15);
-      yard.roofSplat(cursor - r, [0.5, 0.6, 1], 0.8, 0.25 * pulse);
-      yard.roofSplat(cursor + r, [0.5, 0.6, 1], 0.8, 0.25 * pulse);
-    }
+    if (aiming) drawBomb(reach);
     sparks.draw(yard);
+  }
+
+  /**
+   * The bomb: the only white thing on the roof. A bright head, a tail of fuse behind it that
+   * burns shorter, the stretch its blast would cover lit faintly with bright edges. In the last
+   * seconds of the fuse it blinks fast.
+   */
+  function drawBomb(reach: number) {
+    const left = phase === 'aim' ? Math.max(0, fuse / FUSE) : 1;
+    const urgent = phase === 'aim' && fuse < 3;
+    const blink = urgent ? (Math.sin(clock * 28) > 0 ? 1 : 0.2) : 0.85 + 0.15 * Math.sin(clock * 12);
+    for (let i = Math.ceil(cursor - reach); i <= Math.floor(cursor + reach); i++) if (i >= 0 && i < n) yard.roofAt(i, COLORS.hint, 0.05);
+    yard.roofSplat(cursor - reach, COLORS.hint, 0.7, 0.45 * blink);
+    yard.roofSplat(cursor + reach, COLORS.hint, 0.7, 0.45 * blink);
+    const tail = 3 + 10 * left;
+    for (let k = 1; k <= tail; k++) {
+      const at = cursor - cursorDir * k * 0.9;
+      if (at < 0 || at > n - 1) break;
+      const f = k / (tail + 1);
+      // Burning: white near the head, fading to a flickering ember blue.
+      yard.roofSplat(at, mix(WHITE, COLORS.hint, f), 0.65, 0.6 * (1 - f) ** 1.4 * (0.8 + 0.4 * Math.random()));
+    }
+    yard.roofSplat(cursor, WHITE, 1.15, blink);
+    yard.roofSplat(cursor, COLORS.hint, 3.5, 0.18);
   }
 
   function drawBushes() {
@@ -393,6 +470,11 @@ export function cascadeGame(stage: Stage): Game {
         ({ pos: cursor, dir: cursorDir } = bounce(cursor, cursorDir, sweepSpeed(level) * dt, n));
         seen.push(clock, cursor);
       }
+      // The fuse burns while you aim; at the end the bomb goes off by itself.
+      if (phase === 'aim') {
+        fuse -= dt;
+        if (fuse <= 0) fire(cursor);
+      }
       if (phase !== 'over') stepOrbs(dt);
       stepBlasts(dt);
       sparks.update(dt);
@@ -408,7 +490,7 @@ export function cascadeGame(stage: Stage): Game {
       }
       if (phase === 'clear') {
         // Fireworks over the roof in the colors that were popped.
-        if (Math.random() < dt * 5) {
+        if (Math.random() < dt * (swept ? 10 : 5)) {
           const colors = bushPaint.flat().filter((x): x is Paint => !!x).map((x) => x.color);
           sparks.burst(Math.random() * n, colors.length ? [colors[Math.floor(Math.random() * colors.length)], WHITE] : [hsv(Math.random()), WHITE], 26, n * 0.3);
         }
@@ -444,11 +526,28 @@ export function cascadeGame(stage: Stage): Game {
         case 'ready':
           return { ...common, phase, lives: null, message: 'Tap to start! One tap sets off a blast: catch the orbs in a chain.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
         case 'aim':
-          return { ...common, phase, progress, message: `Level ${level}: pop ${target} of ${orbs.length} orbs. Wait for them to bunch up…`, button: 'BOOM!', tone: 'go' };
+          return {
+            ...common,
+            stats: [...stats, { label: 'Fuse', value: `${Math.max(0, Math.ceil(fuse))}s` }],
+            phase,
+            progress,
+            message: `Level ${level}: pop ${target} of ${orbs.length} orbs. Tap when the bright ones bunch up. Same color hits same color: double!`,
+            button: 'BOOM!',
+            tone: 'go'
+          };
         case 'chain':
-          return { ...common, phase, progress, message: chain ? `Chain ×${chain}!` : 'Boom…', button: '…', tone: 'wait' };
+          return { ...common, phase, progress, message: chain ? `Chain ×${chain}!${combos ? ` ${combos} color combo${combos > 1 ? 's' : ''}!` : ''}` : 'Boom…', button: '…', tone: 'wait' };
         case 'clear':
-          return { ...common, phase, progress, message: `Level ${level} cleared! Chain of ${chain}.`, button: 'NEXT', tone: 'good' };
+          return {
+            ...common,
+            phase,
+            progress,
+            message: swept
+              ? `Clean sweep! Every orb popped: +${sweepBonus}${lifeBack ? ' and a life back' : ''}.`
+              : `Level ${level} cleared! Chain of ${chain}${combos ? `, ${combos} combo${combos > 1 ? 's' : ''}` : ''}. Pop them all for a bonus.`,
+            button: 'NEXT',
+            tone: 'good'
+          };
         case 'fail':
           return { ...common, phase, progress, message: lives === 1 ? `${chain} of ${target}. Last try!` : `${chain} of ${target}. So close! Try again.`, button: 'AGAIN', tone: 'bad' };
         case 'over':
