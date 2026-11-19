@@ -1,28 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RoofGeometry } from '../../../shared/types.ts';
 import { fieldRoof } from '../lightfield/LightField.tsx';
-
-/** Height of the strip, in CSS pixels. The page leaves room for it. */
-export const ROOF_HEIGHT = 40;
-/** Space at each end of the strip. */
-const SIDE = 14;
-/** How far the roof's highest point rises over its lowest. */
-const RISE = 16;
+import { nearestOnBorder } from '../lib/border.ts';
 
 export interface RoofStream {
   geometry: RoofGeometry | null;
-  /** The latest colors: one RGB triple per cell. */
+  /** The latest colors: one RGB triple per cell, in strip order. */
   frame: React.RefObject<Uint8Array | null>;
 }
 
 /**
- * The roofline as it is now, from the server (see RoofView): its shape once, then its colors
- * up to 20 times a second. The stream closes while the page is hidden.
+ * The roofline as it is now, from the server (see RoofView): how many cells once, then their
+ * colors up to 20 times a second. The stream closes while the page is hidden.
  */
 export function useRoofStream(): RoofStream {
   const [geometry, setGeometry] = useState<RoofGeometry | null>(null);
   const frame = useRef<Uint8Array | null>(null);
-  const shape = useRef<RoofGeometry | null>(null);
+  const cells = useRef(0);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -31,9 +25,9 @@ export function useRoofStream(): RoofStream {
       es = new EventSource('/api/roof');
       es.addEventListener('geometry', (e) => {
         const g = JSON.parse((e as MessageEvent).data) as RoofGeometry;
-        shape.current = g;
-        frame.current = new Uint8Array(g.x.length * 3);
-        setGeometry(g.x.length ? g : null);
+        cells.current = g.cells;
+        frame.current = new Uint8Array(g.cells * 3);
+        setGeometry(g.cells ? g : null);
         fieldRoof(null);
       });
       es.addEventListener('frame', (e) => {
@@ -41,8 +35,7 @@ export function useRoofStream(): RoofStream {
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         frame.current = bytes;
-        const g = shape.current;
-        if (g && bytes.length === g.x.length * 3) fieldRoof(screenX(g.x), bytes);
+        if (bytes.length === cells.current * 3) fieldRoof(bytes);
       });
       // Too many people watch: no roofline for now, and no retrying.
       es.addEventListener('busy', () => close());
@@ -64,16 +57,15 @@ export function useRoofStream(): RoofStream {
   return { geometry, frame };
 }
 
-/** A cell's place across the window (0..1), with the strip's side margins. */
-function screenX(x: number[]): Float32Array {
-  const w = window.innerWidth || 1;
-  const m = Math.min(SIDE / w, 0.1);
-  return Float32Array.from(x, (v) => m + v * (1 - 2 * m));
-}
+/** Samples around the border loop: the roof's cells are spread over these. */
+const RING = 480;
+/** Pixels of the glow canvas along the window's longer side; the browser scales it up, smoothly. */
+const GRID = 160;
 
 /**
- * The roof's lights along the top edge of the window, drawn in the shape of the roof (its
- * peaks higher), each cell a glowing bulb in the color the real lights show now.
+ * The roofline as a soft glow from the whole border of the window: the roof's lights in strip
+ * order, wrapped clockwise from the bottom-left corner, each part of the border glowing inward in
+ * the color the real lights show there now.
  */
 export function Roofline({ roof, dark }: { roof: RoofStream; dark: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -84,96 +76,107 @@ export function Roofline({ roof, dark }: { roof: RoofStream; dark: boolean }) {
     if (!c || !geometry) return;
     const ctx = c.getContext('2d');
     if (!ctx) return;
-    const n = geometry.x.length;
+    const n = geometry.cells;
     // What is drawn eases toward the latest frame, so 20 frames a second look smooth at 60.
     const shown = new Float32Array(n * 3);
+    const ring = new Float32Array(RING * 3);
+    const blurred = new Float32Array(RING * 3);
     let raf = 0;
-    let w = 0;
-    let h = 0;
-    const resize = () => {
-      const dpr = Math.min(devicePixelRatio || 1, 2);
-      w = c.clientWidth;
-      h = c.clientHeight;
-      c.width = Math.round(w * dpr);
-      c.height = Math.round(h * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    let image: ImageData | null = null;
+    // Per glowing pixel of the small canvas: its index, its place on the ring, and its glow.
+    let pix = new Int32Array(0);
+    let at = new Int32Array(0);
+    let glow = new Float32Array(0);
+
+    const layout = () => {
+      const w = Math.max(1, window.innerWidth);
+      const h = Math.max(1, window.innerHeight);
+      const s = Math.max(w, h) / GRID;
+      const cols = Math.max(8, Math.round(w / s));
+      const rows = Math.max(8, Math.round(h / s));
+      c.width = cols;
+      c.height = rows;
+      image = ctx.createImageData(cols, rows);
+      // The glow reaches about a seventh of the way in on the shorter side, fading as it goes.
+      const reach = Math.min(w, h) * 0.16;
+      const p: number[] = [];
+      const a: number[] = [];
+      const g: number[] = [];
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const { t, depth } = nearestOnBorder((x + 0.5) * s, (y + 0.5) * s, w, h);
+          if (depth > reach) continue;
+          const k = 1 - depth / reach;
+          p.push(y * cols + x);
+          a.push(Math.min(RING - 1, Math.floor(t * RING)));
+          g.push(k * k * (0.35 + 0.65 * k));
+        }
+      }
+      pix = Int32Array.from(p);
+      at = Int32Array.from(a);
+      glow = Float32Array.from(g);
     };
-    resize();
-    window.addEventListener('resize', resize);
+    layout();
+    window.addEventListener('resize', layout);
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
       const f = frame.current;
-      if (f && f.length === n * 3) for (let i = 0; i < f.length; i++) shown[i] += (f[i] - shown[i]) * 0.45;
-      ctx.clearRect(0, 0, w, h);
-      const side = Math.min(SIDE, w * 0.1);
-      const span = w - side * 2;
-      const px = (i: number) => side + geometry.x[i] * span;
-      const py = (i: number) => 6 + (1 - geometry.y[i]) * RISE;
-      const gap = span / Math.max(n, 1);
-      const r = Math.max(1.2, Math.min(3.2, gap * 0.38));
-
-      // The wire: the roof's outline, faint, so the shape reads when the lights are dark.
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = dark ? 'rgba(255,255,255,0.10)' : 'rgba(28,25,23,0.14)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) {
-        // A wide gap is between two roofs: the wire does not cross it.
-        if (i && geometry.x[i] - geometry.x[i - 1] > 0.06) ctx.moveTo(px(i), py(i));
-        else if (i) ctx.lineTo(px(i), py(i));
-        else ctx.moveTo(px(i), py(i));
+      if (f && f.length === n * 3) for (let i = 0; i < f.length; i++) shown[i] += (f[i] - shown[i]) * 0.4;
+      // The cells, spread around the ring (each blends into the next).
+      for (let r = 0; r < RING; r++) {
+        const u = (r / RING) * n - 0.5;
+        const i0 = Math.max(0, Math.min(n - 1, Math.floor(u)));
+        const i1 = Math.min(n - 1, i0 + 1);
+        const k = Math.max(0, Math.min(1, u - i0));
+        for (let ch = 0; ch < 3; ch++) ring[r * 3 + ch] = shown[i0 * 3 + ch] * (1 - k) + shown[i1 * 3 + ch] * k;
       }
-      ctx.stroke();
-
-      // Glow first (added light in the dark, a soft stain on paper), then the bulbs.
-      ctx.globalCompositeOperation = dark ? 'lighter' : 'source-over';
-      for (let i = 0; i < n; i++) {
-        const R = shown[i * 3];
-        const G = shown[i * 3 + 1];
-        const B = shown[i * 3 + 2];
-        const lum = Math.max(R, G, B) / 255;
-        if (lum < 0.03) continue;
-        const x = px(i);
-        const y = py(i);
-        const g = ctx.createRadialGradient(x, y, 0, x, y, r * 5);
-        g.addColorStop(0, `rgba(${R | 0},${G | 0},${B | 0},${(dark ? 0.55 : 0.35) * lum})`);
-        g.addColorStop(1, `rgba(${R | 0},${G | 0},${B | 0},0)`);
-        ctx.fillStyle = g;
-        ctx.fillRect(x - r * 5, y - r * 5, r * 10, r * 10);
-      }
-      ctx.globalCompositeOperation = 'source-over';
-      for (let i = 0; i < n; i++) {
-        const R = shown[i * 3];
-        const G = shown[i * 3 + 1];
-        const B = shown[i * 3 + 2];
-        const lum = Math.max(R, G, B) / 255;
-        ctx.beginPath();
-        ctx.arc(px(i), py(i), r, 0, Math.PI * 2);
-        if (lum < 0.03) ctx.fillStyle = dark ? 'rgba(255,255,255,0.12)' : 'rgba(28,25,23,0.16)';
-        else {
-          // A lit bulb: its color, brightened toward white at the core as real LEDs look.
-          const k = 255 / Math.max(R, G, B, 1);
-          const mix = (v: number) => Math.round(v * k * 0.8 + 255 * 0.2);
-          ctx.fillStyle = `rgba(${mix(R)},${mix(G)},${mix(B)},${0.35 + 0.65 * lum})`;
+      // Diffuse along the border, so the glow is soft and the corners blend.
+      const R = 6;
+      for (let r = 0; r < RING; r++) {
+        let sr = 0;
+        let sg = 0;
+        let sb = 0;
+        for (let d = -R; d <= R; d++) {
+          const q = ((r + d + RING) % RING) * 3;
+          sr += ring[q];
+          sg += ring[q + 1];
+          sb += ring[q + 2];
         }
-        ctx.fill();
+        blurred[r * 3] = sr / (2 * R + 1);
+        blurred[r * 3 + 1] = sg / (2 * R + 1);
+        blurred[r * 3 + 2] = sb / (2 * R + 1);
       }
+      if (!image) return;
+      const d = image.data;
+      const strength = dark ? 0.95 : 1;
+      for (let j = 0; j < pix.length; j++) {
+        const q = at[j] * 3;
+        const r = blurred[q];
+        const g = blurred[q + 1];
+        const b = blurred[q + 2];
+        const m = Math.max(r, g, b);
+        const o = pix[j] * 4;
+        if (m < 2) {
+          d[o + 3] = 0;
+          continue;
+        }
+        // Full color, with the light's brightness as how strongly it shows.
+        const k = 255 / m;
+        d[o] = r * k;
+        d[o + 1] = g * k;
+        d[o + 2] = b * k;
+        d[o + 3] = glow[j] * (m / 255) * strength * 255;
+      }
+      ctx.putImageData(image, 0, 0);
     };
     raf = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(raf);
-      window.removeEventListener('resize', resize);
+      window.removeEventListener('resize', layout);
     };
   }, [geometry, dark, frame]);
 
   if (!geometry) return null;
-  return (
-    <canvas
-      ref={canvas}
-      aria-hidden
-      className="pointer-events-none fixed inset-x-0 z-10 block w-full"
-      style={{ top: 'env(safe-area-inset-top, 0px)', height: ROOF_HEIGHT }}
-    />
-  );
+  return <canvas ref={canvas} aria-hidden className="pointer-events-none fixed inset-0 -z-[5] block h-full w-full" />;
 }

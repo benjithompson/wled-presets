@@ -1,4 +1,5 @@
 import * as S from './shaders.ts';
+import { borderPoint } from '../lib/border.ts';
 
 type Rgb = [number, number, number];
 
@@ -132,8 +133,8 @@ export class LightFieldEngine {
   private slowFrames = 0;
   private pointer = { x: 0, y: 0, px: 0, py: 0, down: false, moved: false, active: false, type: 'mouse' };
   private queue: { x: number; y: number; dx: number; dy: number; color: Rgb; radius: number }[] = [];
-  /** The roofline along the top of the window (see setRoof): its light spills down into the field. */
-  private roof: { x: Float32Array; zones: { x: number; color: Rgb; lum: number; seen: number; flash: number }[] } | null = null;
+  /** The roofline around the window's border (see setRoof): its light spills in from the edges. */
+  private roof: { cells: number; zones: { t: number; color: Rgb; lum: number; seen: number; flash: number }[] } | null = null;
   private roofTurn = 0;
   private cleanup: (() => void)[] = [];
 
@@ -292,23 +293,24 @@ export class LightFieldEngine {
   }
 
   /**
-   * The roofline's colors now. `x`: each cell's place across the window (0..1, in screen
-   * space); `rgb`: one byte triple per cell. Null: no roofline. The roof is gathered into a few
-   * zones; each one spills its light down from the top edge, and a sudden change (a flash, a
-   * chase arriving) pushes harder, so the field answers what the lights do.
+   * The roofline's colors now: one RGB triple per cell, in strip order, wrapped around the
+   * window's border (see border.ts). Null: no roofline. The border is gathered into zones; each
+   * one spills its light in from the edge, and a sudden change (a flash, a chase arriving) pushes
+   * harder, so the field answers what the lights do.
    */
-  setRoof(x: ArrayLike<number> | null, rgb?: Uint8Array) {
-    if (!x || !x.length || !rgb) {
+  setRoof(rgb: Uint8Array | null) {
+    const cells = rgb ? Math.floor(rgb.length / 3) : 0;
+    if (!rgb || !cells) {
       this.roof = null;
       return;
     }
-    const ZONES = 12;
-    if (!this.roof || this.roof.x.length !== x.length || this.roof.x.some((v, i) => v !== x[i])) {
-      this.roof = { x: Float32Array.from(x), zones: Array.from({ length: ZONES }, (_, z) => ({ x: (z + 0.5) / ZONES, color: [0, 0, 0] as Rgb, lum: 0, seen: 0, flash: 0 })) };
+    const ZONES = 20;
+    if (!this.roof || this.roof.cells !== cells) {
+      this.roof = { cells, zones: Array.from({ length: ZONES }, (_, z) => ({ t: (z + 0.5) / ZONES, color: [0, 0, 0] as Rgb, lum: 0, seen: 0, flash: 0 })) };
     }
     const sums = Array.from({ length: ZONES }, () => ({ r: 0, g: 0, b: 0, n: 0, peak: 0 }));
-    for (let i = 0; i < x.length; i++) {
-      const s = sums[Math.min(ZONES - 1, Math.max(0, Math.floor(x[i] * ZONES)))];
+    for (let i = 0; i < cells; i++) {
+      const s = sums[Math.min(ZONES - 1, Math.floor(((i + 0.5) / cells) * ZONES))];
       const r = rgb[i * 3] / 255;
       const g = rgb[i * 3 + 1] / 255;
       const b = rgb[i * 3 + 2] / 255;
@@ -483,7 +485,7 @@ export class LightFieldEngine {
       this.splat(p.x, p.y, dx * 5200 * strength, dy * 5200 * strength, c.map((v) => v * amount) as Rgb, 0.0007);
     }
 
-    // The roofline: half the zones each frame, light falling from the top edge.
+    // The roofline: half the zones each frame, light pouring in from the border.
     if (this.roof) {
       const zones = this.roof.zones;
       this.roofTurn ^= 1;
@@ -492,9 +494,14 @@ export class LightFieldEngine {
         if (z.lum <= 0.01 && z.flash <= 0.01) continue;
         const kick = Math.min(1, z.flash * 3);
         z.flash *= 0.5;
-        const amount = (0.35 + 1.1 * Math.sqrt(z.lum) + 1.6 * kick) * realDt * 2;
-        const fall = 700 + 2600 * kick + 600 * z.lum;
-        this.splat(z.x + (Math.random() - 0.5) * 0.04, 0.99, (Math.random() - 0.5) * 300, -fall * dt * 60, z.color.map((v) => v * amount) as Rgb, 0.0009 + 0.0009 * kick);
+        const amount = (0.3 + 0.9 * Math.sqrt(z.lum) + 1.6 * kick) * realDt * 2;
+        const push = (700 + 2600 * kick + 600 * z.lum) * dt * 60;
+        // Window fractions (y down) to the field's (y up); a little in from the edge.
+        const b = borderPoint(z.t + (Math.random() - 0.5) * 0.02, this.canvas.width, this.canvas.height);
+        const x = b.x + b.nx * 0.008;
+        const y = 1 - (b.y + b.ny * 0.008);
+        const along = (Math.random() - 0.5) * 300;
+        this.splat(x, y, b.nx * push + b.ny * along, -b.ny * push + b.nx * along, z.color.map((v) => v * amount) as Rgb, 0.0008 + 0.0009 * kick);
       }
     }
 

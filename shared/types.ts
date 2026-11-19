@@ -121,14 +121,13 @@ export interface LightControls {
 }
 
 /**
- * The roofline as the home page draws it (see RoofView): the roof's LEDs gathered into cells
- * along the front of the house, left to right.
+ * The roofline as the home page draws it (see RoofView): the roof's LEDs gathered into cells in
+ * strip order (the way a chase runs), its left end (as seen from the street) first. The page
+ * wraps them around the border of the window.
  */
 export interface RoofGeometry {
-  /** Per cell: where it is across the front of the house (0 = left, 1 = right). */
-  x: number[];
-  /** Per cell: how high it is (0 = the lowest roof cell, 1 = the highest). */
-  y: number[];
+  /** How many cells: each frame has one RGB triple per cell. */
+  cells: number;
 }
 
 export interface ApplyResult {
