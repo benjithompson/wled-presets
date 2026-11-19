@@ -520,6 +520,15 @@ export function DesignEditor({
           <div className="mb-2 flex flex-wrap items-center gap-1">
             {toolBtn('select', 'Select', 'V', MousePointer2)}
             {toolBtn('draw', 'Draw wire', 'P', PenTool)}
+            {/* Also under the drawing (Start from), which a phone has to scroll to. */}
+            <button
+              type="button"
+              onClick={() => setPhoto(true)}
+              title="Light the object up, take a picture or scan it, and its LEDs become the shape"
+              className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sky-700 transition hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-500/10 [&_svg]:size-4"
+            >
+              <Camera /> Photo or scan
+            </button>
             <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
             <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
               <Undo2 />
@@ -537,7 +546,7 @@ export function DesignEditor({
           </div>
           <div
             ref={wrap}
-            className={cn('relative h-[52dvh] min-h-72 touch-none overflow-hidden rounded-xl bg-[#05070f] select-none', tool === 'draw' ? 'cursor-crosshair' : 'cursor-default')}
+            className={cn('relative h-[40dvh] min-h-64 touch-none sm:h-[52dvh] sm:min-h-72 overflow-hidden rounded-xl bg-[#05070f] select-none', tool === 'draw' ? 'cursor-crosshair' : 'cursor-default')}
             onPointerDown={onDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
