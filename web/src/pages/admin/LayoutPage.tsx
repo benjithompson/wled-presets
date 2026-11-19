@@ -964,7 +964,9 @@ export function LayoutPage() {
   const mapped = !!layout?.fixtures.some((f) => f.deviceId);
   // Only while this window has focus (see useInFront).
   const inFront = useInFront();
-  const previewing = showOnLights && mapped && inFront;
+  /** The object designer lights an object for its photo: this preview waits meanwhile. */
+  const [photoLights, setPhotoLights] = useState(false);
+  const previewing = showOnLights && mapped && inFront && !photoLights;
   const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 && !probe, probe }) : null;
   useEffect(() => {
     if (!previewBody) return;
@@ -3170,6 +3172,7 @@ export function LayoutPage() {
           layout={layout}
           usedBy={layout.fixtures.filter((f) => f.designId === designing.id).length}
           onSave={saveDesign}
+          onLights={setPhotoLights}
           onClose={() => setDesigning(null)}
         />
       ) : null}

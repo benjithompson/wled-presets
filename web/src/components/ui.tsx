@@ -191,8 +191,10 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      // Only its own: a dialog opened inside this one sends its close here too (through React).
+      onClose={(e) => e.target === ref.current && onClose()}
       onCancel={(e) => {
+        if (e.target !== ref.current) return;
         e.preventDefault();
         onClose();
       }}

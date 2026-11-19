@@ -2,11 +2,12 @@
 // wreath, an arch…), see where every LED lands, and save it to the library to place it in the
 // yard as many times as you like. Designs are in meters, as seen from the front, y up.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
-import { ArrowLeftRight, Crosshair, Maximize, MousePointer2, PenTool, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { ArrowLeftRight, Camera, Crosshair, Maximize, MousePointer2, PenTool, Redo2, Trash2, Undo2 } from 'lucide-react';
 import { designCounts, designLeds, designLength, FEET_PER_METER, type Design, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
 import { allLights, ledsForLength, lightsOf, lightSummary, spacingText, strandStarts, strandText } from '../../../../shared/lights.ts';
 import { Button, Dialog } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
+import { PhotoTrace } from './PhotoTrace.tsx';
 import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropText } from './props.tsx';
 
 type P = { x: number; y: number };
@@ -162,6 +163,7 @@ export function DesignEditor({
   layout,
   usedBy,
   onSave,
+  onLights,
   onClose
 }: {
   open: boolean;
@@ -170,6 +172,8 @@ export function DesignEditor({
   /** How many objects in the yard use this design (they all change). */
   usedBy: number;
   onSave: (d: Design) => void;
+  /** True while the photo tracer lights the object for its photo. */
+  onLights?: (on: boolean) => void;
   onClose: () => void;
 }) {
   const units = layout.units ?? 'ft';
@@ -186,6 +190,7 @@ export function DesignEditor({
   const [stroke, setStroke] = useState<number | null>(null);
   const [draft, setDraft] = useState<P[]>([]);
   const [hover, setHover] = useState<P | null>(null);
+  const [photo, setPhoto] = useState(false);
   const past = useRef<DesignStroke[][]>([]);
   const future = useRef<DesignStroke[][]>([]);
   const [, tick] = useState(0);
@@ -625,6 +630,14 @@ export function DesignEditor({
           </div>
           <div className="mt-2 flex flex-wrap gap-1">
             <span className="self-center pr-1 text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Start from</span>
+            <button
+              type="button"
+              onClick={() => setPhoto(true)}
+              title="Light the object up, take a picture, and its LEDs become the shape"
+              className="flex items-center gap-1.5 rounded-lg bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 transition hover:bg-sky-100 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20 [&_svg]:size-4"
+            >
+              <Camera /> A photo
+            </button>
             {DESIGN_TEMPLATES.map((t) => (
               <button
                 key={t.id}
@@ -780,6 +793,25 @@ export function DesignEditor({
           </PropSection>
         </div>
       </div>
+      <PhotoTrace
+        open={photo}
+        layout={layout}
+        designId={initial.id}
+        pixels={pixels}
+        spacing={lt?.spacing ?? null}
+        onLights={(on) => onLights?.(on)}
+        onClose={() => setPhoto(false)}
+        onUse={(next, n) => {
+          commit(next);
+          setPixels(n ?? (lt ? fitLeds(next, lt.spacing) : pixels));
+          setPick(null);
+          setStroke(null);
+          setDraft([]);
+          setView(fitView(next));
+          setTool('select');
+          setPhoto(false);
+        }}
+      />
     </Dialog>
   );
 }

@@ -1,5 +1,6 @@
 import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
 import { buildStage, deviceLed, editorPulse, layoutShapeKey, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
+import { CODE_RGB, codeDigit } from '../../shared/photoTrace.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
 
@@ -18,6 +19,23 @@ export interface PreviewRequest {
   area?: GameArea | null;
   /** The editor's "match to the lights" wizard: one LED of the selected line blinks red (see paintMatch). */
   probe?: MatchProbe | null;
+  /** The object designer's photo: these LEDs light up in one color (the first in another), all else dark. */
+  photo?: PhotoLights | null;
+}
+
+/**
+ * LEDs to light for a photo of a custom object (see shared/photoTrace.ts): device LEDs `from`
+ * to `to` (either way round) in `rgb`, LED `from` (where the wire starts) in `start`; or, for a
+ * camera scan, each in the color of one digit of its number.
+ */
+export interface PhotoLights {
+  deviceId: string;
+  from: number;
+  to: number;
+  rgb: [number, number, number];
+  start: [number, number, number];
+  /** A frame of a camera scan instead (see codeDigit): every LED shows a digit of its number. */
+  code?: number | null;
 }
 
 /** The sequence editor's preview: a sequence, the time the editor shows, and whether it plays. */
@@ -53,6 +71,21 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
     const f = req.layout.fixtures[fi];
     if (f.deviceId) extra.push({ deviceId: f.deviceId, led: deviceLed(f, i), rgb });
   };
+  if (req.photo) {
+    const p = req.photo;
+    req.layout.fixtures.forEach((_, fi) => {
+      for (let i = 0; i < stage.fixtures[fi].count; i++) put(fi, i, [0, 0, 0]);
+    });
+    const dir = p.to >= p.from ? 1 : -1;
+    const n = Math.abs(p.to - p.from) + 1;
+    for (let i = 0, led = p.from; i < n; i++, led += dir) {
+      const rgb = p.code != null ? CODE_RGB[codeDigit(i, p.code, n)] : i === 0 ? p.start : p.rgb;
+      extra.push({ deviceId: p.deviceId, led, rgb });
+    }
+    // A device with no objects in the layout yet still gets the frame.
+    const maps = view.maps.some((m) => m.deviceId === p.deviceId) ? view.maps : [...view.maps, emptyMap(p.deviceId)];
+    return { maps, bytes, extra };
+  }
   if (req.probe && req.selected) paintMatch(req.layout, req.selected, req.probe, pulse, put);
   else if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
   else paintEditor(req.layout, req.selected, req.corner, req.segment ?? null, pulse, put);
@@ -62,9 +95,11 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
 /** One device's colors for the editor's view (see editorFrame). */
 export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: number, pulse: boolean): Uint8Array {
   const view = viewOf(req.layout);
-  const m = view.maps.find((x) => x.deviceId === deviceId) ?? { deviceId, size: 0, pairs: new Int32Array(), objects: [] };
-  return renderDevice(editorFrame(req, view, pulse), m, ledCount);
+  const frame = editorFrame(req, view, pulse);
+  return renderDevice(frame, frame.maps.find((x) => x.deviceId === deviceId) ?? emptyMap(deviceId), ledCount);
 }
+
+const emptyMap = (deviceId: string): DeviceMap => ({ deviceId, size: 0, pairs: new Int32Array(), objects: [] });
 
 /**
  * Shows the layout being edited on the real lights while an editor asks for it: the layout
@@ -177,7 +212,7 @@ export class LayoutPreview implements FrameSource {
     this.req = req;
     this.until = Date.now() + EXPIRE_MS;
     this.pipeline.wake();
-    const ids = new Set(req.layout.fixtures.map((f) => f.deviceId).filter(Boolean));
+    const ids = new Set([...req.layout.fixtures.map((f) => f.deviceId), req.photo?.deviceId].filter(Boolean));
     const names = this.pipeline
       .deviceList()
       .filter((d) => d.enabled && ids.has(d.id))
