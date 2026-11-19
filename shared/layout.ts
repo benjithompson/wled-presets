@@ -49,6 +49,11 @@ export const isLine = (f: { kind: FixtureKind }) => f.kind === 'roof' || f.kind 
 export interface DesignStroke {
   points: { x: number; y: number }[];
   closed?: boolean;
+  /**
+   * One LED at each point, in order (a scanned string: the wire between LEDs is flexible, so
+   * they are not evenly spaced). Other strokes spread their LEDs evenly along the wire.
+   */
+  exact?: boolean;
 }
 
 /** A custom object in the library, to place as many times as you like. */
@@ -403,8 +408,9 @@ const pathLength = (pts: { x: number; y: number }[]) => pts.slice(1).reduce((a, 
 export const designLength = (strokes: DesignStroke[]) => strokes.reduce((a, s) => a + pathLength(strokePath(s)), 0);
 
 /**
- * Where the n LEDs of a design sit (in meters, LED order). They are spread evenly along all the
- * strokes, at one spacing: an open stroke has an LED at each end, a closed one goes all round.
+ * Where the n LEDs of a design sit (in meters, LED order). An exact stroke has one at each of
+ * its points; the others are spread evenly along the other strokes, at one spacing: an open
+ * stroke has an LED at each end, a closed one goes all round.
  */
 export function designLeds(strokes: DesignStroke[], n: number): { x: number; y: number }[] {
   const live = strokes.filter((s) => s.points.length > 0);
@@ -415,6 +421,10 @@ export function designLeds(strokes: DesignStroke[], n: number): { x: number; y: 
   const out: { x: number; y: number }[] = [];
   live.forEach((s, j) => {
     const c = counts[j];
+    if (s.exact) {
+      for (let i = 0; i < c; i++) out.push({ ...s.points[i] });
+      return;
+    }
     const path = strokePath(s);
     for (let i = 0; i < c; i++) {
       const t = closed[j] ? i / c : c > 1 ? i / (c - 1) : 0.5;
@@ -422,24 +432,39 @@ export function designLeds(strokes: DesignStroke[], n: number): { x: number; y: 
       out.push({ x: p.x, y: p.y });
     }
   });
+  // An exact design with fewer points than LEDs: the rest wait at its last point.
+  while (out.length < n) out.push({ ...(out.at(-1) ?? { x: 0, y: 0 }) });
   return out;
 }
 
-/** How many of the n LEDs each stroke (with points) of a design gets. */
+/**
+ * How many of the n LEDs each stroke (with points) of a design gets: an exact stroke one per
+ * point (in order, while there are LEDs left), the others share the rest by length.
+ */
 export function designCounts(strokes: DesignStroke[], n: number): number[] {
   const live = strokes.filter((s) => s.points.length > 0);
   if (!live.length || n <= 0) return live.map(() => 0);
-  const closed = live.map((s) => !!s.closed && s.points.length > 2);
-  const lens = live.map((s) => pathLength(strokePath(s)));
+  const counts = live.map(() => 0);
+  let left = n;
+  live.forEach((s, j) => {
+    if (!s.exact) return;
+    counts[j] = Math.min(left, s.points.length);
+    left -= counts[j];
+  });
+  const even = live.map((s, j) => (s.exact ? -1 : j)).filter((j) => j >= 0);
+  if (!even.length || left <= 0) return counts;
+  const closed = even.map((j) => !!live[j].closed && live[j].points.length > 2);
+  const lens = even.map((j) => pathLength(strokePath(live[j])));
   const total = lens.reduce((a, b) => a + b, 0);
   // One spacing for the whole design: open strokes have one more LED than gaps.
-  const gaps = n - closed.filter((c) => !c).length;
-  const ideal = gaps > 0 && total > 0 ? lens.map((l, j) => (l * gaps) / total + (closed[j] ? 0 : 1)) : lens.map((l) => (total > 0 ? (l * n) / total : n / live.length));
-  // Whole numbers that add up to n: round down, then give the rest to the biggest remainders.
-  const counts = ideal.map(Math.floor);
-  let left = n - counts.reduce((a, b) => a + b, 0);
-  const order = ideal.map((v, j) => [v - Math.floor(v), j] as const).sort((a, b) => b[0] - a[0]);
-  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) counts[order[k][1]]++;
+  const gaps = left - closed.filter((c) => !c).length;
+  const ideal = gaps > 0 && total > 0 ? lens.map((l, k) => (l * gaps) / total + (closed[k] ? 0 : 1)) : lens.map((l) => (total > 0 ? (l * left) / total : left / even.length));
+  // Whole numbers that add up: round down, then give the rest to the biggest remainders.
+  const share = ideal.map(Math.floor);
+  let more = left - share.reduce((a, b) => a + b, 0);
+  const order = ideal.map((v, k) => [v - Math.floor(v), k] as const).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; more > 0; k = (k + 1) % order.length, more--) share[order[k][1]]++;
+  even.forEach((j, k) => (counts[j] = share[k]));
   return counts;
 }
 

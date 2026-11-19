@@ -15,6 +15,8 @@ import {
   isLoop,
   lineUp,
   ledStep,
+  numberedStep,
+  numberedStrokes,
   orderByNumber,
   orderDots,
   PHOTO_COLORS,
@@ -458,7 +460,9 @@ export function PhotoTrace({
   const used = new Set(wire.flatMap((r) => ('ids' in r ? r.ids : [])));
   const loose = dots.filter((d) => !used.has(d.id)).length;
 
-  const step = ledStep(strokes);
+  // From a scan, the LEDs' numbers say which dots follow on; else the traced order does. Either
+  // way the spacing shows in the longer steps (see tautStep).
+  const step = photo?.scanned != null ? numberedStep(dots, dots.map((d) => d.num ?? null)) : ledStep(strokes);
   const widthPx = photoWidth(strokes);
   const fromSpacing = spacing && step > 0 ? spacing / step : null;
   const metersPerPixel = widthM && widthPx > 0 ? widthM / widthPx : (fromSpacing ?? (widthPx > 0 ? 1 / widthPx : 0));
@@ -466,8 +470,36 @@ export function PhotoTrace({
   const allDots = strokes.length > 0 && strokes.every((s) => s.dots);
   const ledCount = photo?.lit ?? (allDots ? strokes.reduce((a, s) => a + s.points.length, 0) : null);
 
+  /**
+   * The wire from a scan, while its order is still the LEDs' numbers: a point for every LED,
+   * where it really is (the wire between LEDs is flexible, so they are not evenly spaced).
+   */
+  const numbered = (): PhotoStroke[] | null => {
+    if (photo?.scanned == null || !photo.lit) return null;
+    const index = new Map(dots.map((d, k) => [d.id, k]));
+    const order: number[][] = [];
+    let last = -1;
+    for (const r of wire) {
+      if (!('ids' in r)) return null;
+      const run: number[] = [];
+      for (const id of r.ids) {
+        const k = index.get(id);
+        const num = k == null ? undefined : dots[k].num;
+        if (k == null || num == null || num <= last) return null;
+        last = num;
+        run.push(k);
+      }
+      order.push(run);
+    }
+    return numberedStrokes(
+      dots,
+      dots.map((d) => d.num ?? null),
+      order,
+      photo.lit
+    );
+  };
   const use = () => {
-    const design = photoDesign(strokes, metersPerPixel);
+    const design = photoDesign(numbered() ?? strokes, metersPerPixel);
     if (design.length) onUse(design, ledCount);
   };
 
@@ -921,7 +953,7 @@ export function PhotoTrace({
               {widthM
                 ? 'As you typed it.'
                 : fromSpacing
-                  ? 'From the light string’s LED spacing. Type the real width to change it.'
+                  ? 'From the light string’s LED spacing: the most two LEDs can be apart (where the wire is slack they are closer). Type the real width to change it.'
                   : 'Type the real width: pick the light string in the designer and the LED spacing sizes it.'}
             </PropNote>
           </PropSection>

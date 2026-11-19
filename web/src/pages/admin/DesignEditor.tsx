@@ -703,6 +703,11 @@ export function DesignEditor({
                   onChange={(e) => commit(strokes.map((s, i) => (i === stroke ? { ...s, closed: e.target.checked || undefined } : s)))}
                 />
               </PropRow>
+              {strokes[stroke].exact ? (
+                <PropRow label="An LED per point" hint="From a scan: each point is where an LED really is. Off: the LEDs spread evenly along the wire.">
+                  <input type="checkbox" className="accent-sky-600" checked onChange={() => commit(strokes.map((s, i) => (i === stroke ? { ...s, exact: undefined } : s)))} />
+                </PropRow>
+              ) : null}
               {sel && pick ? (
                 <>
                   <PropNumber label="Point x" decimal step={0.1} min={-300} max={300} unit={units} value={show(sel.x)} onChange={(n) => commit(movePoint(strokes, pick, { x: r3(n * perUnit), y: sel.y }))} />
@@ -841,6 +846,11 @@ export function fitLeds(strokes: DesignStroke[], spacing: number): number {
   let n = 0;
   for (const s of strokes) {
     if (!s.points.length) continue;
+    // A scanned stroke: an LED at each point.
+    if (s.exact) {
+      n += s.points.length;
+      continue;
+    }
     const pts = isClosed(s) ? [...s.points, s.points[0]] : s.points;
     const len = pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0);
     n += isClosed(s) ? Math.max(1, ledsForLength(len, spacing, false)) : ledsForLength(len, spacing, true);
