@@ -71,9 +71,10 @@ With no admin account and no environment variables, open `/admin` from the serve
 
 ### On the internet
 
-The public page is safe to share through Cloudflare Tunnel or a reverse proxy:
+The public page is safe to share with a forwarded port, a reverse proxy, or Cloudflare Tunnel:
 
-- Set `TRUST_PROXY=cloudflare` (or `1` for nginx), so rate limits, the line and failed sign-ins are counted per visitor.
+- **Port forwarded straight to the app** (nothing in front): leave `TRUST_PROXY` off. The server sees each visitor's real address. Turning it on here would let visitors make up their address in a header.
+- **Behind a reverse proxy or tunnel**: set `TRUST_PROXY=1` (nginx, Caddy, Nginx Proxy Manager) or `TRUST_PROXY=cloudflare`, so rate limits, the line and failed sign-ins are counted per visitor. Keep the app's own port closed to the internet, so requests can only come through the proxy.
 - Pick your own `ADMIN_PASSWORD`. The example password in this README creates no account, and an account that still has it only signs in from the home network.
 - Failed sign-ins slow down: after 5 from one address, or 10 for one username, each try waits twice as long as the last (up to 15 minutes). Signing in from the home network directly is never locked out by strangers guessing the username.
 - Changing the password signs out every other session.
