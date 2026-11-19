@@ -627,7 +627,7 @@ export function PhotoTrace({
           </div>
           <div
             ref={wrap}
-            className={cn('relative h-[52dvh] min-h-72 touch-none overflow-hidden rounded-xl bg-[#05070f] select-none', photo && (tool === 'move' ? 'cursor-grab' : 'cursor-crosshair'))}
+            className={cn('relative h-[40dvh] min-h-64 touch-none sm:h-[52dvh] sm:min-h-72 overflow-hidden rounded-xl bg-[#05070f] select-none', photo && (tool === 'move' ? 'cursor-grab' : 'cursor-crosshair'))}
             onPointerDown={onDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
