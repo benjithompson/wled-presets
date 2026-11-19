@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Clock, Gamepad2, Loader2, Sparkles, Users, WifiOff } from 'lucide-react';
+import { Check, Clock, Gamepad2, Loader2, Power, Settings2, Sparkles, Users, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PublicState } from '../../../shared/types.ts';
 import { burst } from '../components/Burst.tsx';
@@ -18,18 +18,31 @@ import { gameLook } from '../lib/gameLooks.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
 import { useEvents } from '../lib/useEvents.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
+import { ROOF_HEIGHT, Roofline, useRoofStream } from '../components/Roofline.tsx';
+import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../components/LightControls.tsx';
 
 const KEY = ['public-state'];
 
 export function PublicPage() {
   const qc = useQueryClient();
   const { data: state, isLoading, error } = useQuery({ queryKey: KEY, queryFn: api.state, refetchInterval: 60_000 });
+  // Signed in as an admin: a bar with the way back to the console, and the lights' switches.
+  const { data: session } = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 60_000 });
+  const admin = !!session?.user;
+  const roof = useRoofStream();
   const [pending, setPending] = useState<string | null>(null);
 
   // The line for the lights: who has them, and this visitor's place.
   const [line, setLine] = useState<LineView | null>(null);
   // The server pushes the full state on every change.
-  useEvents('/api/events', { state: (d) => qc.setQueryData(KEY, JSON.parse(d) as PublicState), line: (d) => setLine(JSON.parse(d) as LineView) });
+  useEvents('/api/events', {
+    state: (d) => {
+      qc.setQueryData(KEY, JSON.parse(d) as PublicState);
+      // Another admin may have switched the lights: the bar follows.
+      if (admin) void qc.invalidateQueries({ queryKey: ['admin', 'lights'] });
+    },
+    line: (d) => setLine(JSON.parse(d) as LineView)
+  });
 
   useEffect(() => {
     if (state?.title) document.title = state.title;
@@ -81,7 +94,8 @@ export function PublicPage() {
 
   // Right after a change of theirs, a visitor waits a few seconds before the next (a throttle).
   const cooling = useCountdown(line?.cooldown ?? null);
-  const locked = !!cooling;
+  const off = !!state?.lightsOff;
+  const locked = !!cooling || off;
   const busy = pending !== null || locked;
   const theme = useTheme();
   const speed = useBackgroundSpeed();
@@ -91,8 +105,13 @@ export function PublicPage() {
   return (
     <div className="relative min-h-dvh">
       <LightField look={look} dark={dark} speed={speed} />
+      <Roofline roof={roof} dark={dark} />
 
-      <div className="relative mx-auto max-w-5xl px-5 pt-[max(2rem,env(safe-area-inset-top))] pb-[max(3rem,env(safe-area-inset-bottom))] sm:px-8">
+      <div
+        className="relative mx-auto max-w-5xl px-5 pt-[max(2rem,env(safe-area-inset-top))] pb-[max(3rem,env(safe-area-inset-bottom))] sm:px-8"
+        // Room for the roofline along the top edge.
+        style={roof.geometry ? { paddingTop: `max(calc(${ROOF_HEIGHT}px + 1.25rem), calc(env(safe-area-inset-top) + ${ROOF_HEIGHT}px + 0.5rem))` } : undefined}
+      >
         <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{state?.title ?? ' '}</h1>
@@ -104,6 +123,7 @@ export function PublicPage() {
           </div>
         </header>
 
+        {admin ? <AdminBar lightsOff={off} /> : null}
         {state ? <StatusLine state={state} /> : null}
         {line ? <LineBanner line={line} /> : null}
 
@@ -195,7 +215,7 @@ export function PublicPage() {
                   </div>
                 )}
               </section>
-              <GamesSection />
+              <GamesSection off={off} />
             </div>
           </main>
         ) : null}
@@ -205,7 +225,7 @@ export function PublicPage() {
 }
 
 /** The games, in their own group: cards the size of the scene buttons that open the play page. */
-function GamesSection() {
+function GamesSection({ off }: { off: boolean }) {
   return (
     <section aria-labelledby="games-h">
       <h2 id="games-h" className="mb-4 flex items-center gap-2 text-xs font-semibold tracking-widest text-stone-400 uppercase dark:text-stone-500">
@@ -219,15 +239,17 @@ function GamesSection() {
           return (
             <a
               key={g.id}
-              href={`/play?game=${g.id}`}
-              onClick={(e) => burst(e.currentTarget)}
+              href={off ? undefined : `/play?game=${g.id}`}
+              aria-disabled={off || undefined}
+              onClick={(e) => (off ? e.preventDefault() : burst(e.currentTarget))}
               onPointerEnter={(e) => e.pointerType === 'mouse' && fieldPreview({ colors: look.colors, energy: 0.7 })}
               onPointerLeave={() => fieldPreview(null)}
               style={{ '--swatch': `linear-gradient(90deg, ${look.colors.join(', ')})` } as CSSProperties}
               className={cn(
                 'group relative flex min-h-24 flex-col justify-between overflow-hidden rounded-2xl p-4 text-left backdrop-blur-md transition duration-200 active:scale-[0.97]',
                 'after:absolute after:inset-x-0 after:bottom-0 after:h-1 after:[background:var(--swatch)] after:opacity-80 after:transition-all hover:after:h-1.5',
-                'bg-white/65 ring-1 ring-stone-900/10 hover:-translate-y-0.5 hover:bg-white/80 hover:shadow-lg dark:bg-stone-900/45 dark:ring-white/10 dark:hover:bg-stone-900/60'
+                'bg-white/65 ring-1 ring-stone-900/10 hover:-translate-y-0.5 hover:bg-white/80 hover:shadow-lg dark:bg-stone-900/45 dark:ring-white/10 dark:hover:bg-stone-900/60',
+                off && 'pointer-events-none cursor-not-allowed opacity-50'
               )}
             >
               <span className="flex items-center justify-between gap-2">
@@ -245,6 +267,36 @@ function GamesSection() {
         })}
       </div>
     </section>
+  );
+}
+
+/**
+ * For a signed-in admin: the way back to the admin console, and the switches for every light
+ * (power and brightness), so the lights can be put out without leaving the page.
+ */
+function AdminBar({ lightsOff }: { lightsOff: boolean }) {
+  const { data: controls } = useLightControls();
+  const { power, brightness } = useLightMutations();
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl bg-white/65 px-3 py-2 text-sm ring-1 ring-stone-900/10 backdrop-blur-md dark:bg-stone-900/45 dark:ring-white/10">
+      <a
+        href="/admin"
+        className="inline-flex items-center gap-1.5 rounded-full bg-stone-900 px-3 py-1.5 font-medium text-white shadow-sm hover:bg-stone-800 dark:bg-accent-400 dark:text-stone-950 dark:hover:bg-accent-300"
+      >
+        <Settings2 className="size-4" /> Admin console
+      </a>
+      <span className="inline-flex items-center gap-2">
+        <PowerButton size="sm" on={!lightsOff} label="All lights" disabled={power.isPending} onToggle={() => power.mutate({ on: lightsOff })} />
+        <span className="text-stone-600 dark:text-stone-300">{lightsOff ? 'Lights off' : 'Lights on'}</span>
+      </span>
+      <LevelSlider
+        className="min-w-48 flex-1 sm:max-w-80"
+        label="Brightness of all lights"
+        value={controls?.brightness.all ?? null}
+        disabled={!controls || lightsOff}
+        onCommit={(level) => brightness.mutate({ level })}
+      />
+    </div>
   );
 }
 
@@ -335,15 +387,17 @@ function StatusLine({ state }: { state: PublicState }) {
       <span
         className={cn(
           'inline-flex items-center gap-2 rounded-full px-3 py-1 font-medium ring-1',
-          state.anyOnline
+          state.anyOnline && !state.lightsOff
             ? 'bg-emerald-50 text-emerald-800 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-300 dark:ring-emerald-500/20'
             : 'bg-stone-100 text-stone-600 ring-stone-200 dark:bg-stone-800/60 dark:text-stone-400 dark:ring-stone-700'
         )}
       >
-        <span className={cn('size-1.5 rounded-full', state.anyOnline ? 'bg-emerald-500' : 'bg-stone-400')} />
+        {state.lightsOff ? <Power className="size-3.5" /> : <span className={cn('size-1.5 rounded-full', state.anyOnline ? 'bg-emerald-500' : 'bg-stone-400')} />}
         {state.totalDevices === 0
           ? 'No lights set up'
-          : !state.anyOnline
+          : state.lightsOff
+            ? 'The lights are switched off for now'
+            : !state.anyOnline
             ? 'Lights are offline'
             : all
               ? state.totalDevices === 1

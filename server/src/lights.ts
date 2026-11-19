@@ -1,10 +1,10 @@
 import { effectObjects, effectsLook, type EffectSettings } from '../../shared/effects.ts';
 import { sequenceEffects, sequenceObjects, type Sequence } from '../../shared/sequence.ts';
-import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LogLevel, PublicState, Scene } from '../../shared/types.ts';
+import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LightControls, LogLevel, PublicState, Scene } from '../../shared/types.ts';
 import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
-import { KEY, readSettings } from './settings.ts';
+import { KEY, readLightControls, readSettings, writeLightControls } from './settings.ts';
 import { hexToRgb, wled, type FetchResult } from './wled.ts';
 import { mergeLooks, type PresetLook } from './presetLook.ts';
 
@@ -43,6 +43,8 @@ export class Lights {
 
   /** devicesWithStatus() for the frame loops, which ask 60 times a second (see liveDevices). */
   private live: DeviceWithStatus[] | null = null;
+  /** The admin's power and brightness switches, read once and kept up to date. */
+  private controlsCache: LightControls | null = null;
 
   constructor(db: Db, bus: Bus) {
     this.db = db;
@@ -166,7 +168,9 @@ export class Lights {
    * rebuilt after a device changes and after each status check (an LED count changed in WLED).
    */
   liveDevices(): DeviceWithStatus[] {
-    return (this.live ??= this.devicesWithStatus());
+    // A device switched off counts as disabled here: no frames reach it, and one that was
+    // getting them is given back (it shows its own state, which is off).
+    return (this.live ??= this.devicesWithStatus().map((d) => (d.enabled && this.isOff(d.id) ? { ...d, enabled: false } : d)));
   }
 
   devicesWithStatus(): DeviceWithStatus[] {
@@ -210,7 +214,8 @@ export class Lights {
       anyOnline: onlineDevices > 0,
       onlineDevices,
       totalDevices: enabled.length,
-      revertAt: this.db.getSetting(KEY.revertAt) || null
+      revertAt: this.db.getSetting(KEY.revertAt) || null,
+      lightsOff: this.allOff()
     };
   }
 
@@ -236,10 +241,10 @@ export class Lights {
   async applyScene(sceneId: string, actor?: Actor, reason: 'user' | 'revert' = 'user'): Promise<ApplyResult | null> {
     const scene = this.db.getScene(sceneId);
     if (!scene) return null;
-    const devices = this.db.listDevices().filter((d) => d.enabled);
+    const devices = this.db.listDevices().filter((d) => d.enabled && !this.isOff(d.id));
     // Effects first: a device with an object that plays an effect gets the effect, not a preset.
     const played = this.effectPlayer?.(this.showOf(scene)) ?? { devices: [], objects: 0 };
-    const streamed = new Set(played.devices);
+    const streamed = new Set(played.devices.filter((id) => !this.isOff(id)));
     const work = [];
     const skipped: string[] = [];
     for (const device of devices) {
@@ -255,6 +260,12 @@ export class Lights {
       else result.applied.push(id);
     }
     result.effects = played.objects;
+    // A preset brings its own brightness: the admin's level goes on after it (WLED applies a
+    // preset a moment after the request), and on the devices that play effects.
+    const leveled = devices.filter((d) => result.applied.includes(d.id) && this.levelOf(d.id) != null);
+    if (leveled.length) {
+      setTimeout(() => void Promise.all(leveled.map((d) => wled.brightness(d, this.levelOf(d.id)!))), 150).unref?.();
+    }
 
     if (result.applied.length > 0 || played.objects > 0) {
       this.db.setSetting(KEY.currentScene, scene.id);
@@ -279,8 +290,8 @@ export class Lights {
     if (!rgb) return null;
     const color = `#${hex.replace('#', '').toLowerCase()}`;
     this.effectPlayer?.(null);
-    const devices = this.db.listDevices().filter((d) => d.enabled);
-    const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb) })));
+    const devices = this.db.listDevices().filter((d) => d.enabled && !this.isOff(d.id));
+    const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb, this.levelOf(device.id)) })));
     if (result.applied.length > 0) {
       this.db.setSetting(KEY.currentScene, '');
       this.db.setSetting(KEY.currentColor, color);
@@ -294,6 +305,83 @@ export class Lights {
       actor
     );
     this.bus.emit('state');
+    return result;
+  }
+
+  // ---------- Power and brightness ----------
+
+  controls(): LightControls {
+    return (this.controlsCache ??= readLightControls(this.db));
+  }
+
+  private saveControls(c: LightControls) {
+    writeLightControls(this.db, c);
+    this.controlsCache = c;
+    this.live = null;
+  }
+
+  isOff(deviceId: string): boolean {
+    return this.controls().off.includes(deviceId);
+  }
+
+  /** True when there are lights and an admin switched every one of them off. */
+  allOff(): boolean {
+    const enabled = this.db.listDevices().filter((d) => d.enabled);
+    return enabled.length > 0 && enabled.every((d) => this.isOff(d.id));
+  }
+
+  /** A device's brightness from the admin's switches, as WLED counts it (1 to 255), or null: the scene's. */
+  levelOf(deviceId: string): number | null {
+    const { brightness } = this.controls();
+    const pct = brightness.devices[deviceId] ?? brightness.all;
+    return pct == null ? null : Math.max(1, Math.round((pct / 100) * 255));
+  }
+
+  /**
+   * Switches one device, or every device, on or off. Off holds: scenes, colors, effects and
+   * games leave the device dark until an admin switches it on again.
+   */
+  async setPower(on: boolean, deviceId: string | null, actor?: Actor): Promise<ApplyResult> {
+    const all = this.db.listDevices();
+    const target = deviceId ? all.filter((d) => d.id === deviceId) : all;
+    const ids = new Set(target.map((d) => d.id));
+    const c = this.controls();
+    const off = on ? c.off.filter((id) => !ids.has(id)) : [...new Set([...c.off, ...ids])];
+    this.saveControls({ ...c, off: off.filter((id) => all.some((d) => d.id === id)) });
+    if (!on && this.allOff()) this.cancelRevert();
+    const devices = target.filter((d) => d.enabled);
+    const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.power(device, on, this.levelOf(device.id)) })));
+    // A device that was getting frames is given back on the next frame, and over HTTP that
+    // switches it on again: say off once more after that.
+    if (!on) setTimeout(() => void Promise.all(devices.filter((d) => this.isOff(d.id)).map((d) => wled.power(d, false))), 600).unref?.();
+    const what = deviceId ? `"${target[0]?.name ?? deviceId}"` : 'All lights';
+    this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}`, result, actor);
+    this.bus.emit('devices');
+    this.bus.emit('state');
+    return result;
+  }
+
+  /**
+   * Sets the brightness (percent, 1 to 100) of one device, or of every device. Null: one device
+   * follows "all" again; for all, each scene's presets set it again.
+   */
+  async setBrightness(pct: number | null, deviceId: string | null, actor?: Actor): Promise<ApplyResult> {
+    const c = this.controls();
+    const devicesLevels = { ...c.brightness.devices };
+    if (deviceId) {
+      if (pct == null) delete devicesLevels[deviceId];
+      else devicesLevels[deviceId] = pct;
+    }
+    this.saveControls({ ...c, brightness: deviceId ? { ...c.brightness, devices: devicesLevels } : { all: pct, devices: devicesLevels } });
+    const devices = this.db.listDevices().filter((d) => d.enabled && !this.isOff(d.id) && (!deviceId || d.id === deviceId));
+    const work = devices.flatMap((device) => {
+      const bri = this.levelOf(device.id);
+      return bri == null ? [] : [{ device, run: () => wled.brightness(device, bri) }];
+    });
+    const result = await this.fanOut(work);
+    const what = deviceId ? `"${devices[0]?.name ?? deviceId}"` : 'All lights';
+    this.log(result.failed.length ? 'warn' : 'info', 'power', `${what}: brightness ${pct == null ? (deviceId ? 'follows all lights' : 'set by each scene') : `${pct}%`}`, result, actor);
+    this.bus.emit('devices');
     return result;
   }
 
@@ -331,7 +419,7 @@ export class Lights {
 
   scheduleRevert() {
     const { revertMinutes, defaultSceneId } = readSettings(this.db);
-    if (revertMinutes <= 0 || !defaultSceneId) return this.cancelRevert();
+    if (revertMinutes <= 0 || !defaultSceneId || this.allOff()) return this.cancelRevert();
     const at = new Date(Date.now() + revertMinutes * 60_000);
     this.db.setSetting(KEY.revertAt, at.toISOString());
     this.armRevert(at);
@@ -365,6 +453,11 @@ export class Lights {
     this.revertTimer = null;
     this.db.setSetting(KEY.revertAt, '');
     const { defaultSceneId } = readSettings(this.db);
+    // Lights switched off stay off.
+    if (this.allOff()) {
+      this.bus.emit('state');
+      return;
+    }
     if (!defaultSceneId || !this.db.getScene(defaultSceneId)) {
       this.log('warn', 'auto_revert', 'Default scene is not set or no longer exists');
       this.bus.emit('state');

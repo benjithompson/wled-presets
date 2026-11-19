@@ -1,5 +1,5 @@
 import type { GameArea } from '../../shared/layout.ts';
-import type { Settings } from '../../shared/types.ts';
+import type { LightControls, Settings } from '../../shared/types.ts';
 import type { Db } from './db.ts';
 import { DEFAULT_LINE, type LineSettings } from '../../shared/line.ts';
 
@@ -15,7 +15,9 @@ export const KEY = {
   currentColor: 'currentColor',
   revertAt: 'revertAt',
   gameArea: 'gameArea',
-  line: 'lineSettings'
+  line: 'lineSettings',
+  lightsOff: 'lightsOff',
+  brightness: 'lightsBrightness'
 } as const;
 
 export const DEFAULT_TITLE = 'Lights';
@@ -82,4 +84,26 @@ export function readLineSettings(db: Db): LineSettings {
 
 export function writeLineSettings(db: Db, s: LineSettings) {
   db.setSetting(KEY.line, JSON.stringify(s));
+}
+
+/** The admin's power and brightness switches (see LightControls). */
+export function readLightControls(db: Db): LightControls {
+  const parse = (key: string) => {
+    try {
+      return JSON.parse(db.getSetting(key) || 'null');
+    } catch {
+      return null;
+    }
+  };
+  const off = parse(KEY.lightsOff);
+  const b = parse(KEY.brightness);
+  const level = (v: unknown) => (typeof v === 'number' && v >= 1 && v <= 100 ? Math.round(v) : null);
+  const devices: Record<string, number> = {};
+  if (b && typeof b.devices === 'object') for (const [id, v] of Object.entries(b.devices ?? {})) if (level(v) != null) devices[id] = level(v)!;
+  return { off: Array.isArray(off) ? off.filter((x): x is string => typeof x === 'string') : [], brightness: { all: level(b?.all), devices } };
+}
+
+export function writeLightControls(db: Db, c: LightControls) {
+  db.setSetting(KEY.lightsOff, JSON.stringify(c.off));
+  db.setSetting(KEY.brightness, JSON.stringify(c.brightness));
 }

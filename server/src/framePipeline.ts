@@ -164,6 +164,14 @@ export class FramePipeline {
     return this.devices();
   }
 
+  /**
+   * The colors the device was sent last (one byte triple per device LED, from LED 0), while it
+   * gets frames; null when it shows its own state.
+   */
+  deviceFrame(deviceId: string): Uint8Array | null {
+    return this.sending.has(deviceId) ? (this.buffers.get(deviceId) ?? null) : null;
+  }
+
   /** How frames reach a device (see LightSender.status). */
   link(deviceId: string) {
     return this.sender.status(deviceId);

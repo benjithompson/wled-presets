@@ -7,6 +7,7 @@ import type {
   DevicePreset,
   DeviceWithStatus,
   DiscoveredDevice,
+  LightControls,
   LogEntry,
   PublicState,
   Scene,
@@ -63,6 +64,7 @@ export interface Overview {
   devicePresets: Record<string, DevicePreset[]>;
   settings: Settings;
   state: PublicState;
+  controls: LightControls;
 }
 
 export type PresetImport = { deviceId: string; ok: true; count: number } | { deviceId: string; ok: false; error: string };
@@ -131,6 +133,14 @@ export const api = {
   changePassword: (current: string, next: string) => request('/api/admin/auth/password', { body: { current, next } }),
 
   overview: () => request<Overview>('/api/admin/overview'),
+
+  /** Power and brightness: for every light, or one device (deviceId). */
+  lightControls: () => request<LightControls>('/api/admin/lights'),
+  setPower: (on: boolean, deviceId: string | null = null) =>
+    request<{ controls: LightControls; result: ApplyResult }>('/api/admin/lights/power', { method: 'PUT', body: { on, deviceId } }),
+  /** level: percent (1 to 100); null hands it back (to the scenes, or for a device to "all lights"). */
+  setBrightness: (level: number | null, deviceId: string | null = null) =>
+    request<{ controls: LightControls; result: ApplyResult }>('/api/admin/lights/brightness', { method: 'PUT', body: { level, deviceId } }),
 
   addDevice: (d: DeviceInput) => request<DeviceWithStatus & { presets: PresetImport | null }>('/api/admin/devices', { body: d }),
   addDevices: (devices: DeviceInput[]) => request<{ added: unknown[]; presets: PresetImport[] }>('/api/admin/devices/bulk', { body: { devices } }),

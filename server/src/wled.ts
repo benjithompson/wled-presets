@@ -90,10 +90,20 @@ export const wled = {
   },
 
   /** Sets every segment to one solid color. WLED ignores segment ids that do not exist. */
-  applyColor(ep: Endpoint, [r, g, b]: [number, number, number]) {
+  applyColor(ep: Endpoint, [r, g, b]: [number, number, number], bri?: number | null) {
     // frz: false unfreezes a segment that a real-time preview over HTTP left frozen.
     const seg = Array.from({ length: 16 }, (_, id) => ({ id, col: [[r, g, b]], fx: 0, frz: false }));
-    return wled.setState(ep, { on: true, seg });
+    return wled.setState(ep, { on: true, ...(bri ? { bri } : {}), seg });
+  },
+
+  /** Switches the device on or off; `bri` (1 to 255) also sets its brightness. */
+  power(ep: Endpoint, on: boolean, bri?: number | null) {
+    return wled.setState(ep, { on, ...(on && bri ? { bri } : {}) });
+  },
+
+  /** Sets the device's master brightness (1 to 255). */
+  brightness(ep: Endpoint, bri: number) {
+    return wled.setState(ep, { bri });
   },
 
   async presets(ep: Endpoint): Promise<FetchResult<DevicePreset[]>> {

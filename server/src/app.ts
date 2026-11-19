@@ -4,23 +4,24 @@ import path from 'node:path';
 import { Hono, type Context } from 'hono';
 import { secureHeaders } from 'hono/secure-headers';
 import { streamSSE } from 'hono/streaming';
-import { getConnInfo } from '@hono/node-server/conninfo';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { z } from 'zod';
 import type { BackupFile, DiscoveredDevice, Scene, SessionInfo } from '../../shared/types.ts';
-import { createAuth, sameOrigin, type AuthEnv } from './auth.ts';
+import { createAuth, isExamplePassword, sameOrigin, type AuthEnv } from './auth.ts';
+import { isLoopbackIp, requestIp, requestIsDirectLan, requestIsLocal, warnUntrustedProxy } from './clientIp.ts';
 import type { AppConfig } from './config.ts';
 import type { Db } from './db.ts';
 import { discoverWled } from './discovery.ts';
 import type { Bus } from './events.ts';
 import type { Lights } from './lights.ts';
 import { isValidCidr } from './net.ts';
-import { rateLimit } from './rateLimit.ts';
+import { ConnectionLimit, limitBody, rateLimit } from './rateLimit.ts';
 import { readGameArea, readSettings, writeGameArea, writeLineSettings, writeSettings } from './settings.ts';
 import { visitorCookie, visitorId } from './visitor.ts';
 import type { Visitor } from './line.ts';
 import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
 import type { GameHost } from './game/host.ts';
+import type { RoofView } from './roofView.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -36,6 +37,7 @@ export interface AppDeps {
   discover?: typeof discoverWled;
   host?: GameHost;
   preview?: LayoutPreview;
+  roof?: RoofView;
 }
 
 const deviceInput = z.object({
@@ -103,6 +105,13 @@ const backupInput = z.object({
   )
 });
 
+/** A new admin password: long, and not one from the examples (the site is on the internet). */
+const newPassword = z
+  .string()
+  .min(12, 'Use at least 12 characters')
+  .max(1000)
+  .refine((p) => !isExamplePassword(p), 'That password is in the examples: pick your own');
+
 function errorMessage(e: z.ZodError): string {
   const i = e.issues[0];
   return i ? `${i.path.join('.') || 'input'}: ${i.message}` : 'Invalid input';
@@ -128,26 +137,18 @@ class HttpError extends Error {
   }
 }
 
-export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview }: AppDeps) {
+export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof }: AppDeps) {
   const app = new Hono();
   const auth = createAuth(db, { secureCookie: config.secureCookie });
 
+  // The visitor's address: proxy headers count only as far as TRUST_PROXY says (see clientIp.ts).
   const clientIp = (c: Context): string => {
-    if (config.trustProxy) {
-      const fwd = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
-      if (fwd) return fwd;
-    }
-    try {
-      return getConnInfo(c).remote.address ?? 'unknown';
-    } catch {
-      return 'unknown';
-    }
+    warnUntrustedProxy(c, config.trustProxy);
+    return requestIp(c, config.trustProxy);
   };
-  const actor = (c: Context) => ({ ip: clientIp(c), userAgent: c.req.header('user-agent') ?? null });
-  const isLoopback = (c: Context) => {
-    const ip = clientIp(c);
-    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-  };
+  const actor = (c: Context) => ({ ip: clientIp(c), userAgent: c.req.header('user-agent')?.slice(0, 300) ?? null });
+  // Made on this computer: not just from 127.0.0.1, which every request through cloudflared is.
+  const isLoopback = (c: Context) => requestIsLocal(c);
 
   app.onError((err, c) => {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
@@ -175,6 +176,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     await next();
     if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
   });
+  // Bodies read before signing in are small. Admin uploads (signed in) can be large.
+  app.use('/api/*', limitBody(64 * 1024, (c) => c.req.path.startsWith('/api/admin/')));
   // A visitor id for the line for the lights.
   app.use('*', visitorCookie(config.secureCookie));
   const visitor = (c: Context): Visitor => ({ id: visitorId(c), admin: !!auth.currentUser(c), actor: actor(c) });
@@ -186,6 +189,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // Generous enough for quick taps on the color wheel; still stops a runaway script.
   const applyLimiter = rateLimit({ windowMs: 10_000, max: 30, clientIp, skip: isLoopback });
   const loginLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20, clientIp });
+  // Open event streams: a few tabs per address, and not every socket the server has.
+  const streams = new ConnectionLimit(20, 2000);
 
   // ---------------- Public ----------------
 
@@ -195,7 +200,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.get('/api/events', (c) => {
     const me = visitorId(c);
+    const ip = clientIp(c);
+    const release = streams.take(ip, isLoopbackIp(ip));
+    if (!release) return c.json({ error: 'Too many open pages from your address' }, 429);
     return streamSSE(c, async (stream) => {
+      stream.onAbort(release);
       let timer: NodeJS.Timeout | null = null;
       const send = () => {
         if (timer) return;
@@ -224,6 +233,27 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       if (timer) clearTimeout(timer);
       bus.off('state', send);
       bus.off('line', sendLine);
+    });
+  });
+
+  // The roofline as it is now, for the strip along the top of the home page (see RoofView).
+  app.get('/api/roof', publicLimiter, (c) => {
+    if (!roof) return c.json({ error: 'No roof view' }, 404);
+    const ip = clientIp(c);
+    const release = streams.take(ip, isLoopbackIp(ip));
+    if (!release) return c.json({ error: 'Too many open pages from your address' }, 429);
+    return streamSSE(c, async (stream) => {
+      stream.onAbort(release);
+      const stop = roof.watch((e) => void stream.writeSSE(e).catch(() => {}));
+      if (!stop) {
+        await stream.writeSSE({ event: 'busy', data: '' });
+        release();
+        return;
+      }
+      const ping = setInterval(() => void stream.writeSSE({ event: 'ping', data: '' }).catch(() => {}), 25_000);
+      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      clearInterval(ping);
+      stop();
     });
   });
 
@@ -259,10 +289,13 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     return c.json({ queued: { place: asked.place, message: `You're ${ordinal(asked.place)} in line. ${label} plays when it's your turn.` } }, 202);
   };
 
+  const LIGHTS_OFF = 'The lights are switched off right now.';
+
   app.post('/api/scenes/:id/apply', applyLimiter, async (c) => {
     const id = c.req.param('id');
     const name = lights.publicState().scenes.find((s) => s.id === id)?.name;
     if (!name) throw new HttpError(404, 'Unknown scene');
+    if (lights.allOff()) throw new HttpError(409, LIGHTS_OFF);
     const queued = askLine(c, { kind: 'scene', id }, name);
     if (queued) return queued;
     takeLights('a scene');
@@ -275,6 +308,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   app.post('/api/color', applyLimiter, async (c) => {
     const { color } = await body(c, z.object({ color: z.string().regex(/^#?[0-9a-fA-F]{6}$/, 'Use a hex color like #ff8800') }));
     const hex = `#${color.replace('#', '').toLowerCase()}`;
+    if (lights.allOff()) throw new HttpError(409, LIGHTS_OFF);
     const queued = askLine(c, { kind: 'color', hex }, `Color ${hex}`);
     if (queued) return queued;
     takeLights('a color');
@@ -309,14 +343,19 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   });
 
   app.post('/api/auth/login', loginLimiter, async (c) => {
-    const { username, password } = await body(c, z.object({ username: z.string().min(1), password: z.string().min(1) }));
-    const user = await auth.login(c, username, password);
-    if (!user) {
-      lights.log('warn', 'admin', `Failed sign-in for "${username}"`, null, actor(c));
+    const { username, password } = await body(c, z.object({ username: z.string().min(1).max(100), password: z.string().min(1).max(1000) }));
+    const r = await auth.login(c, username, password, { ip: clientIp(c), lan: requestIsDirectLan(c) });
+    if (r.ok === false && r.retryIn) {
+      const s = Math.ceil(r.retryIn / 1000);
+      c.header('Retry-After', String(s));
+      return c.json({ error: `Too many failed sign-ins. Try again in ${s > 90 ? `${Math.ceil(s / 60)} minutes` : `${s} seconds`}.` }, 429);
+    }
+    if (r.ok === false) {
+      lights.log('warn', 'admin', `Failed sign-in for "${username.slice(0, 40)}"`, null, actor(c));
       throw new HttpError(401, 'Wrong username or password');
     }
-    lights.log('info', 'admin', `${user.username} signed in`, null, actor(c));
-    return c.json({ user });
+    lights.log('info', 'admin', `${r.user.username} signed in`, null, actor(c));
+    return c.json({ user: r.user });
   });
 
   app.post('/api/auth/logout', (c) => {
@@ -329,12 +368,12 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     if (!isLoopback(c)) throw new HttpError(403, 'Create the first admin from the server itself, or set ADMIN_USERNAME and ADMIN_PASSWORD');
     const { username, password } = await body(
       c,
-      z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(12, 'Use at least 12 characters') })
+      z.object({ username: z.string().trim().min(1).max(64), password: newPassword })
     );
     await auth.createUser(username, password);
     lights.log('info', 'admin', `Admin account "${username}" created`, null, actor(c));
-    const user = await auth.login(c, username, password);
-    return c.json({ user });
+    const r = await auth.login(c, username, password, { ip: clientIp(c), lan: true });
+    return c.json({ user: r.ok ? r.user : null });
   });
 
   // ---------------- Admin ----------------
@@ -348,16 +387,45 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       scenes: db.listScenes(),
       devicePresets: db.listDevicePresets(),
       settings: readSettings(db),
-      state: lights.publicState()
+      state: lights.publicState(),
+      controls: lights.controls()
     })
   );
 
+  // Power and brightness, for every light or one device (see LightControls).
+  admin.get('/lights', (c) => c.json(lights.controls()));
+
+  const deviceTarget = z.string().min(1).max(64).nullable().default(null);
+  const knownDevice = (id: string | null) => {
+    if (id && !db.getDevice(id)) throw new HttpError(404, 'Unknown device');
+  };
+
+  admin.put('/lights/power', async (c) => {
+    const { on, deviceId } = await body(c, z.object({ on: z.boolean(), deviceId: deviceTarget }));
+    knownDevice(deviceId);
+    const result = await lights.setPower(on, deviceId, actor(c));
+    if (!on && lights.allOff()) {
+      // Nothing plays on lights that are off: the game ends and the line empties.
+      host?.endGame('the lights were switched off');
+      line?.clear('the lights were switched off');
+    }
+    return c.json({ controls: lights.controls(), result });
+  });
+
+  admin.put('/lights/brightness', async (c) => {
+    const { level, deviceId } = await body(c, z.object({ level: z.number().int().min(1).max(100).nullable(), deviceId: deviceTarget }));
+    knownDevice(deviceId);
+    const result = await lights.setBrightness(level, deviceId, actor(c));
+    return c.json({ controls: lights.controls(), result });
+  });
+
   admin.post('/auth/password', async (c) => {
-    const { current, next } = await body(c, z.object({ current: z.string().min(1), next: z.string().min(12, 'Use at least 12 characters') }));
+    const { current, next } = await body(c, z.object({ current: z.string().min(1).max(1000), next: newPassword }));
     const me = c.get('user');
     const ok = await auth.verify(me.username, current);
     if (!ok) throw new HttpError(400, 'Current password is wrong');
-    await auth.setPassword(me.id, next);
+    // Signs out the other sessions, so a stolen cookie stops working too.
+    await auth.setPassword(me.id, next, c);
     lights.log('info', 'admin', `${me.username} changed their password`, null, actor(c));
     return c.json({ ok: true });
   });

@@ -7,6 +7,7 @@ import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHe
 import { api, type DeviceInput, type PresetImport } from '../../lib/api.ts';
 import { cn, errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
+import { LightsCard } from './LightsCard.tsx';
 
 export function DevicesPage() {
   const qc = useQueryClient();
@@ -74,6 +75,8 @@ export function DevicesPage() {
           </>
         }
       />
+
+      <LightsCard devices={devices} />
 
       <Card>
         {isLoading ? (

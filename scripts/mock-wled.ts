@@ -2,6 +2,7 @@
 // Usage: node scripts/mock-wled.ts [count=3] [basePort=9101]
 import dgram from 'node:dgram';
 import http from 'node:http';
+import { WebSocketServer, type WebSocket } from 'ws';
 
 const NAMES = ['Roofline', 'Porch', 'Tree', 'Garage', 'Fence', 'Window'];
 // Shaped like real WLED presets.json entries, so colors and effects can be read from them.
@@ -19,7 +20,7 @@ const PRESETS: { n: string; seg: Record<string, unknown>[] }[] = [
 export function startMockWled(port: number, name: string, ledCount = 150, { dropUdp = false } = {}) {
   const presets: Record<string, unknown> = { '0': {} };
   PRESETS.forEach((p, i) => (presets[String(i + 1)] = { on: true, bri: 160, ...p }));
-  const state = { on: true, bri: 128, ps: -1, seg: [{ id: 0, col: [[255, 160, 80]], fx: 0 }] };
+  const state: { on: boolean; bri: number; ps: number; seg: Record<string, any>[] } = { on: true, bri: 128, ps: -1, seg: [{ id: 0, col: [[255, 160, 80]], fx: 0 }] };
   const requests: { method: string; url: string; body: unknown }[] = [];
   // Real-time UDP (DNRGB), on the same number as the HTTP port so several mocks can run.
   const realtime = { packets: 0, httpFrames: 0, ddpPackets: 0, ddpFrames: 0, leds: new Uint8Array(ledCount * 3), at: 0 };
@@ -74,6 +75,11 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
           return json({ success: true });
         }
         Object.assign(state, body);
+        // A preset's segments show (WLED applies the preset).
+        const preset = typeof body?.ps === 'number' ? (presets[String(body.ps)] as { seg?: Record<string, unknown>[] } | undefined) : undefined;
+        if (preset?.seg) state.seg = [{ id: 0, col: [[255, 160, 80]], fx: 0, ...(preset.seg[0] as object) }];
+        if (Array.isArray(body?.seg) && body.seg[0]?.col) state.seg = [{ ...state.seg[0], ...body.seg[0] }];
+        broadcastState();
         return json({ success: true });
       }
       if (req.url === '/json/state') return json(state);
@@ -91,6 +97,58 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
       res.writeHead(404).end();
     });
   });
+  // WLED's WebSocket: the state on connect and on each change, and with {"lv": true} the LED
+  // colors ("L", version 1, then RGB per LED) about 8 times a second, as WLED's "Peek" gets them.
+  const wss = new WebSocketServer({ noServer: true });
+  const live = new Set<WebSocket>();
+  const broadcastState = () => {
+    for (const ws of wss.clients) ws.send(JSON.stringify({ state }));
+  };
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url !== '/ws') return socket.destroy();
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.send(JSON.stringify({ state, info: { name, leds: { count: ledCount } } }));
+      ws.on('message', (m) => {
+        try {
+          const j = JSON.parse(String(m));
+          if (j.lv === true) live.add(ws);
+          if (j.lv === false) live.delete(ws);
+        } catch {
+          /* ignore */
+        }
+      });
+      ws.on('close', () => live.delete(ws));
+    });
+  });
+  const peekTimer = setInterval(() => {
+    if (!live.size) return;
+    const out = Buffer.alloc(2 + ledCount * 3);
+    out[0] = 0x4c;
+    out[1] = 1;
+    const k = state.on ? state.bri / 255 : 0;
+    const streaming = realtime.at > 0 && Date.now() - realtime.at < 2500;
+    const seg = state.seg[0] as { col?: number[][]; fx?: number };
+    const a = seg.col?.[0] ?? [255, 160, 80];
+    const b = seg.col?.[1]?.some((v) => v) ? seg.col[1] : [0, 0, 0];
+    const t = Date.now() / 1000;
+    for (let i = 0; i < ledCount; i++) {
+      let rgb: number[];
+      if (streaming) rgb = Array.from(realtime.leds.subarray(i * 3, i * 3 + 3));
+      else if (!seg.fx) rgb = a;
+      else if (seg.fx === 9) rgb = hue((i / 60 + t * 0.3) % 1);
+      else {
+        // Any other effect: the two colors travel along the strip.
+        const w = 0.5 + 0.5 * Math.sin(i / 6 - t * 3);
+        rgb = a.map((v, c) => v * w + b[c] * (1 - w));
+      }
+      out[2 + i * 3] = rgb[0] * k;
+      out[3 + i * 3] = rgb[1] * k;
+      out[4 + i * 3] = rgb[2] * k;
+    }
+    for (const ws of live) ws.send(out);
+  }, 125);
+  peekTimer.unref();
+
   return new Promise<{ port: number; ddpPort: () => number; state: typeof state; requests: typeof requests; realtime: typeof realtime; close: () => Promise<void> }>((resolve) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
@@ -104,7 +162,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
       actualPort = actual;
       udp.bind(actual, '127.0.0.1');
       ddp.bind(0, '127.0.0.1', () => (ddpPort = ddp.address().port));
-      resolve({ port: actual, ddpPort: () => ddpPort, state, requests, realtime, close: () => new Promise((r) => (udp.close(), ddp.close(), server.close(() => r()))) });
+      resolve({ port: actual, ddpPort: () => ddpPort, state, requests, realtime, close: () => new Promise((r) => (clearInterval(peekTimer), wss.clients.forEach((c) => c.terminate()), udp.close(), ddp.close(), server.close(() => r()))) });
     });
   });
 }
@@ -117,4 +175,12 @@ if (import.meta.main) {
     const m = await startMockWled(base + i, NAMES[i % NAMES.length], i === 0 ? 600 : 150);
     console.log(`Mock WLED "${NAMES[i % NAMES.length]}" on 127.0.0.1:${m.port}`);
   }
+}
+
+function hue(h: number): number[] {
+  const f = (n: number) => {
+    const k = (n + h * 6) % 6;
+    return 255 * (1 - Math.max(0, Math.min(k, 4 - k, 1)));
+  };
+  return [f(5), f(3), f(1)];
 }
