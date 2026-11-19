@@ -3,7 +3,7 @@
 // that goes wrong, or the LEDs are too close together to tell apart, trace the wire by hand:
 // drag through the dots (or along the wire) with the mouse or a finger. The photo stays in this
 // browser; only the colors for the lights go to the server.
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { Box, Camera, CircleDot, Flag, Footprints, Hand, Image as ImageIcon, ImagePlus, Lightbulb, Maximize, Route, ScanLine, Undo2, WandSparkles, X } from 'lucide-react';
 import { deviceLed, FEET_PER_METER, MAX_FIXTURE_PIXELS, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
@@ -131,11 +131,14 @@ export function PhotoTrace({
 
   const inFront = useInFront();
   /** Walking round in AR: the phone's AR view is in front (the page may not count as focused). */
-  const [walking, setWalking] = useState<{ status: WalkStatus | null; size: { w: number; h: number } | null; tracking: boolean; finishing?: boolean } | null>(null);
+  const [walking, setWalking] = useState<{ finishing?: boolean } | null>(null);
+  /** What the walk sees, for the overlay only: it changes several times a second, and this dialog need not draw again for it. */
+  const walkFeed = useMemo(feed, []);
   const lighting = open && lightUp && !!deviceId && count <= MAX_FIXTURE_PIXELS && (inFront || !!walking);
   /** While scanning: the frame the lights show (see codeDigit). */
   const [scanCode, setScanCode] = useState<number | null>(null);
-  const lightBody = lighting ? JSON.stringify({ active: true, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code: scanCode } }) : null;
+  // While walking, the walk's own loop keeps the lights on its code.
+  const lightBody = lighting && !walking ? JSON.stringify({ active: true, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code: scanCode } }) : null;
   useEffect(() => {
     onLights(lighting);
     return () => onLights(false);
@@ -471,7 +474,8 @@ export function PhotoTrace({
     closeCamera();
     setProblem(null);
     flushSync(() => {
-      setWalking({ status: null, size: null, tracking: false });
+      walkFeed.set({ status: null, size: null, tracking: false });
+      setWalking({});
       setLightUp(true);
     });
     const n = count;
@@ -489,7 +493,7 @@ export function PhotoTrace({
       if (m.type === 'status') {
         busy = false;
         pool.push(m.buffer);
-        setWalking((w) => w && { ...w, status: m.status, size: { w: m.width, h: m.height } });
+        walkFeed.set({ status: m.status, size: { w: m.width, h: m.height } });
       } else if (m.type === 'done') {
         worker.terminate();
         void finishWalk(m.result, m.first, n);
@@ -498,7 +502,7 @@ export function PhotoTrace({
         busy = false;
       }
     };
-    worker.postMessage({ type: 'start', n, maxSide: 960 } satisfies WalkIn);
+    worker.postMessage({ type: 'start', n } satisfies WalkIn);
     try {
       const ar = await startAr(root, {
         wants: () => !busy && !run.finishing && performance.now() - last >= 120,
@@ -512,9 +516,9 @@ export function PhotoTrace({
           const msg: WalkIn = { type: 'frame', width: f.width, height: f.height, data: f.data.buffer as ArrayBuffer, cam: f.cam, code: shown?.code ?? null, cycle: shown?.cycle ?? cycle };
           worker.postMessage(msg, [msg.data]);
         },
-        tracking: (ok) => setWalking((w) => w && { ...w, tracking: ok }),
+        tracking: (ok) => walkFeed.set({ tracking: ok }),
         ended: () => endWalk(true)
-      });
+      }, 960);
       run.end = ar.end;
     } catch (e) {
       console.error('AR', e);
@@ -530,7 +534,6 @@ export function PhotoTrace({
     while (!run.stop) {
       shown = null;
       const t0 = performance.now();
-      setScanCode(f);
       await api.previewLayout(JSON.stringify(body(f))).catch(() => {});
       await new Promise((r) => setTimeout(r, 250));
       if (run.stop) break;
@@ -914,7 +917,7 @@ export function PhotoTrace({
       <input ref={fileInput} type="file" accept="image/*" className="hidden" onChange={(e) => (void load(e.target.files?.[0]), (e.target.value = ''))} />
       {/* Over the camera while walking round in AR (the browser shows it on top of its AR view). */}
       <div ref={overlay} hidden={!walking} className="fixed inset-0 z-50 bg-transparent text-white select-none">
-        {walking ? <WalkOverlay walking={walking} n={count} onDone={() => endWalk(true)} onCancel={() => endWalk(false)} /> : null}
+        {walking ? <WalkOverlay feed={walkFeed} finishing={!!walking.finishing} n={count} onDone={() => endWalk(true)} onCancel={() => endWalk(false)} /> : null}
       </div>
       <div className="flex flex-col gap-3 pb-2 lg:flex-row">
         <div className="min-w-0 flex-1">
@@ -1231,19 +1234,45 @@ export function PhotoTrace({
   );
 }
 
+interface WalkView {
+  status: WalkStatus | null;
+  size: { w: number; h: number } | null;
+  tracking: boolean;
+}
+type Feed = ReturnType<typeof feed>;
+
+/** What a walk sees now, for the overlay to follow (useSyncExternalStore). */
+function feed() {
+  let view: WalkView = { status: null, size: null, tracking: false };
+  const subs = new Set<() => void>();
+  return {
+    get: () => view,
+    set(change: Partial<WalkView>) {
+      view = { ...view, ...change };
+      subs.forEach((f) => f());
+    },
+    subscribe(f: () => void) {
+      subs.add(f);
+      return () => void subs.delete(f);
+    }
+  };
+}
+
 /** Over the camera while walking round in AR: the LEDs it sees (green: read), how far it got, and the buttons. */
 function WalkOverlay({
-  walking,
+  feed,
+  finishing,
   n,
   onDone,
   onCancel
 }: {
-  walking: { status: WalkStatus | null; size: { w: number; h: number } | null; tracking: boolean; finishing?: boolean };
+  feed: Feed;
+  finishing: boolean;
   n: number;
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const { status, size, tracking, finishing } = walking;
+  const { status, size, tracking } = useSyncExternalStore(feed.subscribe, feed.get);
   const r = size ? Math.max(size.w, size.h) / 160 : 4;
   const share = status ? Math.min(1, status.placed / Math.max(1, n)) : 0;
   return (
@@ -1256,7 +1285,8 @@ function WalkOverlay({
           })}
         </svg>
       ) : null}
-      <div className="relative mx-auto w-full max-w-md rounded-2xl bg-black/60 p-3 text-sm backdrop-blur [text-shadow:0_1px_2px_#000]">
+      {/* No blur behind these: over the moving camera it would cost the phone every frame. */}
+      <div className="relative mx-auto w-full max-w-md rounded-2xl bg-black/70 p-3 text-sm [text-shadow:0_1px_2px_#000]">
         {finishing ? (
           <p>Working out the shape…</p>
         ) : !tracking ? (
@@ -1272,7 +1302,7 @@ function WalkOverlay({
         </p>
       </div>
       <div className="relative mx-auto flex w-full max-w-md gap-3">
-        <button type="button" onClick={onCancel} disabled={finishing} className="h-12 flex-1 rounded-xl bg-black/60 font-medium backdrop-blur disabled:opacity-50">
+        <button type="button" onClick={onCancel} disabled={finishing} className="h-12 flex-1 rounded-xl bg-black/70 font-medium disabled:opacity-50">
           Cancel
         </button>
         <button type="button" onClick={onDone} disabled={finishing} className="h-12 flex-1 rounded-xl bg-sky-600 font-medium disabled:opacity-50">
