@@ -124,4 +124,4 @@ Frames reach the lights through one pipeline ([server/src/framePipeline.ts](serv
 
 ## Release
 
-Push a tag such as `v2.0.0`. The workflow in [.github/workflows](.github/workflows) runs the checks and publishes an amd64 image to GHCR.
+Bump `version` in `package.json` in the pull request. When it is merged into `main`, the workflow in [.github/workflows](.github/workflows) runs the checks, tags the merge `vX.Y.Z`, makes a GitHub release with notes, and publishes an amd64 image to GHCR (`latest`, `X.Y.Z`, `X.Y`, `X`). A merge that keeps the version releases nothing. Pushing a tag such as `v2.0.0` by hand still works too.
