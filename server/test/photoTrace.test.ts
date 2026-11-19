@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { designCounts, designLeds } from '../../shared/layout.ts';
-import { autoDots, codeColor, codeDigit, codeDigits, codeFrames, decodeDigits, decodeScan, glowMaps, isLoop, ledStep, lineUp, numberedStrokes, orderByNumber, orderDots, PHOTO_COLORS, photoDesign, scanDots, strokesFromOrder, tautStep, traceDots, type Pixels, type Pt, type RGB } from './../../shared/photoTrace.ts';
+import { autoDots, codeColor, codeDigit, codeDigits, codeFrames, decodeDigits, decodeScan, glowMaps, isLoop, ledStep, lineUp, numberedStrokes, orderByNumber, orderDots, PHOTO_COLORS, photoDesign, readScan, scanDots, strokesFromOrder, tautStep, traceDots, type Pixels, type Pt, type RGB } from './../../shared/photoTrace.ts';
 
 const GREEN = PHOTO_COLORS[0];
 
@@ -222,17 +222,18 @@ describe('a custom object from a photo', () => {
         [1 + Math.sin(f) * 0.12, 1 + Math.cos(f * 1.3) * 0.08, 1 - Math.sin(f * 0.7) * 0.12]
       )
     );
-    const lined = lineUp(frames, n);
-    const { dots } = scanDots(lined, n);
-    expect(dots).toHaveLength(n);
-    const ids = decodeScan(lined, dots, n);
-    // Dots are in frame 1's place. Every number read is right; at most one or two (where the
-    // wire crosses) are not read.
+    const { dots, ids } = readScan(frames, n);
+    // Dots are in frame 1's place, within a quarter of the way to the next LED (a lamp and
+    // colorful things beside them pull a little). Every number read is right; at most a few
+    // (where the wire crosses) are not read.
     const s1 = { x: Math.round(Math.sin(1.7) * 4), y: Math.round(Math.cos(2.3) * 4) };
-    expect(ids.filter((i) => i == null).length).toBeLessThanOrEqual(2);
+    expect(new Set(ids.filter((i) => i != null)).size).toBeGreaterThanOrEqual(n - 2);
     for (let k = 0; k < dots.length; k++) {
       const i = ids[k];
-      if (i != null) expect(Math.hypot(dots[k].x - pts[i].x - s1.x, dots[k].y - pts[i].y - s1.y)).toBeLessThan(1.5);
+      if (i == null) continue;
+      // Where the wire crosses, two LEDs glow into each other: there, within a few pixels.
+      const crossing = pts.some((p, j) => j !== i && Math.hypot(p.x - pts[i].x, p.y - pts[i].y) < 10);
+      expect(Math.hypot(dots[k].x - pts[i].x - s1.x, dots[k].y - pts[i].y - s1.y)).toBeLessThan(crossing ? 5 : 3);
     }
     const order = orderByNumber(dots, ids);
     expect(order).toHaveLength(1);
@@ -258,6 +259,46 @@ describe('a custom object from a photo', () => {
     expect(ids[at(70)]).not.toBe(140);
     // Every number given is right.
     dots.forEach((d, k) => ids[k] != null && expect(Math.hypot(d.x - pts[ids[k]!].x, d.y - pts[ids[k]!].y)).toBeLessThan(2));
+  });
+
+  it('splits LEDs that glow together where the wire bunches, and puts each where it is', () => {
+    // 150 LEDs in rows 14 px apart, except LEDs 60–71: slack wire, 6 px apart.
+    const n = 150;
+    const pts: Pt[] = [];
+    let x = 60;
+    let y = 120;
+    for (let i = 0; i < n; i++) {
+      pts.push({ x, y });
+      x += i >= 60 && i < 71 ? 6 : 14;
+      if (x > 740) ((x = 60), (y += 120));
+    }
+    const frames = Array.from({ length: codeFrames(n) }, (_, f) => room(800, 500, pts.map((p, i) => ({ p, rgb: codeColor(i, f, n) })), { x: 0, y: 0 }, [1, 1, 1]));
+    const placed = (dots: Pt[], ids: (number | null)[]) =>
+      Array.from({ length: 11 }, (_, j) => 60 + j).filter((i) => {
+        const k = ids.indexOf(i);
+        // Within a third of the way to the next LED.
+        return k >= 0 && Math.hypot(dots[k].x - pts[i].x, dots[k].y - pts[i].y) < 2;
+      }).length;
+    const { dots, ids } = readScan(frames, n);
+    const after = placed(dots, ids);
+    expect(after).toBeGreaterThanOrEqual(10);
+    // Every number given is right.
+    dots.forEach((d, k) => ids[k] != null && expect(Math.hypot(d.x - pts[ids[k]!].x, d.y - pts[ids[k]!].y)).toBeLessThan(3));
+  });
+
+  it('takes the LED over its reflection, which blinks the same number dimmer', () => {
+    const n = 100;
+    const pts = Array.from({ length: n }, (_, i) => ({ x: 60 + (i % 50) * 13, y: 120 + Math.floor(i / 50) * 120 }));
+    // LEDs 20–24 seen again, dimmer, in a window at the bottom.
+    const frames = Array.from({ length: codeFrames(n) }, (_, f) =>
+      room(800, 500, [...pts.map((p, i) => ({ p, rgb: codeColor(i, f, n) })), ...[20, 21, 22, 23, 24].map((i) => ({ p: { x: pts[i].x + 40, y: 420 }, rgb: codeColor(i, f, n).map((v) => v * 0.35) as RGB }))], { x: 0, y: 0 }, [1, 1, 1])
+    );
+    const { dots, ids } = readScan(frames, n);
+    for (const i of [20, 21, 22, 23, 24]) {
+      const k = ids.indexOf(i);
+      expect(k).toBeGreaterThanOrEqual(0);
+      expect(Math.hypot(dots[k].x - pts[i].x, dots[k].y - pts[i].y)).toBeLessThan(2);
+    }
   });
 
   it('sizes a scan by the string spacing as the most LEDs are apart, slack wire or not', () => {

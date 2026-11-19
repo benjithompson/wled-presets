@@ -732,39 +732,64 @@ function at(s: ScanFrames, f: number, x: number, y: number, c: number): number {
 }
 
 /**
- * Finds the LEDs of a scan: where the color changes from frame to frame. A lamp, the wall and
- * anything else that stays the same drop out. Dots are in frame 1's pixels.
+ * Finds the LEDs of a scan, in frame 1's pixels. In the first color frame three LEDs in a row
+ * are red, green and blue, so LEDs of one color there are three apart on the string: looking at
+ * each color by itself, their glows stay apart even where the wire bunches. Only color that
+ * changes counts (each LED shows more than one color over the scan), so a lamp, the wall and a
+ * colorful toy drop out. Where the frames change but no color dot was found (an LED too bright
+ * to show its color, say), the change itself finds it.
  */
 export function scanDots(s: ScanFrames, n: number): { dots: Dot[]; threshold: number } {
   const { width: w, height: h } = s.frames[0];
-  const main = new Uint8Array(w * h);
   const F = s.frames.length;
+  const N = w * h;
+  // Each color standing out in frame 1, over its least in any color frame (what stays the same).
+  const first = [0, 1, 2].map(() => new Float32Array(N));
+  const least = [0, 1, 2].map(() => new Float32Array(N).fill(1e9));
+  const change = new Uint8Array(N);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
+      const i = y * w + x;
       let most = 0;
-      for (let c = 0; c < 3; c++) {
-        let lo = 255 * 2;
-        let hi = 0;
-        for (let f = 0; f < F; f++) {
-          const v = at(s, f, x, y, c);
-          if (v < lo) lo = v;
-          if (v > hi) hi = v;
+      const lo = [1e9, 1e9, 1e9];
+      const hi = [0, 0, 0];
+      for (let f = 0; f < F; f++) {
+        const v = [at(s, f, x, y, 0), at(s, f, x, y, 1), at(s, f, x, y, 2)];
+        for (let c = 0; c < 3; c++) {
+          if (v[c] < lo[c]) lo[c] = v[c];
+          if (v[c] > hi[c]) hi[c] = v[c];
+          if (f === 0) continue;
+          const o = Math.max(0, v[c] - Math.max(v[(c + 1) % 3], v[(c + 2) % 3]));
+          if (f === 1) first[c][i] = o;
+          if (o < least[c][i]) least[c][i] = o;
         }
-        most = Math.max(most, hi - lo);
       }
-      main[y * w + x] = Math.min(255, most);
+      for (let c = 0; c < 3; c++) most = Math.max(most, hi[c] - lo[c]);
+      change[i] = Math.min(255, most);
     }
-  // Glows of neighbors run together where they change: the white frame's small bright spots
-  // keep them apart (and only what changes counts).
+  const empty = new Uint8Array(N);
+  const per = Math.max(1, Math.round(n / 3));
+  const dots: Dot[] = [];
+  let threshold = 0;
+  for (let c = 0; c < 3; c++) {
+    const main = new Uint8Array(N);
+    for (let i = 0; i < N; i++) main[i] = Math.min(255, Math.max(0, first[c][i] - least[c][i]) * 1.5);
+    const got = autoDots({ width: w, height: h, main, start: empty, white: empty }, per);
+    dots.push(...got.dots);
+    threshold = Math.max(threshold, got.threshold);
+  }
+  // What changes but showed no color: the white frame's small bright spots keep LEDs apart.
   const white = brightMaps(s.frames[0]);
   const s0 = s.shifts[0];
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       const fx = Math.min(w - 1, Math.max(0, x + s0.x));
       const fy = Math.min(h - 1, Math.max(0, y + s0.y));
-      main[y * w + x] = Math.min(main[y * w + x], white.main[fy * w + fx]);
+      change[y * w + x] = Math.min(change[y * w + x], white.main[fy * w + fx]);
     }
-  return autoDots({ width: w, height: h, main, start: new Uint8Array(w * h), white: new Uint8Array(w * h) }, n);
+  const gap = typicalGap(dots) || 10;
+  const more = autoDots({ width: w, height: h, main: change, start: empty, white: empty }, n).dots.filter((p) => !dots.some((q) => dist(p, q) < gap * 0.6));
+  return { dots: [...dots, ...more], threshold };
 }
 
 /**
@@ -834,6 +859,8 @@ export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null
   });
   const many = count(ids);
   const unique = ids.map((id) => (id != null && many.get(id) === 1 ? id : null));
+  /** How bright a dot is (its white over its darkest). */
+  const strength = spans.map((x) => x[0] + x[1] + x[2]);
 
   // LEDs next to each other on the string are never farther apart than the wire between them.
   const limit = numberedStep(dots, unique) * 1.35;
@@ -852,9 +879,12 @@ export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null
     if (times < 2) continue;
     const claim = ids.map((x, k) => (x === id ? k : -1)).filter((k) => k >= 0);
     const good = claim.filter((k) => fits(k, id));
-    if (good.length === 1) {
-      out[good[0]] = id;
-      where.set(id, good[0]);
+    // A reflection (in a window, on something shiny) blinks the same number, but dimmer.
+    const bright = [...(good.length ? good : claim)].sort((a, b) => strength[b] - strength[a]);
+    const keep = good.length === 1 ? good[0] : bright.length > 1 && strength[bright[0]] >= strength[bright[1]] * 1.6 ? bright[0] : null;
+    if (keep != null) {
+      out[keep] = id;
+      where.set(id, keep);
     }
   }
   // A dot far from both of its neighbors (when they were read) was misread.
@@ -880,6 +910,114 @@ export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null
     }
   });
   return out;
+}
+
+/** How much a color stands out from the other two at a place in a frame, over its least there. */
+function own(s: ScanFrames, f: number, x: number, y: number, c: number): number {
+  const v = [0, 1, 2].map((k) => at(s, f, x, y, k));
+  return Math.max(0, v[c] - Math.max(v[(c + 1) % 3], v[(c + 2) % 3]));
+}
+
+/**
+ * Where the LEDs really are, from the first color frame, where three LEDs in a row are red,
+ * green and blue: each dot moves to the middle of the color it shows there (the white middle of
+ * a bright LED never changes, so the dots are found by the colored glow around it, and where
+ * LEDs bunch that glow runs together). A dot that shows two or three colors, each in its own
+ * place, is that many LEDs. Dots that land on one LED become one.
+ */
+export function splitMerged(s: ScanFrames, dots: (Pt & { area?: number })[]): Pt[] {
+  if (s.frames.length < 2) return dots;
+  const gap = typicalGap(dots) || 10;
+  // Only a dot bigger than one LED's glow can be more than one LED.
+  const areas = dots.map((d) => d.area ?? 0).sort((a, b) => a - b);
+  const usual = areas[Math.floor(areas.length / 2)] || 0;
+  const big = (d: { area?: number }) => !usual || (d.area ?? 0) >= usual * 1.7;
+  const found: Pt[] = [];
+  dots.forEach((p) => {
+    let near = Infinity;
+    for (const q of dots) if (q !== p) near = Math.min(near, dist(p, q));
+    const rr = Math.max(2.5, Math.min(gap * 0.6, near * 0.8));
+    const r = Math.ceil(rr);
+    const parts = [0, 1, 2].map(() => ({ w: 0, x: 0, y: 0 }));
+    for (let y = Math.round(p.y) - r; y <= Math.round(p.y) + r; y++)
+      for (let x = Math.round(p.x) - r; x <= Math.round(p.x) + r; x++) {
+        if (Math.hypot(x - p.x, y - p.y) > rr) continue;
+        for (let c = 0; c < 3; c++) {
+          const w = own(s, 1, x, y, c);
+          parts[c].w += w;
+          parts[c].x += x * w;
+          parts[c].y += y * w;
+        }
+      }
+    const total = parts.reduce((a, q) => a + q.w, 0);
+    if (!(total > 0)) return found.push(p);
+    // A color whose middle is nearer another dot is that dot's glow, not a second LED here.
+    const mine = (q: Pt) => dots.every((o) => o === p || dist(q, o) > dist(q, p));
+    const strong = parts.filter((q) => q.w >= total * 0.22).map((q) => ({ x: q.x / q.w, y: q.y / q.w })).filter(mine);
+    // Each color in its own place: not one LED's glow with a tint at its edge.
+    const apart = strong.every((a, i) => strong.every((b, j) => i === j || dist(a, b) >= Math.max(2, gap * 0.2)));
+    if (strong.length > 1 && apart && big(p)) found.push(...strong);
+    else {
+      const best = parts.reduce((a, q) => (q.w > a.w ? q : a));
+      found.push({ x: best.x / best.w, y: best.y / best.w });
+    }
+  });
+  // Two dots on one LED become one.
+  const out: Pt[] = [];
+  for (const p of found) if (!out.some((q) => dist(p, q) < Math.max(1.5, gap * 0.15))) out.push(p);
+  return out;
+}
+
+/**
+ * Moves each numbered dot to where its LED really is: the middle of its own color, in the
+ * frames where the LEDs next to it on the string show other colors (so their glow does not pull
+ * it). Those colors are known from the numbers, even for LEDs that were not seen.
+ */
+export function refineDots(s: ScanFrames, dots: Pt[], ids: (number | null)[], n: number): Pt[] {
+  const gap = typicalGap(dots) || 10;
+  return dots.map((p, k) => {
+    const i = ids[k];
+    if (i == null) return p;
+    let near = Infinity;
+    for (const q of dots) if (q !== p) near = Math.min(near, dist(p, q));
+    const rr = Math.max(2, Math.min(gap * 0.6, near * 0.6));
+    const r = Math.ceil(rr);
+    let w = 0;
+    let sx = 0;
+    let sy = 0;
+    for (let f = 1; f < s.frames.length; f++) {
+      const mine = codeColor(i, f, n).join();
+      if ([i - 2, i - 1, i + 1, i + 2].some((j) => j >= 0 && j < n && codeColor(j, f, n).join() === mine)) continue;
+      const c = codeColor(i, f, n).findIndex((v) => v > 0);
+      for (let y = Math.round(p.y) - r; y <= Math.round(p.y) + r; y++)
+        for (let x = Math.round(p.x) - r; x <= Math.round(p.x) + r; x++) {
+          if (Math.hypot(x - p.x, y - p.y) > rr) continue;
+          const v = own(s, f, x, y, c);
+          w += v;
+          sx += x * v;
+          sy += y * v;
+        }
+    }
+    if (w <= 0) return p;
+    const q = { x: sx / w, y: sy / w };
+    // Only a nudge: a big move means something else glowed there.
+    return dist(p, q) <= rr * 0.6 ? q : p;
+  });
+}
+
+/**
+ * Reads a scan from its frames (see codeColor): the LEDs found, split where they glow
+ * together, numbered, and each moved to where it really is.
+ */
+export function readScan(frames: Pixels[], n: number): { lined: ScanFrames; dots: Pt[]; ids: (number | null)[] } {
+  const lined = lineUp(frames, n);
+  let dots = splitMerged(lined, scanDots(lined, n).dots);
+  let ids = decodeScan(lined, dots, n);
+  // Once more from where the numbers put them: read better there.
+  dots = refineDots(lined, dots, ids, n);
+  ids = decodeScan(lined, dots, n);
+  dots = refineDots(lined, dots, ids, n);
+  return { lined, dots, ids };
 }
 
 /** The dots in LED order, as strokes of dot indexes: a new stroke where the wire jumps. */

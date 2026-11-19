@@ -9,11 +9,9 @@ import { deviceLed, FEET_PER_METER, MAX_FIXTURE_PIXELS, type DesignStroke, type 
 import {
   autoDots,
   codeFrames,
-  decodeScan,
   findDots,
   glowMaps,
   isLoop,
-  lineUp,
   ledStep,
   numberedStep,
   numberedStrokes,
@@ -22,7 +20,7 @@ import {
   PHOTO_COLORS,
   photoDesign,
   photoWidth,
-  scanDots,
+  readScan,
   simplify,
   THRESHOLDS,
   traceDots,
@@ -380,12 +378,11 @@ export function PhotoTrace({
     // Let "Reading…" show: this takes a moment on a phone.
     await new Promise((r) => setTimeout(r, 50));
     lastScan.current = shots.map((x) => x.canvas);
-    const lined = lineUp(
+    const { dots: placed, ids: nums } = readScan(
       shots.map((x) => x.pixels),
       n
     );
-    const found = scanDots(lined, n);
-    const nums = decodeScan(lined, found.dots, n);
+    const found = { dots: placed };
     const order = orderByNumber(found.dots, nums);
     const read = nums.filter((x) => x != null).length;
     // The picture under the dots: frame 1, where the dots are.
