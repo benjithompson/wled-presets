@@ -239,10 +239,15 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // The roofline as it is now, for the strip along the top of the home page (see RoofView).
   app.get('/api/roof', publicLimiter, (c) => {
     if (!roof) return c.json({ error: 'No roof view' }, 404);
+    const ip = clientIp(c);
+    const release = streams.take(ip, isLoopbackIp(ip));
+    if (!release) return c.json({ error: 'Too many open pages from your address' }, 429);
     return streamSSE(c, async (stream) => {
+      stream.onAbort(release);
       const stop = roof.watch((e) => void stream.writeSSE(e).catch(() => {}));
       if (!stop) {
         await stream.writeSSE({ event: 'busy', data: '' });
+        release();
         return;
       }
       const ping = setInterval(() => void stream.writeSSE({ event: 'ping', data: '' }).catch(() => {}), 25_000);
