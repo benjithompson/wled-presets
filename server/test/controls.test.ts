@@ -11,7 +11,9 @@ import { Lights } from '../src/lights.ts';
 import { RoofView, type Peek } from '../src/roofView.ts';
 import { WledPeek } from '../src/wledPeek.ts';
 import { sampleLayout, type Layout } from '../../shared/layout.ts';
-import type { DeviceTarget } from '../src/lightSender.ts';
+import { LightSender, type DeviceTarget } from '../src/lightSender.ts';
+import { FramePipeline } from '../src/framePipeline.ts';
+import { LayoutPreview } from '../src/layoutPreview.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
 type Mock = Awaited<ReturnType<typeof startMockWled>>;
@@ -108,6 +110,52 @@ describe('power', () => {
   it('refuses an unknown device', async () => {
     expect((await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: 'nope' })).status).toBe(404);
   });
+  it('lights a switched-off device for an editor that shows it on the lights, and switches it off after', async () => {
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
+    await wait(700);
+    expect(mocks[1].state.on).toBe(false);
+    const pipeline = new FramePipeline(() => t.lights.liveDevices(), new LightSender());
+    const preview = new LayoutPreview(pipeline, () => {});
+    try {
+      // The object designer's photo: LEDs 0 to 9 of that device.
+      const names = preview.show({ layout: sampleLayout(), selected: null, corner: null, photo: { deviceId: ids[1], from: 0, to: 9, rgb: [255, 255, 255], start: [0, 255, 0] } });
+      expect(names).toHaveLength(1);
+      await wait(1500);
+      expect(mocks[1].state.on).toBe(true);
+      expect(Array.from(mocks[1].realtime.leds.subarray(0, 3))).toEqual([0, 255, 0]);
+      expect(Array.from(mocks[1].realtime.leds.subarray(15, 18))).toEqual([255, 255, 255]);
+      // The other device, on all along, is left as it was.
+      expect(mocks[0].state.on).toBe(true);
+      preview.stop();
+      await wait(300);
+      expect(mocks[1].state.on).toBe(false);
+      expect(mocks[0].state.on).toBe(true);
+      // Still off for everyone else.
+      expect(t.lights.isOff(ids[1])).toBe(true);
+    } finally {
+      preview.close();
+      pipeline.close();
+    }
+  }, 10_000);
+
+  it('leaves a device on that an admin switched on while an editor lit it', async () => {
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
+    await wait(700);
+    const pipeline = new FramePipeline(() => t.lights.liveDevices(), new LightSender());
+    const preview = new LayoutPreview(pipeline, () => {});
+    try {
+      preview.show({ layout: sampleLayout(), selected: null, corner: null, photo: { deviceId: ids[1], from: 0, to: 9, rgb: [255, 255, 255], start: [0, 255, 0] } });
+      await wait(400);
+      await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: ids[1] });
+      await wait(800);
+      preview.stop();
+      await wait(300);
+      expect(mocks[1].state.on).toBe(true);
+    } finally {
+      preview.close();
+      pipeline.close();
+    }
+  }, 10_000);
 });
 
 describe('brightness', () => {

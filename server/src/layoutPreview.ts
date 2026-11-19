@@ -84,12 +84,12 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
     }
     // A device with no objects in the layout yet still gets the frame.
     const maps = view.maps.some((m) => m.deviceId === p.deviceId) ? view.maps : [...view.maps, emptyMap(p.deviceId)];
-    return { maps, bytes, extra };
+    return { maps, bytes, extra, wakes: true };
   }
   if (req.probe && req.selected) paintMatch(req.layout, req.selected, req.probe, pulse, put);
   else if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
   else paintEditor(req.layout, req.selected, req.corner, req.segment ?? null, pulse, put);
-  return { maps: view.maps, bytes, extra };
+  return { maps: view.maps, bytes, extra, wakes: true };
 }
 
 /** One device's colors for the editor's view (see editorFrame). */
@@ -105,7 +105,8 @@ const emptyMap = (deviceId: string): DeviceMap => ({ deviceId, size: 0, pairs: n
  * Shows the layout being edited on the real lights while an editor asks for it: the layout
  * editor's colors or effects, the Games page's game area, or the sequence editor's sequence.
  * A source of the FramePipeline that wins over games and scenes; when the editor stops asking,
- * they get the lights back.
+ * they get the lights back. It lights devices that are off too, in WLED or switched off here
+ * (the admin turned it on to see them), and they go off again after.
  */
 export class LayoutPreview implements FrameSource {
   private req: PreviewRequest | null = null;
@@ -193,13 +194,13 @@ export class LayoutPreview implements FrameSource {
     if (sq) {
       sq.player.update(sq.playing ? dt : 0, sq.data);
       toBytes(sq.data, sq.bytes);
-      return { maps: this.view.maps, bytes: sq.bytes };
+      return { maps: this.view.maps, bytes: sq.bytes, wakes: true };
     }
     const fx = this.fx;
     if (fx) {
       fx.scene.update(dt, fx.data);
       toBytes(fx.data, fx.bytes);
-      return { maps: this.view.maps, bytes: fx.bytes };
+      return { maps: this.view.maps, bytes: fx.bytes, wakes: true };
     }
     // Drawn for when it shows, so the lights blink in step with the editor.
     const pulse = editorPulse(showAt);
@@ -215,7 +216,7 @@ export class LayoutPreview implements FrameSource {
     const ids = new Set([...req.layout.fixtures.map((f) => f.deviceId), req.photo?.deviceId].filter(Boolean));
     const names = this.pipeline
       .deviceList()
-      .filter((d) => d.enabled && ids.has(d.id))
+      .filter((d) => (d.enabled || d.switchedOff) && ids.has(d.id))
       .map((d) => d.name);
     if (started && names.length) this.log(`Editor preview on the lights started (${names.join(', ')})`);
     return names;

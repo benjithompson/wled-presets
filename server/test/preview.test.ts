@@ -223,6 +223,34 @@ describe('the frame pipeline', () => {
   });
 });
 
+describe('a device an admin switched off', () => {
+  it('gets an editor’s frames (they wake it), and no others', async () => {
+    const mock = await startMockWled(0, 'Roof', 600);
+    const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: false, switchedOff: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const pipeline = new FramePipeline(() => [device], new LightSender());
+    const stage = buildStage(layout);
+    const maps = deviceMaps(layout, stage);
+    const game = { running: true, tick: (): LightFrame => ({ maps, bytes: new Uint8Array(stage.pixelCount * 3).fill(50) }) };
+    const editor = { running: false, tick: (): LightFrame => ({ maps, bytes: new Uint8Array(stage.pixelCount * 3).fill(200), wakes: true }) };
+    pipeline.add(game, PRIORITY.show);
+    pipeline.add(editor, PRIORITY.editor);
+    try {
+      pipeline.wake();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(pipeline.targets(game)).toEqual([]);
+      expect(mock.realtime.ddpFrames).toBe(0);
+      editor.running = true;
+      pipeline.wake();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(rgb(mock.realtime.leds, 300)).toEqual([200, 200, 200]);
+      expect(pipeline.targets(editor)).toEqual(['Roof']);
+    } finally {
+      pipeline.close();
+      await mock.close();
+    }
+  });
+});
+
 describe('sending to devices', () => {
   it('falls back to HTTP when real-time UDP does not reach the device, and gives the device back after', async () => {
     const { LightSender } = await import('../src/lightSender.ts');
@@ -247,6 +275,30 @@ describe('sending to devices', () => {
     sender.close();
     await mock.close();
   }, 10_000);
+
+  it('switches a device that is off in WLED on for the frames, and off again after', async () => {
+    const mock = await startMockWled(0, 'Roof', 600);
+    mock.state.on = false;
+    const sender = new LightSender();
+    const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const frame = new Uint8Array(600 * 3).fill(90);
+    try {
+      const until = Date.now() + 300;
+      while (Date.now() < until) {
+        sender.send(device, frame);
+        await new Promise((r) => setTimeout(r, 33));
+      }
+      expect(mock.state.on).toBe(true);
+      expect(rgb(mock.realtime.leds, 10)).toEqual([90, 90, 90]);
+      sender.end(device);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(mock.state.on).toBe(false);
+      expect(mock.requests.at(-1)).toMatchObject({ body: { lor: 1, on: false } });
+    } finally {
+      sender.close();
+      await mock.close();
+    }
+  });
 
   it('keeps UDP when the device confirms it shows real-time data', async () => {
     const { LightSender } = await import('../src/lightSender.ts');

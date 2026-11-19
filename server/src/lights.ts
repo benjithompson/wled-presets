@@ -42,7 +42,7 @@ export class Lights {
   private effectPlayer: EffectPlayer | null = null;
 
   /** devicesWithStatus() for the frame loops, which ask 60 times a second (see liveDevices). */
-  private live: DeviceWithStatus[] | null = null;
+  private live: (DeviceWithStatus & { switchedOff?: boolean })[] | null = null;
   /** The admin's power and brightness switches, read once and kept up to date. */
   private controlsCache: LightControls | null = null;
 
@@ -167,10 +167,11 @@ export class Lights {
    * lights: they ask on every frame, and a database query each time would cost frame time. It is
    * rebuilt after a device changes and after each status check (an LED count changed in WLED).
    */
-  liveDevices(): DeviceWithStatus[] {
+  liveDevices(): (DeviceWithStatus & { switchedOff?: boolean })[] {
     // A device switched off counts as disabled here: no frames reach it, and one that was
-    // getting them is given back (it shows its own state, which is off).
-    return (this.live ??= this.devicesWithStatus().map((d) => (d.enabled && this.isOff(d.id) ? { ...d, enabled: false } : d)));
+    // getting them is given back (it shows its own state, which is off). An editor's preview
+    // still lights it, while the admin looks (see LightFrame.wakes).
+    return (this.live ??= this.devicesWithStatus().map((d) => (d.enabled && this.isOff(d.id) ? { ...d, enabled: false, switchedOff: true } : d)));
   }
 
   devicesWithStatus(): DeviceWithStatus[] {

@@ -1106,7 +1106,7 @@ export function PhotoTrace({
                 ) : (
                   <PropNote>
                     {lighting ? <Lightbulb className="mr-1 inline size-3 text-amber-500" /> : null}
-                    {count} LEDs in {color.name.toLowerCase()}, LED {from} (the start) in {color.startName}; the rest of the lights go dark.
+                    {count} LEDs in {color.name.toLowerCase()}, LED {from} (the start) in {color.startName}; the rest of the lights go dark. A light that is switched off comes on for this, and goes off again after.
                     {lightUp && !lighting ? ' They light up while this window is in front.' : ''}
                   </PropNote>
                 )}

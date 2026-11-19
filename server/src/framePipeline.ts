@@ -70,6 +70,11 @@ export interface LightFrame {
   devices?: ReadonlySet<string>;
   /** LEDs set by device number, after the stage's. */
   extra?: readonly ExtraLed[];
+  /**
+   * Lights switched off by an admin get the frame too (an editor's preview, which the admin
+   * turned on to see it on the lights). They go off again after. Default: they stay off.
+   */
+  wakes?: boolean;
 }
 
 /**
@@ -214,7 +219,7 @@ export class FramePipeline {
       for (const m of frame.maps) {
         if (frame.devices && !frame.devices.has(m.deviceId)) continue;
         const d = devices.get(m.deviceId);
-        if (!d?.enabled) continue;
+        if (!d || !(d.enabled || (frame.wakes && d.switchedOff))) continue;
         const buf = renderDevice(frame, m, d.info?.leds?.count ?? 0, this.buffers.get(d.id));
         this.buffers.set(d.id, buf);
         this.sender.send(d, buf);
