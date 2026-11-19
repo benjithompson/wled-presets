@@ -658,7 +658,7 @@ export function frameShift(ref: Pt[], seen: Pt[], reach = 40): Pt {
  * A glow map of small bright spots of any color (white too), brighter than what is around them:
  * to follow the dots from frame to frame. A lit wall is bright too, but not brighter than itself.
  */
-function brightMaps(img: Pixels): GlowMaps {
+export function brightMaps(img: Pixels): GlowMaps {
   const { width: w, height: h, data: d } = img;
   const n = w * h;
   const v = new Float64Array(n);
@@ -792,38 +792,20 @@ export function scanDots(s: ScanFrames, n: number): { dots: Dot[]; threshold: nu
   return { dots: [...dots, ...more], threshold };
 }
 
+/** One frame's reading of an LED: the digit its color says, the next most likely, and how sure. */
+export interface DigitRead {
+  best: number;
+  second: number;
+  margin: number;
+}
+
 /**
- * Reads a scan: each dot gets its LED number, or null when its colors do not add up. Each dot is
- * read against itself: its darkest in each color (the room) and its white (how bright each color
- * comes out). A dot whose check digit fails gets one more try, with its least sure digit as its
- * second choice. Then the string itself checks the numbers: LEDs that follow on are never
- * farther apart than the wire between them, so of two dots with one number the one next to its
- * neighbors keeps it, a dot far from both neighbors loses its number, and a dot without one may
- * take a number its colors nearly said that has a neighbor next to it.
+ * Reads LEDs from their colors: for each, its color summed over its glow in every frame of the
+ * code (white first). Each is read against itself: its darkest in each color (the room) and its
+ * white (how bright each color comes out). One that does not add up gets one more try, with its
+ * least sure digit as its second choice. Numbers may come out twice (see decodeScan).
  */
-export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null)[] {
-  const F = s.frames.length;
-  const gap = typicalGap(dots) || 10;
-  const sums = dots.map((p) => {
-    let near = Infinity;
-    for (const q of dots) if (q !== p) near = Math.min(near, dist(p, q));
-    const rr = Math.max(1.5, Math.min(gap * 0.6, near * 0.42));
-    const r = Math.ceil(rr);
-    const cx = Math.round(p.x);
-    const cy = Math.round(p.y);
-    return Array.from({ length: F }, (_, f) => {
-      const out = [0, 0, 0];
-      for (let y = cy - r; y <= cy + r; y++)
-        for (let x = cx - r; x <= cx + r; x++) {
-          const d = Math.hypot(x - cx, y - cy);
-          if (d > rr) continue;
-          // Nearer the middle counts more: the edge may catch a neighbor's glow.
-          const wt = 1 - d / (rr + 1);
-          for (let c = 0; c < 3; c++) out[c] += at(s, f, x, y, c) * wt;
-        }
-      return out;
-    });
-  });
+export function readColors(sums: number[][][], n: number): { reads: DigitRead[][]; ids: (number | null)[]; strength: number[] } {
   // Each dot's white over its darkest, per color; a dot too faint in one takes the usual.
   const spans = sums.map((fs) => [0, 1, 2].map((c) => fs[0][c] - Math.min(...fs.slice(1).map((v) => v[c]))));
   const usual = [0, 1, 2].map((c) => {
@@ -857,10 +839,49 @@ export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null
     const fixed = decodeDigits(r.map((x, j) => (j === weak ? x.second : x.best)), n);
     return fixed != null && !sure.has(fixed) ? fixed : null;
   });
-  const many = count(ids);
-  const unique = ids.map((id) => (id != null && many.get(id) === 1 ? id : null));
   /** How bright a dot is (its white over its darkest). */
   const strength = spans.map((x) => x[0] + x[1] + x[2]);
+  return { reads, ids, strength };
+}
+
+/**
+ * Reads a scan: each dot gets its LED number (see readColors), or null when its colors do not
+ * add up. Then the string itself checks the numbers: LEDs that follow on are never
+ * farther apart than the wire between them, so of two dots with one number the one next to its
+ * neighbors keeps it, a dot far from both neighbors loses its number, and a dot without one may
+ * take a number its colors nearly said that has a neighbor next to it.
+ */
+export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null)[] {
+  const F = s.frames.length;
+  const gap = typicalGap(dots) || 10;
+  const sums = dots.map((p) => {
+    let near = Infinity;
+    for (const q of dots) if (q !== p) near = Math.min(near, dist(p, q));
+    const rr = Math.max(1.5, Math.min(gap * 0.6, near * 0.42));
+    const r = Math.ceil(rr);
+    const cx = Math.round(p.x);
+    const cy = Math.round(p.y);
+    return Array.from({ length: F }, (_, f) => {
+      const out = [0, 0, 0];
+      for (let y = cy - r; y <= cy + r; y++)
+        for (let x = cx - r; x <= cx + r; x++) {
+          const d = Math.hypot(x - cx, y - cy);
+          if (d > rr) continue;
+          // Nearer the middle counts more: the edge may catch a neighbor's glow.
+          const wt = 1 - d / (rr + 1);
+          for (let c = 0; c < 3; c++) out[c] += at(s, f, x, y, c) * wt;
+        }
+      return out;
+    });
+  });
+  const { reads, ids, strength } = readColors(sums, n);
+  const count = (list: (number | null)[]) => {
+    const m = new Map<number, number>();
+    for (const id of list) if (id != null) m.set(id, (m.get(id) ?? 0) + 1);
+    return m;
+  };
+  const many = count(ids);
+  const unique = ids.map((id) => (id != null && many.get(id) === 1 ? id : null));
 
   // LEDs next to each other on the string are never farther apart than the wire between them.
   const limit = numberedStep(dots, unique) * 1.35;

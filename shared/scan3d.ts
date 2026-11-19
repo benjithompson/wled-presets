@@ -171,6 +171,8 @@ interface Cam {
   R: M3;
   t: [number, number, number];
   f: number;
+  /** Up and down, when the pixels are not square (else f). */
+  fy?: number;
   cu: number;
   cv: number;
 }
@@ -198,7 +200,7 @@ function project(c: Cam, X: number[]): [number, number, number] {
   const py = R[3] * X[0] + R[4] * X[1] + R[5] * X[2] + c.t[1];
   const pz = R[6] * X[0] + R[7] * X[1] + R[8] * X[2] + c.t[2];
   const d = -pz;
-  return [c.cu + (c.f * px) / d, c.cv - (c.f * py) / d, d];
+  return [c.cu + (c.f * px) / d, c.cv - ((c.fy ?? c.f) * py) / d, d];
 }
 
 /** Where a camera is. */
@@ -234,7 +236,7 @@ function triangulate(cams: Cam[], obs: Obs[]): number[] | null {
     const r1 = row(1);
     const r2 = row(2);
     const P1 = r0.map((x, i) => c.f * x - c.cu * r2[i]);
-    const P2 = r1.map((x, i) => -c.f * x - c.cv * r2[i]);
+    const P2 = r1.map((x, i) => -(c.fy ?? c.f) * x - c.cv * r2[i]);
     const P3 = r2.map((x) => -x);
     for (const [P, m] of [
       [P1, o.u],
@@ -267,9 +269,10 @@ function refinePoint(cams: Cam[], obs: Obs[], X: number[], iterations = 4): numb
       const d = -pz;
       if (d <= 1e-6) return x;
       const ru = c.cu + (c.f * px) / d - o.u;
-      const rv = c.cv - (c.f * py) / d - o.v;
+      const fy = c.fy ?? c.f;
+      const rv = c.cv - (fy * py) / d - o.v;
       const ju = [0, 1, 2].map((i) => c.f * (R[i] / d + (px * R[6 + i]) / (d * d)));
-      const jv = [0, 1, 2].map((i) => -c.f * (R[3 + i] / d + (py * R[6 + i]) / (d * d)));
+      const jv = [0, 1, 2].map((i) => -fy * (R[3 + i] / d + (py * R[6 + i]) / (d * d)));
       for (let i = 0; i < 3; i++) {
         g[i] += o.w * (ju[i] * ru + jv[i] * rv);
         for (let j = 0; j < 3; j++) A[i * 3 + j] += o.w * (ju[i] * ju[j] + jv[i] * jv[j]);
@@ -754,6 +757,142 @@ export function solveViews(views: ScanView[], n: number, opts: { focal?: number 
   const [asked, other] = tries;
   const best = other.cost < asked.cost * 0.8 && other.placed >= asked.placed * 0.9 ? other : asked;
   return { points: best.points, cameras: best.cameras, rms: best.rms, placed: best.placed };
+}
+
+// ---------- Cameras whose places are known ----------
+//
+// Walking round with the phone in AR (see scanWalk.ts), the phone's own tracking (its camera and
+// motion sensors together, as AR apps do) says where it was and which way it faced for every
+// picture, in meters. Then each LED is simply where its lines of sight meet.
+
+/** A camera whose place and turn are known: world to camera (looking down −z, y up), and its lens in pixels. */
+export interface PosedCam {
+  R: number[];
+  t: [number, number, number];
+  f: number;
+  fy?: number;
+  cu: number;
+  cv: number;
+}
+
+/** An LED seen in a picture: which camera, and where (pixels). */
+export interface Sighting {
+  cam: number;
+  u: number;
+  v: number;
+}
+
+/** How far a sighting may land from where the point shows and still count (pixels). */
+const KNOWN_TOL = 4;
+/** The widest angle between two lines of sight needed for a depth (radians). */
+const KNOWN_SPREAD = 3 * DEG;
+
+/** A small steady random sequence (the same answer every time): mulberry32. */
+function rand(seed: number) {
+  let a = Math.imul(seed, 2654435761) >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Where each LED is, from cameras whose places are known. A few sightings may be of the wrong
+ * LED (one followed into its neighbor, a misread number), so a point is first guessed from pairs
+ * of sightings, keeping the one most others agree with (RANSAC), then made exact on those.
+ * Returns, by LED, the point (null: not seen from far enough apart) and how many sightings agree.
+ */
+export function placeSeen(cams: PosedCam[], seen: Sighting[][]): { points: (Pt3 | null)[]; agree: number[]; rms: number; placed: number } {
+  const cs: Cam[] = cams.map((c) => ({ R: c.R, t: c.t, f: c.f, fy: c.fy, cu: c.cu, cv: c.cv }));
+  const centers = cs.map(center);
+  const ray = (o: Sighting) => {
+    const c = cs[o.cam];
+    const R = c.R;
+    const d = [(o.u - c.cu) / c.f, -(o.v - c.cv) / (c.fy ?? c.f), -1];
+    const w = [R[0] * d[0] + R[3] * d[1] + R[6] * d[2], R[1] * d[0] + R[4] * d[1] + R[7] * d[2], R[2] * d[0] + R[5] * d[1] + R[8] * d[2]];
+    const l = Math.hypot(...w);
+    return w.map((x) => x / l);
+  };
+  const points: (Pt3 | null)[] = [];
+  const agree: number[] = [];
+  let se = 0;
+  let count = 0;
+  seen.forEach((list, i) => {
+    // One sighting per picture.
+    const byCam = new Map<number, Sighting>();
+    for (const o of list) if (o.cam >= 0 && o.cam < cs.length && Number.isFinite(o.u) && Number.isFinite(o.v)) byCam.set(o.cam, o);
+    const S = [...byCam.values()];
+    points.push(null);
+    agree.push(0);
+    if (S.length < 2) return;
+    const rays = S.map(ray);
+    const obs: Obs[] = S.map((o) => ({ k: o.cam, u: o.u, v: o.v, w: 1, ok: true }));
+    const err = (X: number[], o: Obs) => {
+      const [u, v, d] = project(cs[o.k], X);
+      return d > 1e-3 ? Math.hypot(u - o.u, v - o.v) : Infinity;
+    };
+    // Where two lines of sight pass closest.
+    const meet = (a: number, b: number): number[] | null => {
+      const p = centers[S[a].cam];
+      const q = centers[S[b].cam];
+      const u = rays[a];
+      const v = rays[b];
+      const uv = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+      if (Math.acos(Math.min(1, Math.abs(uv))) < KNOWN_SPREAD) return null;
+      const w = [p.x - q.x, p.y - q.y, p.z - q.z];
+      const uw = u[0] * w[0] + u[1] * w[1] + u[2] * w[2];
+      const vw = v[0] * w[0] + v[1] * w[1] + v[2] * w[2];
+      const den = 1 - uv * uv;
+      const s = (uv * vw - uw) / den;
+      const t = (vw - uv * uw) / den;
+      if (s <= 0 || t <= 0) return null;
+      return [0, 1, 2].map((k) => ([p.x, p.y, p.z][k] + s * u[k] + [q.x, q.y, q.z][k] + t * v[k]) / 2);
+    };
+    const pairs: [number, number][] = [];
+    if (S.length <= 9) for (let a = 0; a < S.length; a++) for (let b = a + 1; b < S.length; b++) pairs.push([a, b]);
+    else {
+      const r = rand(i + 1);
+      for (let k = 0; k < 48; k++) {
+        const a = Math.floor(r() * S.length);
+        const b = Math.floor(r() * S.length);
+        if (a !== b) pairs.push([a, b]);
+      }
+    }
+    let best: { X: number[]; n: number; sum: number } | null = null;
+    for (const [a, b] of pairs) {
+      const X = meet(a, b);
+      if (!X) continue;
+      let n = 0;
+      let sum = 0;
+      for (const o of obs) {
+        const e = err(X, o);
+        if (e <= KNOWN_TOL * 2) (n++, (sum += e));
+      }
+      if (!best || n > best.n || (n === best.n && sum < best.sum)) best = { X, n, sum };
+    }
+    if (!best) return;
+    let X = best.X;
+    for (let round = 0; round < 3; round++) {
+      const tol = round === 0 ? KNOWN_TOL * 2 : KNOWN_TOL;
+      for (const o of obs) o.ok = err(X, o) <= tol;
+      if (obs.filter((o) => o.ok).length < 2) return;
+      X = refinePoint(cs, obs, X, 5);
+    }
+    for (const o of obs) o.ok = err(X, o) <= KNOWN_TOL;
+    const good = obs.filter((o) => o.ok);
+    // Most of its sightings agree, from far enough apart for a depth.
+    if (good.length < 2 || good.length < S.length * 0.3 || spread(cs, good, X) < KNOWN_SPREAD) return;
+    for (const o of good) {
+      se += err(X, o) ** 2;
+      count++;
+    }
+    points[i] = { x: X[0], y: X[1], z: X[2] };
+    agree[i] = good.length;
+  });
+  return { points, agree, rms: count ? Math.sqrt(se / count) : 0, placed: points.filter(Boolean).length };
 }
 
 // ---------- From the points to a design ----------
