@@ -11,9 +11,16 @@ import type {
   LogEntry,
   PublicState,
   Scene,
+  Passkey,
   SessionInfo,
   Settings
 } from '../../../shared/types.ts';
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON
+} from '@simplewebauthn/browser';
 
 export class ApiError extends Error {
   status: number;
@@ -131,6 +138,15 @@ export const api = {
   bootstrap: (username: string, password: string) => request<{ user: SessionInfo['user'] }>('/api/auth/bootstrap', { body: { username, password } }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
   changePassword: (current: string, next: string) => request('/api/admin/auth/password', { body: { current, next } }),
+
+  /** Passkeys (see lib/passkeys.ts): a challenge to sign, then the signed answer. */
+  passkeyOptions: () => request<{ options: PublicKeyCredentialRequestOptionsJSON }>('/api/auth/passkey/options', { body: {} }),
+  passkeyLogin: (response: AuthenticationResponseJSON) => request<{ user: SessionInfo['user'] }>('/api/auth/passkey/login', { body: { response } }),
+  passkeys: () => request<Passkey[]>('/api/admin/passkeys'),
+  passkeyRegistration: (password: string) => request<{ options: PublicKeyCredentialCreationOptionsJSON }>('/api/admin/passkeys/options', { body: { password } }),
+  addPasskey: (name: string, response: RegistrationResponseJSON) => request<Passkey>('/api/admin/passkeys', { body: { name, response } }),
+  renamePasskey: (id: string, name: string) => request<Passkey[]>(`/api/admin/passkeys/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name } }),
+  removePasskey: (id: string) => request<Passkey[]>(`/api/admin/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   overview: () => request<Overview>('/api/admin/overview'),
 

@@ -1,11 +1,12 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, useNavigate, useSearchParams } from 'react-router';
-import { Lightbulb, Loader2 } from 'lucide-react';
+import { KeyRound, Lightbulb, Loader2 } from 'lucide-react';
 import { Button, Card, Field, Input } from '../components/ui.tsx';
 import { ThemeCycleButton } from '../components/ThemeToggle.tsx';
 import { api } from '../lib/api.ts';
 import { errorText } from '../lib/utils.ts';
+import { passkeyAutofill, passkeyCancelled, passkeysUnavailable, signInWithPasskey, stopPasskeyPrompt } from '../lib/passkeys.ts';
 
 export function LoginPage() {
   const qc = useQueryClient();
@@ -17,6 +18,45 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [keyBusy, setKeyBusy] = useState(false);
+  const signingIn = !!session && !session.user && !session.needsBootstrap;
+  const [passkeys] = useState(() => !passkeysUnavailable());
+
+  const signedIn = async () => {
+    await qc.invalidateQueries({ queryKey: ['session'] });
+    navigate(redirect, { replace: true });
+  };
+  const passkeyFailed = (e: unknown) => {
+    if (!passkeyCancelled(e)) setError(errorText(e));
+  };
+
+  // The browser can offer this site's passkeys right in the username field's suggestions.
+  useEffect(() => {
+    if (!signingIn || !passkeys) return;
+    let live = true;
+    void passkeyAutofill().then((ok) => {
+      if (!ok || !live) return;
+      signInWithPasskey(true).then(signedIn, (e) => live && passkeyFailed(e));
+    });
+    return () => {
+      live = false;
+      stopPasskeyPrompt();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signingIn, passkeys]);
+
+  async function withPasskey() {
+    setKeyBusy(true);
+    setError(null);
+    try {
+      await signInWithPasskey();
+      await signedIn();
+    } catch (e) {
+      passkeyFailed(e);
+    } finally {
+      setKeyBusy(false);
+    }
+  }
 
   if (isLoading) {
     return (
@@ -34,8 +74,7 @@ export function LoginPage() {
     setError(null);
     try {
       await (bootstrap ? api.bootstrap(username, password) : api.login(username, password));
-      await qc.invalidateQueries({ queryKey: ['session'] });
-      navigate(redirect, { replace: true });
+      await signedIn();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -59,7 +98,7 @@ export function LoginPage() {
         <Card className="p-6">
           <form onSubmit={submit} className="space-y-4">
             <Field label="Username">
-              {(id) => <Input id={id} autoComplete="username" required value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />}
+              {(id) => <Input id={id} autoComplete={bootstrap ? 'username' : 'username webauthn'} required value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />}
             </Field>
             <Field label="Password" hint={bootstrap ? 'At least 12 characters.' : undefined}>
               {(id) => (
@@ -79,6 +118,19 @@ export function LoginPage() {
               {bootstrap ? 'Create account' : 'Sign in'}
             </Button>
           </form>
+          {!bootstrap && passkeys ? (
+            <>
+              <div className="my-4 flex items-center gap-3 text-xs text-stone-400 dark:text-stone-500" aria-hidden>
+                <span className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
+                or
+                <span className="h-px flex-1 bg-stone-200 dark:bg-stone-800" />
+              </div>
+              <Button type="button" className="w-full justify-center" loading={keyBusy} onClick={withPasskey}>
+                <KeyRound />
+                Sign in with a passkey
+              </Button>
+            </>
+          ) : null}
         </Card>
         <p className="mt-6 text-center text-sm">
           <a href="/" className="text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white">

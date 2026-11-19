@@ -160,6 +160,19 @@ export interface DiscoveredDevice {
   alreadyAdded: boolean;
 }
 
+/** An admin's passkey (see server/src/passkeys.ts). */
+export interface Passkey {
+  /** The credential id (base64url). */
+  id: string;
+  name: string;
+  /** The site name it belongs to: it signs in only there. */
+  rpId: string;
+  /** Kept in a synced password manager (iCloud Keychain, Google, 1Password…), not on one device only. */
+  backedUp: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export interface SessionInfo {
   user: { id: string; username: string } | null;
   needsBootstrap: boolean;

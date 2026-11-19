@@ -6,6 +6,7 @@ import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Sw
 import { api } from '../../lib/api.ts';
 import { errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
+import { PasskeysCard } from './PasskeysCard.tsx';
 
 export function SettingsPage() {
   const qc = useQueryClient();
@@ -124,6 +125,7 @@ export function SettingsPage() {
       </form>
 
       <PasswordCard />
+      <PasskeysCard />
     </>
   );
 }
