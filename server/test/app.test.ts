@@ -502,6 +502,15 @@ describe('sequences', () => {
     expect((await t.call('POST', '/api/admin/sequence-preview', { ...req, inFront: true })).status).toBe(200);
   });
 
+  it('lights a custom object for its photo, within limits', async () => {
+    await login();
+    const base = { active: true, layout: sampleLayout(), selected: null, corner: null };
+    const photo = { deviceId: 'd1', from: 0, to: 49, rgb: [0, 140, 0], start: [255, 0, 0] };
+    expect((await t.call('POST', '/api/admin/layout/preview', { ...base, photo })).status).toBe(200);
+    expect((await t.call('POST', '/api/admin/layout/preview', { ...base, photo: { ...photo, to: 5000 } })).status).toBe(400);
+    expect((await t.call('POST', '/api/admin/layout/preview', { ...base, photo: { ...photo, rgb: [0, 300, 0] } })).status).toBe(400);
+  });
+
   it('stores audio files', async () => {
     await login();
     const wav = new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4]);

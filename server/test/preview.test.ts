@@ -24,6 +24,22 @@ describe('layout preview on the lights', () => {
     expect(Math.max(...rgb(f, 300))).toBeGreaterThan(0);
   });
 
+  it('lights an object for its photo: the first LED in its own color, the rest dark', () => {
+    const photo = { deviceId: 'd', from: 60, to: 50, rgb: [0, 140, 0] as [number, number, number], start: [255, 0, 0] as [number, number, number] };
+    const f = previewFrame({ layout, selected: null, corner: null, photo }, 'd', 600, true);
+    expect(rgb(f, 60)).toEqual([255, 0, 0]);
+    for (let led = 50; led < 60; led++) expect(rgb(f, led)).toEqual([0, 140, 0]);
+    expect(rgb(f, 49)).toEqual([0, 0, 0]);
+    expect(rgb(f, 61)).toEqual([0, 0, 0]);
+    // The roof (LEDs 87–536) is dark while the photo is taken.
+    expect(rgb(f, 300)).toEqual([0, 0, 0]);
+    // A device with nothing on it in the layout yet.
+    const other = previewFrame({ layout, selected: null, corner: null, photo: { ...photo, deviceId: 'new', from: 0, to: 4 } }, 'new', 10, true);
+    expect(rgb(other, 0)).toEqual([255, 0, 0]);
+    expect(rgb(other, 4)).toEqual([0, 140, 0]);
+    expect(rgb(other, 5)).toEqual([0, 0, 0]);
+  });
+
   it('sends DNRGB packets that a device decodes', async () => {
     const mock = await startMockWled(0, 'Roof', 600);
     const out = new RealtimeOut();

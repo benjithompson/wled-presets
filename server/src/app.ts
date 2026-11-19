@@ -30,6 +30,7 @@ import { normalizeHost, wled } from './wled.ts';
 import { readAudio, removeAudio, sequenceInput, writeAudio } from './sequenceStore.ts';
 import { summarize, type Sequence } from '../../shared/sequence.ts';
 import { deviceKey, keyDevice } from '../../shared/effects.ts';
+import { MAX_FIXTURE_PIXELS } from '../../shared/layout.ts';
 
 export interface AppDeps {
   config: AppConfig;
@@ -66,6 +67,9 @@ const settingsInput = z.object({
   revertMinutes: z.coerce.number().int().min(0).max(24 * 60),
   discoverySubnets: z.array(z.string().trim().refine(isValidCidr, 'Use CIDR form, for example 192.168.1.0/24')).max(16)
 });
+
+/** An RGB color, each part 0..255. */
+const rgbInput = z.tuple([z.number().int().min(0).max(255), z.number().int().min(0).max(255), z.number().int().min(0).max(255)]);
 
 const gameAreaInput = z.object({
   exclude: z.array(z.string().min(1).max(64)).max(512).optional(),
@@ -176,7 +180,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     secureHeaders({
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
-        imgSrc: ["'self'", 'data:'],
+        // blob: the object designer's photo, which stays in the browser.
+        imgSrc: ["'self'", 'data:', 'blob:'],
         styleSrc: ["'self'", "'unsafe-inline'"],
         connectSrc: ["'self'"],
         mediaSrc: ["'self'", 'blob:'],
@@ -833,6 +838,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     area: gameAreaInput.nullable().optional(),
     probe: z
       .object({ point: z.number().int().min(0).max(10_000), offset: z.number().int().min(-2000).max(4000) })
+      .nullable()
+      .optional(),
+    photo: z
+      .object({ deviceId: z.string().min(1).max(64), from: z.number().int().min(0).max(10_000), to: z.number().int().min(0).max(10_000), rgb: rgbInput, start: rgbInput })
+      .refine((p) => Math.abs(p.to - p.from) < MAX_FIXTURE_PIXELS, `At most ${MAX_FIXTURE_PIXELS} LEDs`)
       .nullable()
       .optional()
   });
