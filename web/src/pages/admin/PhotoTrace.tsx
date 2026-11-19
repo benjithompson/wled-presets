@@ -4,7 +4,8 @@
 // drag through the dots (or along the wire) with the mouse or a finger. The photo stays in this
 // browser; only the colors for the lights go to the server.
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react';
-import { Box, Camera, CircleDot, Flag, Hand, Image as ImageIcon, ImagePlus, Lightbulb, Maximize, Route, ScanLine, Undo2, WandSparkles, X } from 'lucide-react';
+import { flushSync } from 'react-dom';
+import { Box, Camera, CircleDot, Flag, Footprints, Hand, Image as ImageIcon, ImagePlus, Lightbulb, Maximize, Route, ScanLine, Undo2, WandSparkles, X } from 'lucide-react';
 import { deviceLed, FEET_PER_METER, MAX_FIXTURE_PIXELS, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
 import {
   autoDots,
@@ -29,13 +30,16 @@ import {
   type PhotoStroke,
   type Pt
 } from '../../../../shared/photoTrace.ts';
-import { design3d, solveViews, step3d, width3d, type ScanView } from '../../../../shared/scan3d.ts';
+import { design3d, solveViews, step3d, width3d, type ScanView, type Solved3D } from '../../../../shared/scan3d.ts';
+import type { WalkResult, WalkStatus } from '../../../../shared/scanWalk.ts';
 import { Button, Dialog, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { cn } from '../../lib/utils.ts';
 import { useOverview } from './AdminLayout.tsx';
+import { arAvailable, startAr } from './arWalk.ts';
 import { PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.tsx';
+import type { WalkIn, WalkOut } from './walkWorker.ts';
 
 const ScanCloud = lazy(() => import('./ScanCloud.tsx').then((m) => ({ default: m.ScanCloud })));
 
@@ -126,7 +130,9 @@ export function PhotoTrace({
   }, [deviceId, devices]);
 
   const inFront = useInFront();
-  const lighting = open && lightUp && !!deviceId && count <= MAX_FIXTURE_PIXELS && inFront;
+  /** Walking round in AR: the phone's AR view is in front (the page may not count as focused). */
+  const [walking, setWalking] = useState<{ status: WalkStatus | null; size: { w: number; h: number } | null; tracking: boolean; finishing?: boolean } | null>(null);
+  const lighting = open && lightUp && !!deviceId && count <= MAX_FIXTURE_PIXELS && (inFront || !!walking);
   /** While scanning: the frame the lights show (see codeDigit). */
   const [scanCode, setScanCode] = useState<number | null>(null);
   const lightBody = lighting ? JSON.stringify({ active: true, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code: scanCode } }) : null;
@@ -174,6 +180,8 @@ export function PhotoTrace({
   const [addingSide, setAddingSide] = useState(false);
   const [mirror, setMirror] = useState(false);
   const [show3d, setShow3d] = useState(true);
+  /** The LEDs in 3D from walking round in AR (in meters), instead of from scans of each side. */
+  const [walked, setWalked] = useState<Solved3D | null>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -190,6 +198,8 @@ export function PhotoTrace({
     setSides([]);
     setAddingSide(false);
     setMirror(false);
+    setWalked(null);
+    endWalk(false);
     past.current = [];
   }, [open]);
 
@@ -249,6 +259,7 @@ export function PhotoTrace({
       setPhoto(p);
       setWidthM(null);
       setSides([]);
+      setWalked(null);
       // Let the spinner show: looking through a big photo takes a moment.
       await new Promise((r) => setTimeout(r, 30));
       detect(p, null);
@@ -396,21 +407,31 @@ export function PhotoTrace({
       shots.map((x) => x.pixels),
       n
     );
-    const found = { dots: placed };
-    const order = orderByNumber(found.dots, nums);
-    const read = nums.filter((x) => x != null).length;
-    // The picture under the dots: frame 1, where the dots are.
-    const back = shots[Math.min(1, shots.length - 1)];
-    const blob = await new Promise<Blob | null>((r) => back.canvas.toBlob(r, 'image/jpeg', 0.9));
-    setScanning(null);
-    if (!blob) return;
-    const cache = new Map<string, GlowMaps>();
-    const pixels = back.pixels;
     // From another side: the scan before is kept for the 3D shape. Else this one starts over.
     const before = addingSide && photo?.scanned != null && photo.lit === n ? thisSide() : null;
-    setSides(before ? (s) => [...s, before] : []);
-    setShow3d(true);
+    setScanning(null);
     closeCamera();
+    // The picture under the dots: frame 1, where the dots are.
+    const read = await showScan(shots[Math.min(1, shots.length - 1)].canvas, placed, nums, n);
+    if (read == null) return;
+    setSides(before ? (s) => [...s, before] : []);
+    setWalked(null);
+    // From another side, the LEDs round the back are hidden: the 3D note tells how many it placed.
+    if (!before && read < Math.max(2, n * 0.5))
+      setProblem(
+        `Only ${read} of ${n} LEDs could be read. Keep the phone still (rest it on something), have the whole object in view and spread out (a heap of wire hides LEDs behind each other), and scan again; or fix the order by hand.`
+      );
+  };
+
+  /** Shows a scan: its picture, and the dots in it with the numbers read. Returns how many were read (null: no picture). */
+  const showScan = async (canvas: HTMLCanvasElement, placed: Pt[], nums: (number | null)[], n: number): Promise<number | null> => {
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.9));
+    if (!blob) return null;
+    const pixels = canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, canvas.width, canvas.height);
+    const order = orderByNumber(placed, nums);
+    const read = nums.filter((x) => x != null).length;
+    const cache = new Map<string, GlowMaps>();
+    setShow3d(true);
     setPhoto({
       url: URL.createObjectURL(blob),
       width: pixels.width,
@@ -419,7 +440,7 @@ export function PhotoTrace({
       lit: n,
       scanned: read
     });
-    const list: Dot[] = found.dots.map((d, k) => ({ x: d.x, y: d.y, id: nextId.current++, ...(nums[k] != null ? { num: nums[k]! } : {}) }));
+    const list: Dot[] = placed.map((d, k) => ({ x: d.x, y: d.y, id: nextId.current++, ...(nums[k] != null ? { num: nums[k]! } : {}) }));
     setDots(list);
     setRuns(order.map((o) => ({ ids: o.map((k) => list[k].id), ...(isLoop(o.map((k) => list[k]), typicalGap(list)) && nums[o[0]] === 0 && nums[o.at(-1)!] === n - 1 ? { closed: true } : {}) })));
     setStartId(list.find((d) => d.num === 0)?.id ?? null);
@@ -427,10 +448,155 @@ export function PhotoTrace({
     setWidthM(null);
     setView(null);
     setTool('connect');
-    // From another side, the LEDs round the back are hidden: the 3D note tells how many it placed.
-    if (!before && read < Math.max(2, n * 0.5))
+    return read;
+  };
+
+  // ----- Walking round in AR: the phone knows where it is, the LEDs blink their numbers -----
+  const [arOk, setArOk] = useState(false);
+  useEffect(() => {
+    if (open) void arAvailable().then(setArOk);
+  }, [open]);
+  const overlay = useRef<HTMLDivElement>(null);
+  useEffect(() => () => endWalk(false), []);
+  const walkRun = useRef<{ end: () => void; worker: Worker; stop: boolean; finishing: boolean } | null>(null);
+  const canWalk = arOk && !!deviceId && count <= MAX_FIXTURE_PIXELS;
+
+  /**
+   * Walks round in AR: the lights blink the code over and over, and about eight times a second
+   * the camera's picture and where the phone was go to the worker, which follows the LEDs.
+   */
+  const startWalk = async () => {
+    const root = overlay.current;
+    if (!root || walkRun.current) return;
+    closeCamera();
+    setProblem(null);
+    flushSync(() => {
+      setWalking({ status: null, size: null, tracking: false });
+      setLightUp(true);
+    });
+    const n = count;
+    const F = frames;
+    const worker = new Worker(new URL('./walkWorker.ts', import.meta.url), { type: 'module' });
+    const run = { end: () => {}, worker, stop: false, finishing: false };
+    walkRun.current = run;
+    const pool: ArrayBuffer[] = [];
+    let busy = false;
+    let last = 0;
+    let shown: { code: number; cycle: number } | null = null;
+    let cycle = 0;
+    worker.onmessage = (e: MessageEvent<WalkOut>) => {
+      const m = e.data;
+      if (m.type === 'status') {
+        busy = false;
+        pool.push(m.buffer);
+        setWalking((w) => w && { ...w, status: m.status, size: { w: m.width, h: m.height } });
+      } else if (m.type === 'done') {
+        worker.terminate();
+        void finishWalk(m.result, m.first, n);
+      } else {
+        console.error('Walk', m.message);
+        busy = false;
+      }
+    };
+    worker.postMessage({ type: 'start', n, maxSide: 960 } satisfies WalkIn);
+    try {
+      const ar = await startAr(root, {
+        wants: () => !busy && !run.finishing && performance.now() - last >= 120,
+        buffer: (bytes) => {
+          const b = pool.pop();
+          return b && b.byteLength === bytes ? new Uint8Array(b) : null;
+        },
+        frame: (f) => {
+          busy = true;
+          last = performance.now();
+          const msg: WalkIn = { type: 'frame', width: f.width, height: f.height, data: f.data.buffer as ArrayBuffer, cam: f.cam, code: shown?.code ?? null, cycle: shown?.cycle ?? cycle };
+          worker.postMessage(msg, [msg.data]);
+        },
+        tracking: (ok) => setWalking((w) => w && { ...w, tracking: ok }),
+        ended: () => endWalk(true)
+      });
+      run.end = ar.end;
+    } catch (e) {
+      console.error('AR', e);
+      worker.terminate();
+      walkRun.current = null;
+      setWalking(null);
+      setProblem('AR could not start. Allow the camera for this site, and check that Google Play Services for AR is installed and up to date.');
+      return;
+    }
+    // The code on the lights, over and over: each frame held long enough to be seen settled.
+    const body = (code: number) => ({ active: true as const, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code } });
+    let f = 0;
+    while (!run.stop) {
+      shown = null;
+      const t0 = performance.now();
+      setScanCode(f);
+      await api.previewLayout(JSON.stringify(body(f))).catch(() => {});
+      await new Promise((r) => setTimeout(r, 250));
+      if (run.stop) break;
+      shown = { code: f, cycle };
+      await new Promise((r) => setTimeout(r, Math.max(200, 650 - (performance.now() - t0))));
+      if (++f === F) {
+        f = 0;
+        cycle++;
+      }
+    }
+    shown = null;
+  };
+
+  /** Ends the walk: with the shape from what it saw (finish), or not. */
+  function endWalk(finish: boolean) {
+    const run = walkRun.current;
+    if (!run || run.finishing) return;
+    run.stop = true;
+    run.finishing = true;
+    run.end();
+    setScanCode(null);
+    if (finish) {
+      setWalking((w) => w && { ...w, finishing: true });
+      run.worker.postMessage({ type: 'finish' } satisfies WalkIn);
+    } else {
+      run.worker.terminate();
+      walkRun.current = null;
+      setWalking(null);
+    }
+  }
+
+  const finishWalk = async (result: WalkResult, first: { width: number; height: number; data: Uint8ClampedArray } | null, n: number) => {
+    walkRun.current = null;
+    setWalking(null);
+    if (!first) return setProblem('The walk saw nothing: point the phone at the object while you walk.');
+    // The first picture, the right way up.
+    const canvas = document.createElement('canvas');
+    canvas.width = first.width;
+    canvas.height = first.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(first.data), first.width, first.height), 0, 0);
+    if (result.flipped) {
+      const copy = document.createElement('canvas');
+      copy.width = first.width;
+      copy.height = first.height;
+      const c2 = copy.getContext('2d', { willReadFrequently: true })!;
+      c2.translate(0, first.height);
+      c2.scale(1, -1);
+      c2.drawImage(canvas, 0, 0);
+      ctx.clearRect(0, 0, first.width, first.height);
+      ctx.drawImage(copy, 0, 0);
+    }
+    lastScan.current = [];
+    const read = await showScan(
+      canvas,
+      result.front,
+      result.front.map((d) => d.num),
+      n
+    );
+    if (read == null) return;
+    setSides([]);
+    setMirror(false);
+    setWalked(result.solved);
+    if (result.solved.placed < Math.max(2, n * 0.3))
       setProblem(
-        `Only ${read} of ${n} LEDs could be read. Keep the phone still (rest it on something), have the whole object in view and spread out (a heap of wire hides LEDs behind each other), and scan again; or fix the order by hand.`
+        `Only ${result.solved.placed} of ${n} LEDs could be placed. Walk slowly, all the way round, with the whole object in view, in a lit room (the phone finds its place from what it sees round it).`
       );
   };
 
@@ -485,13 +651,15 @@ export function PhotoTrace({
   function thisSide(): ScanView {
     return { leds: dots.flatMap((d) => (d.num != null ? [{ num: d.num, x: d.x, y: d.y }] : [])), width: photo?.width ?? 1, height: photo?.height ?? 1 };
   }
-  const solved = useMemo(() => (sides.length && photo?.scanned != null && photo.lit ? solveViews([...sides, thisSide()], photo.lit) : null), [sides, dots, photo]);
+  const fromSides = useMemo(() => (!walked && sides.length && photo?.scanned != null && photo.lit ? solveViews([...sides, thisSide()], photo.lit) : null), [sides, dots, photo, walked]);
+  const solved = walked ?? fromSides;
   const in3d = !!solved && solved.placed >= 2;
 
   const widthPx = in3d ? width3d(solved.points) : photoWidth(strokes);
   const unitStep = in3d ? step3d(solved.points) : step;
   const fromSpacing = spacing && unitStep > 0 ? spacing / unitStep : null;
-  const metersPerPixel = widthM && widthPx > 0 ? widthM / widthPx : (fromSpacing ?? (widthPx > 0 ? 1 / widthPx : 0));
+  // Walked round in AR, the points are in meters already.
+  const metersPerPixel = widthM && widthPx > 0 ? widthM / widthPx : walked && in3d ? 1 : (fromSpacing ?? (widthPx > 0 ? 1 / widthPx : 0));
   const shownWidth = widthPx * metersPerPixel;
   const allDots = strokes.length > 0 && strokes.every((s) => s.dots);
   const ledCount = photo?.lit ?? (allDots ? strokes.reduce((a, s) => a + s.points.length, 0) : null);
@@ -744,6 +912,10 @@ export function PhotoTrace({
     >
       <input ref={cameraInput} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => (void load(e.target.files?.[0]), (e.target.value = ''))} />
       <input ref={fileInput} type="file" accept="image/*" className="hidden" onChange={(e) => (void load(e.target.files?.[0]), (e.target.value = ''))} />
+      {/* Over the camera while walking round in AR (the browser shows it on top of its AR view). */}
+      <div ref={overlay} hidden={!walking} className="fixed inset-0 z-50 bg-transparent text-white select-none">
+        {walking ? <WalkOverlay walking={walking} n={count} onDone={() => endWalk(true)} onCancel={() => endWalk(false)} /> : null}
+      </div>
       <div className="flex flex-col gap-3 pb-2 lg:flex-row">
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex flex-wrap items-center gap-1">
@@ -883,6 +1055,11 @@ export function PhotoTrace({
                         <ScanLine /> Scan with the camera
                       </Button>
                     ) : null}
+                    {canWalk ? (
+                      <Button variant={canScan ? 'secondary' : 'primary'} onClick={() => void startWalk()} title="Walk round the object with the phone in AR: the LEDs blink their numbers, and the phone knows where it is, for a 3D shape at its real size">
+                        <Footprints /> Walk round in AR
+                      </Button>
+                    ) : null}
                     <Button variant={canScan ? 'secondary' : 'primary'} loading={loading} onClick={() => cameraInput.current?.click()}>
                       <Camera /> Take a photo
                     </Button>
@@ -946,6 +1123,11 @@ export function PhotoTrace({
                   <ScanLine /> Scan with the camera
                 </Button>
               ) : null}
+              {canWalk && !camera ? (
+                <Button size="sm" variant={walked ? 'primary' : 'secondary'} onClick={() => void startWalk()} title="Walk round the object with the phone in AR, for a 3D shape at its real size">
+                  <Footprints /> {walked ? 'Walk round again' : 'Walk round in AR'}
+                </Button>
+              ) : null}
               <Button size="sm" variant={photo || canScan ? 'secondary' : 'primary'} loading={loading} onClick={() => cameraInput.current?.click()}>
                 <Camera /> {photo ? 'Another photo' : 'Take a photo'}
               </Button>
@@ -956,14 +1138,25 @@ export function PhotoTrace({
             {problem ? <PropNote tone="red">{problem}</PropNote> : null}
             {devices.length && typeof window !== 'undefined' && !window.isSecureContext ? <PropNote>Open the admin console at its https:// address to scan with the camera.</PropNote> : null}
             {canScan ? <PropNote>A scan makes the LEDs blink their numbers in color and reads them with the camera: the exact order, even where the wire crosses itself.</PropNote> : null}
-            {photo?.scanned != null && canScan && !camera ? (
+            {canWalk && !walked ? <PropNote>Walking round in AR does the same while you go round the object, for a 3D shape at its real size: the phone knows where it is as it moves.</PropNote> : null}
+            {photo?.scanned != null && canScan && !camera && !walked ? (
               <div className="flex flex-wrap gap-1.5">
                 <Button size="sm" variant={in3d ? 'secondary' : 'primary'} onClick={() => (setAddingSide(true), void openCamera())} title="Scan the same LEDs again from a step round: from two or more sides, each LED gets its depth">
                   <Box /> Scan from another side
                 </Button>
               </div>
             ) : null}
-            {in3d ? (
+            {in3d && walked ? (
+              <>
+                <PropNote>
+                  3D from walking round: {solved.placed} of {photo?.lit} LEDs placed{solved.placed < (photo?.lit ?? 0) ? ' (the rest along the wire between them)' : ''}, within {Math.round(solved.rms * 10) / 10} px of where the pictures show them.
+                  {solved.placed < (photo?.lit ?? 0) * 0.6 ? ' Walk round again, slower and all the way round, to place more.' : ''}
+                </PropNote>
+                <Button size="sm" variant="ghost" onClick={() => setWalked(null)} title="Forget the walk: a flat shape from its first picture">
+                  Flat, from the first picture only
+                </Button>
+              </>
+            ) : in3d ? (
               <>
                 <PropNote>
                   3D from {sides.length + 1} scans: {solved.placed} of {photo?.lit} LEDs placed{solved.placed < (photo?.lit ?? 0) ? ' (the rest along the wire between them)' : ''}, within {Math.round(solved.rms * 10) / 10} px of where the pictures show them.
@@ -1025,7 +1218,9 @@ export function PhotoTrace({
             <PropNote>
               {widthM
                 ? 'As you typed it.'
-                : fromSpacing
+                : walked && in3d
+                  ? 'From walking round: the phone’s AR tracking measures in meters. Type the real width to change it.'
+                  : fromSpacing
                   ? 'From the light string’s LED spacing: the most two LEDs can be apart (where the wire is slack they are closer). Type the real width to change it.'
                   : 'Type the real width: pick the light string in the designer and the LED spacing sizes it.'}
             </PropNote>
@@ -1033,5 +1228,57 @@ export function PhotoTrace({
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/** Over the camera while walking round in AR: the LEDs it sees (green: read), how far it got, and the buttons. */
+function WalkOverlay({
+  walking,
+  n,
+  onDone,
+  onCancel
+}: {
+  walking: { status: WalkStatus | null; size: { w: number; h: number } | null; tracking: boolean; finishing?: boolean };
+  n: number;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const { status, size, tracking, finishing } = walking;
+  const r = size ? Math.max(size.w, size.h) / 160 : 4;
+  const share = status ? Math.min(1, status.placed / Math.max(1, n)) : 0;
+  return (
+    <div className="absolute inset-0 flex flex-col justify-between p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+      {status && size ? (
+        <svg viewBox={`0 0 ${size.w} ${size.h}`} preserveAspectRatio="xMidYMid slice" className="pointer-events-none absolute inset-0 size-full">
+          {status.dots.map((d, i) => {
+            const y = status.flipped ? size.h - 1 - d.y : d.y;
+            return d.num != null ? <circle key={i} cx={d.x} cy={y} r={r} fill="none" stroke="#4ade80" strokeWidth={r * 0.45} /> : <circle key={i} cx={d.x} cy={y} r={r * 0.6} fill="none" stroke="#fff" strokeOpacity={0.6} strokeWidth={r * 0.3} />;
+          })}
+        </svg>
+      ) : null}
+      <div className="relative mx-auto w-full max-w-md rounded-2xl bg-black/60 p-3 text-sm backdrop-blur [text-shadow:0_1px_2px_#000]">
+        {finishing ? (
+          <p>Working out the shape…</p>
+        ) : !tracking ? (
+          <p className="text-amber-200">Finding its place: move the phone slowly so it sees the room round the object. More light helps.</p>
+        ) : (
+          <p>Walk slowly round the object, all of it in view. Green: LEDs whose numbers it has read.</p>
+        )}
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/20">
+          <div className="h-full rounded-full bg-green-400 transition-[width]" style={{ width: `${share * 100}%` }} />
+        </div>
+        <p className="mt-1.5 text-xs text-white/80 tabular-nums">
+          {status ? `${status.numbered} of ${n} LEDs read · ${status.placed} placed in 3D` : 'Starting…'}
+        </p>
+      </div>
+      <div className="relative mx-auto flex w-full max-w-md gap-3">
+        <button type="button" onClick={onCancel} disabled={finishing} className="h-12 flex-1 rounded-xl bg-black/60 font-medium backdrop-blur disabled:opacity-50">
+          Cancel
+        </button>
+        <button type="button" onClick={onDone} disabled={finishing} className="h-12 flex-1 rounded-xl bg-sky-600 font-medium disabled:opacity-50">
+          Done
+        </button>
+      </div>
+    </div>
   );
 }

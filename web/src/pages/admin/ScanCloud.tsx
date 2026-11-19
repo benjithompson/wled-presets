@@ -1,5 +1,6 @@
 // The LEDs a 3D scan placed, to turn round and look at: each in a color along the wire (LED 0
-// green and bigger), the wire through them, and where each scan's camera stood.
+// green and bigger), the wire through them, and where each scan's camera stood (or, walked round
+// in AR, the way the phone went).
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -97,15 +98,25 @@ export function ScanCloud({ points, cameras, mirror }: { points: (Pt3 | null)[];
       first.position.copy(at(points[0]));
       c.content.add(first);
     }
-    // Where the scans were taken from: a dot, and a faint line to the middle.
-    for (const cam of cameras) {
+    const near = (cam: Pt3) => {
       const v = at(cam);
       const d = v.length();
-      const near = d > 2.2 ? v.clone().multiplyScalar(2.2 / d) : v;
+      return d > 2.2 ? v.clone().multiplyScalar(2.2 / d) : v;
+    };
+    // A walk round (many pictures): the way the phone went, and where it started.
+    if (cameras.length > 12) {
+      c.content.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(cameras.map(near)), new THREE.LineBasicMaterial({ color: 0xfde68a, transparent: true, opacity: 0.5 })));
+      const start = new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 6), new THREE.MeshBasicMaterial({ color: 0xfde68a }));
+      start.position.copy(near(cameras[0]));
+      c.content.add(start);
+    }
+    // Where the scans were taken from: a dot, and a faint line to the middle.
+    for (const cam of cameras.length > 12 ? [] : cameras) {
+      const v = near(cam);
       const m = new THREE.Mesh(new THREE.SphereGeometry(0.03, 10, 6), new THREE.MeshBasicMaterial({ color: 0xfde68a }));
-      m.position.copy(near);
+      m.position.copy(v);
       c.content.add(m);
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([near, new THREE.Vector3()]), new THREE.LineDashedMaterial({ color: 0xfde68a, transparent: true, opacity: 0.3, dashSize: 0.05, gapSize: 0.05 }));
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([v, new THREE.Vector3()]), new THREE.LineDashedMaterial({ color: 0xfde68a, transparent: true, opacity: 0.3, dashSize: 0.05, gapSize: 0.05 }));
       line.computeLineDistances();
       c.content.add(line);
     }
