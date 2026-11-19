@@ -86,6 +86,14 @@ const IDLE_WAITING_MS = 45_000;
 const AWAY_MS = 20_000;
 /** How often the host checks the turn. */
 const TURN_CHECK_MS = 500;
+/** The largest message a browser may send. */
+const MAX_MESSAGE_BYTES = 4096;
+/**
+ * Messages a browser may send in a second: fast tapping in Beat Drop is a few presses and
+ * releases a second. More are dropped (each one sends every browser a status); far more closes it.
+ */
+const MESSAGES_PER_SECOND = 60;
+const CLOSE_AT_MESSAGES_PER_SECOND = 300;
 
 /** Who a browser is: a visitor id from its cookie (so a reload keeps its place in line), and whether an admin. */
 export type Identify = (req: IncomingMessage) => Visitor | null;
@@ -129,7 +137,8 @@ export class GameHost implements FrameSource {
   private lastInput = Date.now();
   /** The last status sent to each browser, so an unchanged one is not sent again. */
   private lastStatus = new WeakMap<WebSocket, string>();
-  private wss = new WebSocketServer({ noServer: true });
+  // Browsers send short JSON messages: a bigger one is not from the page (ws allows 100 MB).
+  private wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
   private log: (msg: string) => void;
   /** Games on the real lights: the debug switch and brightness, and the debug panel's view. */
   readonly output: GameOutput;
@@ -193,10 +202,21 @@ export class GameHost implements FrameSource {
     this.sendStatus(true);
   }
 
-  /** Accepts WebSocket upgrades on the given path. `identify`: who each browser is (no cookie: a new visitor each time). */
-  attach(server: Server, path: string, identify?: Identify) {
+  /**
+   * Accepts WebSocket upgrades on the given path. `identify`: who each browser is (no cookie: a
+   * new visitor each time). `admit`: whether this one may open (see admitUpgrade); it returns the
+   * function to call once the socket closed, or null to refuse.
+   */
+  attach(server: Server, path: string, identify?: Identify, admit?: (req: IncomingMessage) => (() => void) | null) {
     server.on('upgrade', (req: IncomingMessage, socket, head) => {
       if (!req.url || new URL(req.url, 'http://x').pathname !== path) return;
+      const release = admit ? admit(req) : () => {};
+      if (!release) {
+        socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      socket.once('close', release);
       // ?frames=deflate: the browser takes compressed frames (see ViewStream).
       const deflate = new URL(req.url, 'http://x').searchParams.get('frames') === 'deflate';
       const who = identify?.(req) ?? null;
@@ -301,6 +321,7 @@ export class GameHost implements FrameSource {
   private drop(ws: WebSocket, hard = false, goodbye = false) {
     const client = this.clients.get(ws);
     if (!client || !this.clients.delete(ws)) return;
+    this.refused.delete(client.id);
     this.game.leave?.(client.id);
     // A goodbye closes politely; a browser that stopped answering is cut off.
     if (hard) ws.terminate();
@@ -347,8 +368,13 @@ export class GameHost implements FrameSource {
     ws.send(JSON.stringify({ type: 'layout', layout: this.layout }));
     ws.send(JSON.stringify({ type: 'games', games: GAMES.map(({ id, name, description, players }) => ({ id, name, description, players })) }));
     this.sendStatus(true);
+    let second = 0;
+    let sent = 0;
     ws.on('message', (raw, isBinary) => {
-      if (isBinary) return;
+      const now = Math.floor(Date.now() / 1000);
+      if (now !== second) [second, sent] = [now, 0];
+      if (++sent > CLOSE_AT_MESSAGES_PER_SECOND) return this.drop(ws, true);
+      if (sent > MESSAGES_PER_SECOND || isBinary) return;
       let msg: ClientMessage;
       try {
         msg = JSON.parse(String(raw));

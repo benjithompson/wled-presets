@@ -30,7 +30,7 @@
   <Config Name="Discovery Subnets" Target="DISCOVERY_SUBNETS" Default="" Mode="" Description="Optional: Comma-separated CIDR subnets to scan (e.g., 192.168.1.0/24,192.168.2.0/24). Leave empty to auto-detect all local networks." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="Discovery Debug" Target="DISCOVERY_DEBUG" Default="0" Mode="" Description="Enable verbose discovery logging for troubleshooting (1=enabled, 0=disabled)" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
   <Config Name="Secure Cookie" Target="SECURE_COOKIE" Default="0" Mode="" Description="Set to 1 only if you reach the app over HTTPS (reverse proxy)" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
-  <Config Name="Trust Proxy" Target="TRUST_PROXY" Default="0" Mode="" Description="Set to 1 if behind a reverse proxy" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="Trust Proxy" Target="TRUST_PROXY" Default="0" Mode="" Description="cloudflare for Cloudflare Tunnel; 1 behind one reverse proxy (nginx). Rate limits and sign-in lockouts then see each visitor" Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id that owns the data folder" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id that owns the data folder" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
 </Container>

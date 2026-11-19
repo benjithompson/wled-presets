@@ -64,10 +64,19 @@ Host networking lets discovery scan your LAN. Without it, add devices by IP addr
 | `DISCOVERY_HOSTS` | — | Extra hosts to probe on every scan, comma-separated. |
 | `DISCOVERY_PORTS` | `80` | Ports to probe on each address, for example `80,8080` or `9101-9104`. |
 | `STATUS_INTERVAL_MS` | `10000` | How often device status is checked. |
-| `SECURE_COOKIE` | `0` | Set to `1` when you reach the app only over HTTPS. |
-| `TRUST_PROXY` | `0` | Set to `1` behind a reverse proxy or a tunnel (Cloudflare Tunnel, nginx), so logs and the rate limits see each visitor's own IP. Without it, every visitor through the proxy shares one IP and one rate limit. |
+| `SECURE_COOKIE` | `0` | Set to `1` when you reach the app only over HTTPS. Cookies are also `Secure` on any request that a proxy in front marks as HTTPS (`X-Forwarded-Proto: https`). |
+| `TRUST_PROXY` | `0` | Who the visitor is, behind a proxy. `cloudflare` for Cloudflare Tunnel (reads `CF-Connecting-IP`); `1` for one reverse proxy such as nginx (reads the last `X-Forwarded-For` entry; `2` for two proxies, and so on). Without it, every visitor through the proxy shares one IP and one rate limit, and the server log warns about it. |
 
-With no admin account and no environment variables, open `/admin` from the server itself to create one.
+With no admin account and no environment variables, open `/admin` from the server itself (`http://localhost:8790/admin`) to create one. A request through a proxy or tunnel never counts as "from the server itself".
+
+### On the internet
+
+The public page is safe to share through Cloudflare Tunnel or a reverse proxy:
+
+- Set `TRUST_PROXY=cloudflare` (or `1` for nginx), so rate limits, the line and failed sign-ins are counted per visitor.
+- Pick your own `ADMIN_PASSWORD`. The example password in this README creates no account, and an account that still has it only signs in from the home network.
+- Failed sign-ins slow down: after 5 from one address, or 10 for one username, each try waits twice as long as the last (up to 15 minutes). Signing in from the home network directly is never locked out by strangers guessing the username.
+- Changing the password signs out every other session.
 
 ## Upgrade from v1
 

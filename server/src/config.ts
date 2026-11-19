@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { parseTrustProxy, type TrustProxy } from './clientIp.ts';
 
 const flag = (v: string | undefined, fallback = false) => (v == null || v === '' ? fallback : v === '1' || v.toLowerCase() === 'true');
 const list = (v: string | undefined) =>
@@ -15,7 +16,8 @@ export interface AppConfig {
   adminUsername: string;
   adminPassword: string;
   secureCookie: boolean;
-  trustProxy: boolean;
+  /** Which proxy headers tell a visitor's address (see clientIp.ts). */
+  trustProxy: TrustProxy;
   discoveryOnStartup: boolean;
   discoveryAutoSave: boolean;
   discoverySubnets: string[];
@@ -53,7 +55,7 @@ export function loadConfig(env = process.env): AppConfig {
     // v1 defaulted to secure cookies in production. Most installs are plain HTTP on a LAN,
     // so v2 defaults to off and SECURE_COOKIE=1 turns it on.
     secureCookie: flag(env.SECURE_COOKIE, false),
-    trustProxy: flag(env.TRUST_PROXY, false),
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
     discoveryOnStartup: flag(env.DISCOVERY_ON_STARTUP),
     discoveryAutoSave: flag(env.DISCOVERY_AUTO_SAVE),
     discoverySubnets: list(env.DISCOVERY_SUBNETS),
