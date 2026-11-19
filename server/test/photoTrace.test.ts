@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { designLeds } from '../../shared/layout.ts';
-import { autoDots, CODE_RGB, codeDigit, codeDigits, codeFrames, colorfulMaps, decodeDigits, decodeScan, glowMaps, orderByNumber, isLoop, ledStep, orderDots, PHOTO_COLORS, photoDesign, strokesFromOrder, traceDots, type Pixels, type Pt, type RGB } from '../../shared/photoTrace.ts';
+import { autoDots, codeColor, codeDigit, codeDigits, codeFrames, decodeDigits, decodeScan, glowMaps, lineUp, orderByNumber, scanDots, isLoop, ledStep, orderDots, PHOTO_COLORS, photoDesign, strokesFromOrder, traceDots, type Pixels, type Pt, type RGB } from '../../shared/photoTrace.ts';
 
 const GREEN = PHOTO_COLORS[0];
 
@@ -136,50 +136,107 @@ describe('a custom object from a photo', () => {
     expect(r).toBeCloseTo(0.5, 1);
   });
 
-  it('numbers LEDs with a color code that catches a misread digit', () => {
+  it('numbers LEDs with a color code that catches a misread digit, and every LED changes color', () => {
     expect(codeDigits(2)).toBe(1);
     expect(codeDigits(9)).toBe(2);
     expect(codeDigits(10)).toBe(3);
-    expect(codeFrames(300)).toBe(7);
+    expect(codeFrames(300)).toBe(8);
     for (const n of [5, 50, 300]) {
+      const d = codeDigits(n);
       for (let i = 0; i < n; i++) {
-        const digits = Array.from({ length: codeFrames(n) }, (_, f) => codeDigit(i, f, n));
+        const digits = Array.from({ length: d + 1 }, (_, k) => codeDigit(i, k, n));
         expect(decodeDigits(digits, n)).toBe(i);
         // One digit read wrong does not give another LED's number.
-        for (let f = 0; f < digits.length; f++) expect(decodeDigits(digits.map((d, k) => (k === f ? (d + 1) % 3 : d)), n)).toBeNull();
+        for (let k = 0; k < digits.length; k++) expect(decodeDigits(digits.map((x, j) => (j === k ? (x + 1) % 3 : x)), n)).toBeNull();
+        // The first frame is white; after it, no LED keeps one color all through (LED 0 neither).
+        const colors = new Set(Array.from({ length: d + 1 }, (_, k) => codeColor(i, k + 1, n).join()));
+        expect(colors.size).toBeGreaterThan(1);
       }
     }
   });
 
-  it('reads every LED number from camera frames, where the wire crosses itself and the hand shakes', () => {
+  /**
+   * The camera's view of a scan in a lit room: a warm lamp, a purple wall, colorful things that
+   * look like LEDs but never change, a hand that shakes, and a camera that changes its color
+   * balance from frame to frame.
+   */
+  function room(w: number, h: number, leds: { p: Pt; rgb: RGB }[], shake: Pt, balance: RGB): Pixels {
+    const data = new Uint8ClampedArray(w * h * 4);
+    let seed = 11;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const decoys = Array.from({ length: 30 }, (_, k) => ({ x: 40 + ((k * 137) % (w - 80)), y: 30 + ((k * 89) % (h - 60)), rgb: [[255, 40, 40], [40, 255, 60], [60, 60, 255]][k % 3] }));
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const sx = x - shake.x;
+        const sy = y - shake.y;
+        // The lamp lights the room warm; the right part is a purple wall.
+        const lamp = 1 - Math.min(1, Math.hypot(sx - 120, sy - 80) / 700);
+        let c = sx > w * 0.75 ? [90 + 60 * lamp, 60 + 40 * lamp, 140 + 50 * lamp] : [80 + 120 * lamp, 60 + 90 * lamp, 40 + 50 * lamp];
+        for (const d of decoys) {
+          const dd = Math.hypot(sx - d.x, sy - d.y);
+          if (dd < 5) c = d.rgb.map((v, i) => Math.max(c[i], v * (1 - dd / 6)));
+        }
+        const n = (rand() - 0.5) * 14;
+        data.set([c[0] + n, c[1] + n, c[2] + n, 255], (y * w + x) * 4);
+      }
+    for (const { p, rgb } of leds) {
+      const px = p.x + shake.x;
+      const py = p.y + shake.y;
+      for (let y = Math.floor(py - 7); y <= py + 7; y++)
+        for (let x = Math.floor(px - 7); x <= px + 7; x++) {
+          if (x < 0 || y < 0 || x >= w || y >= h) continue;
+          const d = Math.hypot(x - px, y - py);
+          const i = (y * w + x) * 4;
+          const k = Math.max(0, 1 - d / 6);
+          for (let c = 0; c < 3; c++) data[i + c] = d < 1.6 ? 255 : data[i + c] + (rgb[c] / 170) * 255 * k;
+        }
+    }
+    for (let i = 0; i < w * h; i++) for (let c = 0; c < 3; c++) data[i * 4 + c] = data[i * 4 + c] * balance[c];
+    return { width: w, height: h, data };
+  }
+
+  it('reads every LED number in a lit room, where the wire crosses itself and the hand shakes', () => {
     // A figure eight: the wire crosses in the middle, so no guess from the shape can be sure.
-    // 150 LEDs: the top digit is never 2, so that frame shows no blue at all.
+    // 150 LEDs: the top digit is never 2.
     const n = 150;
-    const pts = Array.from({ length: n }, (_, i) => {
-      const a = ((i + 0.5) / n) * Math.PI * 2;
-      return { x: 400 + Math.sin(a) * 340, y: 250 + Math.sin(2 * a) * 160 };
+    const curve = Array.from({ length: 2000 }, (_, i) => {
+      const a = ((i + 0.5) / 2000) * Math.PI * 2;
+      return { x: 400 + Math.sin(a) * 300, y: 250 + Math.sin(2 * a) * 150 };
     });
-    const shake = [
-      { x: 0, y: 0 },
-      { x: 3, y: -2 },
-      { x: -2, y: 4 },
-      { x: 5, y: 1 },
-      { x: -4, y: -3 },
-      { x: 2, y: 3 }
-    ];
-    expect(codeFrames(n)).toBe(shake.length);
-    const frames = shake.map((s, f) => photo(800, 500, pts.map((p, i) => ({ p: { x: p.x + s.x, y: p.y + s.y }, rgb: CODE_RGB[codeDigit(i, f, n)] })), window));
-    const { dots, threshold } = autoDots(colorfulMaps(frames[0]), n);
+    // Evenly spaced along the wire, as on a real string.
+    const len = curve.slice(1).map((p, i) => Math.hypot(p.x - curve[i].x, p.y - curve[i].y));
+    const total = len.reduce((a, b) => a + b, 0);
+    const pts: Pt[] = [];
+    for (let i = 0, acc = 0, j = 0; i < n; i++) {
+      const want = ((i + 0.5) / n) * total;
+      while (j < len.length - 1 && acc + len[j] < want) acc += len[j++];
+      pts.push(curve[j]);
+    }
+    const F = codeFrames(n);
+    const frames = Array.from({ length: F }, (_, f) =>
+      room(
+        800,
+        500,
+        pts.map((p, i) => ({ p, rgb: codeColor(i, f, n) })),
+        { x: Math.round(Math.sin(f * 1.7) * 4), y: Math.round(Math.cos(f * 2.3) * 4) },
+        [1 + Math.sin(f) * 0.12, 1 + Math.cos(f * 1.3) * 0.08, 1 - Math.sin(f * 0.7) * 0.12]
+      )
+    );
+    const lined = lineUp(frames, n);
+    const { dots } = scanDots(lined, n);
     expect(dots).toHaveLength(n);
-    const ids = decodeScan(frames, dots, n, threshold);
+    const ids = decodeScan(lined, dots, n);
+    // Dots are in frame 1's place. Every number read is right; at most one or two (where the
+    // wire crosses) are not read.
+    const s1 = { x: Math.round(Math.sin(1.7) * 4), y: Math.round(Math.cos(2.3) * 4) };
+    expect(ids.filter((i) => i == null).length).toBeLessThanOrEqual(2);
     for (let k = 0; k < dots.length; k++) {
       const i = ids[k];
-      expect(i).not.toBeNull();
-      expect(Math.hypot(dots[k].x - pts[i!].x, dots[k].y - pts[i!].y)).toBeLessThan(1.5);
+      if (i != null) expect(Math.hypot(dots[k].x - pts[i].x - s1.x, dots[k].y - pts[i].y - s1.y)).toBeLessThan(1.5);
     }
     const order = orderByNumber(dots, ids);
     expect(order).toHaveLength(1);
-    expect(order[0].map((k) => ids[k])).toEqual(pts.map((_, i) => i));
+    expect(order[0].map((k) => ids[k])).toEqual(ids.filter((i) => i != null).sort((a, b) => a! - b!));
   });
 
   it('starts a new stroke where the numbered LEDs jump, and skips a missing one', () => {

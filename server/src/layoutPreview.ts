@@ -1,6 +1,6 @@
 import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
 import { buildStage, deviceLed, editorPulse, layoutShapeKey, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
-import { CODE_RGB, codeDigit } from '../../shared/photoTrace.ts';
+import { codeColor } from '../../shared/photoTrace.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
 
@@ -34,7 +34,7 @@ export interface PhotoLights {
   to: number;
   rgb: [number, number, number];
   start: [number, number, number];
-  /** A frame of a camera scan instead (see codeDigit): every LED shows a digit of its number. */
+  /** A frame of a camera scan instead (see codeColor): every LED shows a digit of its number. */
   code?: number | null;
 }
 
@@ -79,7 +79,7 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
     const dir = p.to >= p.from ? 1 : -1;
     const n = Math.abs(p.to - p.from) + 1;
     for (let i = 0, led = p.from; i < n; i++, led += dir) {
-      const rgb = p.code != null ? CODE_RGB[codeDigit(i, p.code, n)] : i === 0 ? p.start : p.rgb;
+      const rgb = p.code != null ? codeColor(i, p.code, n) : i === 0 ? p.start : p.rgb;
       extra.push({ deviceId: p.deviceId, led, rgb });
     }
     // A device with no objects in the layout yet still gets the frame.

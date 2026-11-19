@@ -9,17 +9,18 @@ import { deviceLed, FEET_PER_METER, MAX_FIXTURE_PIXELS, type DesignStroke, type 
 import {
   autoDots,
   codeFrames,
-  colorfulMaps,
   decodeScan,
   findDots,
   glowMaps,
   isLoop,
+  lineUp,
   ledStep,
   orderByNumber,
   orderDots,
   PHOTO_COLORS,
   photoDesign,
   photoWidth,
+  scanDots,
   simplify,
   THRESHOLDS,
   traceDots,
@@ -254,7 +255,7 @@ export function PhotoTrace({
   // ----- Scanning with the camera: the LEDs blink their numbers in color -----
   const video = useRef<HTMLVideoElement>(null);
   const [camera, setCamera] = useState<MediaStream | null>(null);
-  const [scanning, setScanning] = useState<{ frame: number; of: number } | null>(null);
+  const [scanning, setScanning] = useState<{ frame: number; of: number; reading?: boolean } | null>(null);
   const cancelScan = useRef(false);
   const canScan = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && window.isSecureContext && !!deviceId && count <= MAX_FIXTURE_PIXELS;
   const frames = codeFrames(count);
@@ -299,6 +300,52 @@ export function PhotoTrace({
    * Shows each frame of the code on the lights, takes the camera's picture of it, and reads
    * every LED's number from its colors: the dots come out in the wire's exact order.
    */
+  /** The last scan's frames, to save for a closer look when a scan goes wrong. */
+  const lastScan = useRef<HTMLCanvasElement[]>([]);
+
+  /** Waits until the camera's picture stops changing (the lights have changed, the camera has caught up). */
+  const settle = async (minMs: number, maxMs: number) => {
+    const t0 = Date.now();
+    await new Promise((r) => setTimeout(r, minMs));
+    const sample = () => {
+      const g = grab().pixels.data;
+      const out = new Uint8Array(Math.ceil(g.length / 4 / 97));
+      for (let i = 0, j = 0; i < g.length; i += 4 * 97, j++) out[j] = (g[i] + g[i + 1] + g[i + 2]) / 3;
+      return out;
+    };
+    let prev = sample();
+    while (Date.now() - t0 < maxMs) {
+      await new Promise((r) => setTimeout(r, 120));
+      const next = sample();
+      let diff = 0;
+      for (let i = 0; i < next.length; i++) diff += Math.abs(next[i] - prev[i]);
+      if (diff / next.length < 2.5) return;
+      prev = next;
+    }
+  };
+
+  /** Asks the camera to keep its exposure and color balance (where the browser allows it). */
+  const holdCamera = async (hold: boolean) => {
+    const track = camera?.getVideoTracks()[0];
+    if (!track?.applyConstraints) return;
+    const caps = (track.getCapabilities?.() ?? {}) as Record<string, unknown>;
+    const set = (track.getSettings?.() ?? {}) as Record<string, unknown>;
+    const want: Record<string, unknown> = {};
+    if (Array.isArray(caps.exposureMode) && caps.exposureMode.includes(hold ? 'manual' : 'continuous')) {
+      want.exposureMode = hold ? 'manual' : 'continuous';
+      if (hold && typeof set.exposureTime === 'number') want.exposureTime = set.exposureTime;
+    }
+    if (Array.isArray(caps.whiteBalanceMode) && caps.whiteBalanceMode.includes(hold ? 'manual' : 'continuous')) {
+      want.whiteBalanceMode = hold ? 'manual' : 'continuous';
+      if (hold && typeof set.colorTemperature === 'number') want.colorTemperature = set.colorTemperature;
+    }
+    if (Object.keys(want).length) await track.applyConstraints({ advanced: [want as MediaTrackConstraintSet] }).catch(() => {});
+  };
+
+  /**
+   * Shows each frame of the code on the lights, takes the camera's picture of it once it has
+   * settled, and reads every LED's number: the dots come out in the wire's exact order.
+   */
   const runScan = async () => {
     if (!video.current?.videoWidth) return;
     const n = count;
@@ -311,8 +358,12 @@ export function PhotoTrace({
         setScanning({ frame: f + 1, of: frames });
         setScanCode(f);
         await api.previewLayout(JSON.stringify(body(f)));
-        // The lights change, then the camera sees it (and settles its exposure on the first frame).
-        await new Promise((r) => setTimeout(r, f === 0 ? 900 : 500));
+        if (f === 0) {
+          // The camera settles on the lights, then keeps that exposure for the rest.
+          await settle(900, 2500);
+          await holdCamera(true);
+        }
+        await settle(f === 0 ? 300 : 450, 2000);
         if (cancelScan.current) return;
         shots.push(grab());
       }
@@ -320,23 +371,28 @@ export function PhotoTrace({
       setProblem('The lights did not answer. Try again.');
       return;
     } finally {
+      void holdCamera(false);
       setScanCode(null);
-      setScanning(null);
     }
-    const first = colorfulMaps(shots[0].pixels);
-    const found = autoDots(first, n);
-    const nums = decodeScan(
-      shots.map((s) => s.pixels),
-      found.dots,
-      n,
-      found.threshold
+    setScanning({ frame: frames, of: frames, reading: true });
+    // Let "Reading…" show: this takes a moment on a phone.
+    await new Promise((r) => setTimeout(r, 50));
+    lastScan.current = shots.map((x) => x.canvas);
+    const lined = lineUp(
+      shots.map((x) => x.pixels),
+      n
     );
+    const found = scanDots(lined, n);
+    const nums = decodeScan(lined, found.dots, n);
     const order = orderByNumber(found.dots, nums);
     const read = nums.filter((x) => x != null).length;
-    const blob = await new Promise<Blob | null>((r) => shots[0].canvas.toBlob(r, 'image/jpeg', 0.9));
+    // The picture under the dots: frame 1, where the dots are.
+    const back = shots[Math.min(1, shots.length - 1)];
+    const blob = await new Promise<Blob | null>((r) => back.canvas.toBlob(r, 'image/jpeg', 0.9));
+    setScanning(null);
     if (!blob) return;
     const cache = new Map<string, GlowMaps>();
-    const pixels = shots[0].pixels;
+    const pixels = back.pixels;
     closeCamera();
     setPhoto({
       url: URL.createObjectURL(blob),
@@ -354,8 +410,34 @@ export function PhotoTrace({
     setWidthM(null);
     setView(null);
     setTool('connect');
-    if (read < Math.max(2, found.dots.length * 0.5))
-      setProblem(`Only ${read} of ${found.dots.length} LEDs could be read. Hold the phone still (rest it on something), keep the whole object in view, and scan again; or fix the order by hand.`);
+    if (read < Math.max(2, n * 0.5))
+      setProblem(
+        `Only ${read} of ${n} LEDs could be read. Keep the phone still (rest it on something), have the whole object in view and spread out (a heap of wire hides LEDs behind each other), and scan again; or fix the order by hand.`
+      );
+  };
+
+  /** Saves the last scan's frames, one under the other, to look at when a scan goes wrong. */
+  const saveScan = () => {
+    const list = lastScan.current;
+    if (!list.length) return;
+    const w = list[0].width;
+    const h = list[0].height;
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h * list.length;
+    const ctx = out.getContext('2d')!;
+    list.forEach((c, i) => ctx.drawImage(c, 0, i * h));
+    out.toBlob(
+      (b) => {
+        if (!b) return;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(b);
+        a.download = `scan-${count}-leds-${list.length}-frames.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      },
+      'image/png'
+    );
   };
 
   // ----- The wire through the dots -----
@@ -641,8 +723,10 @@ export function PhotoTrace({
                 <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-end justify-between gap-2">
                   <p className="max-w-md text-[11px] text-white/80 [text-shadow:0_1px_2px_#000]">
                     {scanning
-                      ? `Reading the LEDs: frame ${scanning.frame} of ${scanning.of}. Hold still…`
-                      : `Point the camera at the object, with all of it in view, and hold still (rest the phone on something). The lights change color ${frames} times, about ${Math.ceil(frames * 0.5 + 1)} seconds.`}
+                      ? scanning.reading
+                        ? 'Reading the LEDs’ numbers…'
+                        : `Frame ${scanning.frame} of ${scanning.of}. Hold still…`
+                      : `Point the camera at the object, with all of it in view, and hold still (rest the phone on something). The lights go white, then change color ${frames - 1} times: about ${Math.ceil(frames * 0.7 + 2)} seconds.`}
                   </p>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={closeCamera}>
@@ -794,7 +878,10 @@ export function PhotoTrace({
             {canScan ? <PropNote>A scan makes the LEDs blink their numbers in color and reads them with the camera: the exact order, even where the wire crosses itself.</PropNote> : null}
             {photo?.scanned != null ? (
               <PropNote>
-                {photo.scanned} of {photo.lit} LEDs read by their numbers{dots.length > photo.scanned ? `; ${dots.length - photo.scanned} more seen but not read (red)` : ''}. Tap Automatic order to guess from the shape instead.
+                {photo.scanned} of {photo.lit} LEDs read by their numbers{dots.length > photo.scanned ? `; ${dots.length - photo.scanned} more seen but not read (red)` : ''}. Tap Automatic order to guess from the shape instead.{' '}
+                <button type="button" className="underline" onClick={saveScan} title="The camera's pictures of the scan, to look at what went wrong">
+                  Save the scan frames
+                </button>
               </PropNote>
             ) : photo ? (
               <>
