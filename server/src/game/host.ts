@@ -149,6 +149,9 @@ export class GameHost implements FrameSource {
   /** Devices that get the scene's frames: those with an object that plays an effect. */
   private sceneDevices = new Set<string>();
 
+  /** Why no game can start now (the lights are switched off), or null. */
+  closed: () => string | null = () => null;
+
   /** `pipeline`: the lights. Without one, the host ticks on its own and nothing reaches a device. */
   constructor(layout: Layout, log: (msg: string) => void, pipeline?: FramePipeline, heartbeatMs = HEARTBEAT_MS) {
     this.heartbeatMs = heartbeatMs;
@@ -199,6 +202,19 @@ export class GameHost implements FrameSource {
       const who = identify?.(req) ?? null;
       this.wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws, deflate, who));
     });
+  }
+
+  /** The yard as the host plays it now. */
+  get yard(): Layout {
+    return this.layout;
+  }
+
+  /**
+   * The simulated yard's last frame (RGB bytes in stage order, see buildStage), or null when
+   * nothing plays on it (no game, no scene, nobody watching).
+   */
+  simFrame(): Uint8Array | null {
+    return this.running ? this.bytes : null;
   }
 
   setLayout(layout: Layout) {
@@ -360,6 +376,8 @@ export class GameHost implements FrameSource {
     // A new game (a game started, or a press that starts the next one) is a new run: the last
     // one's score can no longer be named.
     const before = this.game.status().phase;
+    const closed = msg.type === 'start' || msg.type === 'accept' ? this.closed() : null;
+    if (closed) return this.notice(ws, closed);
     if (msg.type === 'start') {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;

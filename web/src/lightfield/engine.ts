@@ -132,6 +132,9 @@ export class LightFieldEngine {
   private slowFrames = 0;
   private pointer = { x: 0, y: 0, px: 0, py: 0, down: false, moved: false, active: false, type: 'mouse' };
   private queue: { x: number; y: number; dx: number; dy: number; color: Rgb; radius: number }[] = [];
+  /** The roofline along the top of the window (see setRoof): its light spills down into the field. */
+  private roof: { x: Float32Array; zones: { x: number; color: Rgb; lum: number; seen: number; flash: number }[] } | null = null;
+  private roofTurn = 0;
   private cleanup: (() => void)[] = [];
 
   /** Returns null when WebGL 2 with renderable float textures is not available. */
@@ -288,6 +291,50 @@ export class LightFieldEngine {
     this.retarget(false);
   }
 
+  /**
+   * The roofline's colors now. `x`: each cell's place across the window (0..1, in screen
+   * space); `rgb`: one byte triple per cell. Null: no roofline. The roof is gathered into a few
+   * zones; each one spills its light down from the top edge, and a sudden change (a flash, a
+   * chase arriving) pushes harder, so the field answers what the lights do.
+   */
+  setRoof(x: ArrayLike<number> | null, rgb?: Uint8Array) {
+    if (!x || !x.length || !rgb) {
+      this.roof = null;
+      return;
+    }
+    const ZONES = 12;
+    if (!this.roof || this.roof.x.length !== x.length || this.roof.x.some((v, i) => v !== x[i])) {
+      this.roof = { x: Float32Array.from(x), zones: Array.from({ length: ZONES }, (_, z) => ({ x: (z + 0.5) / ZONES, color: [0, 0, 0] as Rgb, lum: 0, seen: 0, flash: 0 })) };
+    }
+    const sums = Array.from({ length: ZONES }, () => ({ r: 0, g: 0, b: 0, n: 0, peak: 0 }));
+    for (let i = 0; i < x.length; i++) {
+      const s = sums[Math.min(ZONES - 1, Math.max(0, Math.floor(x[i] * ZONES)))];
+      const r = rgb[i * 3] / 255;
+      const g = rgb[i * 3 + 1] / 255;
+      const b = rgb[i * 3 + 2] / 255;
+      s.r += r;
+      s.g += g;
+      s.b += b;
+      s.n++;
+      s.peak = Math.max(s.peak, r, g, b);
+    }
+    this.roof.zones.forEach((z, k) => {
+      const s = sums[k];
+      if (!s.n) {
+        z.color = [0, 0, 0];
+        z.lum = 0;
+        return;
+      }
+      // The zone's hue at its brightest: a few lit bulbs among dark ones still show their color.
+      const m = Math.max(s.r, s.g, s.b) || 1;
+      z.color = [(s.r / m) * s.peak, (s.g / m) * s.peak, (s.b / m) * s.peak];
+      const lum = (s.r + s.g + s.b) / (3 * s.n);
+      z.flash = Math.max(z.flash, lum - z.seen);
+      z.seen += (lum - z.seen) * 0.35;
+      z.lum = lum;
+    });
+  }
+
   /** A radial burst of the given colors at a screen point, for example a tapped button. */
   burst(clientX: number, clientY: number, colors?: string[], strength = 1) {
     const { x, y } = this.toUv(clientX, clientY);
@@ -434,6 +481,21 @@ export class LightFieldEngine {
       const c = colors[Math.floor(this.time * 0.8) % colors.length];
       const amount = Math.min(Math.hypot(dx * aspect, dy) * 18, 1) * 0.22 * strength;
       this.splat(p.x, p.y, dx * 5200 * strength, dy * 5200 * strength, c.map((v) => v * amount) as Rgb, 0.0007);
+    }
+
+    // The roofline: half the zones each frame, light falling from the top edge.
+    if (this.roof) {
+      const zones = this.roof.zones;
+      this.roofTurn ^= 1;
+      for (let k = this.roofTurn; k < zones.length; k += 2) {
+        const z = zones[k];
+        if (z.lum <= 0.01 && z.flash <= 0.01) continue;
+        const kick = Math.min(1, z.flash * 3);
+        z.flash *= 0.5;
+        const amount = (0.35 + 1.1 * Math.sqrt(z.lum) + 1.6 * kick) * realDt * 2;
+        const fall = 700 + 2600 * kick + 600 * z.lum;
+        this.splat(z.x + (Math.random() - 0.5) * 0.04, 0.99, (Math.random() - 0.5) * 300, -fall * dt * 60, z.color.map((v) => v * amount) as Rgb, 0.0009 + 0.0009 * kick);
+      }
     }
 
     // Occasional slow blooms keep the field alive when nobody touches it.

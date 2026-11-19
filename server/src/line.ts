@@ -214,6 +214,17 @@ export class Line {
     this.changed();
   }
 
+  /** Empties the line and ends the turn now, for example when an admin switches the lights off. */
+  clear(reason: string) {
+    const t = this.turn;
+    this.turn = null;
+    this.offerTo = null;
+    this.queue = [];
+    if (t && !isShow(t.want)) this.onEndGame(reason);
+    this.log(`The line was emptied: ${reason}`);
+    this.changed();
+  }
+
   /** An admin takes someone out of the line. */
   remove(id: number) {
     if (this.offerTo?.entry.id === id) {

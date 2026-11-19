@@ -21,6 +21,7 @@ import { visitorCookie, visitorId } from './visitor.ts';
 import type { Visitor } from './line.ts';
 import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
 import type { GameHost } from './game/host.ts';
+import type { RoofView } from './roofView.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -36,6 +37,7 @@ export interface AppDeps {
   discover?: typeof discoverWled;
   host?: GameHost;
   preview?: LayoutPreview;
+  roof?: RoofView;
 }
 
 const deviceInput = z.object({
@@ -128,7 +130,7 @@ class HttpError extends Error {
   }
 }
 
-export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview }: AppDeps) {
+export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof }: AppDeps) {
   const app = new Hono();
   const auth = createAuth(db, { secureCookie: config.secureCookie });
 
@@ -227,6 +229,22 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     });
   });
 
+  // The roofline as it is now, for the strip along the top of the home page (see RoofView).
+  app.get('/api/roof', publicLimiter, (c) => {
+    if (!roof) return c.json({ error: 'No roof view' }, 404);
+    return streamSSE(c, async (stream) => {
+      const stop = roof.watch((e) => void stream.writeSSE(e).catch(() => {}));
+      if (!stop) {
+        await stream.writeSSE({ event: 'busy', data: '' });
+        return;
+      }
+      const ping = setInterval(() => void stream.writeSSE({ event: 'ping', data: '' }).catch(() => {}), 25_000);
+      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      clearInterval(ping);
+      stop();
+    });
+  });
+
   /** A color or scene chosen on the public page wins over a game or a layout preview. */
   const takeLights = (what: string) => {
     host?.endGame(`${what} was chosen`);
@@ -259,10 +277,13 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     return c.json({ queued: { place: asked.place, message: `You're ${ordinal(asked.place)} in line. ${label} plays when it's your turn.` } }, 202);
   };
 
+  const LIGHTS_OFF = 'The lights are switched off right now.';
+
   app.post('/api/scenes/:id/apply', applyLimiter, async (c) => {
     const id = c.req.param('id');
     const name = lights.publicState().scenes.find((s) => s.id === id)?.name;
     if (!name) throw new HttpError(404, 'Unknown scene');
+    if (lights.allOff()) throw new HttpError(409, LIGHTS_OFF);
     const queued = askLine(c, { kind: 'scene', id }, name);
     if (queued) return queued;
     takeLights('a scene');
@@ -275,6 +296,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   app.post('/api/color', applyLimiter, async (c) => {
     const { color } = await body(c, z.object({ color: z.string().regex(/^#?[0-9a-fA-F]{6}$/, 'Use a hex color like #ff8800') }));
     const hex = `#${color.replace('#', '').toLowerCase()}`;
+    if (lights.allOff()) throw new HttpError(409, LIGHTS_OFF);
     const queued = askLine(c, { kind: 'color', hex }, `Color ${hex}`);
     if (queued) return queued;
     takeLights('a color');
@@ -348,9 +370,37 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       scenes: db.listScenes(),
       devicePresets: db.listDevicePresets(),
       settings: readSettings(db),
-      state: lights.publicState()
+      state: lights.publicState(),
+      controls: lights.controls()
     })
   );
+
+  // Power and brightness, for every light or one device (see LightControls).
+  admin.get('/lights', (c) => c.json(lights.controls()));
+
+  const deviceTarget = z.string().min(1).max(64).nullable().default(null);
+  const knownDevice = (id: string | null) => {
+    if (id && !db.getDevice(id)) throw new HttpError(404, 'Unknown device');
+  };
+
+  admin.put('/lights/power', async (c) => {
+    const { on, deviceId } = await body(c, z.object({ on: z.boolean(), deviceId: deviceTarget }));
+    knownDevice(deviceId);
+    const result = await lights.setPower(on, deviceId, actor(c));
+    if (!on && lights.allOff()) {
+      // Nothing plays on lights that are off: the game ends and the line empties.
+      host?.endGame('the lights were switched off');
+      line?.clear('the lights were switched off');
+    }
+    return c.json({ controls: lights.controls(), result });
+  });
+
+  admin.put('/lights/brightness', async (c) => {
+    const { level, deviceId } = await body(c, z.object({ level: z.number().int().min(1).max(100).nullable(), deviceId: deviceTarget }));
+    knownDevice(deviceId);
+    const result = await lights.setBrightness(level, deviceId, actor(c));
+    return c.json({ controls: lights.controls(), result });
+  });
 
   admin.post('/auth/password', async (c) => {
     const { current, next } = await body(c, z.object({ current: z.string().min(1), next: z.string().min(12, 'Use at least 12 characters') }));

@@ -102,6 +102,33 @@ export interface PublicState {
   onlineDevices: number;
   totalDevices: number;
   revertAt: string | null;
+  /** An admin switched every light off: nothing plays until one switches them on again. */
+  lightsOff: boolean;
+}
+
+/**
+ * The admin's switches for the lights, kept by the server so they hold through scenes, colors,
+ * games and the auto-revert.
+ */
+export interface LightControls {
+  /** Devices switched off: they stay dark (no scene, color, effect or game) until switched on. */
+  off: string[];
+  /**
+   * Brightness in percent (1 to 100). `all`: every device; null leaves it to each scene's
+   * presets. `devices`: a device's own level, which wins over `all`.
+   */
+  brightness: { all: number | null; devices: Record<string, number> };
+}
+
+/**
+ * The roofline as the home page draws it (see RoofView): the roof's LEDs gathered into cells
+ * along the front of the house, left to right.
+ */
+export interface RoofGeometry {
+  /** Per cell: where it is across the front of the house (0 = left, 1 = right). */
+  x: number[];
+  /** Per cell: how high it is (0 = the lowest roof cell, 1 = the highest). */
+  y: number[];
 }
 
 export interface ApplyResult {

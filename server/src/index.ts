@@ -16,6 +16,7 @@ import { readLayout } from './layoutStore.ts';
 import { LayoutPreview } from './layoutPreview.ts';
 import { FramePipeline } from './framePipeline.ts';
 import { LightSender } from './lightSender.ts';
+import { RoofView } from './roofView.ts';
 
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
@@ -47,7 +48,16 @@ host.setGameArea(readGameArea(db));
 host.line.configure(readLineSettings(db));
 // Scenes with effects: the game host draws them and sends them to the lights.
 lights.setEffectPlayer((show) => host.playShow(show));
-const app = createApp({ config, db, bus, lights, host, preview });
+// No game starts on lights that are switched off.
+host.closed = () => (lights.allOff() ? 'The lights are switched off right now.' : null);
+// What the roofline shows, for the home page.
+const roof = new RoofView({
+  layout: () => host.yard,
+  devices: () => lights.liveDevices(),
+  deviceFrame: (id) => pipeline.deviceFrame(id),
+  simFrame: () => host.simFrame()
+});
+const app = createApp({ config, db, bus, lights, host, preview, roof });
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);
 });
@@ -94,6 +104,7 @@ async function shutdown() {
   // Unfreeze devices that got frames over HTTP, so they do not stay on the last frame.
   await Promise.race([sender.release(lights.devicesWithStatus()), new Promise((r) => setTimeout(r, 1000))]);
   lights.stop();
+  roof.close();
   host.stop();
   preview.close();
   pipeline.close();
