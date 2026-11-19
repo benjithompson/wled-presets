@@ -18,7 +18,7 @@ import { gameLook } from '../lib/gameLooks.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
 import { useEvents } from '../lib/useEvents.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
-import { ROOF_HEIGHT, Roofline, useRoofStream } from '../components/Roofline.tsx';
+import { Roofline, useRoofStream } from '../components/Roofline.tsx';
 import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../components/LightControls.tsx';
 
 const KEY = ['public-state'];
@@ -107,11 +107,7 @@ export function PublicPage() {
       <LightField look={look} dark={dark} speed={speed} />
       <Roofline roof={roof} dark={dark} />
 
-      <div
-        className="relative mx-auto max-w-5xl px-5 pt-[max(2rem,env(safe-area-inset-top))] pb-[max(3rem,env(safe-area-inset-bottom))] sm:px-8"
-        // Room for the roofline along the top edge.
-        style={roof.geometry ? { paddingTop: `max(calc(${ROOF_HEIGHT}px + 1.25rem), calc(env(safe-area-inset-top) + ${ROOF_HEIGHT}px + 0.5rem))` } : undefined}
-      >
+      <div className="relative mx-auto max-w-5xl px-5 pt-[max(2rem,env(safe-area-inset-top))] pb-[max(3rem,env(safe-area-inset-bottom))] sm:px-8">
         <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{state?.title ?? ' '}</h1>

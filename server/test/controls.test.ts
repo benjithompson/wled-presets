@@ -185,20 +185,26 @@ describe('roof view', () => {
     expect(view.frame().every((v) => v === 0)).toBe(true);
   });
 
-  it('lays the cells out left to right, the peak highest', () => {
+  it('gathers the roof into cells in strip order, its left end first', () => {
     const l = layout();
-    const view = new RoofView({ layout: () => l, devices: () => [device], deviceFrame: () => null, simFrame: () => null }, fakePeek);
-    const geometry: { x: number[]; y: number[] }[] = [];
+    // Light only the roof's first LED (strip order): it shows in the first cell.
+    const sent = new Uint8Array(6000);
+    const view = new RoofView({ layout: () => l, devices: () => [device], deviceFrame: () => sent, simFrame: () => null }, fakePeek);
+    const geometry: { cells: number }[] = [];
     const stop = view.watch((e) => e.event === 'geometry' && geometry.push(JSON.parse(e.data)));
     stop?.();
     view.close();
-    const g = geometry[0];
-    expect(g.x.length).toBeGreaterThan(10);
-    expect(g.x).toEqual([...g.x].sort((a, b) => a - b));
-    expect(Math.max(...g.y)).toBeGreaterThan(0.95);
-    // The sample roof is a gable: high in the middle, low at the ends.
-    const mid = g.y[Math.floor(g.y.length / 2)];
-    expect(mid).toBeGreaterThan(g.y[0]);
+    const cells = geometry[0].cells;
+    expect(cells).toBeGreaterThan(10);
+    expect(cells).toBeLessThanOrEqual(240);
+    const roof = l.fixtures.find((f) => f.kind === 'roof')!;
+    // The sample roof's strip starts at its left end: LED 0 is the first cell.
+    const first = roof.reversed ? roof.startPixel + roof.pixels - 1 : roof.startPixel;
+    sent[first * 3] = 255;
+    const f = view.frame();
+    expect(f.length).toBe(cells * 3);
+    expect(f[0]).toBe(255);
+    expect(f.slice(3).every((v) => v === 0)).toBe(true);
   });
 });
 

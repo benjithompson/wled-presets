@@ -10,9 +10,9 @@ export function fieldBurst(el: Element, colors?: string[]) {
   engine?.burst(r.left + r.width / 2, r.top + r.height / 2, colors, 1);
 }
 
-/** The roofline's colors now (see LightFieldEngine.setRoof). Null: no roofline. */
-export function fieldRoof(x: ArrayLike<number> | null, rgb?: Uint8Array) {
-  engine?.setRoof(x, rgb);
+/** The roofline's colors now, one RGB triple per cell in strip order (see LightFieldEngine.setRoof). Null: none. */
+export function fieldRoof(rgb: Uint8Array | null) {
+  engine?.setRoof(rgb);
 }
 
 /** Shows a scene's colors while the pointer rests on it. Null ends the preview. */
