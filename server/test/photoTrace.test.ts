@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { designLeds } from '../../shared/layout.ts';
-import { autoDots, glowMaps, isLoop, ledStep, orderDots, PHOTO_COLORS, photoDesign, strokesFromOrder, traceDots, type Pixels, type Pt, type RGB } from '../../shared/photoTrace.ts';
+import { autoDots, CODE_RGB, codeDigit, codeDigits, codeFrames, colorfulMaps, decodeDigits, decodeScan, glowMaps, orderByNumber, isLoop, ledStep, orderDots, PHOTO_COLORS, photoDesign, strokesFromOrder, traceDots, type Pixels, type Pt, type RGB } from '../../shared/photoTrace.ts';
 
 const GREEN = PHOTO_COLORS[0];
 
@@ -135,4 +135,58 @@ describe('a custom object from a photo', () => {
     const r = Math.max(...design[0].points.map((p) => Math.hypot(p.x, p.y)));
     expect(r).toBeCloseTo(0.5, 1);
   });
+
+  it('numbers LEDs with a color code that catches a misread digit', () => {
+    expect(codeDigits(2)).toBe(1);
+    expect(codeDigits(9)).toBe(2);
+    expect(codeDigits(10)).toBe(3);
+    expect(codeFrames(300)).toBe(7);
+    for (const n of [5, 50, 300]) {
+      for (let i = 0; i < n; i++) {
+        const digits = Array.from({ length: codeFrames(n) }, (_, f) => codeDigit(i, f, n));
+        expect(decodeDigits(digits, n)).toBe(i);
+        // One digit read wrong does not give another LED's number.
+        for (let f = 0; f < digits.length; f++) expect(decodeDigits(digits.map((d, k) => (k === f ? (d + 1) % 3 : d)), n)).toBeNull();
+      }
+    }
+  });
+
+  it('reads every LED number from camera frames, where the wire crosses itself and the hand shakes', () => {
+    // A figure eight: the wire crosses in the middle, so no guess from the shape can be sure.
+    // 150 LEDs: the top digit is never 2, so that frame shows no blue at all.
+    const n = 150;
+    const pts = Array.from({ length: n }, (_, i) => {
+      const a = ((i + 0.5) / n) * Math.PI * 2;
+      return { x: 400 + Math.sin(a) * 340, y: 250 + Math.sin(2 * a) * 160 };
+    });
+    const shake = [
+      { x: 0, y: 0 },
+      { x: 3, y: -2 },
+      { x: -2, y: 4 },
+      { x: 5, y: 1 },
+      { x: -4, y: -3 },
+      { x: 2, y: 3 }
+    ];
+    expect(codeFrames(n)).toBe(shake.length);
+    const frames = shake.map((s, f) => photo(800, 500, pts.map((p, i) => ({ p: { x: p.x + s.x, y: p.y + s.y }, rgb: CODE_RGB[codeDigit(i, f, n)] })), window));
+    const { dots, threshold } = autoDots(colorfulMaps(frames[0]), n);
+    expect(dots).toHaveLength(n);
+    const ids = decodeScan(frames, dots, n, threshold);
+    for (let k = 0; k < dots.length; k++) {
+      const i = ids[k];
+      expect(i).not.toBeNull();
+      expect(Math.hypot(dots[k].x - pts[i!].x, dots[k].y - pts[i!].y)).toBeLessThan(1.5);
+    }
+    const order = orderByNumber(dots, ids);
+    expect(order).toHaveLength(1);
+    expect(order[0].map((k) => ids[k])).toEqual(pts.map((_, i) => i));
+  });
+
+  it('starts a new stroke where the numbered LEDs jump, and skips a missing one', () => {
+    const dots = [...Array.from({ length: 6 }, (_, i) => ({ x: i * 10, y: 0 })), ...Array.from({ length: 6 }, (_, i) => ({ x: 200 + i * 10, y: 0 }))];
+    const ids = dots.map((_, i) => (i === 2 ? null : i));
+    const order = orderByNumber(dots, ids);
+    expect(order).toEqual([[0, 1, 3, 4, 5], [6, 7, 8, 9, 10, 11]]);
+  });
 });
+

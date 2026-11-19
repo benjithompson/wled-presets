@@ -471,3 +471,185 @@ export function photoDesign(strokes: PhotoStroke[], metersPerPixel: number): Des
     };
   });
 }
+
+// ---------- Scanning with the camera: every LED tells its number ----------
+//
+// For an exact order, the LEDs blink their own numbers: in each of a few frames every LED is
+// red, green or blue, one base-3 digit of its number (the LED's place from the start of the
+// wire), and a last frame holds a check digit. A camera that watches the frames reads each dot's
+// colors and so its number: no guessing at the order, even where the wire crosses itself. Every
+// LED is lit in every frame, so the camera's exposure stays steady and every frame shows every
+// dot (a shaky hand is followed from frame to frame).
+
+/** The three colors of the code, a little dimmed so the middle of an LED is not all white. */
+export const CODE_RGB: RGB[] = [
+  [150, 0, 0],
+  [0, 120, 0],
+  [0, 0, 170]
+];
+
+/** How many digits the numbers of n LEDs need. */
+export const codeDigits = (n: number) => Math.max(1, Math.ceil(Math.log(Math.max(2, n)) / Math.log(3) - 1e-9));
+
+/** How many frames a scan of n LEDs takes: its digits and the check digit. */
+export const codeFrames = (n: number) => codeDigits(n) + 1;
+
+/** The color (0 red, 1 green, 2 blue) of LED i (counted from the start of the wire) in a frame of a scan of n LEDs. */
+export function codeDigit(i: number, frame: number, n: number): number {
+  const d = codeDigits(n);
+  if (frame < d) return Math.floor(i / 3 ** frame) % 3;
+  // The check digit: the digits' sum, so one misread digit shows.
+  let sum = 0;
+  for (let k = 0; k < d; k++) sum += Math.floor(i / 3 ** k) % 3;
+  return sum % 3;
+}
+
+/** The LED number from the colors read in each frame, or null when they do not add up. */
+export function decodeDigits(digits: number[], n: number): number | null {
+  const d = codeDigits(n);
+  if (digits.length !== d + 1 || digits.some((x) => x < 0 || x > 2)) return null;
+  let i = 0;
+  let sum = 0;
+  for (let k = 0; k < d; k++) {
+    i += digits[k] * 3 ** k;
+    sum += digits[k];
+  }
+  return sum % 3 === digits[d] && i < n ? i : null;
+}
+
+/** A glow map for lights of any color: strongly colored and bright (the code has three colors). */
+export function colorfulMaps(img: Pixels): GlowMaps {
+  const n = img.width * img.height;
+  const main = new Uint8Array(n);
+  const white = new Uint8Array(n);
+  const d = img.data;
+  for (let i = 0; i < n; i++) {
+    const r = d[i * 4];
+    const g = d[i * 4 + 1];
+    const b = d[i * 4 + 2];
+    const hi = Math.max(r, g, b);
+    const lo = Math.min(r, g, b);
+    main[i] = Math.min(255, ((hi - lo) * hi) / 200);
+    white[i] = lo >= 225 ? 1 : 0;
+  }
+  return { width: img.width, height: img.height, main, start: new Uint8Array(n), white };
+}
+
+/** How far the dots in a frame moved from where they were (a hand holding the phone moves a little). */
+export function frameShift(ref: Pt[], seen: Pt[], gap: number): Pt {
+  let shift = { x: 0, y: 0 };
+  if (!ref.length || !seen.length) return shift;
+  for (let round = 0, reach = gap * 3; round < 4; round++, reach = gap * 0.5) {
+    const dx: number[] = [];
+    const dy: number[] = [];
+    for (const p of ref) {
+      let best: Pt | null = null;
+      let bd = reach;
+      for (const q of seen) {
+        const d = Math.hypot(q.x - p.x - shift.x, q.y - p.y - shift.y);
+        if (d < bd) {
+          bd = d;
+          best = q;
+        }
+      }
+      if (best) {
+        dx.push(best.x - p.x);
+        dy.push(best.y - p.y);
+      }
+    }
+    if (!dx.length) return shift;
+    const mid = (v: number[]) => v.sort((a, b) => a - b)[Math.floor(v.length / 2)];
+    shift = { x: mid(dx), y: mid(dy) };
+  }
+  return shift;
+}
+
+/**
+ * How much red, green and blue each dot shows in a frame, around its middle (which is often
+ * white). Nearer the middle counts more: the edge may catch a neighbor's glow.
+ */
+export function colorSums(img: Pixels, dots: Pt[], shift: Pt, radius: number | number[]): number[][] {
+  const { width: w, height: h, data } = img;
+  return dots.map((p, k) => {
+    const s = [0, 0, 0];
+    const rr = Math.max(1, typeof radius === 'number' ? radius : radius[k]);
+    const r = Math.ceil(rr);
+    const cx = Math.round(p.x + shift.x);
+    const cy = Math.round(p.y + shift.y);
+    for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
+      for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) {
+        const d = Math.hypot(x - cx, y - cy);
+        if (d > rr) continue;
+        const i = (y * w + x) * 4;
+        const lo = Math.min(data[i], data[i + 1], data[i + 2]);
+        if (lo >= 225) continue;
+        const wt = 1 - d / (rr + 1);
+        for (let c = 0; c < 3; c++) s[c] += Math.max(0, data[i + c] - lo) * wt;
+      }
+    return s;
+  });
+}
+
+/**
+ * How bright each color comes out (cameras see green brighter, for one): its high end over all
+ * the readings. Taken over the whole scan, since a frame may not show every color (the top
+ * digit of a few LEDs is never 2).
+ */
+export function colorGains(sums: number[][]): number[] {
+  return [0, 1, 2].map((c) => {
+    const v = sums.map((s) => s[c]).sort((a, b) => a - b);
+    return Math.max(1, v[Math.floor(v.length * 0.85)] ?? 1);
+  });
+}
+
+/** The color of each reading: 0 red, 1 green, 2 blue. */
+export const pickColors = (sums: number[][], gains: number[]) =>
+  sums.map((s) => {
+    const v = s.map((x, c) => x / gains[c]);
+    return v.indexOf(Math.max(...v));
+  });
+
+/**
+ * Reads a scan: the frames in order (see codeDigit), the dots found in the first one. Each dot
+ * gets its LED number, or null when its colors do not add up. Two dots with the same number
+ * both get null (one of them was misread).
+ */
+export function decodeScan(frames: Pixels[], dots: Pt[], n: number, threshold: number): (number | null)[] {
+  const gap = typicalGap(dots) || 10;
+  // Each dot is read within less than half the way to its nearest neighbor.
+  const radius = dots.map((p) => {
+    let near = Infinity;
+    for (const q of dots) if (q !== p) near = Math.min(near, dist(p, q));
+    return Math.max(1.5, Math.min(gap * 0.6, near * 0.42));
+  });
+  const sums = frames.map((img, f) => {
+    const shift = f === 0 ? { x: 0, y: 0 } : frameShift(dots, findDots(colorfulMaps(img), threshold), gap);
+    return colorSums(img, dots, shift, radius);
+  });
+  const gains = colorGains(sums.flat());
+  const colors = sums.map((s) => pickColors(s, gains));
+  const digits = dots.map((_, k) => colors.map((c) => c[k]));
+  const ids = digits.map((d) => decodeDigits(d, n));
+  const count = new Map<number, number>();
+  for (const id of ids) if (id != null) count.set(id, (count.get(id) ?? 0) + 1);
+  return ids.map((id) => (id != null && count.get(id) === 1 ? id : null));
+}
+
+/** The dots in LED order, as strokes of dot indexes: a new stroke where the wire jumps. */
+export function orderByNumber(dots: Pt[], ids: (number | null)[]): number[][] {
+  const known = ids.map((id, k) => ({ id, k })).filter((x): x is { id: number; k: number } => x.id != null).sort((a, b) => a.id - b.id);
+  if (!known.length) return [];
+  // The usual distance from one LED to the next, per LED number (some may be missing).
+  const steps: number[] = [];
+  for (let j = 1; j < known.length; j++) steps.push(dist(dots[known[j].k], dots[known[j - 1].k]) / (known[j].id - known[j - 1].id));
+  steps.sort((a, b) => a - b);
+  const step = steps[Math.floor(steps.length / 2)] ?? 0;
+  const out: number[][] = [[known[0].k]];
+  for (let j = 1; j < known.length; j++) {
+    const a = known[j - 1];
+    const b = known[j];
+    if (step && dist(dots[a.k], dots[b.k]) > step * (b.id - a.id) * 2.2 + step) out.push([]);
+    out.at(-1)!.push(b.k);
+  }
+  return out;
+}

@@ -4,14 +4,18 @@
 // drag through the dots (or along the wire) with the mouse or a finger. The photo stays in this
 // browser; only the colors for the lights go to the server.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react';
-import { Camera, CircleDot, Flag, Hand, ImagePlus, Lightbulb, Maximize, Route, Undo2, WandSparkles } from 'lucide-react';
+import { Camera, CircleDot, Flag, Hand, ImagePlus, Lightbulb, Maximize, Route, ScanLine, Undo2, WandSparkles, X } from 'lucide-react';
 import { deviceLed, FEET_PER_METER, MAX_FIXTURE_PIXELS, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
 import {
   autoDots,
+  codeFrames,
+  colorfulMaps,
+  decodeScan,
   findDots,
   glowMaps,
   isLoop,
   ledStep,
+  orderByNumber,
   orderDots,
   PHOTO_COLORS,
   photoDesign,
@@ -35,7 +39,8 @@ import { PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.
 const MAX_SIDE = 1400;
 
 type Tool = 'connect' | 'dots' | 'start' | 'move';
-type Dot = Pt & { id: number };
+/** A dot in the photo. `num`: its LED number, when a scan read it. */
+type Dot = Pt & { id: number; num?: number };
 /** A run of the wire traced by hand: through dots (by id), or freehand where no dots were found. */
 type Run = { ids: number[]; closed?: boolean } | { free: Pt[] };
 
@@ -46,6 +51,8 @@ interface Photo {
   maps: (color: (typeof PHOTO_COLORS)[number]) => GlowMaps;
   /** How many LEDs were lit for it, when this page lit them. */
   lit: number | null;
+  /** From a camera scan: how many LEDs it read the numbers of. */
+  scanned?: number;
 }
 
 interface Snapshot {
@@ -116,7 +123,9 @@ export function PhotoTrace({
 
   const inFront = useInFront();
   const lighting = open && lightUp && !!deviceId && count <= MAX_FIXTURE_PIXELS && inFront;
-  const lightBody = lighting ? JSON.stringify({ active: true, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start } }) : null;
+  /** While scanning: the frame the lights show (see codeDigit). */
+  const [scanCode, setScanCode] = useState<number | null>(null);
+  const lightBody = lighting ? JSON.stringify({ active: true, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code: scanCode } }) : null;
   useEffect(() => {
     onLights(lighting);
     return () => onLights(false);
@@ -161,6 +170,7 @@ export function PhotoTrace({
   useEffect(() => () => void (photo && URL.revokeObjectURL(photo.url)), [photo]);
   useEffect(() => {
     if (open) return;
+    closeCamera();
     setPhoto(null);
     setDots([]);
     setRuns(null);
@@ -236,10 +246,117 @@ export function PhotoTrace({
     }
   };
 
-  // Another color: look again.
+  // Another color: look again (a scan's dots stay: they have their numbers).
   useEffect(() => {
-    if (photo) detect(photo, null);
+    if (photo && !photo.scanned) detect(photo, null);
   }, [colorId]);
+
+  // ----- Scanning with the camera: the LEDs blink their numbers in color -----
+  const video = useRef<HTMLVideoElement>(null);
+  const [camera, setCamera] = useState<MediaStream | null>(null);
+  const [scanning, setScanning] = useState<{ frame: number; of: number } | null>(null);
+  const cancelScan = useRef(false);
+  const canScan = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && window.isSecureContext && !!deviceId && count <= MAX_FIXTURE_PIXELS;
+  const frames = codeFrames(count);
+
+  const openCamera = async () => {
+    setProblem(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      setCamera(stream);
+      setLightUp(true);
+    } catch {
+      setProblem('The camera could not be opened. Allow it for this site in the browser, or take a photo instead.');
+    }
+  };
+  function closeCamera() {
+    cancelScan.current = true;
+    setCamera((c) => {
+      c?.getTracks().forEach((t) => t.stop());
+      return null;
+    });
+    setScanning(null);
+    setScanCode(null);
+  }
+  useEffect(() => {
+    if (video.current && camera) video.current.srcObject = camera;
+  }, [camera]);
+  useEffect(() => () => camera?.getTracks().forEach((t) => t.stop()), [camera]);
+
+  /** The camera's picture now, made smaller like a photo. */
+  const grab = () => {
+    const v = video.current!;
+    const k = Math.min(1, MAX_SIDE / Math.max(v.videoWidth, v.videoHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(v.videoWidth * k));
+    canvas.height = Math.max(1, Math.round(v.videoHeight * k));
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    return { canvas, pixels: ctx.getImageData(0, 0, canvas.width, canvas.height) };
+  };
+
+  /**
+   * Shows each frame of the code on the lights, takes the camera's picture of it, and reads
+   * every LED's number from its colors: the dots come out in the wire's exact order.
+   */
+  const runScan = async () => {
+    if (!video.current?.videoWidth) return;
+    const n = count;
+    const body = (code: number) => ({ active: true as const, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code } });
+    cancelScan.current = false;
+    setProblem(null);
+    const shots: { canvas: HTMLCanvasElement; pixels: ImageData }[] = [];
+    try {
+      for (let f = 0; f < frames; f++) {
+        setScanning({ frame: f + 1, of: frames });
+        setScanCode(f);
+        await api.previewLayout(JSON.stringify(body(f)));
+        // The lights change, then the camera sees it (and settles its exposure on the first frame).
+        await new Promise((r) => setTimeout(r, f === 0 ? 900 : 500));
+        if (cancelScan.current) return;
+        shots.push(grab());
+      }
+    } catch {
+      setProblem('The lights did not answer. Try again.');
+      return;
+    } finally {
+      setScanCode(null);
+      setScanning(null);
+    }
+    const first = colorfulMaps(shots[0].pixels);
+    const found = autoDots(first, n);
+    const nums = decodeScan(
+      shots.map((s) => s.pixels),
+      found.dots,
+      n,
+      found.threshold
+    );
+    const order = orderByNumber(found.dots, nums);
+    const read = nums.filter((x) => x != null).length;
+    const blob = await new Promise<Blob | null>((r) => shots[0].canvas.toBlob(r, 'image/jpeg', 0.9));
+    if (!blob) return;
+    const cache = new Map<string, GlowMaps>();
+    const pixels = shots[0].pixels;
+    closeCamera();
+    setPhoto({
+      url: URL.createObjectURL(blob),
+      width: pixels.width,
+      height: pixels.height,
+      maps: (c) => cache.get(c.id) ?? (cache.set(c.id, glowMaps(pixels, c)), cache.get(c.id)!),
+      lit: n,
+      scanned: read
+    });
+    const list: Dot[] = found.dots.map((d, k) => ({ x: d.x, y: d.y, id: nextId.current++, ...(nums[k] != null ? { num: nums[k]! } : {}) }));
+    setDots(list);
+    setRuns(order.map((o) => ({ ids: o.map((k) => list[k].id), ...(isLoop(o.map((k) => list[k]), typicalGap(list)) && nums[o[0]] === 0 && nums[o.at(-1)!] === n - 1 ? { closed: true } : {}) })));
+    setStartId(list.find((d) => d.num === 0)?.id ?? null);
+    past.current = [];
+    setWidthM(null);
+    setView(null);
+    setTool('connect');
+    if (read < Math.max(2, found.dots.length * 0.5))
+      setProblem(`Only ${read} of ${found.dots.length} LEDs could be read. Hold the phone still (rest it on something), keep the whole object in view, and scan again; or fix the order by hand.`);
+  };
 
   // ----- The wire through the dots -----
   const byId = useMemo(() => new Map(dots.map((d) => [d.id, d])), [dots]);
@@ -518,7 +635,28 @@ export function PhotoTrace({
             onWheel={onWheel}
             onContextMenu={(e) => e.preventDefault()}
           >
-            {photo ? (
+            {camera ? (
+              <>
+                <video ref={video} autoPlay playsInline muted className="absolute inset-0 size-full object-contain" />
+                <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-end justify-between gap-2">
+                  <p className="max-w-md text-[11px] text-white/80 [text-shadow:0_1px_2px_#000]">
+                    {scanning
+                      ? `Reading the LEDs: frame ${scanning.frame} of ${scanning.of}. Hold still…`
+                      : `Point the camera at the object, with all of it in view, and hold still (rest the phone on something). The lights change color ${frames} times, about ${Math.ceil(frames * 0.5 + 1)} seconds.`}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={closeCamera}>
+                      <X /> {scanning ? 'Stop' : 'Close camera'}
+                    </Button>
+                    {scanning ? null : (
+                      <Button size="sm" variant="primary" onClick={() => void runScan()} disabled={!lighting}>
+                        <ScanLine /> Start scan
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : photo ? (
               <>
                 <img
                   src={photo.url}
@@ -557,7 +695,7 @@ export function PhotoTrace({
                   })}
                   {/* Every tenth LED's number, to check the order. */}
                   {dots.map((d) => {
-                    const n = ledIndex.get(d.id);
+                    const n = d.num ?? ledIndex.get(d.id);
                     if (n == null || n === 0 || n % 10) return null;
                     const q = S(d);
                     return (
@@ -576,7 +714,12 @@ export function PhotoTrace({
                   <Camera className="mx-auto size-8 text-white/50" />
                   <p>Take the picture in the dark or at dusk, straight from the front, with the whole object in it. Hold still.</p>
                   <div className="flex flex-wrap justify-center gap-2">
-                    <Button variant="primary" loading={loading} onClick={() => cameraInput.current?.click()}>
+                    {canScan ? (
+                      <Button variant="primary" onClick={() => void openCamera()} title="The LEDs blink their numbers in color, and the camera reads them: the exact order">
+                        <ScanLine /> Scan with the camera
+                      </Button>
+                    ) : null}
+                    <Button variant={canScan ? 'secondary' : 'primary'} loading={loading} onClick={() => cameraInput.current?.click()}>
                       <Camera /> Take a photo
                     </Button>
                     <Button onClick={() => fileInput.current?.click()} disabled={loading}>
@@ -591,7 +734,7 @@ export function PhotoTrace({
         </div>
 
         {/* On a phone, lighting comes first until there is a photo. */}
-        <div className={cn('w-full shrink-0 rounded-xl ring-1 ring-stone-200 lg:order-none lg:w-72 dark:ring-stone-800', !photo && 'order-first')}>
+        <div className={cn('w-full shrink-0 rounded-xl ring-1 ring-stone-200 lg:order-none lg:w-72 dark:ring-stone-800', !photo && !camera && 'order-first')}>
           <PropSection id="photo-light" title="1 · Light it up">
             {devices.length ? (
               <>
@@ -632,9 +775,14 @@ export function PhotoTrace({
             )}
           </PropSection>
 
-          <PropSection id="photo-shot" title="2 · Take the photo">
+          <PropSection id="photo-shot" title="2 · Scan or take a photo">
             <div className="flex flex-wrap gap-1.5">
-              <Button size="sm" variant={photo ? 'secondary' : 'primary'} loading={loading} onClick={() => cameraInput.current?.click()}>
+              {canScan && !camera ? (
+                <Button size="sm" variant="primary" onClick={() => void openCamera()}>
+                  <ScanLine /> Scan with the camera
+                </Button>
+              ) : null}
+              <Button size="sm" variant={photo || canScan ? 'secondary' : 'primary'} loading={loading} onClick={() => cameraInput.current?.click()}>
                 <Camera /> {photo ? 'Another photo' : 'Take a photo'}
               </Button>
               <Button size="sm" onClick={() => fileInput.current?.click()} disabled={loading}>
@@ -642,7 +790,13 @@ export function PhotoTrace({
               </Button>
             </div>
             {problem ? <PropNote tone="red">{problem}</PropNote> : null}
-            {photo ? (
+            {devices.length && typeof window !== 'undefined' && !window.isSecureContext ? <PropNote>Open the admin console at its https:// address to scan with the camera.</PropNote> : null}
+            {canScan ? <PropNote>A scan makes the LEDs blink their numbers in color and reads them with the camera: the exact order, even where the wire crosses itself.</PropNote> : null}
+            {photo?.scanned != null ? (
+              <PropNote>
+                {photo.scanned} of {photo.lit} LEDs read by their numbers{dots.length > photo.scanned ? `; ${dots.length - photo.scanned} more seen but not read (red)` : ''}. Tap Automatic order to guess from the shape instead.
+              </PropNote>
+            ) : photo ? (
               <>
                 <PropRow label="Sensitivity" hint="More finds fainter LEDs; less leaves out stray light">
                   <input

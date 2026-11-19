@@ -1,5 +1,6 @@
 import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
 import { buildStage, deviceLed, editorPulse, layoutShapeKey, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
+import { CODE_RGB, codeDigit } from '../../shared/photoTrace.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
 
@@ -24,7 +25,8 @@ export interface PreviewRequest {
 
 /**
  * LEDs to light for a photo of a custom object (see shared/photoTrace.ts): device LEDs `from`
- * to `to` (either way round) in `rgb`, LED `from` (where the wire starts) in `start`.
+ * to `to` (either way round) in `rgb`, LED `from` (where the wire starts) in `start`; or, for a
+ * camera scan, each in the color of one digit of its number.
  */
 export interface PhotoLights {
   deviceId: string;
@@ -32,6 +34,8 @@ export interface PhotoLights {
   to: number;
   rgb: [number, number, number];
   start: [number, number, number];
+  /** A frame of a camera scan instead (see codeDigit): every LED shows a digit of its number. */
+  code?: number | null;
 }
 
 /** The sequence editor's preview: a sequence, the time the editor shows, and whether it plays. */
@@ -73,7 +77,11 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
       for (let i = 0; i < stage.fixtures[fi].count; i++) put(fi, i, [0, 0, 0]);
     });
     const dir = p.to >= p.from ? 1 : -1;
-    for (let led = p.from; led !== p.to + dir; led += dir) extra.push({ deviceId: p.deviceId, led, rgb: led === p.from ? p.start : p.rgb });
+    const n = Math.abs(p.to - p.from) + 1;
+    for (let i = 0, led = p.from; i < n; i++, led += dir) {
+      const rgb = p.code != null ? CODE_RGB[codeDigit(i, p.code, n)] : i === 0 ? p.start : p.rgb;
+      extra.push({ deviceId: p.deviceId, led, rgb });
+    }
     // A device with no objects in the layout yet still gets the frame.
     const maps = view.maps.some((m) => m.deviceId === p.deviceId) ? view.maps : [...view.maps, emptyMap(p.deviceId)];
     return { maps, bytes, extra };

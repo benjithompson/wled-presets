@@ -841,7 +841,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       .nullable()
       .optional(),
     photo: z
-      .object({ deviceId: z.string().min(1).max(64), from: z.number().int().min(0).max(10_000), to: z.number().int().min(0).max(10_000), rgb: rgbInput, start: rgbInput })
+      .object({ deviceId: z.string().min(1).max(64), from: z.number().int().min(0).max(10_000), to: z.number().int().min(0).max(10_000), rgb: rgbInput, start: rgbInput, code: z.number().int().min(0).max(12).nullable().optional() })
       .refine((p) => Math.abs(p.to - p.from) < MAX_FIXTURE_PIXELS, `At most ${MAX_FIXTURE_PIXELS} LEDs`)
       .nullable()
       .optional()
