@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './app.ts';
-import { COOKIE, createAuth } from './auth.ts';
+import { COOKIE, createAuth, isExamplePassword } from './auth.ts';
+import { ConnectionLimit } from './rateLimit.ts';
 import { loadConfig } from './config.ts';
 import { openDatabase } from './db.ts';
 import { useScoreStore } from './game/kit.ts';
@@ -9,7 +10,7 @@ import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
 import { migrateV1Settings, readGameArea, readLineSettings, readSettings } from './settings.ts';
-import { upgradeVisitor } from './visitor.ts';
+import { admitUpgrade, upgradeVisitor } from './visitor.ts';
 import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
 import { readLayout } from './layoutStore.ts';
@@ -26,7 +27,10 @@ migrateV1Settings(db);
 
 // First admin account from the environment.
 if (db.countUsers() === 0) {
-  if (config.adminUsername && config.adminPassword) {
+  if (config.adminUsername && config.adminPassword && isExamplePassword(config.adminPassword)) {
+    // The site is on the internet, and the example password is in the README.
+    console.error('ERROR: ADMIN_PASSWORD is the example password. No admin account was created: set a password of your own.');
+  } else if (config.adminUsername && config.adminPassword) {
     await createAuth(db, { secureCookie: config.secureCookie }).createUser(config.adminUsername, config.adminPassword);
     lights.log('info', 'admin', `Admin account "${config.adminUsername}" created from environment`);
     if (config.adminPassword.length < 12) console.warn('WARNING: ADMIN_PASSWORD is shorter than 12 characters.');
@@ -53,7 +57,25 @@ const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
 });
 
 const auth = createAuth(db, { secureCookie: config.secureCookie });
-host.attach(server as unknown as Server, '/api/play', (req) => upgradeVisitor(req, { trustProxy: config.trustProxy, sessionCookie: COOKIE, isAdmin: (t) => !!auth.userForToken(t) }));
+// Play pages open at once: a few per address (a household shares one), a few hundred in all.
+const sockets = new ConnectionLimit(20, 500);
+host.attach(
+  server as unknown as Server,
+  '/api/play',
+  (req) => upgradeVisitor(req, { trustProxy: config.trustProxy, sessionCookie: COOKIE, isAdmin: (t) => !!auth.userForToken(t) }),
+  (req) => admitUpgrade(req, { trustProxy: config.trustProxy, limit: sockets })
+);
+// An upgrade on a path that no WebSocket handler took stays open for ever (Node hands the socket
+// over and stops timing it): many of them would use up the server's sockets. A socket that a
+// handler took reads data; one that nobody took is closed.
+(server as unknown as Server).on('upgrade', (_req, socket) => {
+  setTimeout(() => {
+    if (!socket.destroyed && socket.listenerCount('data') === 0) socket.destroy();
+  }, 10_000).unref();
+});
+if (db.countUsers() > 0 && config.adminPassword && isExamplePassword(config.adminPassword)) {
+  console.warn('WARNING: ADMIN_PASSWORD is the example password. If an admin still uses it, it only signs in from the home network: change it in the admin console.');
+}
 lights.start(config.statusIntervalMs);
 // A scene with effects that was playing before a restart plays again.
 lights.resumeEffects();

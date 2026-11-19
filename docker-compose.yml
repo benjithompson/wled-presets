@@ -9,7 +9,8 @@ services:
     environment:
       PORT: 8790
       ADMIN_USERNAME: admin
-      ADMIN_PASSWORD: change-me-to-something-long
+      ADMIN_PASSWORD: change-me-to-something-long  # pick your own: this example creates no account
+      # TRUST_PROXY: cloudflare  # behind Cloudflare Tunnel
       DISCOVERY_ON_STARTUP: 1
       DISCOVERY_AUTO_SAVE: 1
       # DISCOVERY_SUBNETS: 192.168.1.0/24

@@ -1,4 +1,11 @@
 import { DEFAULT_LINE, LINE_MAX, type LineAdmin, type LineSettings, type LineView, type LineWant } from '../../shared/line.ts';
+import { isLoopbackIp } from './clientIp.ts';
+
+/**
+ * The most places in line from one address. A household or a group on one Wi-Fi shares an
+ * address; more than this from one is someone filling the line so nobody else gets a turn.
+ */
+export const LINE_PER_ADDRESS = 4;
 
 // The line for the lights (see shared/line.ts): one turn at a time, everyone else waits.
 //
@@ -131,7 +138,7 @@ export class Line {
       this.changed();
       return { result: 'queued', place: at + 1 };
     }
-    if (this.queue.length >= LINE_MAX) return { result: 'full' };
+    if (this.queue.length >= LINE_MAX || this.placesOf(who) >= LINE_PER_ADDRESS) return { result: 'full' };
     this.queue.push({ id: this.nextId++, who, want, label, joined: now });
     if (this.turn) this.turn.deadline = this.deadline(this.turn, now);
     this.log(`Joined the line for ${label} (${this.queue.length} waiting)`);
@@ -149,6 +156,17 @@ export class Line {
     this.queue = this.queue.filter((e) => e.who.id !== who.id);
     if (this.offerTo?.entry.who.id === who.id) this.offerTo = null;
     this.changed();
+  }
+
+  /**
+   * Places in line held from this visitor's address. A visitor id is only a cookie: one person can
+   * make as many as they like, so the line counts addresses too. A loopback address is a proxy's
+   * own (TRUST_PROXY off): it does not tell visitors apart, so it is not counted.
+   */
+  private placesOf(who: Visitor) {
+    const ip = who.actor?.ip;
+    if (who.admin || !ip || ip === 'unknown' || isLoopbackIp(ip)) return 0;
+    return this.queue.filter((e) => e.who.actor?.ip === ip).length;
   }
 
   /** When the turn has to end: a scene's time; a game's turn from when someone began to wait. */

@@ -159,6 +159,7 @@ export function openDatabase(file: string) {
     ),
     touchSession: db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?'),
     deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
+    deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?'),
     purgeSessions: db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
     insertLog: db.prepare(
       'INSERT INTO activity_logs(level, action, message, client_ip, user_agent, details) VALUES(?, ?, ?, ?, ?, ?)'
@@ -298,6 +299,8 @@ export function openDatabase(file: string) {
     getSession: (tokenHash: string) => stmt.getSession.get(tokenHash) ?? null,
     touchSession: (tokenHash: string, expiresAt: number) => stmt.touchSession.run(expiresAt, tokenHash),
     deleteSession: (tokenHash: string) => stmt.deleteSession.run(tokenHash),
+    /** Signs a user out everywhere but the session `keepHash`. */
+    deleteUserSessions: (userId: string, keepHash: string) => stmt.deleteUserSessions.run(userId, keepHash),
     purgeSessions: () => stmt.purgeSessions.run(Date.now()),
 
     addLog(entry: { level: LogLevel; action: string; message: string; clientIp?: string | null; userAgent?: string | null; details?: unknown }) {

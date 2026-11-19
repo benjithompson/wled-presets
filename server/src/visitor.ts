@@ -3,6 +3,8 @@ import type { IncomingMessage } from 'node:http';
 import type { Context, MiddlewareHandler } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import type { Visitor } from './line.ts';
+import { isLoopbackIp, upgradeIp, viaHttps, type TrustProxy } from './clientIp.ts';
+import type { ConnectionLimit } from './rateLimit.ts';
 
 // Who is who, for the line for the lights: each browser gets a random visitor id in a cookie
 // (no name, nothing else). The same id on the public page and the play page, and after a reload,
@@ -25,7 +27,7 @@ export const visitorCookie =
     await next();
     if (!id) return;
     try {
-      setCookie(c, VISITOR_COOKIE, id, { httpOnly: true, sameSite: 'Lax', secure, path: '/', maxAge: YEAR_S });
+      setCookie(c, VISITOR_COOKIE, id, { httpOnly: true, sameSite: 'Lax', secure: secure || viaHttps(c), path: '/', maxAge: YEAR_S });
     } catch {
       // A response whose headers cannot change: the next request gets one.
     }
@@ -54,14 +56,35 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
-/** Who opened a WebSocket: their visitor id (null without one), whether an admin, and their IP for the log. */
-export function upgradeVisitor(req: IncomingMessage, opts: { trustProxy: boolean; isAdmin: (sessionToken: string) => boolean; sessionCookie: string }): Visitor | null {
+/**
+ * Who opened a WebSocket: their visitor id, whether an admin, and their IP (for the log, and the
+ * line's limit per address). Without a visitor cookie, a new visitor each time.
+ */
+export function upgradeVisitor(req: IncomingMessage, opts: { trustProxy: TrustProxy; isAdmin: (sessionToken: string) => boolean; sessionCookie: string }): Visitor {
   const cookies = parseCookies(req.headers.cookie);
   const id = cookies[VISITOR_COOKIE];
   const token = cookies[opts.sessionCookie];
-  const fwd = opts.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() : '';
-  const ip = fwd || req.socket.remoteAddress || 'unknown';
+  const ip = upgradeIp(req, opts.trustProxy);
   const ua = req.headers['user-agent'];
-  if (!id || !VALID.test(id)) return null;
-  return { id, admin: !!token && opts.isAdmin(token), actor: { ip, userAgent: typeof ua === 'string' ? ua : null } };
+  const actor = { ip, userAgent: typeof ua === 'string' ? ua.slice(0, 300) : null };
+  if (!id || !VALID.test(id)) return { id: `c:${crypto.randomUUID()}`, actor };
+  return { id, admin: !!token && opts.isAdmin(token), actor };
+}
+
+/**
+ * Whether a WebSocket may open. A page on another site cannot open one (its Origin names another
+ * host), and one address holds only so many at once. Returns the function to call once the
+ * socket closed, or null to refuse it.
+ */
+export function admitUpgrade(req: IncomingMessage, opts: { trustProxy: TrustProxy; limit: ConnectionLimit }): (() => void) | null {
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      if (new URL(origin).host !== req.headers.host) return null;
+    } catch {
+      return null;
+    }
+  }
+  const ip = upgradeIp(req, opts.trustProxy);
+  return opts.limit.take(ip, isLoopbackIp(ip));
 }
