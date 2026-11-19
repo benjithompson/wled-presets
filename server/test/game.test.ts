@@ -344,11 +344,21 @@ describe('Comet Catcher', () => {
       }
       return Math.max(...green) - Math.min(...green);
     };
+    // The comet's tail over the gate hides its green for a moment: take the widest look over half a
+    // second (the gate closes in by only 2.5% of its width in that time).
+    const widest = () => {
+      let w = gateWidth();
+      for (let i = 0; i < 30; i++) {
+        game.update(1 / 60, frame);
+        w = Math.max(w, gateWidth());
+      }
+      return w;
+    };
     game.input({ playerId: 'p', action: 'press' });
     game.update(1 / 60, frame);
     const before = gateWidth();
     for (let i = 0; i < 8 * 60; i++) game.update(1 / 60, frame);
-    const after = gateWidth();
+    const after = widest();
     expect(after).toBeLessThan(before * 0.75);
     expect(after).toBeGreaterThan(before * 0.3);
   });
