@@ -414,6 +414,8 @@ export interface PhotoStroke {
   points: Pt[];
   dots: boolean;
   closed?: boolean;
+  /** One point per LED, in order (from a scan: see numberedStrokes). */
+  exact?: boolean;
 }
 
 /** The strokes of dots in wire order (see orderDots); a stroke that ends next to its start goes all round. */
@@ -432,15 +434,71 @@ export function isLoop(points: Pt[], gap: number): boolean {
   return points.length >= 6 && gap > 0 && dist(points[0], points.at(-1)!) <= gap * 1.8;
 }
 
-/** The usual distance from one LED to the next along the traced wire, in photo pixels (0: none). */
+/**
+ * The wire's length between two LEDs is the most they can be apart; where it is slack (or runs
+ * toward the camera) they look closer. So the string's spacing shows in the longer steps, not
+ * the usual ones: this is a high one (the 80th percentile, `at`), leaving out the few longest
+ * (an LED missed between two, or misread).
+ */
+export function tautStep(steps: number[], at = 0.8): number {
+  const v = steps.filter((x) => x > 0).sort((a, b) => a - b);
+  return v.length ? v[Math.min(v.length - 1, Math.floor(v.length * at))] : 0;
+}
+
+/** The string's spacing in photo pixels, from the traced wire through the dots (0: none). */
 export function ledStep(strokes: PhotoStroke[]): number {
   const steps: number[] = [];
   for (const s of strokes) {
     if (!s.dots) continue;
     for (let i = 1; i < s.points.length; i++) steps.push(dist(s.points[i - 1], s.points[i]));
   }
-  steps.sort((a, b) => a - b);
-  return steps.length ? steps[Math.floor(steps.length / 2)] : 0;
+  return tautStep(steps);
+}
+
+/** The string's spacing in photo pixels from a scan: between LEDs whose numbers follow on. */
+export function numberedStep(dots: Pt[], ids: (number | null)[]): number {
+  const at = new Map<number, Pt>();
+  ids.forEach((id, k) => id != null && at.set(id, dots[k]));
+  const steps: number[] = [];
+  for (const [id, p] of at) {
+    const q = at.get(id + 1);
+    if (q) steps.push(dist(p, q));
+  }
+  return tautStep(steps, 0.85);
+}
+
+/**
+ * A scan's wire as strokes with one point per LED, all n of them, in number order (see orderByNumber):
+ * an LED that was not read sits on the straight line between the ones read before and after it
+ * (the wire runs there: LEDs are never farther apart than the wire between them), or, before the
+ * first or after the last one read, on it.
+ */
+export function numberedStrokes(dots: Pt[], ids: (number | null)[], order: number[][], n: number): PhotoStroke[] {
+  const runs = order.filter((o) => o.length);
+  if (!runs.length) return [];
+  const out: PhotoStroke[] = runs.map(() => ({ points: [], dots: true, exact: true }));
+  const first = ids[runs[0][0]]!;
+  for (let i = 0; i < first; i++) out[0].points.push({ ...dots[runs[0][0]] });
+  let prev: { id: number; p: Pt } | null = null;
+  runs.forEach((run, r) => {
+    for (const k of run) {
+      const id = ids[k]!;
+      const p = dots[k];
+      if (prev && id - prev.id > 1) {
+        // The ones between: on the way from the one before (in the stroke the wire came from).
+        const into = out[run[0] === k && r > 0 ? r - 1 : r].points;
+        for (let m = 1; m < id - prev.id; m++) {
+          const t = m / (id - prev.id);
+          into.push({ x: prev.p.x + (p.x - prev.p.x) * t, y: prev.p.y + (p.y - prev.p.y) * t });
+        }
+      }
+      out[r].points.push({ x: p.x, y: p.y });
+      prev = { id, p };
+    }
+  });
+  const last = prev as { id: number; p: Pt } | null;
+  if (last) for (let i = last.id + 1; i < n; i++) out.at(-1)!.points.push({ ...last.p });
+  return out;
 }
 
 /** How wide the traced wire is, in photo pixels. */
@@ -461,7 +519,10 @@ export function photoDesign(strokes: PhotoStroke[], metersPerPixel: number): Des
   const cy = (Math.min(...all.map((p) => p.y)) + Math.max(...all.map((p) => p.y))) / 2;
   const step = ledStep(live);
   const r3 = (v: number) => Math.round(v * 1000) / 1000 + 0;
+  const at = (p: Pt) => ({ x: r3((p.x - cx) * metersPerPixel), y: r3(-(p.y - cy) * metersPerPixel) });
   return live.map((s) => {
+    // A scanned run keeps every LED where it is.
+    if (s.exact) return { points: s.points.map(at), exact: true, ...(s.closed ? { closed: true } : {}) };
     const pts = s.closed ? [...s.points, s.points[0]] : s.points;
     let simple = simplify(pts, Math.max(1, (step || 8) * 0.2));
     if (s.closed) simple = simple.slice(0, -1);
@@ -710,7 +771,10 @@ export function scanDots(s: ScanFrames, n: number): { dots: Dot[]; threshold: nu
  * Reads a scan: each dot gets its LED number, or null when its colors do not add up. Each dot is
  * read against itself: its darkest in each color (the room) and its white (how bright each color
  * comes out). A dot whose check digit fails gets one more try, with its least sure digit as its
- * second choice. Two dots with the same number both get null (one was misread).
+ * second choice. Then the string itself checks the numbers: LEDs that follow on are never
+ * farther apart than the wire between them, so of two dots with one number the one next to its
+ * neighbors keeps it, a dot far from both neighbors loses its number, and a dot without one may
+ * take a number its colors nearly said that has a neighbor next to it.
  */
 export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null)[] {
   const F = s.frames.length;
@@ -768,24 +832,68 @@ export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null
     const fixed = decodeDigits(r.map((x, j) => (j === weak ? x.second : x.best)), n);
     return fixed != null && !sure.has(fixed) ? fixed : null;
   });
-  const final = count(ids);
-  return ids.map((id) => (id != null && final.get(id) === 1 ? id : null));
+  const many = count(ids);
+  const unique = ids.map((id) => (id != null && many.get(id) === 1 ? id : null));
+
+  // LEDs next to each other on the string are never farther apart than the wire between them.
+  const limit = numberedStep(dots, unique) * 1.35;
+  if (!(limit > 0)) return unique;
+  const where = new Map<number, number>();
+  unique.forEach((id, k) => id != null && where.set(id, k));
+  const neighbors = (k: number, id: number) => [id - 1, id + 1].map((j) => where.get(j)).filter((j): j is number => j != null && j !== k);
+  const fits = (k: number, id: number) => neighbors(k, id).some((j) => dist(dots[j], dots[k]) <= limit);
+  const lonely = (k: number, id: number) => {
+    const near = neighbors(k, id);
+    return near.length > 0 && near.every((j) => dist(dots[j], dots[k]) > limit * 1.5);
+  };
+  // Two dots with one number: the one next to its neighbors keeps it.
+  const out = [...unique];
+  for (const [id, times] of many) {
+    if (times < 2) continue;
+    const claim = ids.map((x, k) => (x === id ? k : -1)).filter((k) => k >= 0);
+    const good = claim.filter((k) => fits(k, id));
+    if (good.length === 1) {
+      out[good[0]] = id;
+      where.set(id, good[0]);
+    }
+  }
+  // A dot far from both of its neighbors (when they were read) was misread.
+  out.forEach((id, k) => {
+    if (id == null || !lonely(k, id)) return;
+    where.delete(id);
+    out[k] = null;
+  });
+  // A dot without a number gets one its colors allow (one or two of its least sure digits the
+  // other way) that has a neighbor close by, or none.
+  out.forEach((id, k) => {
+    if (id != null) return;
+    const r = reads[k];
+    const weak = r.map((x, j) => [x.margin, j] as const).sort((a, b) => a[0] - b[0]).map(([, j]) => j);
+    const tries = [[weak[0]], [weak[1]], [weak[0], weak[1]], [weak[2]]].filter((t) => t.every((j) => j != null));
+    for (const t of tries) {
+      const alt = decodeDigits(r.map((x, j) => (t.includes(j) ? x.second : x.best)), n);
+      if (alt != null && !where.has(alt) && fits(k, alt)) {
+        out[k] = alt;
+        where.set(alt, k);
+        return;
+      }
+    }
+  });
+  return out;
 }
 
 /** The dots in LED order, as strokes of dot indexes: a new stroke where the wire jumps. */
 export function orderByNumber(dots: Pt[], ids: (number | null)[]): number[][] {
   const known = ids.map((id, k) => ({ id, k })).filter((x): x is { id: number; k: number } => x.id != null).sort((a, b) => a.id - b.id);
   if (!known.length) return [];
-  // The usual distance from one LED to the next, per LED number (some may be missing).
-  const steps: number[] = [];
-  for (let j = 1; j < known.length; j++) steps.push(dist(dots[known[j].k], dots[known[j - 1].k]) / (known[j].id - known[j - 1].id));
-  steps.sort((a, b) => a - b);
-  const step = steps[Math.floor(steps.length / 2)] ?? 0;
+  // The most one LED can be from the next: the string's spacing (see numberedStep).
+  const step = numberedStep(dots, ids);
   const out: number[][] = [[known[0].k]];
   for (let j = 1; j < known.length; j++) {
     const a = known[j - 1];
     const b = known[j];
-    if (step && dist(dots[a.k], dots[b.k]) > step * (b.id - a.id) * 2.2 + step) out.push([]);
+    // Farther than the wire between them reaches: a longer wire (between strands, say) or a jump.
+    if (step && dist(dots[a.k], dots[b.k]) > step * (b.id - a.id) * 1.5 + step * 0.5) out.push([]);
     out.at(-1)!.push(b.k);
   }
   return out;

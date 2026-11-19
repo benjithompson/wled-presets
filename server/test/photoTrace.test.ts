@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { designLeds } from '../../shared/layout.ts';
-import { autoDots, codeColor, codeDigit, codeDigits, codeFrames, decodeDigits, decodeScan, glowMaps, lineUp, orderByNumber, scanDots, isLoop, ledStep, orderDots, PHOTO_COLORS, photoDesign, strokesFromOrder, traceDots, type Pixels, type Pt, type RGB } from '../../shared/photoTrace.ts';
+import { designCounts, designLeds } from '../../shared/layout.ts';
+import { autoDots, codeColor, codeDigit, codeDigits, codeFrames, decodeDigits, decodeScan, glowMaps, isLoop, ledStep, lineUp, numberedStrokes, orderByNumber, orderDots, PHOTO_COLORS, photoDesign, scanDots, strokesFromOrder, tautStep, traceDots, type Pixels, type Pt, type RGB } from './../../shared/photoTrace.ts';
 
 const GREEN = PHOTO_COLORS[0];
 
@@ -237,6 +237,53 @@ describe('a custom object from a photo', () => {
     const order = orderByNumber(dots, ids);
     expect(order).toHaveLength(1);
     expect(order[0].map((k) => ids[k])).toEqual(ids.filter((i) => i != null).sort((a, b) => a! - b!));
+  });
+
+  it('takes a misread number from the string itself: neighbors are never farther apart than the wire', () => {
+    // 150 LEDs. LED 40 shows LED 100's code (two dots say 100); LED 70 shows
+    // LED 140's code while LED 140 is hidden (one dot says 140, far from 139 and 141).
+    const n = 150;
+    // Three rows back and forth, 13 px apart.
+    const pts = Array.from({ length: n }, (_, i) => ({ x: 70 + (Math.floor(i / 50) % 2 ? 49 - (i % 50) : i % 50) * 13, y: 110 + Math.floor(i / 50) * 140 }));
+    const shows = (i: number) => (i === 40 ? 100 : i === 70 ? 140 : i);
+    const frames = Array.from({ length: codeFrames(n) }, (_, f) =>
+      room(800, 500, pts.map((p, i) => ({ p, rgb: codeColor(shows(i), f, n) })).filter((_, i) => i !== 140), { x: 0, y: 0 }, [1, 1, 1])
+    );
+    const lined = lineUp(frames, n);
+    const { dots } = scanDots(lined, n);
+    const ids = decodeScan(lined, dots, n);
+    const at = (i: number) => dots.findIndex((d) => Math.hypot(d.x - pts[i].x, d.y - pts[i].y) < 2);
+    expect(ids[at(100)]).toBe(100);
+    expect(ids[at(40)]).not.toBe(100);
+    expect(ids[at(70)]).not.toBe(140);
+    // Every number given is right.
+    dots.forEach((d, k) => ids[k] != null && expect(Math.hypot(d.x - pts[ids[k]!].x, d.y - pts[ids[k]!].y)).toBeLessThan(2));
+  });
+
+  it('sizes a scan by the string spacing as the most LEDs are apart, slack wire or not', () => {
+    // Taut: 20 px apart. Slack (or toward the camera): closer, never farther.
+    const steps = [...Array(30).fill(20), ...Array.from({ length: 50 }, (_, i) => 6 + (i % 12)), 41];
+    expect(tautStep(steps)).toBe(20);
+    const strokes = [{ points: steps.reduce<Pt[]>((a, d) => [...a, { x: a.at(-1)!.x + d, y: 0 }], [{ x: 0, y: 0 }]), dots: true }];
+    expect(ledStep(strokes)).toBe(20);
+  });
+
+  it('keeps every scanned LED where it was, with the unread ones between their neighbors', () => {
+    // LEDs 0..9; 0 and 1 not read, 5 not read, 9 not read; 2..4 and 6..8 in two strokes.
+    const dots = [2, 3, 4, 6, 7, 8].map((i) => ({ x: i * 10, y: i % 2 }));
+    const ids = [2, 3, 4, 6, 7, 8];
+    const strokes = numberedStrokes(dots, ids, [[0, 1, 2], [3, 4, 5]], 10);
+    expect(strokes.every((s) => s.exact)).toBe(true);
+    expect(strokes.reduce((a, s) => a + s.points.length, 0)).toBe(10);
+    const all = strokes.flatMap((s) => s.points);
+    expect(all.map((p) => p.x)).toEqual([20, 20, 20, 30, 40, 50, 60, 70, 80, 80]);
+    // In a design, each point is an LED: they stay where they are, not spread evenly.
+    const design = photoDesign(strokes, 0.01);
+    expect(design.every((s) => s.exact)).toBe(true);
+    const leds = designLeds(design, 10);
+    expect(leds.map((p) => Math.round(p.x * 100))).toEqual([-30, -30, -30, -20, -10, 0, 10, 20, 30, 30]);
+    // An exact stroke beside a drawn one: its LEDs first, the rest spread on the drawn one.
+    expect(designCounts([{ points: [{ x: 0, y: 0 }, { x: 1, y: 0 }], exact: true }, { points: [{ x: 0, y: 1 }, { x: 1, y: 1 }] }], 7)).toEqual([2, 5]);
   });
 
   it('starts a new stroke where the numbered LEDs jump, and skips a missing one', () => {
