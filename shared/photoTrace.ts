@@ -474,12 +474,16 @@ export function photoDesign(strokes: PhotoStroke[], metersPerPixel: number): Des
 
 // ---------- Scanning with the camera: every LED tells its number ----------
 //
-// For an exact order, the LEDs blink their own numbers: in each of a few frames every LED is
-// red, green or blue, one base-3 digit of its number (the LED's place from the start of the
-// wire), and a last frame holds a check digit. A camera that watches the frames reads each dot's
-// colors and so its number: no guessing at the order, even where the wire crosses itself. Every
-// LED is lit in every frame, so the camera's exposure stays steady and every frame shows every
-// dot (a shaky hand is followed from frame to frame).
+// For an exact order, the LEDs blink their own numbers, as active markers do in motion capture.
+// The first frame lights every LED a dim white: a reference for how each one comes out on camera.
+// In each frame after it, every LED is red, green or blue for one base-3 digit of its number (its
+// place from the start of the wire), and a last frame holds a check digit. The colors turn by one
+// each frame (a digit 0 is red in one frame, green in the next), so every LED changes color during
+// the scan, even LED 0.
+//
+// What changes from frame to frame is an LED; a lamp, the wall or a colorful toy does not. So the
+// LEDs are found where the frames differ, and each is read against its own white and its own
+// darkest: a warm lamp, the camera's color balance or a tinted bulb do not shift the colors.
 
 /** The three colors of the code, a little dimmed so the middle of an LED is not all white. */
 export const CODE_RGB: RGB[] = [
@@ -487,24 +491,32 @@ export const CODE_RGB: RGB[] = [
   [0, 120, 0],
   [0, 0, 170]
 ];
+/** The first frame: every LED a dim white. */
+export const CODE_WHITE: RGB = [70, 60, 80];
 
 /** How many digits the numbers of n LEDs need. */
 export const codeDigits = (n: number) => Math.max(1, Math.ceil(Math.log(Math.max(2, n)) / Math.log(3) - 1e-9));
 
-/** How many frames a scan of n LEDs takes: its digits and the check digit. */
-export const codeFrames = (n: number) => codeDigits(n) + 1;
+/** How many frames a scan of n LEDs takes: the white one, the digits and the check digit. */
+export const codeFrames = (n: number) => codeDigits(n) + 2;
 
-/** The color (0 red, 1 green, 2 blue) of LED i (counted from the start of the wire) in a frame of a scan of n LEDs. */
-export function codeDigit(i: number, frame: number, n: number): number {
+/** Digit k of LED i's code (k = codeDigits(n): the check digit, the digits' sum). */
+export function codeDigit(i: number, k: number, n: number): number {
   const d = codeDigits(n);
-  if (frame < d) return Math.floor(i / 3 ** frame) % 3;
-  // The check digit: the digits' sum, so one misread digit shows.
+  if (k < d) return Math.floor(i / 3 ** k) % 3;
   let sum = 0;
-  for (let k = 0; k < d; k++) sum += Math.floor(i / 3 ** k) % 3;
+  for (let j = 0; j < d; j++) sum += Math.floor(i / 3 ** j) % 3;
   return sum % 3;
 }
 
-/** The LED number from the colors read in each frame, or null when they do not add up. */
+/** The color of LED i (counted from the start of the wire) in a frame of a scan of n LEDs. */
+export function codeColor(i: number, frame: number, n: number): RGB {
+  if (frame <= 0) return CODE_WHITE;
+  const k = frame - 1;
+  return CODE_RGB[(codeDigit(i, k, n) + k) % 3];
+}
+
+/** The LED number from its digits, or null when they do not add up. */
 export function decodeDigits(digits: number[], n: number): number | null {
   const d = codeDigits(n);
   if (digits.length !== d + 1 || digits.some((x) => x < 0 || x > 2)) return null;
@@ -535,104 +547,229 @@ export function colorfulMaps(img: Pixels): GlowMaps {
   return { width: img.width, height: img.height, main, start: new Uint8Array(n), white };
 }
 
-/** How far the dots in a frame moved from where they were (a hand holding the phone moves a little). */
-export function frameShift(ref: Pt[], seen: Pt[], gap: number): Pt {
-  let shift = { x: 0, y: 0 };
-  if (!ref.length || !seen.length) return shift;
-  for (let round = 0, reach = gap * 3; round < 4; round++, reach = gap * 0.5) {
-    const dx: number[] = [];
-    const dy: number[] = [];
-    for (const p of ref) {
-      let best: Pt | null = null;
-      let bd = reach;
-      for (const q of seen) {
-        const d = Math.hypot(q.x - p.x - shift.x, q.y - p.y - shift.y);
-        if (d < bd) {
-          bd = d;
-          best = q;
-        }
-      }
-      if (best) {
-        dx.push(best.x - p.x);
-        dy.push(best.y - p.y);
-      }
-    }
-    if (!dx.length) return shift;
-    const mid = (v: number[]) => v.sort((a, b) => a - b)[Math.floor(v.length / 2)];
-    shift = { x: mid(dx), y: mid(dy) };
+/**
+ * How far the dots in a frame moved from where they were (a hand holding the phone moves a
+ * little): the move that lines up the most dots, tried every two pixels up to `reach`, then
+ * made exact on the dots it lines up.
+ */
+export function frameShift(ref: Pt[], seen: Pt[], reach = 40): Pt {
+  if (!ref.length || !seen.length) return { x: 0, y: 0 };
+  const cell = 4;
+  const grid = new Map<string, Pt[]>();
+  for (const q of seen) {
+    const key = `${Math.floor(q.x / cell)},${Math.floor(q.y / cell)}`;
+    (grid.get(key) ?? grid.set(key, []).get(key)!).push(q);
   }
-  return shift;
+  const near = (x: number, y: number, tol: number): Pt | null => {
+    const gx = Math.floor(x / cell);
+    const gy = Math.floor(y / cell);
+    let best: Pt | null = null;
+    let bd = tol;
+    for (let i = gx - 1; i <= gx + 1; i++)
+      for (let j = gy - 1; j <= gy + 1; j++)
+        for (const q of grid.get(`${i},${j}`) ?? []) {
+          const d = Math.hypot(q.x - x, q.y - y);
+          if (d <= bd) {
+            bd = d;
+            best = q;
+          }
+        }
+    return best;
+  };
+  let best = { x: 0, y: 0, hits: -1 };
+  for (let dy = -reach; dy <= reach; dy += 2)
+    for (let dx = -reach; dx <= reach; dx += 2) {
+      let hits = 0;
+      for (const p of ref) if (near(p.x + dx, p.y + dy, 2)) hits++;
+      if (hits > best.hits || (hits === best.hits && Math.hypot(dx, dy) < Math.hypot(best.x, best.y))) best = { x: dx, y: dy, hits };
+    }
+  const ox: number[] = [];
+  const oy: number[] = [];
+  for (const p of ref) {
+    const q = near(p.x + best.x, p.y + best.y, 2.5);
+    if (q) (ox.push(q.x - p.x), oy.push(q.y - p.y));
+  }
+  const mid = (v: number[]) => v.sort((a, b) => a - b)[Math.floor(v.length / 2)];
+  return ox.length ? { x: mid(ox), y: mid(oy) } : { x: best.x, y: best.y };
 }
 
 /**
- * How much red, green and blue each dot shows in a frame, around its middle (which is often
- * white). Nearer the middle counts more: the edge may catch a neighbor's glow.
+ * A glow map of small bright spots of any color (white too), brighter than what is around them:
+ * to follow the dots from frame to frame. A lit wall is bright too, but not brighter than itself.
  */
-export function colorSums(img: Pixels, dots: Pt[], shift: Pt, radius: number | number[]): number[][] {
-  const { width: w, height: h, data } = img;
-  return dots.map((p, k) => {
-    const s = [0, 0, 0];
-    const rr = Math.max(1, typeof radius === 'number' ? radius : radius[k]);
-    const r = Math.ceil(rr);
-    const cx = Math.round(p.x + shift.x);
-    const cy = Math.round(p.y + shift.y);
-    for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
-      for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) {
-        const d = Math.hypot(x - cx, y - cy);
-        if (d > rr) continue;
-        const i = (y * w + x) * 4;
-        const lo = Math.min(data[i], data[i + 1], data[i + 2]);
-        if (lo >= 225) continue;
-        const wt = 1 - d / (rr + 1);
-        for (let c = 0; c < 3; c++) s[c] += Math.max(0, data[i + c] - lo) * wt;
+function brightMaps(img: Pixels): GlowMaps {
+  const { width: w, height: h, data: d } = img;
+  const n = w * h;
+  const v = new Float64Array(n);
+  for (let i = 0; i < n; i++) v[i] = Math.max(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
+  // Sums from the top left corner, for the mean of any box at once.
+  const sum = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += v[y * w + x];
+      sum[(y + 1) * (w + 1) + x + 1] = sum[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const r = 10;
+  const main = new Uint8Array(n);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - r);
+      const y0 = Math.max(0, y - r);
+      const x1 = Math.min(w, x + r + 1);
+      const y1 = Math.min(h, y + r + 1);
+      const mean = (sum[y1 * (w + 1) + x1] - sum[y0 * (w + 1) + x1] - sum[y1 * (w + 1) + x0] + sum[y0 * (w + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+      main[y * w + x] = Math.max(0, Math.min(255, (v[y * w + x] - mean) * 2));
+    }
+  return { width: w, height: h, main, start: new Uint8Array(n), white: new Uint8Array(n) };
+}
+
+/** A scan's frames lined up: where each frame moved (from frame 1), and its colors evened out. */
+export interface ScanFrames {
+  frames: Pixels[];
+  /** Whole pixels to add to a position in frame 1 to find it in each frame. */
+  shifts: Pt[];
+  /** Per frame and color: what to multiply by so the room looks the same in every frame. */
+  levels: number[][];
+}
+
+/**
+ * Lines the frames up: the hand moves a little (followed through the colored dots), and the
+ * camera may change its exposure or color balance from frame to frame (evened out on the room,
+ * which does not change).
+ */
+export function lineUp(frames: Pixels[], n: number): ScanFrames {
+  const ref = frames[Math.min(1, frames.length - 1)];
+  // The threshold that suits frame 1 suits the others (looking for the best one is slow).
+  const first = autoDots(brightMaps(ref), n);
+  const spots = frames.map((img, f) => (f === 1 ? first.dots : findDots(brightMaps(img), first.threshold)));
+  const shifts = spots.map((list, f) => {
+    if (f === 1) return { x: 0, y: 0 };
+    const sh = frameShift(spots[1], list);
+    return { x: Math.round(sh.x), y: Math.round(sh.y) };
+  });
+  // The room's middle level of each color, from a sample of pixels.
+  const median = (img: Pixels, c: number) => {
+    const hist = new Uint32Array(256);
+    let count = 0;
+    for (let i = c; i < img.data.length; i += 4 * 7) (hist[img.data[i]]++, count++);
+    for (let v = 0, acc = 0; v < 256; v++) if ((acc += hist[v]) * 2 >= count) return Math.max(4, v);
+    return 128;
+  };
+  const base = [0, 1, 2].map((c) => median(ref, c));
+  const levels = frames.map((img) => [0, 1, 2].map((c) => Math.min(2, Math.max(0.5, base[c] / median(img, c)))));
+  return { frames, shifts, levels };
+}
+
+/** One frame's color at a place in frame 1's terms, evened out (see lineUp). */
+function at(s: ScanFrames, f: number, x: number, y: number, c: number): number {
+  const img = s.frames[f];
+  const fx = Math.min(img.width - 1, Math.max(0, x + s.shifts[f].x));
+  const fy = Math.min(img.height - 1, Math.max(0, y + s.shifts[f].y));
+  return img.data[(fy * img.width + fx) * 4 + c] * s.levels[f][c];
+}
+
+/**
+ * Finds the LEDs of a scan: where the color changes from frame to frame. A lamp, the wall and
+ * anything else that stays the same drop out. Dots are in frame 1's pixels.
+ */
+export function scanDots(s: ScanFrames, n: number): { dots: Dot[]; threshold: number } {
+  const { width: w, height: h } = s.frames[0];
+  const main = new Uint8Array(w * h);
+  const F = s.frames.length;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let most = 0;
+      for (let c = 0; c < 3; c++) {
+        let lo = 255 * 2;
+        let hi = 0;
+        for (let f = 0; f < F; f++) {
+          const v = at(s, f, x, y, c);
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        most = Math.max(most, hi - lo);
       }
-    return s;
-  });
+      main[y * w + x] = Math.min(255, most);
+    }
+  // Glows of neighbors run together where they change: the white frame's small bright spots
+  // keep them apart (and only what changes counts).
+  const white = brightMaps(s.frames[0]);
+  const s0 = s.shifts[0];
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(w - 1, Math.max(0, x + s0.x));
+      const fy = Math.min(h - 1, Math.max(0, y + s0.y));
+      main[y * w + x] = Math.min(main[y * w + x], white.main[fy * w + fx]);
+    }
+  return autoDots({ width: w, height: h, main, start: new Uint8Array(w * h), white: new Uint8Array(w * h) }, n);
 }
 
 /**
- * How bright each color comes out (cameras see green brighter, for one): its high end over all
- * the readings. Taken over the whole scan, since a frame may not show every color (the top
- * digit of a few LEDs is never 2).
+ * Reads a scan: each dot gets its LED number, or null when its colors do not add up. Each dot is
+ * read against itself: its darkest in each color (the room) and its white (how bright each color
+ * comes out). A dot whose check digit fails gets one more try, with its least sure digit as its
+ * second choice. Two dots with the same number both get null (one was misread).
  */
-export function colorGains(sums: number[][]): number[] {
-  return [0, 1, 2].map((c) => {
-    const v = sums.map((s) => s[c]).sort((a, b) => a - b);
-    return Math.max(1, v[Math.floor(v.length * 0.85)] ?? 1);
-  });
-}
-
-/** The color of each reading: 0 red, 1 green, 2 blue. */
-export const pickColors = (sums: number[][], gains: number[]) =>
-  sums.map((s) => {
-    const v = s.map((x, c) => x / gains[c]);
-    return v.indexOf(Math.max(...v));
-  });
-
-/**
- * Reads a scan: the frames in order (see codeDigit), the dots found in the first one. Each dot
- * gets its LED number, or null when its colors do not add up. Two dots with the same number
- * both get null (one of them was misread).
- */
-export function decodeScan(frames: Pixels[], dots: Pt[], n: number, threshold: number): (number | null)[] {
+export function decodeScan(s: ScanFrames, dots: Pt[], n: number): (number | null)[] {
+  const F = s.frames.length;
   const gap = typicalGap(dots) || 10;
-  // Each dot is read within less than half the way to its nearest neighbor.
-  const radius = dots.map((p) => {
+  const sums = dots.map((p) => {
     let near = Infinity;
     for (const q of dots) if (q !== p) near = Math.min(near, dist(p, q));
-    return Math.max(1.5, Math.min(gap * 0.6, near * 0.42));
+    const rr = Math.max(1.5, Math.min(gap * 0.6, near * 0.42));
+    const r = Math.ceil(rr);
+    const cx = Math.round(p.x);
+    const cy = Math.round(p.y);
+    return Array.from({ length: F }, (_, f) => {
+      const out = [0, 0, 0];
+      for (let y = cy - r; y <= cy + r; y++)
+        for (let x = cx - r; x <= cx + r; x++) {
+          const d = Math.hypot(x - cx, y - cy);
+          if (d > rr) continue;
+          // Nearer the middle counts more: the edge may catch a neighbor's glow.
+          const wt = 1 - d / (rr + 1);
+          for (let c = 0; c < 3; c++) out[c] += at(s, f, x, y, c) * wt;
+        }
+      return out;
+    });
   });
-  const sums = frames.map((img, f) => {
-    const shift = f === 0 ? { x: 0, y: 0 } : frameShift(dots, findDots(colorfulMaps(img), threshold), gap);
-    return colorSums(img, dots, shift, radius);
+  // Each dot's white over its darkest, per color; a dot too faint in one takes the usual.
+  const spans = sums.map((fs) => [0, 1, 2].map((c) => fs[0][c] - Math.min(...fs.slice(1).map((v) => v[c]))));
+  const usual = [0, 1, 2].map((c) => {
+    const v = spans.map((x) => x[c]).sort((a, b) => a - b);
+    return Math.max(1, v[Math.floor(v.length / 2)] ?? 1);
   });
-  const gains = colorGains(sums.flat());
-  const colors = sums.map((s) => pickColors(s, gains));
-  const digits = dots.map((_, k) => colors.map((c) => c[k]));
-  const ids = digits.map((d) => decodeDigits(d, n));
-  const count = new Map<number, number>();
-  for (const id of ids) if (id != null) count.set(id, (count.get(id) ?? 0) + 1);
-  return ids.map((id) => (id != null && count.get(id) === 1 ? id : null));
+  const reads = sums.map((fs, k) => {
+    const lo = [0, 1, 2].map((c) => Math.min(...fs.slice(1).map((v) => v[c])));
+    const span = spans[k].map((x, c) => (x > usual[c] * 0.15 ? x : usual[c]));
+    return fs.slice(1).map((v, j) => {
+      const score = v.map((x, c) => (x - lo[c]) / span[c]);
+      const order = [0, 1, 2].sort((a, b) => score[b] - score[a]);
+      // Back from the frame's color to the digit (the colors turn by one each frame).
+      const digit = (c: number) => (c - j + 300) % 3;
+      return { best: digit(order[0]), second: digit(order[1]), margin: score[order[0]] - score[order[1]] };
+    });
+  });
+  let ids = reads.map((r) => decodeDigits(r.map((x) => x.best), n));
+  const count = (list: (number | null)[]) => {
+    const m = new Map<number, number>();
+    for (const id of list) if (id != null) m.set(id, (m.get(id) ?? 0) + 1);
+    return m;
+  };
+  const sure = count(ids);
+  // One more try for a dot that does not add up: its least sure digit, the other way.
+  ids = ids.map((id, k) => {
+    if (id != null) return id;
+    const r = reads[k];
+    let weak = 0;
+    r.forEach((x, j) => x.margin < r[weak].margin && (weak = j));
+    const fixed = decodeDigits(r.map((x, j) => (j === weak ? x.second : x.best)), n);
+    return fixed != null && !sure.has(fixed) ? fixed : null;
+  });
+  const final = count(ids);
+  return ids.map((id) => (id != null && final.get(id) === 1 ? id : null));
 }
 
 /** The dots in LED order, as strokes of dot indexes: a new stroke where the wire jumps. */

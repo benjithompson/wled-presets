@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildStage, fromLedRange, matchPoint, matchRange, pointOffsets, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { deviceMaps, FramePipeline, PRIORITY, type LightFrame } from '../src/framePipeline.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
-import { CODE_RGB, codeDigit } from '../../shared/photoTrace.ts';
+import { codeColor } from '../../shared/photoTrace.ts';
 import { LightSender } from '../src/lightSender.ts';
 import { RealtimeOut } from '../src/realtime.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
@@ -45,7 +45,7 @@ describe('layout preview on the lights', () => {
     const photo = { deviceId: 'd', from: 60, to: 50, rgb: [0, 140, 0] as [number, number, number], start: [255, 0, 0] as [number, number, number], code: 1 };
     const f = previewFrame({ layout, selected: null, corner: null, photo }, 'd', 600, true);
     // Device LED 60 is LED 0 of the wire, LED 50 its last (number 10 of 11).
-    for (let i = 0; i <= 10; i++) expect(rgb(f, 60 - i)).toEqual(CODE_RGB[codeDigit(i, 1, 11)]);
+    for (let i = 0; i <= 10; i++) expect(rgb(f, 60 - i)).toEqual(codeColor(i, 1, 11));
     expect(rgb(f, 61)).toEqual([0, 0, 0]);
   });
 
