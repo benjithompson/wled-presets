@@ -49,7 +49,7 @@ const lightTypeSchema = z.object({
 const meters = z.number().finite().min(-100).max(100);
 // A scanned stroke has a point for each LED (exact), so up to a whole string's worth.
 const strokesSchema = z
-  .array(z.object({ points: z.array(z.object({ x: meters, y: meters })).min(1).max(MAX_FIXTURE_PIXELS), closed: z.boolean().optional(), exact: z.boolean().optional() }))
+  .array(z.object({ points: z.array(z.object({ x: meters, y: meters, z: meters.optional() })).min(1).max(MAX_FIXTURE_PIXELS), closed: z.boolean().optional(), exact: z.boolean().optional() }))
   .max(64)
   .refine((list) => list.reduce((a, s) => a + s.points.length, 0) <= MAX_FIXTURE_PIXELS * 2, 'Too many points');
 

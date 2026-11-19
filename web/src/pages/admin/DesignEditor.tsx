@@ -3,7 +3,7 @@
 // yard as many times as you like. Designs are in meters, as seen from the front, y up.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { ArrowLeftRight, Camera, Crosshair, Maximize, MousePointer2, PenTool, Redo2, Trash2, Undo2 } from 'lucide-react';
-import { designCounts, designLeds, designLength, FEET_PER_METER, type Design, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
+import { designCounts, designLeds, designLength, FEET_PER_METER, type Design, type DesignPoint, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
 import { allLights, ledsForLength, lightsOf, lightSummary, spacingText, strandStarts, strandText } from '../../../../shared/lights.ts';
 import { Button, Dialog } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
@@ -127,7 +127,8 @@ function bounds(strokes: DesignStroke[]) {
   return Number.isFinite(x0) ? { x0, y0, x1, y1 } : null;
 }
 
-const mapPoints = (strokes: DesignStroke[], f: (p: P) => P) => strokes.map((s) => ({ ...s, points: s.points.map(f) }));
+/** Each point moved by f; a 3D point keeps its depth unless f sets it. */
+const mapPoints = (strokes: DesignStroke[], f: (p: DesignPoint) => DesignPoint) => strokes.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p, ...f(p) })) }));
 
 function distToSegment(p: P, a: P, b: P) {
   const dx = b.x - a.x;
@@ -363,7 +364,7 @@ export function DesignEditor({
     }
     const p = snap(W(X, Y), e.altKey);
     d.moved = true;
-    setStrokes(d.start.map((s, si) => (si === d.pick.s ? { ...s, points: s.points.map((q, i) => (i === d.pick.i ? p : q)) } : s)));
+    setStrokes(d.start.map((s, si) => (si === d.pick.s ? { ...s, points: s.points.map((q, i) => (i === d.pick.i ? { ...q, ...p } : q)) } : s)));
   };
   const onUp = () => {
     const d = drag.current;
@@ -683,6 +684,7 @@ export function DesignEditor({
               </PropRow>
             ) : null}
             {lt && fit === pixels ? <PropNote>The LEDs fit the wire, and keep fitting it as you change the drawing.</PropNote> : null}
+            {strokes.some((s) => s.points.some((p) => p.z)) ? <PropNote>A 3D shape: you see it from the front here, and dragging a point keeps its depth. The 3D view of the layout shows it all round.</PropNote> : null}
             {lt?.perStrand ? <PropNote>{strandText(pixels, lt.perStrand)}. Orange dots: where a new strand starts.</PropNote> : null}
             {lt && strokes.length ? (
               <PropNote>
@@ -712,6 +714,17 @@ export function DesignEditor({
                 <>
                   <PropNumber label="Point x" decimal step={0.1} min={-300} max={300} unit={units} value={show(sel.x)} onChange={(n) => commit(movePoint(strokes, pick, { x: r3(n * perUnit), y: sel.y }))} />
                   <PropNumber label="Point y" decimal step={0.1} min={-300} max={300} unit={units} value={show(sel.y)} onChange={(n) => commit(movePoint(strokes, pick, { x: sel.x, y: r3(n * perUnit) }))} />
+                  <PropNumber
+                    label="Point depth"
+                    hint="Toward the front of the object (minus: toward its back)"
+                    decimal
+                    step={0.1}
+                    min={-300}
+                    max={300}
+                    unit={units}
+                    value={show(sel.z ?? 0)}
+                    onChange={(n) => commit(movePoint(strokes, pick, { x: sel.x, y: sel.y, z: r3(n * perUnit) }))}
+                  />
                 </>
               ) : null}
               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -762,7 +775,7 @@ export function DesignEditor({
               onChange={(n) => {
                 if (!box || box.x1 - box.x0 < 1e-6) return;
                 const k = (n * perUnit) / (box.x1 - box.x0);
-                apply(mapPoints(strokes, (p) => ({ x: r3(p.x * k), y: r3(p.y * k) })), true);
+                apply(mapPoints(strokes, (p) => ({ x: r3(p.x * k), y: r3(p.y * k), ...(p.z != null ? { z: r3(p.z * k) } : {}) })), true);
               }}
             />
             <PropNumber
@@ -777,7 +790,7 @@ export function DesignEditor({
               onChange={(n) => {
                 if (!box || box.y1 - box.y0 < 1e-6) return;
                 const k = (n * perUnit) / (box.y1 - box.y0);
-                apply(mapPoints(strokes, (p) => ({ x: r3(p.x * k), y: r3(p.y * k) })), true);
+                apply(mapPoints(strokes, (p) => ({ x: r3(p.x * k), y: r3(p.y * k), ...(p.z != null ? { z: r3(p.z * k) } : {}) })), true);
               }}
             />
             <PropNote>Width and height keep the shape; the LEDs are fitted again when a light string is set.</PropNote>
@@ -830,8 +843,8 @@ export function DesignEditor({
   );
 }
 
-function movePoint(strokes: DesignStroke[], pick: Pick, p: P) {
-  return strokes.map((s, si) => (si === pick.s ? { ...s, points: s.points.map((q, i) => (i === pick.i ? p : q)) } : s));
+function movePoint(strokes: DesignStroke[], pick: Pick, p: DesignPoint) {
+  return strokes.map((s, si) => (si === pick.s ? { ...s, points: s.points.map((q, i) => (i === pick.i ? { ...q, ...p } : q)) } : s));
 }
 
 const isClosed = (s: DesignStroke) => !!s.closed && s.points.length > 2;
@@ -852,7 +865,7 @@ export function fitLeds(strokes: DesignStroke[], spacing: number): number {
       continue;
     }
     const pts = isClosed(s) ? [...s.points, s.points[0]] : s.points;
-    const len = pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0);
+    const len = pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i].x, p.y - pts[i].y, (p.z ?? 0) - (pts[i].z ?? 0)), 0);
     n += isClosed(s) ? Math.max(1, ledsForLength(len, spacing, false)) : ledsForLength(len, spacing, true);
   }
   return Math.max(1, Math.min(2000, n));
