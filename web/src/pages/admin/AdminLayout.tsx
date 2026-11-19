@@ -72,7 +72,7 @@ export function AdminLayout() {
               href="/"
               target="_blank"
               rel="noreferrer"
-              className="hidden items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 sm:inline-flex dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white"
+              className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white"
             >
               Public page <ExternalLink className="size-3.5" />
             </a>

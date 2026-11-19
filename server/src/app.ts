@@ -8,13 +8,15 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { z } from 'zod';
 import type { BackupFile, DiscoveredDevice, Scene, SessionInfo } from '../../shared/types.ts';
 import { createAuth, isExamplePassword, sameOrigin, type AuthEnv } from './auth.ts';
-import { isLoopbackIp, requestIp, requestIsDirectLan, requestIsLocal, warnUntrustedProxy } from './clientIp.ts';
+import { isLoopbackIp, requestIp, requestIsDirectLan, requestIsLocal, viaHttps, warnUntrustedProxy } from './clientIp.ts';
 import type { AppConfig } from './config.ts';
 import type { Db } from './db.ts';
 import { discoverWled } from './discovery.ts';
 import type { Bus } from './events.ts';
 import type { Lights } from './lights.ts';
 import { isValidCidr } from './net.ts';
+import { createPasskeys, PasskeyError, siteOf } from './passkeys.ts';
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { ConnectionLimit, limitBody, rateLimit } from './rateLimit.ts';
 import { readGameArea, readSettings, writeGameArea, writeLineSettings, writeSettings } from './settings.ts';
 import { visitorCookie, visitorId } from './visitor.ts';
@@ -112,6 +114,17 @@ const newPassword = z
   .max(1000)
   .refine((p) => !isExamplePassword(p), 'That password is in the examples: pick your own');
 
+/** What a browser sends back from a passkey (checked in full by Passkeys; this keeps it in shape). */
+const credentialJson = z
+  .object({
+    id: z.string().min(1).max(1400),
+    rawId: z.string().max(1400),
+    type: z.literal('public-key'),
+    response: z.looseObject({ clientDataJSON: z.string().max(8192) }),
+    clientExtensionResults: z.looseObject({}).default({})
+  })
+  .loose();
+
 function errorMessage(e: z.ZodError): string {
   const i = e.issues[0];
   return i ? `${i.path.join('.') || 'input'}: ${i.message}` : 'Invalid input';
@@ -140,6 +153,7 @@ class HttpError extends Error {
 export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof }: AppDeps) {
   const app = new Hono();
   const auth = createAuth(db, { secureCookie: config.secureCookie });
+  const passkeys = createPasskeys(db);
 
   // The visitor's address: proxy headers count only as far as TRUST_PROXY says (see clientIp.ts).
   const clientIp = (c: Context): string => {
@@ -152,6 +166,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.onError((err, c) => {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    if (err instanceof PasskeyError) return c.json({ error: err.message }, 400);
     console.error(err);
     return c.json({ error: 'Internal error' }, 500);
   });
@@ -183,6 +198,19 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   const visitor = (c: Context): Visitor => ({ id: visitorId(c), admin: !!auth.currentUser(c), actor: actor(c) });
   /** The line for the lights: with no game host (tests), there is none and the last choice wins. */
   const line = host?.line ?? null;
+
+  const signInFrom = (c: Context) => ({ ip: clientIp(c), lan: requestIsDirectLan(c) });
+  const tooMany = (c: Context, retryIn: number) => {
+    const s = Math.ceil(retryIn / 1000);
+    c.header('Retry-After', String(s));
+    return c.json({ error: `Too many failed sign-ins. Try again in ${s > 90 ? `${Math.ceil(s / 60)} minutes` : `${s} seconds`}.` }, 429);
+  };
+  /** The page's site, for passkeys: refused over plain HTTP or at an IP address (see siteOf). */
+  const site = (c: Context) => {
+    const s = siteOf(c.req.header('origin'), c.req.header('host'), viaHttps(c));
+    if ('error' in s) throw new HttpError(400, s.error);
+    return s;
+  };
 
   // No limits for requests from this computer (localhost): that is you, testing.
   const publicLimiter = rateLimit({ windowMs: 60_000, max: 120, clientIp, skip: isLoopback });
@@ -344,18 +372,30 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.post('/api/auth/login', loginLimiter, async (c) => {
     const { username, password } = await body(c, z.object({ username: z.string().min(1).max(100), password: z.string().min(1).max(1000) }));
-    const r = await auth.login(c, username, password, { ip: clientIp(c), lan: requestIsDirectLan(c) });
-    if (r.ok === false && r.retryIn) {
-      const s = Math.ceil(r.retryIn / 1000);
-      c.header('Retry-After', String(s));
-      return c.json({ error: `Too many failed sign-ins. Try again in ${s > 90 ? `${Math.ceil(s / 60)} minutes` : `${s} seconds`}.` }, 429);
-    }
+    const r = await auth.login(c, username, password, signInFrom(c));
+    if (r.ok === false && r.retryIn) return tooMany(c, r.retryIn);
     if (r.ok === false) {
       lights.log('warn', 'admin', `Failed sign-in for "${username.slice(0, 40)}"`, null, actor(c));
       throw new HttpError(401, 'Wrong username or password');
     }
     lights.log('info', 'admin', `${r.user.username} signed in`, null, actor(c));
     return c.json({ user: r.user });
+  });
+
+  // Passkeys: the browser asks for a challenge, the device signs it, the server checks the signature.
+  app.post('/api/auth/passkey/options', publicLimiter, async (c) => c.json({ options: await passkeys.authenticationOptions(site(c)) }));
+
+  app.post('/api/auth/passkey/login', loginLimiter, async (c) => {
+    const { response } = await body(c, z.object({ response: credentialJson }));
+    const where = site(c);
+    const r = await auth.loginWith(c, () => passkeys.authenticate(response as unknown as AuthenticationResponseJSON, where), signInFrom(c));
+    if (r.ok === false && r.retryIn) return tooMany(c, r.retryIn);
+    if (r.ok === false) {
+      lights.log('warn', 'admin', 'Failed passkey sign-in', null, actor(c));
+      throw new HttpError(401, 'That passkey did not work here. Try again, or sign in with your password.');
+    }
+    lights.log('info', 'admin', `${r.who.user.username} signed in with passkey "${r.who.passkey}"`, null, actor(c));
+    return c.json({ user: r.who.user });
   });
 
   app.post('/api/auth/logout', (c) => {
@@ -422,12 +462,51 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   admin.post('/auth/password', async (c) => {
     const { current, next } = await body(c, z.object({ current: z.string().min(1).max(1000), next: newPassword }));
     const me = c.get('user');
-    const ok = await auth.verify(me.username, current);
-    if (!ok) throw new HttpError(400, 'Current password is wrong');
+    const ok = await auth.confirmPassword(me, current, signInFrom(c));
+    if (ok.retryIn) return tooMany(c, ok.retryIn);
+    if (!ok.ok) throw new HttpError(400, 'Current password is wrong');
     // Signs out the other sessions, so a stolen cookie stops working too.
     await auth.setPassword(me.id, next, c);
     lights.log('info', 'admin', `${me.username} changed their password`, null, actor(c));
     return c.json({ ok: true });
+  });
+
+  // Passkeys of the signed-in admin.
+  admin.get('/passkeys', (c) => c.json(passkeys.list(c.get('user').id)));
+
+  // A new passkey needs the password too: a stolen session cookie alone cannot add a way back in.
+  admin.post('/passkeys/options', loginLimiter, async (c) => {
+    const { password } = await body(c, z.object({ password: z.string().min(1).max(1000) }));
+    const me = c.get('user');
+    const where = site(c);
+    const ok = await auth.confirmPassword(me, password, signInFrom(c));
+    if (ok.retryIn) return tooMany(c, ok.retryIn);
+    if (!ok.ok) throw new HttpError(400, 'Password is wrong');
+    return c.json({ options: await passkeys.registrationOptions(me, where) });
+  });
+
+  const passkeyName = z.string().trim().max(60);
+
+  admin.post('/passkeys', async (c) => {
+    const { response, name } = await body(c, z.object({ response: credentialJson, name: passkeyName.default('') }));
+    const me = c.get('user');
+    const key = await passkeys.register(me, response as unknown as RegistrationResponseJSON, site(c), name);
+    lights.log('info', 'admin', `${me.username} added passkey "${key.name}"`, null, actor(c));
+    return c.json(key);
+  });
+
+  admin.patch('/passkeys/:id', async (c) => {
+    const { name } = await body(c, z.object({ name: passkeyName.min(1) }));
+    if (!passkeys.rename(c.get('user').id, c.req.param('id'), name)) throw new HttpError(404, 'No such passkey');
+    return c.json(passkeys.list(c.get('user').id));
+  });
+
+  admin.delete('/passkeys/:id', (c) => {
+    const me = c.get('user');
+    const key = passkeys.list(me.id).find((p) => p.id === c.req.param('id'));
+    if (!key || !passkeys.remove(me.id, key.id)) throw new HttpError(404, 'No such passkey');
+    lights.log('info', 'admin', `${me.username} removed passkey "${key.name}"`, null, actor(c));
+    return c.json(passkeys.list(me.id));
   });
 
   // Devices

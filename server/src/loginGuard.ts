@@ -80,18 +80,18 @@ export class LoginGuard {
 
   private static key = (username: string) => username.trim().toLowerCase().slice(0, 100);
 
-  /** Milliseconds until this sign-in may be tried (0: now). */
-  wait(username: string, from: SignInFrom) {
-    return Math.max(this.ips.wait(from.ip), from.lan ? 0 : this.names.wait(LoginGuard.key(username)));
+  /** Milliseconds until this sign-in may be tried (0: now). A passkey sign-in has no username (null). */
+  wait(username: string | null, from: SignInFrom) {
+    return Math.max(this.ips.wait(from.ip), from.lan || username == null ? 0 : this.names.wait(LoginGuard.key(username)));
   }
 
-  fail(username: string, from: SignInFrom) {
+  fail(username: string | null, from: SignInFrom) {
     this.ips.fail(from.ip);
-    if (!from.lan) this.names.fail(LoginGuard.key(username));
+    if (!from.lan && username != null) this.names.fail(LoginGuard.key(username));
   }
 
-  succeed(username: string, from: SignInFrom) {
+  succeed(username: string | null, from: SignInFrom) {
     this.ips.clear(from.ip);
-    this.names.clear(LoginGuard.key(username));
+    if (username != null) this.names.clear(LoginGuard.key(username));
   }
 }

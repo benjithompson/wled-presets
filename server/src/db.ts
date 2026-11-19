@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type { AudioFile, Device, DevicePreset, LogEntry, LogLevel, Scene } from '../../shared/types.ts';
+import type { AudioFile, Device, DevicePreset, LogEntry, LogLevel, Passkey, Scene } from '../../shared/types.ts';
 import type { Sequence } from '../../shared/sequence.ts';
 
 // The schema keeps the table names of v1, so an existing data volume works unchanged.
@@ -22,6 +22,18 @@ const SCHEMA = `
     token_hash TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS passkeys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    public_key BLOB NOT NULL,
+    counter INTEGER NOT NULL DEFAULT 0,
+    transports TEXT NOT NULL DEFAULT '[]',
+    rp_id TEXT NOT NULL,
+    backed_up INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
   );
   CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
@@ -161,6 +173,19 @@ export function openDatabase(file: string) {
     deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
     deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?'),
     purgeSessions: db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
+    listPasskeys: db.prepare<[string]>(
+      'SELECT id, name, rp_id AS rpId, backed_up AS backedUp, created_at AS createdAt, last_used_at AS lastUsedAt FROM passkeys WHERE user_id = ? ORDER BY created_at, rowid'
+    ),
+    passkeyCredentials: db.prepare<[string]>('SELECT id, transports, rp_id AS rpId FROM passkeys WHERE user_id = ?'),
+    getPasskey: db.prepare<[string]>(
+      'SELECT id, user_id AS userId, name, public_key AS publicKey, counter, transports, rp_id AS rpId FROM passkeys WHERE id = ?'
+    ),
+    insertPasskey: db.prepare(
+      'INSERT INTO passkeys(id, user_id, name, public_key, counter, transports, rp_id, backed_up) VALUES(@id, @userId, @name, @publicKey, @counter, @transports, @rpId, @backedUp)'
+    ),
+    usePasskey: db.prepare("UPDATE passkeys SET counter = ?, backed_up = ?, last_used_at = datetime('now') WHERE id = ?"),
+    renamePasskey: db.prepare('UPDATE passkeys SET name = ? WHERE id = ? AND user_id = ?'),
+    deletePasskey: db.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?'),
     insertLog: db.prepare(
       'INSERT INTO activity_logs(level, action, message, client_ip, user_agent, details) VALUES(?, ?, ?, ?, ?, ?)'
     ),
@@ -303,6 +328,20 @@ export function openDatabase(file: string) {
     deleteUserSessions: (userId: string, keepHash: string) => stmt.deleteUserSessions.run(userId, keepHash),
     purgeSessions: () => stmt.purgeSessions.run(Date.now()),
 
+    listPasskeys: (userId: string): Passkey[] =>
+      (stmt.listPasskeys.all(userId) as any[]).map((r) => ({ ...r, backedUp: Boolean(r.backedUp), createdAt: utc(r.createdAt), lastUsedAt: r.lastUsedAt ? utc(r.lastUsedAt) : null })),
+    passkeyCredentials: (userId: string) =>
+      (stmt.passkeyCredentials.all(userId) as { id: string; transports: string; rpId: string }[]).map((r) => ({ ...r, transports: stringList(r.transports) })),
+    getPasskey(id: string) {
+      const r = stmt.getPasskey.get(id) as { id: string; userId: string; name: string; publicKey: Buffer; counter: number; transports: string; rpId: string } | undefined;
+      return r ? { ...r, transports: stringList(r.transports) } : null;
+    },
+    addPasskey: (p: { id: string; userId: string; name: string; publicKey: Buffer; counter: number; transports: string[]; rpId: string; backedUp: boolean }) =>
+      stmt.insertPasskey.run({ ...p, transports: JSON.stringify(p.transports), backedUp: p.backedUp ? 1 : 0 }),
+    usePasskey: (id: string, counter: number, backedUp: boolean) => stmt.usePasskey.run(counter, backedUp ? 1 : 0, id),
+    renamePasskey: (userId: string, id: string, name: string) => stmt.renamePasskey.run(name, id, userId).changes > 0,
+    deletePasskey: (userId: string, id: string) => stmt.deletePasskey.run(id, userId).changes > 0,
+
     addLog(entry: { level: LogLevel; action: string; message: string; clientIp?: string | null; userAgent?: string | null; details?: unknown }) {
       stmt.insertLog.run(
         entry.level,
@@ -317,12 +356,19 @@ export function openDatabase(file: string) {
     listLogs(limit: number, action: string | null): LogEntry[] {
       return (stmt.listLogs.all({ limit, action }) as any[]).map((r) => ({
         ...r,
-        // SQLite datetime('now') is UTC without a zone marker.
-        timestamp: r.timestamp.includes('T') ? r.timestamp : `${r.timestamp.replace(' ', 'T')}Z`,
+        timestamp: utc(r.timestamp),
         details: r.details ? safeJson(r.details) : null
       }));
     }
   };
+}
+
+/** SQLite datetime('now') is UTC without a zone marker. */
+const utc = (t: string) => (t.includes('T') ? t : `${t.replace(' ', 'T')}Z`);
+
+function stringList(s: string): string[] {
+  const v = safeJson(s);
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
 
 function safeJson(s: string): unknown {

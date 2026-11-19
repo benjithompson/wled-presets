@@ -57,6 +57,13 @@ export function createAuth(db: Db, opts: { secureCookie: boolean }) {
     });
   }
 
+  function startSession(c: Context, userId: string) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    db.purgeSessions();
+    db.createSession(hash(token), userId, Date.now() + TTL_MS);
+    setSessionCookie(c, token);
+  }
+
   /** The user of a session token (a WebSocket's cookie), without renewing the session. */
   function userForToken(token: string) {
     const s = db.getSession(hash(token));
@@ -88,11 +95,34 @@ export function createAuth(db: Db, opts: { secureCookie: boolean }) {
         return { ok: false };
       }
       guard.succeed(username, from);
-      const token = crypto.randomBytes(32).toString('base64url');
-      db.purgeSessions();
-      db.createSession(hash(token), user.id, Date.now() + TTL_MS);
-      setSessionCookie(c, token);
+      startSession(c, user.id);
       return { ok: true, user: { id: user.id, username: user.username } };
+    },
+
+    /**
+     * Signs in with a passkey (see Passkeys): `check` says whose passkey signed. Failures count
+     * against the address like wrong passwords (there is no username to count against).
+     */
+    async loginWith<T extends { user: { id: string; username: string } }>(c: Context, check: () => Promise<T | null>, from: SignInFrom = { ip: 'unknown' }): Promise<{ ok: true; who: T } | { ok: false; retryIn?: number }> {
+      const wait = guard.wait(null, from);
+      if (wait > 0) return { ok: false, retryIn: wait };
+      const who = await check();
+      if (!who) {
+        guard.fail(null, from);
+        return { ok: false };
+      }
+      guard.succeed(null, from);
+      startSession(c, who.user.id);
+      return { ok: true, who };
+    },
+
+    /** A wrong password here (confirming a change) counts like a failed sign-in. */
+    async confirmPassword(user: { username: string }, password: string, from: SignInFrom = { ip: 'unknown' }): Promise<{ ok: boolean; retryIn?: number }> {
+      const wait = guard.wait(user.username, from);
+      if (wait > 0) return { ok: false, retryIn: wait };
+      if (await this.verify(user.username, password)) return { ok: true };
+      guard.fail(user.username, from);
+      return { ok: false };
     },
 
     logout(c: Context) {
