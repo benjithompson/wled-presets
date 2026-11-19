@@ -77,6 +77,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         if (Array.isArray(hex)) {
           hex.forEach((h: string, i: number) => i < ledCount && realtime.leds.set([parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)], i * 3));
           realtime.httpFrames++;
+          if (typeof body.on === 'boolean') state.on = body.on;
           return json({ success: true });
         }
         Object.assign(state, body);
