@@ -42,12 +42,13 @@ export const isLine = (f: { kind: FixtureKind }) => f.kind === 'roof' || f.kind 
 
 /**
  * One run of LEDs in a custom object's design, in meters, as seen from the front: x to the
- * right, y up, (0, 0) is the object's anchor (the point you place). The LEDs run from the first
- * point to the last; a closed stroke goes back to its first point. Between strokes, the wire
- * jumps without LEDs.
+ * right, y up, z toward the front (toward whoever looks at the object; none: 0, a flat object),
+ * (0, 0, 0) is the object's anchor (the point you place). The LEDs run from the first point to
+ * the last; a closed stroke goes back to its first point. Between strokes, the wire jumps
+ * without LEDs.
  */
 export interface DesignStroke {
-  points: { x: number; y: number }[];
+  points: DesignPoint[];
   closed?: boolean;
   /**
    * One LED at each point, in order (a scanned string: the wire between LEDs is flexible, so
@@ -55,6 +56,9 @@ export interface DesignStroke {
    */
   exact?: boolean;
 }
+
+/** A point of a design, in meters: x to the right, y up, z toward the front (see DesignStroke). */
+export type DesignPoint = { x: number; y: number; z?: number };
 
 /** A custom object in the library, to place as many times as you like. */
 export interface Design {
@@ -402,7 +406,7 @@ function treePixels(f: Fixture, n: number): Point3[] {
 // ---------- Custom objects ----------
 
 const strokePath = (s: DesignStroke) => (s.closed && s.points.length > 2 ? [...s.points, s.points[0]] : s.points);
-const pathLength = (pts: { x: number; y: number }[]) => pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i].x, p.y - pts[i].y), 0);
+const pathLength = (pts: DesignPoint[]) => pts.slice(1).reduce((a, p, i) => a + Math.hypot(p.x - pts[i].x, p.y - pts[i].y, (p.z ?? 0) - (pts[i].z ?? 0)), 0);
 
 /** The length of wire with LEDs in a design, in meters. */
 export const designLength = (strokes: DesignStroke[]) => strokes.reduce((a, s) => a + pathLength(strokePath(s)), 0);
@@ -412,13 +416,13 @@ export const designLength = (strokes: DesignStroke[]) => strokes.reduce((a, s) =
  * its points; the others are spread evenly along the other strokes, at one spacing: an open
  * stroke has an LED at each end, a closed one goes all round.
  */
-export function designLeds(strokes: DesignStroke[], n: number): { x: number; y: number }[] {
+export function designLeds(strokes: DesignStroke[], n: number): DesignPoint[] {
   const live = strokes.filter((s) => s.points.length > 0);
   if (n <= 0) return [];
   if (!live.length) return Array.from({ length: n }, () => ({ x: 0, y: 0 }));
   const closed = live.map((s) => !!s.closed && s.points.length > 2);
   const counts = designCounts(live, n);
-  const out: { x: number; y: number }[] = [];
+  const out: DesignPoint[] = [];
   live.forEach((s, j) => {
     const c = counts[j];
     if (s.exact) {
@@ -426,10 +430,11 @@ export function designLeds(strokes: DesignStroke[], n: number): { x: number; y: 
       return;
     }
     const path = strokePath(s);
+    const deep = path.some((p) => p.z);
     for (let i = 0; i < c; i++) {
       const t = closed[j] ? i / c : c > 1 ? i / (c - 1) : 0.5;
       const p = along(path, t);
-      out.push({ x: p.x, y: p.y });
+      out.push(deep ? { x: p.x, y: p.y, z: p.z } : { x: p.x, y: p.y });
     }
   });
   // An exact design with fewer points than LEDs: the rest wait at its last point.
@@ -469,7 +474,7 @@ export function designCounts(strokes: DesignStroke[], n: number): number[] {
 }
 
 /** From a design's meters to the yard: sized, turned and facing as the object is, at its point. */
-export function designTransform(f: Pick<Fixture, 'points' | 'size' | 'rotation' | 'facing'>, scale = DEFAULT_SCALE): (p: { x: number; y: number }) => Point3 {
+export function designTransform(f: Pick<Fixture, 'points' | 'size' | 'rotation' | 'facing'>, scale = DEFAULT_SCALE): (p: DesignPoint) => Point3 {
   const c = f.points[0] ?? { x: 0, y: 0 };
   const cz = pz(c);
   const k = scale * (f.size && f.size > 0 ? f.size : 1);
@@ -483,7 +488,9 @@ export function designTransform(f: Pick<Fixture, 'points' | 'size' | 'rotation' 
     // Turned clockwise as seen from the front; y is up in the design, down in the yard.
     const u = (p.x * cr + p.y * sr) * k;
     const v = (-p.x * sr + p.y * cr) * k;
-    return { x: c.x + u * cf, y: c.y - v, z: cz - u * sf };
+    // Its front faces the way it faces: toward the street at 0, to the right at 90.
+    const w = (p.z ?? 0) * k;
+    return { x: c.x + u * cf + w * sf, y: c.y - v, z: cz - u * sf + w * cf };
   };
 }
 
@@ -497,7 +504,7 @@ export function designPaths(f: Fixture, scale = DEFAULT_SCALE): Point3[][] {
 export function designReach(f: Fixture, scale = DEFAULT_SCALE): number {
   const k = scale * (f.size && f.size > 0 ? f.size : 1);
   let r = 0;
-  for (const s of f.design ?? []) for (const p of s.points) r = Math.max(r, Math.hypot(p.x, p.y));
+  for (const s of f.design ?? []) for (const p of s.points) r = Math.max(r, Math.hypot(p.x, p.y, p.z ?? 0));
   return r * k;
 }
 

@@ -3,8 +3,8 @@
 // that goes wrong, or the LEDs are too close together to tell apart, trace the wire by hand:
 // drag through the dots (or along the wire) with the mouse or a finger. The photo stays in this
 // browser; only the colors for the lights go to the server.
-import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react';
-import { Camera, CircleDot, Flag, Hand, ImagePlus, Lightbulb, Maximize, Route, ScanLine, Undo2, WandSparkles, X } from 'lucide-react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react';
+import { Box, Camera, CircleDot, Flag, Hand, Image as ImageIcon, ImagePlus, Lightbulb, Maximize, Route, ScanLine, Undo2, WandSparkles, X } from 'lucide-react';
 import { deviceLed, FEET_PER_METER, MAX_FIXTURE_PIXELS, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
 import {
   autoDots,
@@ -29,12 +29,15 @@ import {
   type PhotoStroke,
   type Pt
 } from '../../../../shared/photoTrace.ts';
+import { design3d, solveViews, step3d, width3d, type ScanView } from '../../../../shared/scan3d.ts';
 import { Button, Dialog, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { cn } from '../../lib/utils.ts';
 import { useOverview } from './AdminLayout.tsx';
 import { PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.tsx';
+
+const ScanCloud = lazy(() => import('./ScanCloud.tsx').then((m) => ({ default: m.ScanCloud })));
 
 /** The photo, made smaller: big enough to see each LED, small enough to look through quickly. */
 const MAX_SIDE = 1400;
@@ -165,6 +168,12 @@ export function PhotoTrace({
   const past = useRef<Snapshot[]>([]);
   const nextId = useRef(1);
   const [, tick] = useState(0);
+  /** Earlier scans of the same LEDs from other sides, for a 3D shape (the photo is the last). */
+  const [sides, setSides] = useState<ScanView[]>([]);
+  /** The next scan is from another side (not a new start). */
+  const [addingSide, setAddingSide] = useState(false);
+  const [mirror, setMirror] = useState(false);
+  const [show3d, setShow3d] = useState(true);
   const cameraInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -178,6 +187,9 @@ export function PhotoTrace({
     setStartId(null);
     setWidthM(null);
     setProblem(null);
+    setSides([]);
+    setAddingSide(false);
+    setMirror(false);
     past.current = [];
   }, [open]);
 
@@ -236,6 +248,7 @@ export function PhotoTrace({
       };
       setPhoto(p);
       setWidthM(null);
+      setSides([]);
       // Let the spinner show: looking through a big photo takes a moment.
       await new Promise((r) => setTimeout(r, 30));
       detect(p, null);
@@ -278,6 +291,7 @@ export function PhotoTrace({
     });
     setScanning(null);
     setScanCode(null);
+    setAddingSide(false);
   }
   useEffect(() => {
     if (video.current && camera) video.current.srcObject = camera;
@@ -392,6 +406,10 @@ export function PhotoTrace({
     if (!blob) return;
     const cache = new Map<string, GlowMaps>();
     const pixels = back.pixels;
+    // From another side: the scan before is kept for the 3D shape. Else this one starts over.
+    const before = addingSide && photo?.scanned != null && photo.lit === n ? thisSide() : null;
+    setSides(before ? (s) => [...s, before] : []);
+    setShow3d(true);
     closeCamera();
     setPhoto({
       url: URL.createObjectURL(blob),
@@ -409,7 +427,8 @@ export function PhotoTrace({
     setWidthM(null);
     setView(null);
     setTool('connect');
-    if (read < Math.max(2, n * 0.5))
+    // From another side, the LEDs round the back are hidden: the 3D note tells how many it placed.
+    if (!before && read < Math.max(2, n * 0.5))
       setProblem(
         `Only ${read} of ${n} LEDs could be read. Keep the phone still (rest it on something), have the whole object in view and spread out (a heap of wire hides LEDs behind each other), and scan again; or fix the order by hand.`
       );
@@ -460,8 +479,18 @@ export function PhotoTrace({
   // From a scan, the LEDs' numbers say which dots follow on; else the traced order does. Either
   // way the spacing shows in the longer steps (see tautStep).
   const step = photo?.scanned != null ? numberedStep(dots, dots.map((d) => d.num ?? null)) : ledStep(strokes);
-  const widthPx = photoWidth(strokes);
-  const fromSpacing = spacing && step > 0 ? spacing / step : null;
+
+  // ----- 3D: this scan with the ones from other sides -----
+  /** This scan, as one side for the 3D shape: the LEDs it read, where they are. */
+  function thisSide(): ScanView {
+    return { leds: dots.flatMap((d) => (d.num != null ? [{ num: d.num, x: d.x, y: d.y }] : [])), width: photo?.width ?? 1, height: photo?.height ?? 1 };
+  }
+  const solved = useMemo(() => (sides.length && photo?.scanned != null && photo.lit ? solveViews([...sides, thisSide()], photo.lit) : null), [sides, dots, photo]);
+  const in3d = !!solved && solved.placed >= 2;
+
+  const widthPx = in3d ? width3d(solved.points) : photoWidth(strokes);
+  const unitStep = in3d ? step3d(solved.points) : step;
+  const fromSpacing = spacing && unitStep > 0 ? spacing / unitStep : null;
   const metersPerPixel = widthM && widthPx > 0 ? widthM / widthPx : (fromSpacing ?? (widthPx > 0 ? 1 / widthPx : 0));
   const shownWidth = widthPx * metersPerPixel;
   const allDots = strokes.length > 0 && strokes.every((s) => s.dots);
@@ -496,7 +525,7 @@ export function PhotoTrace({
     );
   };
   const use = () => {
-    const design = photoDesign(numbered() ?? strokes, metersPerPixel);
+    const design = in3d ? design3d(solved.points, metersPerPixel, mirror) : photoDesign(numbered() ?? strokes, metersPerPixel);
     if (design.length) onUse(design, ledCount);
   };
 
@@ -553,8 +582,9 @@ export function PhotoTrace({
   >(null);
   const [tracePath, setTracePath] = useState<Pt[] | null>(null);
 
+  const cloud = in3d && show3d && !camera;
   const onDown = (e: RPointerEvent<HTMLDivElement>) => {
-    if (!photo) return;
+    if (!photo || cloud) return;
     const p = local(e);
     pointers.current.set(e.pointerId, p);
     try {
@@ -620,7 +650,7 @@ export function PhotoTrace({
     }
   };
   const onWheel = (e: RWheelEvent<HTMLDivElement>) => {
-    if (!photo) return;
+    if (!photo || cloud) return;
     const p = local(e);
     setView(zoomAt(p.X, p.Y, Math.exp(-e.deltaY * 0.0015)));
   };
@@ -659,6 +689,8 @@ export function PhotoTrace({
   };
 
   // ----- Drawing -----
+  const viewBtn = 'flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition [&_svg]:size-4';
+  const viewOff = 'text-stone-700 hover:bg-stone-200/70 dark:text-stone-300 dark:hover:bg-stone-800';
   const toolBtn = (t: Tool, label: string, Icon: typeof Hand, title: string) => (
     <button
       type="button"
@@ -698,7 +730,7 @@ export function PhotoTrace({
         <>
           {strokes.length ? (
             <span className="mr-auto self-center text-xs text-stone-500 tabular-nums">
-              {strokes.length} stroke{strokes.length === 1 ? '' : 's'}
+              {in3d ? '3D' : `${strokes.length} stroke${strokes.length === 1 ? '' : 's'}`}
               {ledCount != null ? ` · ${ledCount} LEDs` : ''}
               {shownWidth > 0 ? ` · ${Math.round((shownWidth / perUnit) * 100) / 100} ${units} wide` : ''}
             </span>
@@ -715,6 +747,18 @@ export function PhotoTrace({
       <div className="flex flex-col gap-3 pb-2 lg:flex-row">
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex flex-wrap items-center gap-1">
+            {in3d ? (
+              <>
+                <button type="button" onClick={() => setShow3d(true)} aria-pressed={show3d} title="The LEDs in 3D, from every scan" className={cn(viewBtn, show3d ? 'bg-sky-600 text-white' : viewOff)}>
+                  <Box /> 3D
+                </button>
+                <button type="button" onClick={() => setShow3d(false)} aria-pressed={!show3d} title="The last scan's picture" className={cn(viewBtn, !show3d ? 'bg-sky-600 text-white' : viewOff)}>
+                  <ImageIcon /> Photo
+                </button>
+                <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
+              </>
+            ) : null}
+            {cloud ? <span className="text-xs text-stone-500 dark:text-stone-400">Drag to turn it round, pinch or scroll to zoom.</span> : <>
             {toolBtn('connect', 'Connect', Route, 'Connect the dots: drag through them in wire order')}
             {toolBtn('dots', 'Dots', CircleDot, 'Add or remove dots')}
             {toolBtn('start', 'First LED', Flag, 'Pick the dot where the wire starts')}
@@ -735,6 +779,7 @@ export function PhotoTrace({
                 <Route /> Trace by hand
               </Button>
             ) : null}
+            </>}
           </div>
           <div
             ref={wrap}
@@ -755,7 +800,9 @@ export function PhotoTrace({
                       ? scanning.reading
                         ? 'Reading the LEDs’ numbers…'
                         : `Frame ${scanning.frame} of ${scanning.of}. Hold still…`
-                      : `Point the camera at the object, with all of it in view, and hold still (rest the phone on something). The lights go white, then change color ${frames - 1} times: about ${Math.ceil(frames * 0.7 + 2)} seconds.`}
+                      : addingSide
+                        ? `Scan ${sides.length + 2}: step about an eighth of the way round the object to your right (or turn the object that much), at the same height and distance, with all of it in view. Hold still, then start.`
+                        : `Point the camera at the object, with all of it in view, and hold still (rest the phone on something). The lights go white, then change color ${frames - 1} times: about ${Math.ceil(frames * 0.7 + 2)} seconds.`}
                   </p>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={closeCamera}>
@@ -769,6 +816,10 @@ export function PhotoTrace({
                   </div>
                 </div>
               </>
+            ) : cloud ? (
+              <Suspense fallback={null}>
+                <ScanCloud points={solved.points} cameras={solved.cameras} mirror={mirror} />
+              </Suspense>
             ) : photo ? (
               <>
                 <img
@@ -905,6 +956,31 @@ export function PhotoTrace({
             {problem ? <PropNote tone="red">{problem}</PropNote> : null}
             {devices.length && typeof window !== 'undefined' && !window.isSecureContext ? <PropNote>Open the admin console at its https:// address to scan with the camera.</PropNote> : null}
             {canScan ? <PropNote>A scan makes the LEDs blink their numbers in color and reads them with the camera: the exact order, even where the wire crosses itself.</PropNote> : null}
+            {photo?.scanned != null && canScan && !camera ? (
+              <div className="flex flex-wrap gap-1.5">
+                <Button size="sm" variant={in3d ? 'secondary' : 'primary'} onClick={() => (setAddingSide(true), void openCamera())} title="Scan the same LEDs again from a step round: from two or more sides, each LED gets its depth">
+                  <Box /> Scan from another side
+                </Button>
+              </div>
+            ) : null}
+            {in3d ? (
+              <>
+                <PropNote>
+                  3D from {sides.length + 1} scans: {solved.placed} of {photo?.lit} LEDs placed{solved.placed < (photo?.lit ?? 0) ? ' (the rest along the wire between them)' : ''}, within {Math.round(solved.rms * 10) / 10} px of where the pictures show them.
+                  {solved.placed < (photo?.lit ?? 0) * 0.6 ? ' Scan from more sides, all the way round, to place more.' : ''}
+                </PropNote>
+                <PropRow label="Swap front, back" hint="When the 3D shape came out the wrong way round, front to back (mirrored)">
+                  <Switch checked={mirror} onChange={setMirror} label="Swap front and back" />
+                </PropRow>
+                <Button size="sm" variant="ghost" onClick={() => setSides([])} title="Forget the scans from other sides: a flat shape from this scan">
+                  Flat, from this scan only
+                </Button>
+              </>
+            ) : photo?.scanned != null && sides.length ? (
+              <PropNote tone="red">These scans do not fit together yet: scan once more from a little farther round, with the same LEDs lit.</PropNote>
+            ) : photo?.scanned != null && canScan ? (
+              <PropNote>For a 3D shape, scan again from about an eighth of the way round, and again: from every side, for LEDs all the way round.</PropNote>
+            ) : null}
             {photo?.scanned != null ? (
               <PropNote>
                 {photo.scanned} of {photo.lit} LEDs read by their numbers{dots.length > photo.scanned ? `; ${dots.length - photo.scanned} more seen but not read (red)` : ''}. Tap Automatic order to guess from the shape instead.{' '}
