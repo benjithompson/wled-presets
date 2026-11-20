@@ -54,13 +54,22 @@ host.line.configure(readLineSettings(db));
 lights.setEffectPlayer((show) => host.playShow(show));
 // No game starts on lights that are switched off.
 host.closed = () => (lights.allOff() ? 'The lights are switched off right now.' : null);
-// What the roofline shows, for the home page.
-const roof = new RoofView({
-  layout: () => host.yard,
-  devices: () => lights.liveDevices(),
-  deviceFrame: (id) => pipeline.deviceFrame(id),
-  simFrame: () => host.simFrame()
-});
+// Lights switched off on the devices themselves end the game, as the admin's switch does.
+lights.onAllOff = () => {
+  host.endGame('the lights were switched off');
+  host.line.clear('the lights were switched off');
+};
+// What the roofline shows, for the home page. It watches the devices over the same WebSockets
+// that tell the server their power and brightness.
+const roof = new RoofView(
+  {
+    layout: () => host.yard,
+    devices: () => lights.liveDevices(),
+    deviceFrame: (id) => pipeline.deviceFrame(id),
+    simFrame: () => host.simFrame()
+  },
+  (d) => lights.peek(d)
+);
 const app = createApp({ config, db, bus, lights, host, preview, roof });
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);

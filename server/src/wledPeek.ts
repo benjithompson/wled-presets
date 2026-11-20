@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import { baseUrl, type Endpoint } from './wled.ts';
+import { baseUrl, pickPower, type Endpoint, type PowerState } from './wled.ts';
 
 /** How long to wait before connecting again after the device closed the connection. */
 const RETRY_MS = 5000;
@@ -10,6 +10,10 @@ const ASK_AGAIN_MS = 5000;
  * Watches what a WLED device shows, over its WebSocket (what WLED's own page uses for "Peek"):
  * its LED colors a few times a second, after its brightness, and its state (on, brightness)
  * whenever it changes. It reconnects until closed.
+ *
+ * The server keeps one per device (see Lights.watch), for the device's power and brightness:
+ * WLED tells it of every change, made here or anywhere else. The roof view borrows it for the
+ * colors.
  */
 export class WledPeek {
   /** RGB per sampled LED (WLED sends every `step`th LED of a long strip), or null before the first. */
@@ -22,18 +26,30 @@ export class WledPeek {
   on: boolean | null = null;
   bri: number | null = null;
 
+  /** True while the connection is open and the device has said its state. */
+  get connected() {
+    return this.ws?.readyState === WebSocket.OPEN && this.on !== null;
+  }
+
   private ws: WebSocket | null = null;
-  private live = true;
+  private live: boolean;
+  private listener: ((s: PowerState | null) => void) | null;
   private askedAt = 0;
   private retry: NodeJS.Timeout | null = null;
   private closed = false;
   private ep: Endpoint;
   private ledCount: () => number;
 
-  /** `ledCount`: the device's LED count (from its info), to know how many LEDs a sample stands for. */
-  constructor(ep: Endpoint, ledCount: () => number) {
+  /**
+   * `ledCount`: the device's LED count (from its info), to know how many LEDs a sample stands for.
+   * `live`: ask for the colors from the start. `onPower`: each state the device reports, and
+   * null when the connection drops.
+   */
+  constructor(ep: Endpoint, ledCount: () => number, { live = true, onPower }: { live?: boolean; onPower?: (s: PowerState | null) => void } = {}) {
     this.ep = ep;
     this.ledCount = ledCount;
+    this.live = live;
+    this.listener = onPower ?? null;
     this.connect();
   }
 
@@ -51,6 +67,7 @@ export class WledPeek {
 
   close() {
     this.closed = true;
+    this.listener = null;
     if (this.retry) clearTimeout(this.retry);
     this.ws?.terminate();
     this.ws = null;
@@ -76,6 +93,9 @@ export class WledPeek {
       if (this.ws !== ws) return;
       this.ws = null;
       this.leds = null;
+      const knew = this.on !== null;
+      this.on = this.bri = null;
+      if (knew) this.listener?.(null);
       if (!this.closed) {
         this.retry = setTimeout(() => this.connect(), RETRY_MS);
         this.retry.unref?.();
@@ -100,6 +120,8 @@ export class WledPeek {
       const st = j?.state ?? j;
       if (typeof st?.on === 'boolean') this.on = st.on;
       if (typeof st?.bri === 'number') this.bri = st.bri;
+      const power = pickPower({ on: this.on, bri: this.bri });
+      if (power && (typeof st?.on === 'boolean' || typeof st?.bri === 'number')) this.listener?.(power);
     } catch {
       /* not JSON */
     }

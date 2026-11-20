@@ -5,6 +5,7 @@ import { Activity, ChevronDown, Clapperboard, ExternalLink, Gamepad2, Layers, Li
 import { ThemeSwitcher } from '../../components/ThemeToggle.tsx';
 import { api } from '../../lib/api.ts';
 import { useEvents } from '../../lib/useEvents.ts';
+import { LIGHTS } from '../../components/LightControls.tsx';
 import { cn } from '../../lib/utils.ts';
 
 export const OVERVIEW = ['admin', 'overview'];
@@ -34,8 +35,9 @@ export function AdminLayout() {
     '/api/admin/events',
     {
       log: () => void qc.invalidateQueries({ queryKey: LOGS }),
-      devices: () => void qc.invalidateQueries({ queryKey: OVERVIEW }),
-      state: () => void qc.invalidateQueries({ queryKey: OVERVIEW })
+      // The switches follow the lights, also when they are changed in WLED's own app.
+      devices: () => (void qc.invalidateQueries({ queryKey: OVERVIEW }), void qc.invalidateQueries({ queryKey: LIGHTS })),
+      state: () => (void qc.invalidateQueries({ queryKey: OVERVIEW }), void qc.invalidateQueries({ queryKey: LIGHTS }))
     },
     signedIn
   );

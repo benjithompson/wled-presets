@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -189,6 +189,128 @@ describe('brightness', () => {
     expect((await t.call('PUT', '/api/admin/lights/brightness', { level: 0 })).status).toBe(400);
     expect((await t.call('PUT', '/api/admin/lights/brightness', { level: 101 })).status).toBe(400);
   });
+});
+
+describe('following the devices', () => {
+  /** Waits until `ok` holds (checked every 20 ms), or fails after `ms`. */
+  const until = async (ok: () => boolean, ms = 2000) => {
+    const end = Date.now() + ms;
+    while (!ok()) {
+      if (Date.now() > end) throw new Error('Timed out');
+      await wait(20);
+    }
+  };
+  const power = (id: string) => t.lights.devicesWithStatus().find((d) => d.id === id)?.power;
+
+  beforeEach(async () => {
+    t.lights.settleMs = 100;
+    await t.lights.refreshStatus();
+    // Each device's WebSocket says its state, and the app's own requests have settled.
+    await until(() => ids.every((id) => power(id)?.bri === 128));
+    await wait(250);
+  });
+  afterEach(() => t.lights.stop());
+
+  it("reports each device's own power and brightness", async () => {
+    expect(power(ids[0])).toEqual({ on: true, bri: 128 });
+    mocks[0].press({ bri: 200 });
+    await until(() => power(ids[0])?.bri === 200);
+  });
+
+  it('switches a light off here when it is switched off on the device, and on again', async () => {
+    mocks[1].press({ on: false });
+    await until(() => t.lights.isOff(ids[1]));
+    expect(power(ids[1])?.on).toBe(false);
+    // Off holds here now: a color leaves it dark.
+    const r = await t.call('POST', '/api/color', { color: '#ff0000' });
+    expect(r.json.applied).toEqual([ids[0]]);
+    expect(mocks[1].state.on).toBe(false);
+
+    await wait(250);
+    mocks[1].press({ on: true });
+    await until(() => !t.lights.isOff(ids[1]));
+  });
+
+  it('says the lights are off when every device was switched off on the device', async () => {
+    let ended = 0;
+    t.lights.onAllOff = () => ended++;
+    for (const m of mocks) m.press({ on: false });
+    await until(() => t.lights.allOff());
+    expect((await t.call('GET', '/api/state')).json.lightsOff).toBe(true);
+    expect(ended).toBe(1);
+  });
+
+  it("does not take the app's own switches for changes made on the device", async () => {
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 50 });
+    await until(() => power(ids[0])?.bri === 128 && power(ids[1])?.bri === 128);
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 20 });
+    await until(() => power(ids[0])?.bri === 51);
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[0] });
+    await until(() => power(ids[0])?.on === false);
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: ids[0] });
+    await until(() => power(ids[0])?.on === true);
+    await wait(300);
+    expect(t.lights.controls()).toEqual({ off: [], brightness: { all: 20, devices: {} } });
+  });
+
+  it('follows a level changed on the device, where the app sets one', async () => {
+    // With no level here, each scene's presets set it: nothing to follow.
+    mocks[0].press({ bri: 40 });
+    await until(() => power(ids[0])?.bri === 40);
+    expect(t.lights.controls().brightness).toEqual({ all: null, devices: {} });
+
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 50 });
+    await wait(250);
+    mocks[1].press({ bri: 230 });
+    await until(() => t.lights.controls().brightness.devices[ids[1]] === 90);
+    expect(t.lights.levelOf(ids[1])).toBe(230);
+    expect(t.lights.levelOf(ids[0])).toBe(128);
+  });
+
+  it("lends the roof view the device's colors over the same WebSocket", async () => {
+    const device = t.db.getDevice(ids[0])!;
+    const peek = t.lights.peek(device);
+    expect(peek.on).toBe(true);
+    peek.setLive(true);
+    await until(() => peek.leds !== null);
+    expect(peek.leds!.length).toBe(150 * 3);
+    // Closing it stops the colors, not the connection that tells the server its state.
+    peek.close();
+    mocks[0].press({ bri: 77 });
+    await until(() => power(ids[0])?.bri === 77);
+  });
+
+  it('shows an offline device as offline, and gives it the switch it missed when it is back', async () => {
+    const spare = await startMockWled(0, 'Spare');
+    const port = spare.port;
+    const id = (await t.call('POST', '/api/admin/devices', { host: '127.0.0.1', port })).json.id;
+    await t.lights.refreshStatus();
+    await until(() => power(id)?.on === true);
+    await spare.close();
+    // Two missed checks in a row: offline.
+    await t.lights.refreshStatus();
+    await t.lights.refreshStatus();
+    const gone = t.lights.devicesWithStatus().find((d) => d.id === id)!;
+    expect(gone.online).toBe(false);
+    expect(gone.power).toBeNull();
+
+    // Switched off while it does not answer.
+    const r = await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: id });
+    expect(r.json.result.failed.map((f: { deviceId: string }) => f.deviceId)).toEqual([id]);
+
+    // Back, and on (as after a power cut): it is switched off, not taken as switched on.
+    const back = await startMockWled(port, 'Spare');
+    try {
+      await t.lights.refreshStatus();
+      await until(() => back.state.on === false);
+      await wait(300);
+      expect(t.lights.isOff(id)).toBe(true);
+      expect(t.lights.devicesWithStatus().find((d) => d.id === id)?.online).toBe(true);
+    } finally {
+      t.lights.stop();
+      await back.close();
+    }
+  }, 10_000);
 });
 
 describe('roof view', () => {

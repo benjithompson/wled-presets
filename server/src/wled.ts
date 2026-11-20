@@ -8,6 +8,35 @@ export interface Endpoint {
 
 export type FetchResult<T> = { ok: true; status: number; data: T } | { ok: false; status: number; error: string };
 
+/** A device's power and master brightness (1 to 255; when off, the level it comes back on at). */
+export interface PowerState {
+  on: boolean;
+  bri: number;
+}
+
+/**
+ * When this app last told each device to change its state (by base URL). A change the device
+ * reports with no such request around it was made somewhere else: WLED's own app, a button,
+ * one of its timers (see Lights.observe).
+ */
+const writes = new Map<string, number>();
+
+/** When this app last sent the device a state change (Date.now()), or 0. */
+export function lastWrite(ep: Endpoint): number {
+  return writes.get(baseUrl(ep)) ?? 0;
+}
+
+function noteWrite(url: string, method: string) {
+  if (method === 'GET') return;
+  const m = /^(.*)\/json(?:\/state|\/si)?$/.exec(url);
+  if (m) writes.set(m[1], Date.now());
+}
+
+/** The power and brightness in a WLED state object, or null when it has none. */
+export function pickPower(st: any): PowerState | null {
+  return typeof st?.on === 'boolean' && typeof st?.bri === 'number' ? { on: st.on, bri: st.bri } : null;
+}
+
 export function normalizeHost(host: string): string {
   return String(host || '')
     .trim()
@@ -25,6 +54,7 @@ export async function requestJson<T = unknown>(
   url: string,
   { method = 'GET', body, timeoutMs = 1500 }: { method?: string; body?: unknown; timeoutMs?: number } = {}
 ): Promise<FetchResult<T>> {
+  noteWrite(url, method);
   try {
     const res = await fetch(url, {
       method,
@@ -33,6 +63,8 @@ export async function requestJson<T = unknown>(
       signal: AbortSignal.timeout(timeoutMs)
     });
     const text = await res.text();
+    // The device has the change now: what it reports from here on may come from it.
+    noteWrite(url, method);
     if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` };
     try {
       return { ok: true, status: res.status, data: (text ? JSON.parse(text) : null) as T };
@@ -70,6 +102,18 @@ export const wled = {
     if (!r.ok) return r;
     if (!isWledInfo(r.data)) return { ok: false, status: r.status, error: 'Not a WLED device' };
     return { ok: true, status: r.status, data: pickInfo(r.data) };
+  },
+
+  /**
+   * Info and the power state in one request (WLED's /json/si). An old WLED without it gets
+   * info only.
+   */
+  async infoAndPower(ep: Endpoint, timeoutMs = 1500): Promise<FetchResult<{ info: DeviceInfo; power: PowerState | null }>> {
+    const r = await requestJson<{ state?: unknown; info?: unknown }>(`${baseUrl(ep)}/json/si`, { timeoutMs });
+    if (r.ok && isWledInfo(r.data?.info)) return { ok: true, status: r.status, data: { info: pickInfo(r.data.info), power: pickPower(r.data.state) } };
+    if (!r.ok && r.status === 0) return r;
+    const i = await wled.info(ep, timeoutMs);
+    return i.ok ? { ...i, data: { info: i.data, power: null } } : i;
   },
 
   /** The LED outputs (see DeviceInfo.outputs), from the device's settings. */
