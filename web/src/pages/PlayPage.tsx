@@ -11,6 +11,7 @@ import { InitialsEntry, Scoreboard } from './HighScores.tsx';
 import { LineCard, OfferCard, TurnBanner } from './LineParts.tsx';
 import { ArcadeWindow } from './ArcadeHud.tsx';
 import { GameScreen, GameWindow } from './GameWindow.tsx';
+import { PaintStudio } from './PaintStudio.tsx';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
@@ -189,7 +190,9 @@ export function PlayPage() {
               </p>
             ) : null}
 
-            {layout && playing && status ? (
+            {layout && playing && status?.paint ? (
+              <PaintStudio layout={layout} getFrame={() => frame.current} status={status} send={send} banner={line ? <TurnBanner line={line} /> : null} />
+            ) : layout && playing && status ? (
               <div className="flex min-h-52 flex-1 flex-col">
                 {arcade ? (
                   <ArcadeWindow hud={arcade} health={status.progress}>
@@ -209,7 +212,7 @@ export function PlayPage() {
 
             {offer ? (
               <OfferCard offer={offer} onPlay={() => send({ type: 'accept' })} onPass={() => send({ type: 'leaveLine' })} />
-            ) : playing ? (
+            ) : playing && status?.paint ? null : playing ? (
               <section className="flex shrink-0 flex-col items-center justify-center gap-2 pt-2">
                 {line ? <TurnBanner line={line} /> : null}
                 {you ? (

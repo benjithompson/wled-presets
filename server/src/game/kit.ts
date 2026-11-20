@@ -270,9 +270,12 @@ export class Yard {
   /** Straight into the frame: for the roof track, whose LEDs are all in use. */
   private put: Sink = (i, color, amount) => this.out?.add(i, color, amount);
 
-  /** A soft light at a point of the front view: every LED within `radius` catches some of it. */
-  glow(x: number, y: number, radius: number, color: Rgb, amount = 1) {
-    if (amount <= 0) return;
+  /**
+   * Visits every LED in use within `radius` of a point of the front view, with its squared
+   * distance as a share of the radius (0 at the point, 1 at the edge).
+   */
+  within(x: number, y: number, radius: number, visit: (i: number, d2: number) => void) {
+    if (!(radius > 0)) return;
     const c = Yard.CELL;
     const pos = this.stage.positions;
     for (let cx = Math.floor((x - radius) / c); cx <= Math.floor((x + radius) / c); cx++) {
@@ -281,10 +284,16 @@ export class Yard {
         if (!list) continue;
         for (const i of list) {
           const d2 = ((pos[i * 2] - x) ** 2 + (pos[i * 2 + 1] - y) ** 2) / (radius * radius);
-          if (d2 < 1) this.out?.add(i, color, amount * (1 - d2) * (1 - d2));
+          if (d2 < 1) visit(i, d2);
         }
       }
     }
+  }
+
+  /** A soft light at a point of the front view: every LED within `radius` catches some of it. */
+  glow(x: number, y: number, radius: number, color: Rgb, amount = 1) {
+    if (amount <= 0) return;
+    this.within(x, y, radius, (i, d2) => this.out?.add(i, color, amount * (1 - d2) * (1 - d2)));
   }
 
   /** A ring of light at distance r from a point: one frame of a shockwave through the yard. */

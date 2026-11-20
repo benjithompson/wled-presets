@@ -64,5 +64,12 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     tagline: 'Hit the colors on the beat',
     description: 'Notes in four colors slide along the roof to the lit zone: press the button in each note\'s color as it passes through, hold the long ones to their end. Pick 1, 2 or 4 colors and Easy, Normal or Hard; the beat never stops, keeps getting faster, and every 8 bars the whole roofline changes its look.',
     players: '1 player'
+  },
+  {
+    id: 'paint',
+    name: 'Light Painter',
+    tagline: 'Paint the house with your finger',
+    description: 'For little artists: pick a color and a sparkle, then paint the lights with your finger. Fill a whole bush in one touch, or tap Surprise!',
+    players: '1 player'
   }
 ];

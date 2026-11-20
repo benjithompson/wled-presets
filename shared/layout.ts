@@ -2,6 +2,7 @@
 // the house, and where each LED of each object sits. Shared by the server (games) and the
 // web client (editor and simulator), so both agree on every pixel's position.
 
+import type { PaintPad } from './paint.ts';
 import type { LineView } from './line.ts';
 import type { EffectSettings } from './effects.ts';
 import type { LightType } from './lights.ts';
@@ -1267,6 +1268,8 @@ export interface GameStatus {
   scoreboard?: Scoreboard;
   /** An arcade score display while playing (Beat Drop): it takes the place of score and stats. */
   arcade?: ArcadeHud;
+  /** Light Painter: the phone shows the paint box and the yard to paint on (see paint.ts). */
+  paint?: PaintPad;
   /** The last game's score made the board: the phone asks for initials. */
   enterInitials?: { id: number; rank: number; score: number; refused?: boolean };
 }
