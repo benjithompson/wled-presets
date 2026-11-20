@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
-import { BrushCleaning, Eraser, PaintBucket, Undo2, WandSparkles } from 'lucide-react';
+import { BrushCleaning, Eraser, PaintBucket, Shrink, Undo2, WandSparkles } from 'lucide-react';
 import type { GameStatus, Layout } from '../../../shared/layout.ts';
-import { ERASER, PAINT_BUTTONS, PAINT_COLORS, PAINT_EFFECTS, PAINT_FINGERS, PAINT_MAX_POINTS, type PaintStroke } from '../../../shared/paint.ts';
+import { ERASER, PAINT_BUTTONS, PAINT_COLORS, PAINT_EFFECTS, PAINT_MAX_POINTS, type PaintStroke } from '../../../shared/paint.ts';
 import { YardView, coverBox, ledBox } from '../yard/YardView.tsx';
 import type { PlayMessage } from '../yard/usePlaySocket.ts';
+import { clampCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Cam, type Pair } from '../yard/camera.ts';
 import { Cabinet } from './GameWindow.tsx';
 import { cn } from '../lib/utils.ts';
 
@@ -162,114 +163,200 @@ function ToolButton({ label, disabled, onClick, className, children }: { label: 
   );
 }
 
-/** A finger on the picture: its stroke, and the points it passed that are not sent yet. */
-interface Finger {
-  finger: number;
+/** A finger painting: its stroke, and the points it passed that are not sent yet. */
+interface Stroke {
+  pointer: number;
   start: boolean;
   points: number[];
-  /** Where it is, in CSS pixels on the picture (for the circle under it). */
-  x: number;
-  y: number;
+  /** A touch waits this long (ms timestamp) before it paints: it may be the first finger of a pinch. */
+  sendAt: number;
 }
 
+/** A touch is held back this long, so a pinch that starts with one finger leaves no dot. */
+const HOLD_MS = 90;
+/** Zoomed in at most this many times closer than all the lights. */
+const CLOSEST = 8;
+
 /**
- * The yard, zoomed in on its lights like a game's screen, and painted on with fingers: each
- * finger sends the points it passes, in layout units, a few times a second.
+ * The yard, zoomed in on its lights like a game's screen, and painted on with a finger, which
+ * sends the points it passes (layout units) a few times a second. Two fingers zoom (pinch) and
+ * pan; on a computer, the wheel zooms at the pointer and the right or middle button pans.
  */
 function PaintScreen({ layout, getFrame, choice, swatch, send }: { layout: Layout; getFrame: () => Uint8Array | null; choice: Choice; swatch: string; send: (m: PlayMessage) => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [box, setBox] = useState({ w: 0, h: 0 });
+  const [px, setPx] = useState({ w: 0, h: 0 });
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const ro = new ResizeObserver(([e]) => setBox({ w: e.contentRect.width, h: e.contentRect.height }));
+    const ro = new ResizeObserver(([e]) => setPx({ w: e.contentRect.width, h: e.contentRect.height }));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
   const lights = useMemo(() => ledBox(layout, 'front', [-480, 480]), [layout]);
-  const vb = box.w && box.h ? coverBox(lights, box.w / box.h) : null;
-  const vbRef = useRef(vb);
-  vbRef.current = vb;
+  /** All the lights, filling the screen: as far out as the camera goes, and as far as it pans. */
+  const bounds = px.w && px.h ? coverBox(lights, px.w / px.h) : null;
+  const far: Cam | null = bounds ? { cx: bounds.x + bounds.w / 2, cy: bounds.y + bounds.h / 2, k: bounds.w / px.w } : null;
+  /** The camera; null: all the lights. */
+  const [cam, setCam] = useState<Cam | null>(null);
+  const shown = far && bounds ? clampCam(cam ?? far, px, far, bounds, CLOSEST) : null;
+  const vb = shown ? viewBoxOf(shown, px) : null;
+  const zoomed = !!(shown && far && shown.k < far.k * 0.98);
+
+  const view = useRef({ shown, far, bounds, px });
+  view.current = { shown, far, bounds, px };
   const choiceRef = useRef(choice);
   choiceRef.current = choice;
+  /** Sets the camera, kept on the lights. */
+  const moveTo = useCallback((c: Cam) => {
+    const { far: f, bounds: b, px: p } = view.current;
+    if (f && b) setCam(clampCam(c, p, f, b, CLOSEST));
+  }, []);
 
-  const fingers = useRef(new Map<number, Finger>());
-  const [shown, setShown] = useState<{ id: number; x: number; y: number }[]>([]);
-  const show = () => setShown([...fingers.current].map(([id, f]) => ({ id, x: f.x, y: f.y })));
-
+  /** Every pointer down on the picture, where it is (pixels in the pane). */
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const stroke = useRef<Stroke | null>(null);
+  const gesture = useRef<{ ids: [number, number]; from: Pair; start: Cam } | null>(null);
+  /** After a pinch, the fingers left down do not paint until all of them lift. */
+  const locked = useRef(false);
+  const mousePan = useRef<{ id: number; x: number; y: number } | null>(null);
+  /** The circle under the painting finger, in pixels. */
+  const [ring, setRing] = useState<{ x: number; y: number } | null>(null);
   const radiusPx = choice.tool === 'fill' ? 18 : BRUSHES[choice.tool];
 
+  /** A pane pixel in layout units. */
+  const toLayout = (p: { x: number; y: number }) => {
+    const { shown: c, px: size } = view.current;
+    if (!c) return null;
+    const b = viewBoxOf(c, size);
+    return { x: b.x + (p.x / size.w) * b.w, y: b.y + (p.y / size.h) * b.h };
+  };
+
   const flush = useCallback(
-    (f: Finger) => {
-      if (!f.points.length) return;
+    (s: Stroke, force = false) => {
+      if (!s.points.length || (!force && performance.now() < s.sendAt)) return;
       const c = choiceRef.current;
-      // Layout units per CSS pixel of the picture.
-      const k = vbRef.current && ref.current?.clientWidth ? vbRef.current.w / ref.current.clientWidth : 1;
-      const stroke: PaintStroke = {
-        finger: f.finger,
-        start: f.start,
-        points: f.points,
-        radius: (c.tool === 'fill' ? 18 : BRUSHES[c.tool]) * k,
-        color: c.color,
-        effect: c.effect,
-        fill: c.tool === 'fill'
-      };
-      send({ type: 'paint', ...stroke });
-      f.start = false;
-      f.points = [];
+      const k = view.current.shown?.k ?? 1;
+      const m: PaintStroke = { finger: 0, start: s.start, points: s.points, radius: (c.tool === 'fill' ? 18 : BRUSHES[c.tool]) * k, color: c.color, effect: c.effect, fill: c.tool === 'fill' };
+      send({ type: 'paint', ...m });
+      if (s.start) navigator.vibrate?.(10);
+      s.start = false;
+      s.points = [];
     },
     [send]
   );
 
-  // While a finger is down, what it painted goes out every SEND_MS.
+  // While a finger paints, what it passed goes out every SEND_MS.
   useEffect(() => {
-    const t = setInterval(() => {
-      for (const f of fingers.current.values()) flush(f);
-    }, SEND_MS);
+    const t = setInterval(() => stroke.current && flush(stroke.current), SEND_MS);
     return () => clearInterval(t);
   }, [flush]);
 
+  // The wheel (or a trackpad pinch) zooms at the pointer. React's wheel events cannot be stopped
+  // from scrolling the page, so this one is added by hand.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => {
+      const { shown: c, px: size } = view.current;
+      if (!c) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      moveTo(zoomAt(c, size, { x: e.clientX - r.left, y: e.clientY - r.top }, wheelFactor(e)));
+    };
+    // Safari's own pinch events would zoom the whole page instead of the picture.
+    const gesture = (e: Event) => e.preventDefault();
+    el.addEventListener('wheel', wheel, { passive: false });
+    el.addEventListener('gesturestart', gesture);
+    el.addEventListener('gesturechange', gesture);
+    return () => {
+      el.removeEventListener('wheel', wheel);
+      el.removeEventListener('gesturestart', gesture);
+      el.removeEventListener('gesturechange', gesture);
+    };
+  }, [moveTo]);
+
   const at = (e: React.PointerEvent) => {
     const r = ref.current!.getBoundingClientRect();
-    const px = e.clientX - r.left;
-    const py = e.clientY - r.top;
-    const v = vbRef.current;
-    if (!v) return null;
-    return { px, py, x: v.x + (px / r.width) * v.w, y: v.y + (py / r.height) * v.h };
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  const pairOf = (ids: [number, number]): Pair | null => {
+    const a = pointers.current.get(ids[0]);
+    const b = pointers.current.get(ids[1]);
+    return a && b ? [{ ...a }, { ...b }] : null;
+  };
+
+  /** The painting finger stops: what it painted goes out, unless it never really started (a pinch). */
+  const endStroke = (keep: boolean) => {
+    const s = stroke.current;
+    if (!s) return;
+    if (keep || !s.start) flush(s, true);
+    stroke.current = null;
+    setRing(null);
   };
 
   const down = (e: React.PointerEvent) => {
     e.preventDefault();
-    const p = at(e);
-    if (!p) return;
-    const used = new Set([...fingers.current.values()].map((f) => f.finger));
-    const free = Array.from({ length: PAINT_FINGERS }, (_, i) => i).find((i) => !used.has(i));
-    if (free == null) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    const f: Finger = { finger: free, start: true, points: [p.x, p.y], x: p.px, y: p.py };
-    fingers.current.set(e.pointerId, f);
-    // A tap paints at once.
-    flush(f);
-    navigator.vibrate?.(10);
-    show();
-  };
-  const move = (e: React.PointerEvent) => {
-    const f = fingers.current.get(e.pointerId);
-    if (!f) return;
     const p = at(e);
-    if (!p) return;
-    f.x = p.px;
-    f.y = p.py;
-    f.points.push(p.x, p.y);
-    if (f.points.length >= PAINT_MAX_POINTS * 2) flush(f);
-    show();
+    // The right or middle mouse button pans.
+    if (e.pointerType === 'mouse' && e.button !== 0) {
+      mousePan.current = { id: e.pointerId, ...p };
+      return;
+    }
+    pointers.current.set(e.pointerId, p);
+    if (pointers.current.size === 2 && view.current.shown) {
+      // A second finger: this is a pinch, not painting. A first touch that has not painted yet
+      // is dropped; one that has keeps what it painted.
+      endStroke(false);
+      const ids = [...pointers.current.keys()] as [number, number];
+      gesture.current = { ids, from: pairOf(ids)!, start: view.current.shown };
+      locked.current = true;
+      return;
+    }
+    if (pointers.current.size > 1 || locked.current) return;
+    const q = toLayout(p);
+    if (!q) return;
+    stroke.current = { pointer: e.pointerId, start: true, points: [q.x, q.y], sendAt: e.pointerType === 'touch' ? performance.now() + HOLD_MS : 0 };
+    flush(stroke.current);
+    setRing(p);
   };
+
+  const move = (e: React.PointerEvent) => {
+    const p = at(e);
+    const pan = mousePan.current;
+    if (pan && pan.id === e.pointerId) {
+      const c = view.current.shown;
+      if (c) moveTo(panBy(c, p.x - pan.x, p.y - pan.y));
+      mousePan.current = { id: pan.id, ...p };
+      return;
+    }
+    if (!pointers.current.has(e.pointerId)) return;
+    pointers.current.set(e.pointerId, p);
+    const g = gesture.current;
+    if (g) {
+      const to = pairOf(g.ids);
+      if (to) moveTo(pinch(g.start, view.current.px, g.from, to));
+      return;
+    }
+    const s = stroke.current;
+    if (!s || s.pointer !== e.pointerId) return;
+    const q = toLayout(p);
+    if (!q) return;
+    s.points.push(q.x, q.y);
+    if (s.points.length >= PAINT_MAX_POINTS * 2) flush(s, true);
+    setRing(p);
+  };
+
   const up = (e: React.PointerEvent) => {
-    const f = fingers.current.get(e.pointerId);
-    if (!f) return;
-    flush(f);
-    fingers.current.delete(e.pointerId);
-    show();
+    if (mousePan.current?.id === e.pointerId) {
+      mousePan.current = null;
+      return;
+    }
+    if (!pointers.current.delete(e.pointerId)) return;
+    // A quick tap paints, even before its wait is over.
+    if (stroke.current?.pointer === e.pointerId) endStroke(true);
+    if (gesture.current?.ids.includes(e.pointerId)) gesture.current = null;
+    if (!pointers.current.size) locked.current = false;
   };
 
   return (
@@ -284,13 +371,12 @@ function PaintScreen({ layout, getFrame, choice, swatch, send }: { layout: Layou
       onContextMenu={(e) => e.preventDefault()}
     >
       {vb ? <YardView layout={layout} getFrame={getFrame} fill edge={false} viewBox={vb} /> : null}
-      {shown.map((f) => (
+      {ring ? (
         <span
-          key={f.id}
           className="pointer-events-none absolute rounded-full border-2 border-white/80"
           style={{
-            left: f.x - radiusPx,
-            top: f.y - radiusPx,
+            left: ring.x - radiusPx,
+            top: ring.y - radiusPx,
             width: radiusPx * 2,
             height: radiusPx * 2,
             background: choice.color === ERASER ? 'rgba(0,0,0,0.35)' : swatch,
@@ -298,7 +384,19 @@ function PaintScreen({ layout, getFrame, choice, swatch, send }: { layout: Layou
             boxShadow: '0 0 16px rgba(255,255,255,0.5)'
           }}
         />
-      ))}
+      ) : null}
+      {zoomed ? (
+        <button
+          type="button"
+          aria-label="See all the lights"
+          title="See all the lights"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setCam(null)}
+          className="absolute top-2 right-2 grid size-11 touch-manipulation place-items-center rounded-full bg-black/60 text-white ring-1 ring-white/25 backdrop-blur transition active:scale-95"
+        >
+          <Shrink className="size-5" />
+        </button>
+      ) : null}
     </div>
   );
 }

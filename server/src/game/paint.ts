@@ -249,7 +249,7 @@ export function paintGame(stage: Stage): Game {
     const x = pos[i * 2];
     const y = pos[i * 2 + 1];
     const s = seed[i];
-    const c: Rgb = pc.id === RAINBOW || !pc.rgb ? hsv((((x - minX) / span) * 0.9 + ((y - minY) / span) * 0.35 - clock * 0.15 + 10) % 1) : pc.rgb;
+    const c: Rgb = pc.id === RAINBOW || !pc.rgb ? hsv(((x - minX) / span) * 0.9 + ((y - minY) / span) * 0.35 - clock * 0.15) : pc.rgb;
     let m = 0.9;
     let glint = 0;
     switch (effect[i]) {

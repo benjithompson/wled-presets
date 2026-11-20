@@ -124,6 +124,34 @@ describe('Light Painter', () => {
     for (const f of stage.fixtures) expect(lit(frame, f).count, f.name).toBeGreaterThan(0);
   });
 
+  it('cycles the rainbow smoothly through every hue, never through white, however long it runs', () => {
+    const game = paintGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    game.paint!(stroke(middleOf(middle), { fill: true, color: 'rainbow' }));
+    // Long enough that the rainbow has gone round many times.
+    run(game, frame, 200);
+    const leds = Array.from({ length: middle.count }, (_, i) => middle.offset + i);
+    const rgbOf = (i: number) => [0, 1, 2].map((c) => frame.data[i * 3 + c]);
+    let before = leds.map(rgbOf);
+    const hues = new Set<number>();
+    for (let f = 0; f < 60 * 8; f++) {
+      game.update(1 / 60, frame);
+      const now = leds.map(rgbOf);
+      now.forEach((rgb, k) => {
+        const max = Math.max(...rgb);
+        // Fully saturated: one channel is always (nearly) off.
+        expect(Math.min(...rgb)).toBeLessThan(max * 0.05);
+        // No jumps from one frame to the next.
+        expect(Math.max(...rgb.map((v, c) => Math.abs(v - before[k][c])))).toBeLessThan(0.08);
+        // Which sixth of the color wheel it is in: red, yellow, green, cyan, blue, magenta.
+        const [r, g, b] = rgb;
+        hues.add(r >= g && g >= b ? 0 : g >= r && r >= b ? 1 : g >= b && b >= r ? 2 : b >= g && g >= r ? 3 : b >= r && r >= g ? 4 : 5);
+      });
+      before = now;
+    }
+    expect(hues.size).toBe(6);
+  });
+
   it('turns down paint messages that are not right', () => {
     const good = { finger: 0, start: true, points: [1, 2], radius: 10, color: 'red', effect: 'chase', fill: false };
     expect(cleanStroke(good)).toEqual(good);
