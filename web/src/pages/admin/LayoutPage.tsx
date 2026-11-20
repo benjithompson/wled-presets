@@ -4,6 +4,9 @@ import { useSearchParams } from 'react-router';
 import {
   ArrowLeftRight,
   ChevronDown,
+  ChevronUp,
+  Ellipsis,
+  Magnet,
   Clapperboard,
   Pause,
   Play,
@@ -20,6 +23,7 @@ import {
   LayoutPanelLeft,
   Lightbulb,
   LightbulbOff,
+  List,
   LocateFixed,
   Maximize2,
   Minimize2,
@@ -102,12 +106,13 @@ import { DesignEditor } from './DesignEditor.tsx';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
-import { fitCam, panBy, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type PaneSize } from '../../yard/camera.ts';
-import { NumberInput, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
+import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
+import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
+import { useMedia } from '../../lib/useMedia.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
@@ -122,6 +127,13 @@ const TOOL_KEYS: Record<string, Tool> = { v: 'select', a: 'edit', c: 'split', h:
 /** A line being drawn. `cont`: it continues an existing line from one of its ends. */
 type Draft = { side: ViewSide; pts: UV[]; cont?: { id: string; at: 'first' | 'last' } };
 type MenuItem = { label: string; keys?: string; danger?: boolean; run: () => void };
+/** Where a menu opens: on the screen, in pixels. */
+type Anchor = { x: number; y: number };
+/** Under a button. */
+const below = (e: RMouseEvent<HTMLElement>): Anchor => {
+  const r = e.currentTarget.getBoundingClientRect();
+  return { x: r.left, y: r.bottom + 4 };
+};
 /** How far back Undo goes. */
 const UNDO_STEPS = 100;
 /** Changes closer together than this are one step for Undo (for example, one drag). */
@@ -175,6 +187,8 @@ const LAYOUT_KEY = ['layout'];
 const HUES = FIXTURE_HUES;
 const SHOW_KEY = 'layout.showOnLights';
 const VIEWPORT_KEY = 'layout.viewport';
+/** The one view a phone shows. */
+const PHONE_VIEW_KEY = 'layout.phoneView';
 const DRAFTING_KEY = 'layout.drafting';
 const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
 const VIEW_NOTES: Record<ViewName, string> = { front: 'as seen from the street', top: 'from above, the street at the bottom', '3d': 'drag to turn, right-drag to pan' };
@@ -199,6 +213,14 @@ function readViewport(): { mode: VpMode; panes: ViewName[] } {
     if (v.mode in VP_COUNT && v.panes.length === 3 && all.every((x) => v.panes.includes(x))) return v;
   } catch {}
   return { mode: 'three', panes: ['front', 'top', '3d'] };
+}
+
+function readPhoneView(): ViewName {
+  try {
+    const v = localStorage.getItem(PHONE_VIEW_KEY);
+    if (v === 'front' || v === 'top' || v === '3d') return v;
+  } catch {}
+  return 'front';
 }
 
 function readDrafting(): Drafting {
@@ -287,6 +309,32 @@ export function LayoutPage() {
   /** Align tool: a spot on the picture from above, where it goes, then a second spot and where it goes (top view). */
   const [alignPts, setAlignPts] = useState<UV[]>([]);
 
+  // A phone (or a narrow window) is laid out like a mobile app: one view at a time, switched
+  // with buttons, and the object list and the inspector in a bottom sheet that expands and
+  // collapses. Wide screens get the CAD layout: viewports side by side and a side panel.
+  const wide = useMedia('(min-width: 1024px)');
+  const phone = !wide;
+  /** Touch: the hints talk about taps, long presses and pinches instead of clicks and keys. */
+  const coarse = useMedia('(pointer: coarse)');
+  const [phoneView, setPhoneViewState] = useState(readPhoneView);
+  const setPhoneView = (v: ViewName) => {
+    setPhoneViewState(v);
+    try {
+      localStorage.setItem(PHONE_VIEW_KEY, v);
+    } catch {}
+  };
+  /** The bottom sheet on a phone: just its tabs, half the screen, or all of it. */
+  const [sheet, setSheet] = useState<'peek' | 'half' | 'full'>('peek');
+  const [sheetTab, setSheetTab] = useState<'objects' | 'details'>('details');
+  /** On a phone, the inspector shows one section at a time: the open one, for objects, a multi-selection and the yard. */
+  const [accOpen, setAccOpen] = useState<Record<'object' | 'multi' | 'yard', string | null>>({ object: 'object', multi: 'multi-effect', yard: 'yardfx' });
+  /** The drawer of tools that add objects (phone toolbar). */
+  const [addOpen, setAddOpen] = useState(false);
+  /** The phone's one-line hint, opened to show all of it. */
+  const [hintOpen, setHintOpen] = useState(false);
+  /** Where a swipe on the bottom sheet's handle started (screen y). */
+  const sheetDrag = useRef<number | null>(null);
+
   // Viewports: how they share the space, which view each one shows, and one view made big.
   const [viewport, setViewportState] = useState(readViewport);
   const [maximized, setMaximized] = useState<ViewName | null>(null);
@@ -305,7 +353,7 @@ export function LayoutPage() {
     if (maximized === panes[j]) setMaximized(null);
   };
   const visible = viewport.panes.slice(0, VP_COUNT[viewport.mode]);
-  const shown = maximized && visible.includes(maximized) ? [maximized] : visible;
+  const shown = phone ? [phoneView] : maximized && visible.includes(maximized) ? [maximized] : visible;
 
   // The camera of each 2D view. No camera: the view shows the whole yard (zoom to fit).
   const [cams, setCams] = useState<Partial<Record<ViewSide, Cam>>>({});
@@ -409,6 +457,17 @@ export function LayoutPage() {
     setCorner(null);
     setSegment(null);
   }, [selected]);
+  // On a phone, a selection (in the views or the list) shows its properties in the bottom sheet.
+  useEffect(() => {
+    if (selected) setSheetTab('details');
+  }, [selected]);
+  // A segment or a point picked in a view opens its own section of the phone's inspector.
+  useEffect(() => {
+    const f = layoutRef.current?.fixtures.find((x) => x.id === selected);
+    if (!f || !isLine(f)) return;
+    const part = segment != null ? 'segment' : corner == null ? null : corner > 0 && corner < f.points.length - 1 ? 'corner' : 'position';
+    if (part) setAccOpen((a) => ({ ...a, object: part }));
+  }, [selected, segment, corner]);
 
   /** Selects one segment of a line (and the line itself). */
   const selectSegment = (id: string, k: number | null) => {
@@ -809,6 +868,7 @@ export function LayoutPage() {
 
   const chooseTool = (t: Tool) => {
     setTool(t);
+    setAddOpen(false);
     setDraft((d) => ({ side: d.side, pts: [] }));
     setTape(null);
     setAlignPts([]);
@@ -1104,6 +1164,58 @@ export function LayoutPage() {
       return { ...c, [side]: zoomAt(cam, sizeOf(side), { x: e.clientX - rect.left, y: e.clientY - rect.top }, wheelFactor(e)) };
     });
   }
+
+  // Touch: two fingers pan and zoom a 2D view (a pinch), as in maps and drawing apps. The first
+  // finger of a pinch has already reached the view as a tap (a point drawn, a drag begun, the
+  // selection cleared), so when the second finger follows quickly, what the first one did is
+  // taken back.
+  const touchStart = useRef<{
+    at: number;
+    layout: Layout | null;
+    past: number;
+    draft: Draft;
+    tape: typeof tape;
+    alignPts: UV[];
+    selected: string | null;
+    corner: number | null;
+    segment: number | null;
+    multi: string[];
+    tool: Tool;
+  } | null>(null);
+  const pinchCam = useRef<Cam | null>(null);
+  const onTouchFirst = () => {
+    touchStart.current = { at: performance.now(), layout: layoutRef.current, past: past.current.length, draft, tape, alignPts, selected, corner, segment, multi, tool };
+  };
+  const onPinchStart = (side: ViewSide) => {
+    const s = touchStart.current;
+    setDrag(null);
+    setSnapHint(null);
+    setCursor(null);
+    if (s && performance.now() - s.at < 600) {
+      if (s.layout && layoutRef.current !== s.layout) {
+        past.current = past.current.slice(0, s.past);
+        lastEdit.current = 0;
+        setLayout(s.layout);
+        setHistoryTick((n) => n + 1);
+      }
+      if (s.selected !== selected) {
+        keepPart.current = true;
+        setSelected(s.selected);
+      }
+      setCorner(s.corner);
+      setSegment(s.segment);
+      setMulti(s.multi);
+      setTool(s.tool);
+      setDraft(s.draft);
+      setTape(s.tape);
+      setAlignPts(s.alignPts);
+    }
+    pinchCam.current = camFor(side);
+  };
+  const onPinch = (side: ViewSide, from: Pair, to: Pair) => {
+    const start = pinchCam.current;
+    if (start) setCams((c) => ({ ...c, [side]: pinch(start, sizeOf(side), from, to) }));
+  };
 
   /** The pointer position in one view, in layout units. */
   function viewPoint(e: { clientX: number; clientY: number }, side: ViewSide): UV {
@@ -1504,14 +1616,13 @@ export function LayoutPage() {
   // Scenes with effects on objects (effects on whole devices are picked in the scene dialog).
   const effectScenes = (overview?.scenes ?? []).filter((x) => Object.keys(x.effects ?? {}).some((k) => keyDevice(k) == null));
   const editingScene = sceneRef && overview?.scenes.some((x) => x.id === sceneRef.id) ? sceneRef : null;
-  function scenesMenu(e: RMouseEvent<HTMLElement>) {
-    const r = e.currentTarget.getBoundingClientRect();
+  function scenesMenu(at: Anchor) {
     const items: MenuItem[] = [];
     if (editingScene) items.push({ label: `Save "${editingScene.name}"`, run: () => void saveScene({ id: editingScene.id }) });
     items.push({ label: 'Save as a new scene…', run: () => setNewScene(editingScene ? `${editingScene.name} 2` : '') });
     for (const sc of effectScenes) items.push({ label: `Open "${sc.name}"`, run: () => loadScene(sc) });
     if (fxCount) items.push({ label: 'Remove every effect', danger: true, run: () => (edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => withEffects(f, {})) })), setSceneRef(null)) });
-    setMenu({ x: r.left, y: r.bottom + 4, title: editingScene ? `Scene: ${editingScene.name}` : 'Scenes with effects', items });
+    setMenu({ ...at, title: editingScene ? `Scene: ${editingScene.name}` : 'Scenes with effects', items });
   }
 
   async function upload(file: File | undefined) {
@@ -1555,7 +1666,8 @@ export function LayoutPage() {
   const startAlign = (a: AerialPicture | null | undefined = layoutRef.current?.aerial) => {
     chooseTool('align');
     // The top view must be on the screen, zoomed out to show the whole picture and the yard.
-    if (!shown.includes('top')) {
+    if (phone) setPhoneView('top');
+    else if (!shown.includes('top')) {
       setMaximized(null);
       if (!visible.includes('top')) setPaneView(0, 'top');
     }
@@ -1607,11 +1719,9 @@ export function LayoutPage() {
   }
 
   /** The File menu: the layout to a file, and a layout from a file. */
-  function fileMenu(e: RMouseEvent<HTMLElement>) {
-    const r = e.currentTarget.getBoundingClientRect();
+  function fileMenu(at: Anchor) {
     setMenu({
-      x: r.left,
-      y: r.bottom + 4,
+      ...at,
       title: 'Layout file',
       items: [
         { label: 'Export the layout…', run: () => void exportLayout() },
@@ -1680,9 +1790,8 @@ export function LayoutPage() {
   }
 
   /** The Pictures menu: the front of the house, and the yard from above. */
-  function picturesMenu(e: RMouseEvent<HTMLElement>) {
+  function picturesMenu(at: Anchor) {
     if (!layout) return;
-    const r = e.currentTarget.getBoundingClientRect();
     const items: MenuItem[] = [
       { label: layout.background ? 'Change the house picture (front view)…' : 'Add a house picture (front view)…', run: () => fileInput.current?.click() },
       { label: layout.aerial ? 'Change the picture from above (top view)…' : 'Add a picture from above (top view)…', run: () => aerialInput.current?.click() }
@@ -1690,7 +1799,19 @@ export function LayoutPage() {
     if (layout.aerial) items.push({ label: 'Line up the picture from above', run: () => startAlign() });
     if (layout.background) items.push({ label: 'Remove the house picture', danger: true, run: () => void removeBg() });
     if (layout.aerial) items.push({ label: 'Remove the picture from above', danger: true, run: () => void removeAerial() });
-    setMenu({ x: r.left, y: r.bottom + 4, title: 'Pictures to trace over', items });
+    setMenu({ ...at, title: 'Pictures to trace over', items });
+  }
+
+  /** The phone's command bar keeps the menus of the wide one under ⋯: scenes, pictures, the layout file, Revert. */
+  function moreMenu(at: Anchor) {
+    const items: MenuItem[] = [
+      { label: editingScene ? `Scene: ${editingScene.name}…` : 'Scenes…', run: () => scenesMenu(at) },
+      { label: 'Pictures to trace over…', run: () => picturesMenu(at) },
+      { label: 'Layout file…', run: () => fileMenu(at) },
+      { label: 'Custom objects…', run: () => setLibrary(true) }
+    ];
+    if (dirty) items.push({ label: 'Revert to the saved layout', danger: true, run: () => (edit(() => saved!), setSelected(null)) });
+    setMenu({ ...at, title: 'Layout', items });
   }
 
   async function removeBg() {
@@ -1737,18 +1858,41 @@ export function LayoutPage() {
       aria-keyshortcuts={toolKey(t)}
       aria-pressed={tool === t}
       className={cn(
-        'relative grid size-9 shrink-0 place-items-center rounded-lg transition [&_svg]:size-[18px]',
+        'relative grid shrink-0 place-items-center rounded-lg transition [&_svg]:size-[18px]',
+        phone ? 'size-10' : 'size-9',
         tool === t ? 'bg-sky-600 text-white shadow-sm' : 'text-stone-600 hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white'
       )}
     >
       <Icon />
-      <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">{toolKey(t)}</kbd>
+      {phone ? null : <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">{toolKey(t)}</kbd>}
     </button>
   );
   const toolSep = <span className="h-6 w-px shrink-0 bg-stone-200 lg:h-px lg:w-6 dark:bg-stone-700" />;
   const barSep = <span className="mx-1 h-5 w-px shrink-0 bg-stone-200 dark:bg-stone-700" />;
 
-  const hint = !has2d
+  /** What the tool needs next, for a finger. */
+  const touchHint = !has2d
+    ? 'Switch to the front or the top view to draw and move objects. In the 3D view, tap an LED to select its object.'
+    : panMode
+      ? 'Drag to pan the view. Pinch to zoom.'
+      : isLineTool(tool)
+        ? draft.pts.length
+          ? 'Tap the next corner. Tap Finish line (or double-tap) when it is done. Pinch to zoom.'
+          : `Tap the first point of the ${tool === 'roof' ? 'roofline' : 'line'}, or tap the end of a line to continue it.`
+        : tool === 'edit'
+          ? 'Tap a line to add a point, then drag it into place. Drag a point to move it. Long-press a point to delete it.'
+          : tool === 'split'
+            ? 'Tap a corner, or a spot on a line, to cut the line in two there.'
+            : tool === 'bush'
+              ? 'Press on the middle of the bush and drag out to its edge.'
+              : tool === 'tree'
+                ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
+                : tool === 'measure'
+                  ? 'Tap two points to measure the distance between them. Then type the real distance to set the scale.'
+                  : tool === 'align'
+                    ? ALIGN_STEPS[alignPts.length]
+                    : 'Tap to select; drag an object or a point to move it. Long-press for actions. Pinch to zoom; drag with two fingers to pan.';
+  const deskHint = !has2d
     ? 'Show the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
     : panMode
       ? 'Drag to pan the view. Wheel: zoom at the pointer. Home: zoom to fit.'
@@ -1769,6 +1913,7 @@ export function LayoutPage() {
                   : tool === 'align'
                     ? ALIGN_STEPS[alignPts.length]
                   : 'Click to select; drag an object or a point to move it (Shift: straight across or straight up). Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
+  const hint = coarse ? touchHint : deskHint;
 
   const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
   const coords: [string, string][] | null = cursor
@@ -2192,6 +2337,44 @@ export function LayoutPage() {
     const big = maximized === v;
     const side = v === '3d' ? null : v;
     const zoom = side ? Math.round((fitCam(contentBox(side), sizeOf(side), offOf(side)).k / camFor(side).k) * 100) : null;
+    if (phone)
+      return (
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/10 bg-stone-900 px-1.5 text-xs text-white/55 select-none">
+          <div role="group" aria-label="View" className="inline-flex rounded-lg bg-white/10 p-0.5">
+            {(['front', 'top', '3d'] as ViewName[]).map((x) => (
+              <button
+                key={x}
+                type="button"
+                aria-pressed={x === v}
+                onClick={() => setPhoneView(x)}
+                className={cn('h-8 rounded-md px-3.5 text-xs font-semibold transition', x === v ? 'bg-white text-stone-900 shadow-sm' : 'text-white/70 active:bg-white/15')}
+              >
+                {VIEW_LABELS[x]}
+              </button>
+            ))}
+          </div>
+          <span className="ml-auto" />
+          {side ? (
+            <>
+              <span className="tabular-nums">{zoom}%</span>
+              <button
+                type="button"
+                aria-label="Zoom to fit"
+                onClick={() =>
+                  setCams((c) => {
+                    const next = { ...c };
+                    delete next[side];
+                    return next;
+                  })
+                }
+                className="grid size-9 place-items-center rounded-lg text-white/80 active:bg-white/15 [&_svg]:size-4"
+              >
+                <Scan />
+              </button>
+            </>
+          ) : null}
+        </div>
+      );
     return (
       <div
         className="flex h-7 shrink-0 items-center gap-2 border-b border-white/10 bg-stone-900 px-1.5 text-[11px] text-white/55 select-none"
@@ -2558,142 +2741,683 @@ export function LayoutPage() {
       </>
     ) : null;
 
-  return (
-    <div className="flex flex-col bg-stone-100 lg:h-full dark:bg-stone-950">
-      {/* The command bar: history, viewports, the real lights, the picture, and saving. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-stone-200 bg-stone-50 px-2 py-1 dark:border-stone-800 dark:bg-stone-900">
-        <h1 className="px-1.5 text-sm font-semibold tracking-tight">Yard layout</h1>
-        {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
-        {barSep}
-        <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
-          <Undo2 />
-        </Button>
-        <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
-          <Redo2 />
-        </Button>
-        {barSep}
-        <div className="inline-flex rounded-lg bg-white p-0.5 ring-1 ring-stone-200 dark:bg-stone-950 dark:ring-stone-800" role="group" aria-label="Viewports">
-          {VP_MODES.map(({ mode, label, icon: Icon }) => (
+  /** The object list. In the side panel (`inline`), the selected object opens in it, with its properties right under it. */
+  const objectList = (inline: boolean) => (
+    <div className="flex shrink-0 flex-col border-b border-stone-200 dark:border-stone-800">
+      <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-b border-stone-100 px-3 dark:border-stone-800">
+        <span className="text-[11px] font-semibold tracking-wide text-stone-600 uppercase dark:text-stone-400">Objects</span>
+        <span className="text-[11px] text-stone-500 tabular-nums">
+          {layout.fixtures.length} · {totals} LEDs
+        </span>
+      </div>
+      {layout.fixtures.length ? (
+        <ul aria-label="Objects" className="py-1">
+          {layout.fixtures.map((f, i) => {
+            const Icon = KIND_ICONS[f.kind];
+            const on = selected === f.id || multi.includes(f.id);
+            const partly = !on && multi.some((x) => effectTarget(x).id === f.id);
+            /** The selected object opens: its row stays at the top while you scroll through its properties. */
+            const open = inline && sel?.id === f.id;
+            return (
+              <li key={f.id} className={cn(open && 'my-1')}>
+                <div
+                  data-object-row={f.id}
+                  aria-current={on ? 'true' : undefined}
+                  aria-expanded={open}
+                  title={partly ? 'Some of its segments are selected' : undefined}
+                  onClick={(e) => {
+                    if (tool !== 'select') chooseTool('select');
+                    if (e.ctrlKey || e.metaKey) {
+                      toggleTarget(f.id);
+                    } else if (e.shiftKey && listAnchor.current) {
+                      // A range, from the item clicked before to this one.
+                      const ids = layout.fixtures.map((x) => x.id);
+                      const a = ids.indexOf(listAnchor.current);
+                      const b = ids.indexOf(f.id);
+                      if (a >= 0) return pickTargets(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
+                      setSelected(f.id);
+                    } else setSelected(f.id);
+                    listAnchor.current = f.id;
+                    // On a phone, the list hands over to the object's properties.
+                    if (!inline) setSheetTab('details');
+                  }}
+                  onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+                  onDoubleClick={() => setRenaming(f.id)}
+                  onContextMenu={(e) => objectMenu(e, f)}
+                  className={cn(
+                    'mx-1 flex cursor-default items-center gap-2 rounded-md px-2',
+                    inline ? 'text-[13px]' : 'text-sm',
+                    open ? 'sticky top-0 z-10 min-h-11 rounded-b-none py-1.5 shadow-sm' : inline ? 'h-7' : 'h-11',
+                    on
+                      ? 'bg-sky-600 text-white'
+                      : partly
+                        ? 'bg-sky-600/15 text-stone-900 dark:text-white'
+                        : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
+                  )}
+                >
+                  <Icon className="size-3.5 shrink-0" style={{ color: on ? undefined : `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
+                  {renaming === f.id ? (
+                    <RenameInput value={f.name} onDone={(name) => (setRenaming(null), name != null && name.trim() && update(f.id, { name: name.trim() }))} />
+                  ) : open ? (
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold">{f.name}</span>
+                      <span className="block truncate text-[11px] text-white/75">
+                        {KIND_LABELS[f.kind]}
+                        {isLine(f) && segment != null ? ` · segment ${segment + 1} of ${f.points.length - 1}` : ''}
+                        {isLine(f) && segment == null && corner != null ? ` · ${pointName(f, corner)}` : ''}
+                        {` · LEDs ${ledRange(f).first}–${ledRange(f).last}`}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                  )}
+                  {open ? (
+                    <span className="flex shrink-0" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <button type="button" onClick={() => frameSelection()} title="Zoom to this object (F)" aria-label="Zoom to this object" className="grid size-7 place-items-center rounded-md hover:bg-white/15 [&_svg]:size-4">
+                        <Scan />
+                      </button>
+                      <button type="button" onClick={() => remove(f.id)} title="Delete this object (Delete)" aria-label="Delete this object" className="grid size-7 place-items-center rounded-md hover:bg-red-500/80 [&_svg]:size-4">
+                        <Trash2 />
+                      </button>
+                    </span>
+                  ) : (
+                    <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
+                      {ledRange(f).first}–{ledRange(f).last}
+                    </span>
+                  )}
+                </div>
+                {open ? (
+                  <div className="mx-1 rounded-b-md border border-t-0 border-sky-600/50 bg-stone-50/70 dark:border-sky-400/40 dark:bg-stone-950/40 [&>section:last-child]:border-b-0">{selPanel()}</div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="px-3 py-4 text-xs text-stone-500">
+          {coarse ? 'Nothing yet. Draw the roofline first: tap + in the toolbar, pick Roofline, then tap along the roof.' : 'Nothing yet. Draw the roofline first: press R, then click along the roof.'}
+        </p>
+      )}
+    </div>
+  );
+
+  /** The inspector when no one object is selected: the multi-selection, or the whole yard. */
+  const restPanel = () =>
+    multiItems.length >= 2 ? (
+      <>
+        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-semibold">{multiItems.length} selected</p>
+            <p className="truncate text-[11px] text-stone-500">Ctrl/⌘-click to add or remove. Esc to clear.</p>
+          </div>
+          <Button size="sm" variant="ghost" onClick={() => setMulti([])} title="Clear the selection (Esc)" aria-label="Clear the selection" className="px-2">
+            <X />
+          </Button>
+        </div>
+        <PropSection key="multi-items" id="multi-items" title="Selection">
+          <ul className="space-y-0.5">
+            {multiItems.map((it) => (
+              <li key={it.key} className="group flex items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
+                <button type="button" className="min-w-0 flex-1 truncate text-left" title="Select only this" onClick={() => pickTargets([it.key])}>
+                  {it.name}
+                </button>
+                <span className="text-stone-500">{it.effect ? EFFECT_NAMES[it.effect.effect] : '—'}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${it.name} from the selection`}
+                  title="Remove from the selection"
+                  onClick={() => toggleTarget(it.key)}
+                  className="grid size-5 place-items-center rounded text-stone-400 opacity-0 group-hover:opacity-100 hover:text-stone-900 dark:hover:text-white [&_svg]:size-3"
+                >
+                  <X />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </PropSection>
+        <PropSection key="multi-effect" id="multi-effect" title={`Effect${multiShown ? ` · ${EFFECT_NAMES[multiShown.effect]}` : ''}`}>
+          {multiMixed ? (
+            <PropNote>They play different effects now. The settings below are the first one’s. A setting you change goes to each of them; a new effect replaces them all.</PropNote>
+          ) : null}
+          <EffectProps
+            effect={multiShown}
+            objectCount={multiItems.length}
+            noneLabel="None"
+            emptyNote="Pick an effect: every selected object and segment gets it. A segment plays its own copy; the rest of its line keeps the line’s effect."
+            onChange={(next) => {
+              setMultiEffect(next, multiShown);
+              if (next) setPlaying(true);
+            }}
+          />
+        </PropSection>
+      </>
+    ) : (
+      <>
+        <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-semibold">Yard</p>
+            <p className="text-[11px] text-stone-500">Nothing selected. {coarse ? 'Tap' : 'Click'} an object to see its properties.</p>
+          </div>
+        </div>
+        <PropSection key="yardfx" id="yardfx" title="Whole yard effect">
+          <EffectProps
+            effect={layout.effect}
+            objectCount={0}
+            noneLabel="None"
+            emptyNote="An effect for every object at once. A 3-D effect plays over the whole yard as one picture; a 1-D effect runs along each object. Objects and segments with their own effect play theirs instead."
+            onChange={(effect) => {
+              updateLayout({ effect });
+              if (effect) setPlaying(true);
+            }}
+          />
+        </PropSection>
+        <PropSection key="scene" id="scene" title="Effects and scenes">
+          {fxCount ? (
+            <ul className="space-y-0.5">
+              {layout.effect ? (
+                <li className="flex items-center gap-2 px-1 py-0.5 text-xs">
+                  <span className="min-w-0 flex-1 truncate font-medium">Whole yard</span>
+                  <span className="text-stone-500">{EFFECT_NAMES[layout.effect.effect]}</span>
+                </li>
+              ) : null}
+              {layout.fixtures.flatMap((f) => {
+                const rows: { key: string; name: string; fx: EffectSettings; seg: number | null }[] = [];
+                if (f.effect) rows.push({ key: f.id, name: f.name, fx: f.effect, seg: null });
+                if (isLine(f))
+                  for (const [k, fx] of Object.entries(f.segmentEffects ?? {}).sort(([a], [b]) => Number(a) - Number(b)))
+                    if (Number(k) < f.points.length - 1) rows.push({ key: `${f.id}#${k}`, name: `${f.name} · segment ${Number(k) + 1}`, fx, seg: Number(k) });
+                return rows.map((r) => (
+                  <li key={r.key}>
+                    <button
+                      type="button"
+                      onClick={(e) => (e.ctrlKey || e.metaKey ? toggleTarget(r.key) : r.seg == null ? setSelected(f.id) : selectSegment(f.id, r.seg))}
+                      className={cn('flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800', r.seg != null && 'pl-4')}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                      <span className="text-stone-500">{EFFECT_NAMES[r.fx.effect]}</span>
+                    </button>
+                  </li>
+                ));
+              })}
+            </ul>
+          ) : (
+            <PropNote>No object has an effect yet. Select an object, then pick an effect in its Effect section.</PropNote>
+          )}
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <PropButton onClick={() => setPlaying((v) => !v)} disabled={!fxCount}>
+              {playing ? <Pause /> : <Play />} {playing ? 'Stop' : 'Play'}
+            </PropButton>
+            {editingScene ? (
+              <PropButton onClick={() => void saveScene({ id: editingScene.id })} disabled={!fxCount || busy}>
+                <Save /> Save “{editingScene.name}”
+              </PropButton>
+            ) : null}
+            <PropButton onClick={() => setNewScene('')} disabled={!fxCount || busy}>
+              <Clapperboard /> Save as a new scene
+            </PropButton>
+          </div>
+          <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
+        </PropSection>
+        <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+        {layout.aerial ? (
+          <AerialProps
+            aerial={layout.aerial}
+            m={m}
+            onChange={(patch) => updateLayout({ aerial: { ...layout.aerial!, ...patch } })}
+            onAlign={() => startAlign()}
+            onMeasure={() => (chooseTool('measure'), setTape(null))}
+            onRemove={() => void removeAerial()}
+          />
+        ) : null}
+        <PropSection key="lightstrings" id="lightstrings" title="Light strings">
+          <LightSelect
+            layout={layout}
+            label="New objects"
+            value={layout.lights}
+            hint="What new lines, bushes, trees and custom objects are made of"
+            onChange={(lights) => updateLayout({ lights })}
+            onNew={() => setLightEdit({ type: null })}
+          />
+          {newLights ? (
+            <PropNote>
+              New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart; while you draw, each segment shows its length and LEDs.
+            </PropNote>
+          ) : (
+            <PropNote>Pick the light string you use most. New objects are made of it, and lines you draw get the right number of LEDs.</PropNote>
+          )}
+          {layout.lightTypes?.length ? (
+            <ul className="space-y-0.5 pt-1">
+              {layout.lightTypes.map((lt) => (
+                <li key={lt.id}>
+                  <button type="button" onClick={() => setLightEdit({ type: lt })} className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
+                    <span className="min-w-0 flex-1 truncate">{lt.name}</span>
+                    <span className="text-stone-500">{layout.fixtures.filter((f) => f.lights === lt.id).length} objects</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="pt-1">
+            <PropButton onClick={() => setLightEdit({ type: null })}>
+              <Plus /> New light type
+            </PropButton>
+          </div>
+        </PropSection>
+        <PropSection key="library" id="library" title="Custom objects">
+          <LibraryList layout={layout} onPlace={(d) => placeDesign(d)} onEdit={setDesigning} onDuplicate={duplicateDesign} onDelete={deleteDesign} />
+          <div className="pt-1">
+            <PropButton onClick={newDesign}>
+              <Plus /> New custom object
+            </PropButton>
+          </div>
+        </PropSection>
+        {runs.size ? (
+          <PropSection key="devices" id="devices" title="LEDs per device">
+            <div className="space-y-4">
+              {[...runs.entries()].map(([deviceId, r]) => (
+                <StripMap
+                  key={deviceId}
+                  name={devices.find((d) => d.id === deviceId)?.name ?? 'Unknown device'}
+                  count={devices.find((d) => d.id === deviceId)?.info?.leds?.count ?? null}
+                  runs={r.runs}
+                  overlaps={r.overlaps}
+                  fixtures={layout.fixtures}
+                  selected={selected}
+                  onSelect={setSelected}
+                />
+              ))}
+            </div>
+          </PropSection>
+        ) : null}
+        {coarse ? null : (
+          <PropSection key="keys" id="keys" title="Keyboard and mouse" defaultOpen={false}>
+            <Shortcuts />
+          </PropSection>
+        )}
+      </>
+    );
+
+  const iconButton =
+    'grid size-10 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 active:bg-stone-200 disabled:opacity-35 dark:text-stone-300 dark:hover:bg-stone-800 dark:active:bg-stone-700 [&_svg]:size-[18px]';
+
+  /** The phone's command bar: one row, the menus under ⋯. */
+  const phoneBar = (
+    <div className="flex shrink-0 items-center gap-0.5 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
+      <button type="button" onClick={undo} disabled={!past.current.length} aria-label="Undo" className={iconButton}>
+        <Undo2 />
+      </button>
+      <button type="button" onClick={redo} disabled={!future.current.length} aria-label="Redo" className={iconButton}>
+        <Redo2 />
+      </button>
+      {barSep}
+      <button
+        type="button"
+        onClick={toggleShow}
+        aria-pressed={showOnLights}
+        aria-label={lightsLabel}
+        title={lightsTitle}
+        className={cn(iconButton, showOnLights && 'text-stone-900 dark:text-white', previewing && previewDevices.length && 'text-emerald-600 dark:text-emerald-400')}
+      >
+        {showOnLights ? <Lightbulb /> : <LightbulbOff />}
+      </button>
+      <button
+        type="button"
+        onClick={() => setPlaying((v) => !v)}
+        disabled={!fxCount}
+        aria-pressed={playing}
+        aria-label={playing ? 'Stop the effects' : 'Play the effects'}
+        className={cn(iconButton, playing && 'text-sky-600 dark:text-sky-300')}
+      >
+        {playing ? <Pause /> : <Play />}
+      </button>
+      {overlapCount ? <Badge tone="red">LEDs overlap</Badge> : null}
+      <span className="ml-auto" />
+      <button type="button" onClick={(e) => moreMenu(below(e))} disabled={busy} aria-label="More: scenes, pictures, file" aria-haspopup="menu" className={iconButton}>
+        <Ellipsis />
+      </button>
+      <Button size="sm" variant="primary" onClick={save} disabled={!dirty || overlapCount > 0} loading={busy} className="h-10">
+        <Save /> Save
+      </Button>
+    </div>
+  );
+
+  /** The tools that add an object, in a drawer on a phone. */
+  const addTools: [Tool | 'custom', typeof House, string][] = [
+    ['roof', House, 'Roofline'],
+    ['line', Spline, 'Line'],
+    ['bush', Circle, 'Bush'],
+    ['tree', TreePine, 'Tree'],
+    ['custom', Shapes, 'Custom']
+  ];
+  const addTool = addTools.find(([t]) => t === tool);
+  const AddIcon = addTool ? addTool[1] : Plus;
+  /** The phone's toolbar: select, edit and split; a drawer of objects to add; measure; snapping. Two fingers pan, so no Pan tool. */
+  const phoneTools = (
+    <div role="toolbar" aria-label="Tools" className="relative z-20 flex shrink-0 items-center gap-1 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
+      {toolButton('select', MousePointer2)}
+      {toolButton('edit', PenTool)}
+      {toolButton('split', Scissors)}
+      {toolSep}
+      <button
+        type="button"
+        onClick={() => setAddOpen((v) => !v)}
+        aria-expanded={addOpen}
+        aria-label={addTool ? `Add: ${TOOL_LABELS[addTool[0] as Tool]}` : 'Add an object'}
+        className={cn(
+          'flex h-10 shrink-0 items-center gap-0.5 rounded-lg px-2 transition [&_svg]:size-[18px]',
+          addTool ? 'bg-sky-600 text-white shadow-sm' : addOpen ? 'bg-stone-200 text-stone-950 dark:bg-stone-800 dark:text-white' : 'text-stone-600 active:bg-stone-200 dark:text-stone-300 dark:active:bg-stone-800'
+        )}
+      >
+        <AddIcon />
+        <ChevronDown className={cn('size-3.5! transition', addOpen && 'rotate-180')} />
+      </button>
+      {toolButton('measure', Ruler)}
+      <span className="ml-auto" />
+      <DraftingMenu drafting={drafting} layout={layout} onChange={setDrafting} />
+      {addOpen ? (
+        <div className="absolute inset-x-0 top-full grid grid-cols-5 gap-1 border-b border-stone-200 bg-stone-50 p-1.5 shadow-lg dark:border-stone-800 dark:bg-stone-900">
+          {addTools.map(([t, Icon, label]) => (
             <button
-              key={mode}
+              key={t}
               type="button"
-              title={label}
-              aria-label={label}
-              aria-pressed={viewport.mode === mode && !maximized}
-              onClick={() => (setViewport({ ...viewport, mode }), setMaximized(null))}
+              aria-pressed={tool === t}
+              onClick={() => (t === 'custom' ? (setAddOpen(false), setLibrary(true)) : chooseTool(t))}
               className={cn(
-                'grid h-7 w-8 place-items-center rounded-md transition [&_svg]:size-4',
-                viewport.mode === mode && !maximized
-                  ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900'
-                  : 'text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white'
+                'flex flex-col items-center gap-1 rounded-lg py-2 text-[11px] font-medium transition [&_svg]:size-5',
+                tool === t ? 'bg-sky-600 text-white' : 'text-stone-700 active:bg-stone-200 dark:text-stone-200 dark:active:bg-stone-800'
               )}
             >
               <Icon />
+              {label}
             </button>
           ))}
         </div>
-        {barSep}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={toggleShow}
-          aria-pressed={showOnLights}
-          title={lightsTitle}
-          className={cn(previewing && previewDevices.length && 'text-emerald-700 dark:text-emerald-400')}
-        >
-          {showOnLights ? <Lightbulb /> : <LightbulbOff />}
-          <span className="max-w-48 truncate">{lightsLabel}</span>
-        </Button>
-        {barSep}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => setPlaying((v) => !v)}
-          disabled={!fxCount}
-          aria-pressed={playing}
-          title={fxCount ? `${playing ? 'Stop' : 'Play'} the effects (P)` : 'Select an object and pick an effect for it first'}
-          className={cn(playing && 'text-sky-700 dark:text-sky-300')}
-        >
-          {playing ? <Pause /> : <Play />} {playing ? 'Stop effects' : 'Play effects'}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={scenesMenu} disabled={busy} title="Save the effects as a scene for the public page, or open a scene to change it">
-          <Clapperboard />
-          <span className="max-w-40 truncate">{editingScene ? editingScene.name : 'Scenes'}</span>
-          <ChevronDown />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={picturesMenu}
-          disabled={busy}
-          title="Pictures to trace over: the front of the house (a photo or a Street View screenshot), and the yard from above (a satellite view screenshot)"
-        >
-          {layout.background || layout.aerial ? <Images /> : <ImagePlus />} Pictures
-          <ChevronDown />
-        </Button>
-        <Button size="sm" variant="ghost" onClick={fileMenu} disabled={busy} title="Export the layout to a file, or import a layout from a file">
-          <FolderOpen /> File
-          <ChevronDown />
-        </Button>
-        <input ref={layoutFileInput} type="file" accept="application/json,.json" hidden onChange={(e) => (void pickLayoutFile(e.target.files?.[0]), (e.target.value = ''))} />
-        <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
-        <input ref={aerialInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (uploadAerial(e.target.files?.[0]), (e.target.value = ''))} />
-        <span className="ml-auto" />
-        <Button size="sm" variant="ghost" onClick={() => (edit(() => saved!), setSelected(null))} disabled={!dirty || busy} title="Go back to the saved layout">
-          <RotateCcw /> Revert
-        </Button>
-        <Button size="sm" variant="primary" onClick={save} disabled={!dirty || overlapCount > 0} loading={busy} title="Save the layout (Ctrl/⌘+S)">
-          <Save /> Save
-        </Button>
-      </div>
+      ) : null}
+    </div>
+  );
 
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Tools */}
-        <div
-          role="toolbar"
-          aria-label="Tools"
-          className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-stone-200 bg-stone-50 p-1 lg:flex-col lg:overflow-visible lg:border-r lg:border-b-0 dark:border-stone-800 dark:bg-stone-900"
-        >
-          {toolButton('select', MousePointer2)}
-          {toolButton('edit', PenTool)}
-          {toolButton('split', Scissors)}
-          {toolButton('pan', Hand)}
-          {toolSep}
-          {toolButton('roof', House)}
-          {toolButton('line', Spline)}
-          {toolButton('bush', Circle)}
-          {toolButton('tree', TreePine)}
-          <button
-            type="button"
-            onClick={() => setLibrary(true)}
-            title="Custom object: a star, a wreath, an arch… (O)"
-            aria-label="Custom object"
-            aria-keyshortcuts="O"
-            className="relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]"
-          >
-            <Shapes />
-            <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">O</kbd>
-          </button>
-          {toolSep}
-          {toolButton('measure', Ruler)}
-          {toolSep}
-          <button
-            type="button"
-            onClick={() => frameSelection()}
-            title={sel ? `Zoom to ${sel.name} (F)` : 'Zoom to fit (F or Home)'}
-            aria-label="Zoom to fit"
-            className="relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]"
-          >
-            <Scan />
-            <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">F</kbd>
-          </button>
+  /** The phone's status line: the tool and what it needs next. Tap it to read all of it. */
+  const phoneStatus = (
+    <button
+      type="button"
+      onClick={() => setHintOpen((v) => !v)}
+      aria-expanded={hintOpen}
+      className="flex shrink-0 items-start gap-2 border-t border-stone-200 bg-stone-50 px-3 py-1.5 text-left text-[11px] text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+    >
+      <span className="font-semibold text-stone-700 dark:text-stone-200">{TOOL_LABELS[tool]}</span>
+      <span className={cn('min-w-0 flex-1', !hintOpen && 'truncate')}>{hint}</span>
+      <ChevronDown className={cn('mt-px size-3.5 shrink-0 transition', hintOpen && 'rotate-180')} />
+    </button>
+  );
+
+  /** The phone's inspector: the selected object, the multi-selection or the yard, one section open at a time. */
+  const phoneDetails = () => {
+    const key = sel ? 'object' : multiItems.length >= 2 ? 'multi' : 'yard';
+    const i = sel ? layout.fixtures.indexOf(sel) : -1;
+    const Icon = sel ? KIND_ICONS[sel.kind] : null;
+    const body =
+      sel && Icon ? (
+        <>
+          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white py-1.5 pr-1 pl-3 dark:border-stone-800 dark:bg-stone-900">
+            <Icon className="size-4 shrink-0" style={{ color: `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">{sel.name}</p>
+              <p className="truncate text-[11px] text-stone-500">
+                {KIND_LABELS[sel.kind]}
+                {isLine(sel) && segment != null ? ` · segment ${segment + 1} of ${sel.points.length - 1}` : ''}
+                {isLine(sel) && segment == null && corner != null ? ` · ${pointName(sel, corner)}` : ''}
+                {` · LEDs ${ledRange(sel).first}–${ledRange(sel).last}`}
+              </p>
+            </div>
+            <button type="button" onClick={() => frameSelection()} aria-label="Zoom to this object" className={iconButton}>
+              <Scan />
+            </button>
+            <button type="button" onClick={() => remove(sel.id)} aria-label="Delete this object" className={cn(iconButton, 'text-red-600 dark:text-red-400')}>
+              <Trash2 />
+            </button>
+            <button type="button" onClick={() => setSelected(null)} aria-label="Done: select nothing" className={iconButton}>
+              <X />
+            </button>
+          </div>
+          {selPanel()}
+        </>
+      ) : (
+        restPanel()
+      );
+    // The wizard that matches a line to the lights is one section, always open.
+    if (sel && matching && probe) return body;
+    return <PropAccordion.Provider value={{ open: accOpen[key], set: (id) => setAccOpen((a) => ({ ...a, [key]: id })) }}>{body}</PropAccordion.Provider>;
+  };
+
+  const SHEETS = ['peek', 'half', 'full'] as const;
+  const stepSheet = (d: number) => setSheet((x) => SHEETS[Math.max(0, Math.min(SHEETS.length - 1, SHEETS.indexOf(x) + d))]);
+  const sheetTabButton = (t: 'objects' | 'details', content: ReactNode) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={sheetTab === t}
+      onClick={() => (setSheetTab(t), sheet === 'peek' && setSheet('half'))}
+      className={cn(
+        'inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition [&_svg]:size-4 [&_svg]:shrink-0',
+        sheetTab === t && sheet !== 'peek' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-950 dark:text-white' : 'text-stone-600 dark:text-stone-300'
+      )}
+    >
+      {content}
+    </button>
+  );
+  const SelIcon = sel ? KIND_ICONS[sel.kind] : null;
+  /** The phone's bottom sheet: the object list and the inspector, in two tabs. Swipe or tap the handle to open and close it. */
+  const phoneSheet = (
+    <section
+      aria-label="Objects and properties"
+      className={cn(
+        'flex min-h-0 shrink-0 flex-col border-t border-stone-200 bg-white text-sm shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.3)] dark:border-stone-800 dark:bg-stone-900',
+        sheet === 'half' && 'h-[45dvh]',
+        sheet === 'full' && 'flex-1'
+      )}
+      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+    >
+      <button
+        type="button"
+        aria-label={sheet === 'peek' ? 'Open the panel' : 'Close the panel'}
+        className="flex h-6 w-full shrink-0 touch-none items-center justify-center"
+        onPointerDown={(e) => {
+          sheetDrag.current = e.clientY;
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerUp={(e) => {
+          const y = sheetDrag.current;
+          sheetDrag.current = null;
+          if (y == null) return;
+          const dy = e.clientY - y;
+          if (dy < -24) stepSheet(1);
+          else if (dy > 24) stepSheet(-1);
+          else setSheet((x) => (x === 'peek' ? 'half' : 'peek'));
+        }}
+        onPointerCancel={() => (sheetDrag.current = null)}
+        // The keyboard (a click with no pointer) opens and closes it too.
+        onClick={(e) => e.detail === 0 && setSheet((x) => (x === 'peek' ? 'half' : 'peek'))}
+      >
+        <span className="h-1 w-10 rounded-full bg-stone-300 dark:bg-stone-600" />
+      </button>
+      <div className="flex shrink-0 items-center gap-1 px-2 pb-2">
+        <div role="tablist" aria-label="Panel" className="flex min-w-0 flex-1 rounded-lg bg-stone-100 p-0.5 dark:bg-stone-800">
+          {sheetTabButton(
+            'objects',
+            <>
+              <List /> Objects <span className="text-stone-500 tabular-nums">{layout.fixtures.length}</span>
+            </>
+          )}
+          {sheetTabButton(
+            'details',
+            <>
+              {SelIcon ? <SelIcon /> : null}
+              <span className="truncate">{sel ? sel.name : multiItems.length >= 2 ? `${multiItems.length} selected` : 'Yard'}</span>
+            </>
+          )}
         </div>
+        {sheet !== 'peek' ? (
+          <button type="button" onClick={() => setSheet(sheet === 'full' ? 'half' : 'full')} aria-label={sheet === 'full' ? 'Make the panel smaller' : 'Make the panel full height'} className={iconButton}>
+            {sheet === 'full' ? <Minimize2 /> : <Maximize2 />}
+          </button>
+        ) : null}
+        <button type="button" onClick={() => setSheet(sheet === 'peek' ? 'half' : 'peek')} aria-label={sheet === 'peek' ? 'Open the panel' : 'Close the panel'} className={iconButton}>
+          {sheet === 'peek' ? <ChevronUp /> : <ChevronDown />}
+        </button>
+      </div>
+      {sheet !== 'peek' ? (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain border-t border-stone-200 dark:border-stone-800">{sheetTab === 'objects' ? objectList(false) : phoneDetails()}</div>
+      ) : null}
+    </section>
+  );
+
+  return (
+    <div className="touch-ui flex h-full flex-col bg-stone-100 dark:bg-stone-950">
+      {phone ? (
+        phoneBar
+      ) : (
+        <>
+          {/* The command bar: history, viewports, the real lights, the picture, and saving. */}
+          <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-stone-200 bg-stone-50 px-2 py-1 dark:border-stone-800 dark:bg-stone-900">
+            <h1 className="px-1.5 text-sm font-semibold tracking-tight">Yard layout</h1>
+            {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
+            {barSep}
+            <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
+              <Undo2 />
+            </Button>
+            <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
+              <Redo2 />
+            </Button>
+            {barSep}
+            <div className="inline-flex rounded-lg bg-white p-0.5 ring-1 ring-stone-200 dark:bg-stone-950 dark:ring-stone-800" role="group" aria-label="Viewports">
+              {VP_MODES.map(({ mode, label, icon: Icon }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={viewport.mode === mode && !maximized}
+                  onClick={() => (setViewport({ ...viewport, mode }), setMaximized(null))}
+                  className={cn(
+                    'grid h-7 w-8 place-items-center rounded-md transition [&_svg]:size-4',
+                    viewport.mode === mode && !maximized
+                      ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900'
+                      : 'text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white'
+                  )}
+                >
+                  <Icon />
+                </button>
+              ))}
+            </div>
+            {barSep}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={toggleShow}
+              aria-pressed={showOnLights}
+              title={lightsTitle}
+              className={cn(previewing && previewDevices.length && 'text-emerald-700 dark:text-emerald-400')}
+            >
+              {showOnLights ? <Lightbulb /> : <LightbulbOff />}
+              <span className="max-w-48 truncate">{lightsLabel}</span>
+            </Button>
+            {barSep}
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setPlaying((v) => !v)}
+              disabled={!fxCount}
+              aria-pressed={playing}
+              title={fxCount ? `${playing ? 'Stop' : 'Play'} the effects (P)` : 'Select an object and pick an effect for it first'}
+              className={cn(playing && 'text-sky-700 dark:text-sky-300')}
+            >
+              {playing ? <Pause /> : <Play />} {playing ? 'Stop effects' : 'Play effects'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={(e) => scenesMenu(below(e))} disabled={busy} title="Save the effects as a scene for the public page, or open a scene to change it">
+              <Clapperboard />
+              <span className="max-w-40 truncate">{editingScene ? editingScene.name : 'Scenes'}</span>
+              <ChevronDown />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(e) => picturesMenu(below(e))}
+              disabled={busy}
+              title="Pictures to trace over: the front of the house (a photo or a Street View screenshot), and the yard from above (a satellite view screenshot)"
+            >
+              {layout.background || layout.aerial ? <Images /> : <ImagePlus />} Pictures
+              <ChevronDown />
+            </Button>
+            <Button size="sm" variant="ghost" onClick={(e) => fileMenu(below(e))} disabled={busy} title="Export the layout to a file, or import a layout from a file">
+              <FolderOpen /> File
+              <ChevronDown />
+            </Button>
+            <span className="ml-auto" />
+            <Button size="sm" variant="ghost" onClick={() => (edit(() => saved!), setSelected(null))} disabled={!dirty || busy} title="Go back to the saved layout">
+              <RotateCcw /> Revert
+            </Button>
+            <Button size="sm" variant="primary" onClick={save} disabled={!dirty || overlapCount > 0} loading={busy} title="Save the layout (Ctrl/⌘+S)">
+              <Save /> Save
+            </Button>
+          </div>
+        </>
+      )}
+      <input ref={layoutFileInput} type="file" accept="application/json,.json" hidden onChange={(e) => (void pickLayoutFile(e.target.files?.[0]), (e.target.value = ''))} />
+      <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (upload(e.target.files?.[0]), (e.target.value = ''))} />
+      <input ref={aerialInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => (uploadAerial(e.target.files?.[0]), (e.target.value = ''))} />
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {phone ? (
+          sheet === 'full' ? null : phoneTools
+        ) : (
+          <>
+            {/* Tools */}
+            <div
+              role="toolbar"
+              aria-label="Tools"
+              className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-stone-200 bg-stone-50 p-1 lg:flex-col lg:overflow-visible lg:border-r lg:border-b-0 dark:border-stone-800 dark:bg-stone-900"
+            >
+              {toolButton('select', MousePointer2)}
+              {toolButton('edit', PenTool)}
+              {toolButton('split', Scissors)}
+              {toolButton('pan', Hand)}
+              {toolSep}
+              {toolButton('roof', House)}
+              {toolButton('line', Spline)}
+              {toolButton('bush', Circle)}
+              {toolButton('tree', TreePine)}
+              <button
+                type="button"
+                onClick={() => setLibrary(true)}
+                title="Custom object: a star, a wreath, an arch… (O)"
+                aria-label="Custom object"
+                aria-keyshortcuts="O"
+                className="relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]"
+              >
+                <Shapes />
+                <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">O</kbd>
+              </button>
+              {toolSep}
+              {toolButton('measure', Ruler)}
+              {toolSep}
+              <button
+                type="button"
+                onClick={() => frameSelection()}
+                title={sel ? `Zoom to ${sel.name} (F)` : 'Zoom to fit (F or Home)'}
+                aria-label="Zoom to fit"
+                className="relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]"
+              >
+                <Scan />
+                <kbd className="pointer-events-none absolute right-0.5 bottom-0 font-sans text-[9px] leading-none font-semibold opacity-60">F</kbd>
+              </button>
+            </div>
+          </>
+        )}
 
         {/* Viewports */}
-        <div className="relative min-h-0 min-w-0 flex-1">
-          <div className={cn('grid gap-px bg-stone-300 lg:h-full dark:bg-stone-800', gridClass)}>
+        <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col', phone && sheet === 'full' && 'hidden')}>
+          <div className={cn('grid min-h-0 flex-1 gap-px bg-stone-300 dark:bg-stone-800', phone ? 'grid-cols-1 grid-rows-1' : gridClass)}>
             {shown.map((v, i) => (
-              <div key={v} className={cn('flex h-[55dvh] min-h-0 min-w-0 flex-col bg-[#05070f] lg:h-auto', viewport.mode === 'three' && !single && i === 0 && 'lg:row-span-2')}>
+              <div key={v} className={cn('flex min-h-0 min-w-0 flex-col bg-[#05070f]', viewport.mode === 'three' && !single && i === 0 && 'lg:row-span-2')}>
                 {paneHeader(v)}
                 {v === '3d' ? (
                   <div className="relative min-h-0 flex-1">
@@ -2718,7 +3442,13 @@ export function LayoutPage() {
                     </Suspense>
                   </div>
                 ) : (
-                  <PaneBody onSize={(w, h) => setPaneSize((p) => (p[v]?.w === w && p[v]?.h === h ? p : { ...p, [v]: { w, h } }))} onWheel={(e, r) => onWheel(v, e, r)}>
+                  <PaneBody
+                    onSize={(w, h) => setPaneSize((p) => (p[v]?.w === w && p[v]?.h === h ? p : { ...p, [v]: { w, h } }))}
+                    onWheel={(e, r) => onWheel(v, e, r)}
+                    onTouchFirst={onTouchFirst}
+                    onPinchStart={() => onPinchStart(v)}
+                    onPinch={(from, to) => onPinch(v, from, to)}
+                  >
                     {renderView(v)}
                   </PaneBody>
                 )}
@@ -2731,19 +3461,19 @@ export function LayoutPage() {
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-3">
               <div className="pointer-events-auto">
                 {drawing && isLineTool(tool) ? (
-                  <div className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-900/90 px-3 py-1.5 text-xs text-white shadow-lg ring-1 ring-white/10 backdrop-blur">
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-900/90 px-3 py-1.5 text-xs text-white shadow-lg ring-1 ring-white/10 backdrop-blur max-lg:text-sm">
                     <span>
                       {draft.cont ? `Adding to ${layout.fixtures.find((f) => f.id === draft.cont!.id)?.name ?? 'the line'}` : `New ${TOOL_LABELS[tool].toLowerCase()}`}:{' '}
                       <span className="tabular-nums">{draft.pts.length}</span> point(s)
                     </span>
-                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => setDraft((d) => ({ ...d, pts: d.pts.slice(0, -1) }))} title="Backspace">
+                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10 max-lg:px-3 max-lg:py-2" onClick={() => setDraft((d) => ({ ...d, pts: d.pts.slice(0, -1) }))} title="Backspace">
                       Remove last point
                     </button>
-                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => setDraft((d) => ({ side: d.side, pts: [] }))}>
+                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10 max-lg:px-3 max-lg:py-2" onClick={() => setDraft((d) => ({ side: d.side, pts: [] }))}>
                       Cancel
                     </button>
                     {draft.pts.length >= 2 ? (
-                      <button type="button" className="rounded-md bg-sky-600 px-2.5 py-1 font-semibold hover:bg-sky-500" onClick={() => finishLine(tool)} title="Enter">
+                      <button type="button" className="rounded-md bg-sky-600 px-2.5 py-1 font-semibold hover:bg-sky-500 max-lg:px-3 max-lg:py-2" onClick={() => finishLine(tool)} title="Enter">
                         Finish line
                       </button>
                     ) : null}
@@ -2752,16 +3482,16 @@ export function LayoutPage() {
                   <div className="flex flex-wrap items-center gap-2 rounded-xl bg-stone-900/90 px-3 py-1.5 text-xs text-white shadow-lg ring-1 ring-white/10 backdrop-blur">
                     <span className="max-w-[34rem]">{layout.aerial ? ALIGN_STEPS[alignPts.length] : 'Add a picture from above first (Pictures menu).'}</span>
                     {alignPts.length ? (
-                      <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => setAlignPts((a) => a.slice(0, -1))} title="Backspace">
+                      <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10 max-lg:px-3 max-lg:py-2" onClick={() => setAlignPts((a) => a.slice(0, -1))} title="Backspace">
                         Undo last click
                       </button>
                     ) : null}
                     {alignPts.length === 2 ? (
-                      <button type="button" className="rounded-md bg-teal-600 px-2.5 py-1 font-semibold hover:bg-teal-500" onClick={() => finishAlign(alignPts)} title="Enter">
+                      <button type="button" className="rounded-md bg-teal-600 px-2.5 py-1 font-semibold hover:bg-teal-500 max-lg:px-3 max-lg:py-2" onClick={() => finishAlign(alignPts)} title="Enter">
                         Just move it
                       </button>
                     ) : null}
-                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10" onClick={() => chooseTool('select')} title="Esc">
+                    <button type="button" className="rounded-md px-2 py-1 hover:bg-white/10 max-lg:px-3 max-lg:py-2" onClick={() => chooseTool('select')} title="Esc">
                       Done
                     </button>
                   </div>
@@ -2791,332 +3521,62 @@ export function LayoutPage() {
           ) : null}
         </div>
 
-        {/* The side panel: the object list. The selected object opens in the list, with its properties right under it. */}
-        <aside ref={sidePanel} className="flex shrink-0 flex-col border-stone-200 bg-white text-sm lg:w-80 lg:overflow-y-auto lg:border-l dark:border-stone-800 dark:bg-stone-900">
-          <div className="flex shrink-0 flex-col border-b border-stone-200 dark:border-stone-800">
-            <div className="flex h-8 shrink-0 items-center justify-between gap-2 border-b border-stone-100 px-3 dark:border-stone-800">
-              <span className="text-[11px] font-semibold tracking-wide text-stone-600 uppercase dark:text-stone-400">Objects</span>
-              <span className="text-[11px] text-stone-500 tabular-nums">
-                {layout.fixtures.length} · {totals} LEDs
-              </span>
-            </div>
-            {layout.fixtures.length ? (
-              <ul aria-label="Objects" className="py-1">
-                {layout.fixtures.map((f, i) => {
-                  const Icon = KIND_ICONS[f.kind];
-                  const on = selected === f.id || multi.includes(f.id);
-                  const partly = !on && multi.some((x) => effectTarget(x).id === f.id);
-                  /** The selected object opens: its row stays at the top while you scroll through its properties. */
-                  const open = sel?.id === f.id;
-                  return (
-                    <li key={f.id} className={cn(open && 'my-1')}>
-                      <div
-                        data-object-row={f.id}
-                        aria-current={on ? 'true' : undefined}
-                        aria-expanded={open}
-                        title={partly ? 'Some of its segments are selected' : undefined}
-                        onClick={(e) => {
-                          if (tool !== 'select') chooseTool('select');
-                          if (e.ctrlKey || e.metaKey) {
-                            toggleTarget(f.id);
-                          } else if (e.shiftKey && listAnchor.current) {
-                            // A range, from the item clicked before to this one.
-                            const ids = layout.fixtures.map((x) => x.id);
-                            const a = ids.indexOf(listAnchor.current);
-                            const b = ids.indexOf(f.id);
-                            if (a >= 0) return pickTargets(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
-                            setSelected(f.id);
-                          } else setSelected(f.id);
-                          listAnchor.current = f.id;
-                        }}
-                        onMouseDown={(e) => e.shiftKey && e.preventDefault()}
-                        onDoubleClick={() => setRenaming(f.id)}
-                        onContextMenu={(e) => objectMenu(e, f)}
-                        className={cn(
-                          'mx-1 flex cursor-default items-center gap-2 rounded-md px-2 text-[13px]',
-                          open ? 'sticky top-0 z-10 min-h-11 rounded-b-none py-1.5 shadow-sm' : 'h-7',
-                          on
-                            ? 'bg-sky-600 text-white'
-                            : partly
-                              ? 'bg-sky-600/15 text-stone-900 dark:text-white'
-                              : 'text-stone-800 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800'
-                        )}
-                      >
-                        <Icon className="size-3.5 shrink-0" style={{ color: on ? undefined : `rgb(${hsvBytes(HUES[i % HUES.length], 1).join(',')})` }} />
-                        {renaming === f.id ? (
-                          <RenameInput value={f.name} onDone={(name) => (setRenaming(null), name != null && name.trim() && update(f.id, { name: name.trim() }))} />
-                        ) : open ? (
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate font-semibold">{f.name}</span>
-                            <span className="block truncate text-[11px] text-white/75">
-                              {KIND_LABELS[f.kind]}
-                              {isLine(f) && segment != null ? ` · segment ${segment + 1} of ${f.points.length - 1}` : ''}
-                              {isLine(f) && segment == null && corner != null ? ` · ${pointName(f, corner)}` : ''}
-                              {` · LEDs ${ledRange(f).first}–${ledRange(f).last}`}
-                            </span>
-                          </span>
-                        ) : (
-                          <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                        )}
-                        {open ? (
-                          <span className="flex shrink-0" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                            <button type="button" onClick={() => frameSelection()} title="Zoom to this object (F)" aria-label="Zoom to this object" className="grid size-7 place-items-center rounded-md hover:bg-white/15 [&_svg]:size-4">
-                              <Scan />
-                            </button>
-                            <button type="button" onClick={() => remove(f.id)} title="Delete this object (Delete)" aria-label="Delete this object" className="grid size-7 place-items-center rounded-md hover:bg-red-500/80 [&_svg]:size-4">
-                              <Trash2 />
-                            </button>
-                          </span>
-                        ) : (
-                          <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
-                            {ledRange(f).first}–{ledRange(f).last}
-                          </span>
-                        )}
-                      </div>
-                      {open ? (
-                        <div className="mx-1 rounded-b-md border border-t-0 border-sky-600/50 bg-stone-50/70 dark:border-sky-400/40 dark:bg-stone-950/40 [&>section:last-child]:border-b-0">{selPanel()}</div>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="px-3 py-4 text-xs text-stone-500">Nothing yet. Draw the roofline first: press R, then click along the roof.</p>
-            )}
-          </div>
-
-          <div>
-            {sel ? null : multiItems.length >= 2 ? (
-              <>
-                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-semibold">{multiItems.length} selected</p>
-                    <p className="truncate text-[11px] text-stone-500">Ctrl/⌘-click to add or remove. Esc to clear.</p>
-                  </div>
-                  <Button size="sm" variant="ghost" onClick={() => setMulti([])} title="Clear the selection (Esc)" aria-label="Clear the selection" className="px-2">
-                    <X />
-                  </Button>
-                </div>
-                <PropSection key="multi-items" id="multi-items" title="Selection">
-                  <ul className="space-y-0.5">
-                    {multiItems.map((it) => (
-                      <li key={it.key} className="group flex items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
-                        <button type="button" className="min-w-0 flex-1 truncate text-left" title="Select only this" onClick={() => pickTargets([it.key])}>
-                          {it.name}
-                        </button>
-                        <span className="text-stone-500">{it.effect ? EFFECT_NAMES[it.effect.effect] : '—'}</span>
-                        <button
-                          type="button"
-                          aria-label={`Remove ${it.name} from the selection`}
-                          title="Remove from the selection"
-                          onClick={() => toggleTarget(it.key)}
-                          className="grid size-5 place-items-center rounded text-stone-400 opacity-0 group-hover:opacity-100 hover:text-stone-900 dark:hover:text-white [&_svg]:size-3"
-                        >
-                          <X />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </PropSection>
-                <PropSection key="multi-effect" id="multi-effect" title={`Effect${multiShown ? ` · ${EFFECT_NAMES[multiShown.effect]}` : ''}`}>
-                  {multiMixed ? (
-                    <PropNote>They play different effects now. The settings below are the first one’s. A setting you change goes to each of them; a new effect replaces them all.</PropNote>
-                  ) : null}
-                  <EffectProps
-                    effect={multiShown}
-                    objectCount={multiItems.length}
-                    noneLabel="None"
-                    emptyNote="Pick an effect: every selected object and segment gets it. A segment plays its own copy; the rest of its line keeps the line’s effect."
-                    onChange={(next) => {
-                      setMultiEffect(next, multiShown);
-                      if (next) setPlaying(true);
-                    }}
-                  />
-                </PropSection>
-              </>
-            ) : (
-              <>
-                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-stone-200 bg-white px-3 py-2 dark:border-stone-800 dark:bg-stone-900">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-semibold">Yard</p>
-                    <p className="text-[11px] text-stone-500">Nothing selected. Click an object to see its properties.</p>
-                  </div>
-                </div>
-                <PropSection key="yardfx" id="yardfx" title="Whole yard effect">
-                  <EffectProps
-                    effect={layout.effect}
-                    objectCount={0}
-                    noneLabel="None"
-                    emptyNote="An effect for every object at once. A 3-D effect plays over the whole yard as one picture; a 1-D effect runs along each object. Objects and segments with their own effect play theirs instead."
-                    onChange={(effect) => {
-                      updateLayout({ effect });
-                      if (effect) setPlaying(true);
-                    }}
-                  />
-                </PropSection>
-                <PropSection key="scene" id="scene" title="Effects and scenes">
-                  {fxCount ? (
-                    <ul className="space-y-0.5">
-                      {layout.effect ? (
-                        <li className="flex items-center gap-2 px-1 py-0.5 text-xs">
-                          <span className="min-w-0 flex-1 truncate font-medium">Whole yard</span>
-                          <span className="text-stone-500">{EFFECT_NAMES[layout.effect.effect]}</span>
-                        </li>
-                      ) : null}
-                      {layout.fixtures.flatMap((f) => {
-                        const rows: { key: string; name: string; fx: EffectSettings; seg: number | null }[] = [];
-                        if (f.effect) rows.push({ key: f.id, name: f.name, fx: f.effect, seg: null });
-                        if (isLine(f))
-                          for (const [k, fx] of Object.entries(f.segmentEffects ?? {}).sort(([a], [b]) => Number(a) - Number(b)))
-                            if (Number(k) < f.points.length - 1) rows.push({ key: `${f.id}#${k}`, name: `${f.name} · segment ${Number(k) + 1}`, fx, seg: Number(k) });
-                        return rows.map((r) => (
-                          <li key={r.key}>
-                            <button
-                              type="button"
-                              onClick={(e) => (e.ctrlKey || e.metaKey ? toggleTarget(r.key) : r.seg == null ? setSelected(f.id) : selectSegment(f.id, r.seg))}
-                              className={cn('flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800', r.seg != null && 'pl-4')}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{r.name}</span>
-                              <span className="text-stone-500">{EFFECT_NAMES[r.fx.effect]}</span>
-                            </button>
-                          </li>
-                        ));
-                      })}
-                    </ul>
-                  ) : (
-                    <PropNote>No object has an effect yet. Select an object, then pick an effect in its Effect section.</PropNote>
-                  )}
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    <PropButton onClick={() => setPlaying((v) => !v)} disabled={!fxCount}>
-                      {playing ? <Pause /> : <Play />} {playing ? 'Stop' : 'Play'}
-                    </PropButton>
-                    {editingScene ? (
-                      <PropButton onClick={() => void saveScene({ id: editingScene.id })} disabled={!fxCount || busy}>
-                        <Save /> Save “{editingScene.name}”
-                      </PropButton>
-                    ) : null}
-                    <PropButton onClick={() => setNewScene('')} disabled={!fxCount || busy}>
-                      <Clapperboard /> Save as a new scene
-                    </PropButton>
-                  </div>
-                  <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
-                </PropSection>
-                <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
-                {layout.aerial ? (
-                  <AerialProps
-                    aerial={layout.aerial}
-                    m={m}
-                    onChange={(patch) => updateLayout({ aerial: { ...layout.aerial!, ...patch } })}
-                    onAlign={() => startAlign()}
-                    onMeasure={() => (chooseTool('measure'), setTape(null))}
-                    onRemove={() => void removeAerial()}
-                  />
-                ) : null}
-                <PropSection key="lightstrings" id="lightstrings" title="Light strings">
-                  <LightSelect
-                    layout={layout}
-                    label="New objects"
-                    value={layout.lights}
-                    hint="What new lines, bushes, trees and custom objects are made of"
-                    onChange={(lights) => updateLayout({ lights })}
-                    onNew={() => setLightEdit({ type: null })}
-                  />
-                  {newLights ? (
-                    <PropNote>
-                      New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart; while you draw, each segment shows its length and LEDs.
-                    </PropNote>
-                  ) : (
-                    <PropNote>Pick the light string you use most. New objects are made of it, and lines you draw get the right number of LEDs.</PropNote>
-                  )}
-                  {layout.lightTypes?.length ? (
-                    <ul className="space-y-0.5 pt-1">
-                      {layout.lightTypes.map((lt) => (
-                        <li key={lt.id}>
-                          <button type="button" onClick={() => setLightEdit({ type: lt })} className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
-                            <span className="min-w-0 flex-1 truncate">{lt.name}</span>
-                            <span className="text-stone-500">{layout.fixtures.filter((f) => f.lights === lt.id).length} objects</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  <div className="pt-1">
-                    <PropButton onClick={() => setLightEdit({ type: null })}>
-                      <Plus /> New light type
-                    </PropButton>
-                  </div>
-                </PropSection>
-                <PropSection key="library" id="library" title="Custom objects">
-                  <LibraryList layout={layout} onPlace={(d) => placeDesign(d)} onEdit={setDesigning} onDuplicate={duplicateDesign} onDelete={deleteDesign} />
-                  <div className="pt-1">
-                    <PropButton onClick={newDesign}>
-                      <Plus /> New custom object
-                    </PropButton>
-                  </div>
-                </PropSection>
-                {runs.size ? (
-                  <PropSection key="devices" id="devices" title="LEDs per device">
-                    <div className="space-y-4">
-                      {[...runs.entries()].map(([deviceId, r]) => (
-                        <StripMap
-                          key={deviceId}
-                          name={devices.find((d) => d.id === deviceId)?.name ?? 'Unknown device'}
-                          count={devices.find((d) => d.id === deviceId)?.info?.leds?.count ?? null}
-                          runs={r.runs}
-                          overlaps={r.overlaps}
-                          fixtures={layout.fixtures}
-                          selected={selected}
-                          onSelect={setSelected}
-                        />
-                      ))}
-                    </div>
-                  </PropSection>
-                ) : null}
-                <PropSection key="keys" id="keys" title="Keyboard and mouse" defaultOpen={false}>
-                  <Shortcuts />
-                </PropSection>
-              </>
-            )}
-          </div>
-        </aside>
+        {phone ? (
+          <>
+            {sheet === 'full' ? null : phoneStatus}
+            {phoneSheet}
+          </>
+        ) : (
+          <>
+            {/* The side panel: the object list. The selected object opens in the list, with its properties right under it. */}
+            <aside ref={sidePanel} className="flex shrink-0 flex-col border-stone-200 bg-white text-sm lg:w-80 lg:overflow-y-auto lg:border-l dark:border-stone-800 dark:bg-stone-900">
+              {objectList(true)}
+              <div>{sel ? null : restPanel()}</div>
+            </aside>
+          </>
+        )}
       </div>
 
-      {/* The status bar: the tool and what it needs, the pointer position, and the drafting switches. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-stone-200 bg-stone-50 px-3 py-1 text-[11px] text-stone-500 lg:h-7 lg:flex-nowrap lg:py-0 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
-        <span className="font-semibold text-stone-700 dark:text-stone-200">{TOOL_LABELS[tool]}</span>
-        <span className="min-w-0 flex-1 lg:truncate" title={hint}>
-          {hint}
-        </span>
-        <span className="flex w-52 shrink-0 gap-3 tabular-nums" aria-live="off">
-          {coords ? coords.map(([l, v]) => <span key={l}>{`${l} ${v}`}</span>) : <span className="opacity-60">Pointer outside the views</span>}
-        </span>
-        <span className="flex shrink-0 items-center gap-1">
-          {(
-            [
-              ['snap', 'Snap', 'Snap to points, midpoints, lines and alignments (Alt: the other way)'],
-              ['ortho', 'Ortho', 'Keep lines level or upright (Shift: 45° steps)'],
-              ['grid', 'Grid', 'Show the grid'],
-              ['gridSnap', 'Grid snap', 'Snap to the grid where no point or line is near (Alt: not now)']
-            ] as [DraftSwitch, string, string][]
-          ).map(([key, label, title]) => (
-            <button
-              key={key}
-              type="button"
-              title={title}
-              aria-pressed={drafting[key]}
-              onClick={() => setDrafting({ [key]: !drafting[key] })}
-              className={cn(
-                'rounded px-1.5 py-0.5 font-semibold tracking-wide uppercase transition',
-                drafting[key] ? 'bg-sky-600/15 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300' : 'text-stone-400 hover:text-stone-700 dark:text-stone-600 dark:hover:text-stone-300'
-              )}
-            >
-              {label}
-            </button>
-          ))}
-          <GridSettings drafting={drafting} layout={layout} onChange={setDrafting} />
-        </span>
-      </div>
-      {menu ? <ContextMenu menu={menu} onClose={() => setMenu(null)} /> : null}
+      {phone ? null : (
+        <>
+          {/* The status bar: the tool and what it needs, the pointer position, and the drafting switches. */}
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-stone-200 bg-stone-50 px-3 py-1 text-[11px] text-stone-500 lg:h-7 lg:flex-nowrap lg:py-0 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
+            <span className="font-semibold text-stone-700 dark:text-stone-200">{TOOL_LABELS[tool]}</span>
+            <span className="min-w-0 flex-1 lg:truncate" title={hint}>
+              {hint}
+            </span>
+            <span className="flex w-52 shrink-0 gap-3 tabular-nums" aria-live="off">
+              {coords ? coords.map(([l, v]) => <span key={l}>{`${l} ${v}`}</span>) : <span className="opacity-60">Pointer outside the views</span>}
+            </span>
+            <span className="flex shrink-0 items-center gap-1">
+              {(
+                [
+                  ['snap', 'Snap', 'Snap to points, midpoints, lines and alignments (Alt: the other way)'],
+                  ['ortho', 'Ortho', 'Keep lines level or upright (Shift: 45° steps)'],
+                  ['grid', 'Grid', 'Show the grid'],
+                  ['gridSnap', 'Grid snap', 'Snap to the grid where no point or line is near (Alt: not now)']
+                ] as [DraftSwitch, string, string][]
+              ).map(([key, label, title]) => (
+                <button
+                  key={key}
+                  type="button"
+                  title={title}
+                  aria-pressed={drafting[key]}
+                  onClick={() => setDrafting({ [key]: !drafting[key] })}
+                  className={cn(
+                    'rounded px-1.5 py-0.5 font-semibold tracking-wide uppercase transition',
+                    drafting[key] ? 'bg-sky-600/15 text-sky-700 dark:bg-sky-400/15 dark:text-sky-300' : 'text-stone-400 hover:text-stone-700 dark:text-stone-600 dark:hover:text-stone-300'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+              <GridSettings drafting={drafting} layout={layout} onChange={setDrafting} />
+            </span>
+          </div>
+        </>
+      )}
+      {menu ? <ContextMenu menu={menu} sheet={phone} onClose={() => setMenu(null)} /> : null}
       <ConfirmDialog
         open={importing != null}
         title="Import this layout?"
@@ -4068,6 +4528,127 @@ const GRID_PRESETS: Record<Units, [number, GridUnit][]> = {
 };
 
 /** The grid size in the status bar; a click opens the grid settings: size, units, brighter lines, show and snap. */
+/** The grid's settings: shown, snapped to, its size and units, and its bright lines. */
+function GridFields({ drafting, layout, onChange }: { drafting: Drafting; layout: Layout; onChange: (patch: Partial<Drafting>) => void }) {
+  const g = gridOf(drafting, layout);
+  /** Another unit keeps about the same size, rounded to two figures (5 ft is 1.5 m). */
+  const setUnit = (unit: GridUnit) => {
+    const from = GRID_UNITS.find((x) => x.unit === g.unit)!.meters;
+    const to = GRID_UNITS.find((x) => x.unit === unit)!.meters;
+    onChange({ gridUnit: unit, gridSize: Number(((g.size * from) / to).toPrecision(2)) });
+  };
+  const row = 'flex items-center justify-between gap-3';
+  return (
+    <>
+      <p className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Grid</p>
+      <label className={row}>
+        <span>Show the grid</span>
+        <Switch checked={drafting.grid} onChange={(v) => onChange({ grid: v })} label="Show the grid" />
+      </label>
+      <label className={row}>
+        <span>Snap to the grid</span>
+        <Switch checked={drafting.gridSnap} onChange={(v) => onChange({ gridSnap: v })} label="Snap to the grid" />
+      </label>
+      <div className={row}>
+        <span>Size</span>
+        <span className="flex w-36 gap-1">
+          <NumberInput compact decimal value={g.size} min={0.01} max={1000} step={g.unit === 'cm' || g.unit === 'in' ? 1 : 0.5} onCommit={(n) => onChange({ gridSize: n, gridUnit: g.unit })} className="w-16" />
+          <select
+            value={g.unit}
+            onChange={(e) => setUnit(e.target.value as GridUnit)}
+            aria-label="Grid units"
+            className="h-7 w-16 shrink-0 rounded-md bg-white px-1.5 text-xs ring-1 ring-stone-200 ring-inset focus:ring-2 focus:ring-sky-500 focus:outline-none dark:bg-stone-950 dark:ring-stone-700"
+          >
+            {GRID_UNITS.map((x) => (
+              <option key={x.unit} value={x.unit}>
+                {x.label}
+              </option>
+            ))}
+          </select>
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {GRID_PRESETS[layout.units ?? 'ft'].map(([size, unit]) => (
+          <button
+            key={`${size}${unit}`}
+            type="button"
+            onClick={() => onChange({ gridSize: size, gridUnit: unit })}
+            className={cn(
+              'rounded-md px-2 py-0.5 tabular-nums ring-1 ring-stone-200 transition hover:bg-stone-100 dark:ring-stone-700 dark:hover:bg-stone-800',
+              g.size === size && g.unit === unit && 'bg-sky-600/15 text-sky-700 ring-sky-600/30 dark:text-sky-300'
+            )}
+          >
+            {size} {unit}
+          </button>
+        ))}
+      </div>
+      <div className={row}>
+        <span title="Every this many lines, one is brighter">Bright line every</span>
+        <span className="flex w-36 items-center gap-1.5">
+          <NumberInput compact value={drafting.gridMajor} min={1} max={50} onCommit={(n) => onChange({ gridMajor: Math.round(n) })} className="w-16" />
+          <span className="text-stone-500">lines</span>
+        </span>
+      </div>
+      <p className="text-[11px] leading-snug text-stone-500">
+        The grid counts from the left edge, and from the ground (front view) or the front wall (top view). Alt (Option) turns grid snap off while you hold it. Lines closer than a few pixels are not drawn: zoom in to see them.
+      </p>
+    </>
+  );
+}
+
+/**
+ * The phone's drafting menu: snapping, ortho and the grid, which the wide screen keeps in its
+ * status bar.
+ */
+function DraftingMenu({ drafting, layout, onChange }: { drafting: Drafting; layout: Layout; onChange: (patch: Partial<Drafting>) => void }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [open]);
+  const on = drafting.snap || drafting.ortho || drafting.gridSnap;
+  const row = 'flex items-center justify-between gap-3';
+  return (
+    <div ref={box} className="relative">
+      <button
+        type="button"
+        aria-label="Snapping and grid"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          'grid size-10 shrink-0 place-items-center rounded-lg transition [&_svg]:size-[18px]',
+          open && 'bg-stone-200 dark:bg-stone-800',
+          on ? 'text-sky-700 dark:text-sky-300' : 'text-stone-500 dark:text-stone-400'
+        )}
+      >
+        <Magnet />
+      </button>
+      {open ? (
+        <div
+          role="dialog"
+          aria-label="Snapping and grid"
+          className="absolute top-full right-0 z-30 mt-1 max-h-[70dvh] w-72 max-w-[calc(100vw-1rem)] space-y-3 overflow-y-auto rounded-xl bg-white p-3 text-sm text-stone-700 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:text-stone-200 dark:ring-stone-700"
+        >
+          <p className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Snapping</p>
+          <label className={row}>
+            <span>Snap to points and lines</span>
+            <Switch checked={drafting.snap} onChange={(v) => onChange({ snap: v })} label="Snap to points and lines" />
+          </label>
+          <label className={row}>
+            <span>Keep lines level or upright</span>
+            <Switch checked={drafting.ortho} onChange={(v) => onChange({ ortho: v })} label="Keep lines level or upright (ortho)" />
+          </label>
+          <GridFields drafting={drafting} layout={layout} onChange={onChange} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function GridSettings({ drafting, layout, onChange }: { drafting: Drafting; layout: Layout; onChange: (patch: Partial<Drafting>) => void }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
@@ -4083,13 +4664,6 @@ function GridSettings({ drafting, layout, onChange }: { drafting: Drafting; layo
       window.removeEventListener('keydown', esc, true);
     };
   }, [open]);
-  /** Another unit keeps about the same size, rounded to two figures (5 ft is 1.5 m). */
-  const setUnit = (unit: GridUnit) => {
-    const from = GRID_UNITS.find((x) => x.unit === g.unit)!.meters;
-    const to = GRID_UNITS.find((x) => x.unit === unit)!.meters;
-    onChange({ gridUnit: unit, gridSize: Number(((g.size * from) / to).toPrecision(2)) });
-  };
-  const row = 'flex items-center justify-between gap-3';
   return (
     <span ref={box} className="relative">
       <button
@@ -4109,65 +4683,48 @@ function GridSettings({ drafting, layout, onChange }: { drafting: Drafting; layo
           aria-label="Grid settings"
           className="absolute right-0 bottom-full z-50 mb-2 w-64 space-y-2.5 rounded-xl bg-white p-3 text-xs text-stone-700 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:text-stone-200 dark:ring-stone-700"
         >
-          <p className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Grid</p>
-          <label className={row}>
-            <span>Show the grid</span>
-            <Switch checked={drafting.grid} onChange={(v) => onChange({ grid: v })} label="Show the grid" />
-          </label>
-          <label className={row}>
-            <span>Snap to the grid</span>
-            <Switch checked={drafting.gridSnap} onChange={(v) => onChange({ gridSnap: v })} label="Snap to the grid" />
-          </label>
-          <div className={row}>
-            <span>Size</span>
-            <span className="flex w-36 gap-1">
-              <NumberInput compact decimal value={g.size} min={0.01} max={1000} step={g.unit === 'cm' || g.unit === 'in' ? 1 : 0.5} onCommit={(n) => onChange({ gridSize: n, gridUnit: g.unit })} className="w-16" />
-              <select
-                value={g.unit}
-                onChange={(e) => setUnit(e.target.value as GridUnit)}
-                aria-label="Grid units"
-                className="h-7 min-w-0 flex-1 rounded-md bg-white px-1.5 text-xs ring-1 ring-stone-200 ring-inset focus:ring-2 focus:ring-sky-500 focus:outline-none dark:bg-stone-950 dark:ring-stone-700"
-              >
-                {GRID_UNITS.map((x) => (
-                  <option key={x.unit} value={x.unit}>
-                    {x.label}
-                  </option>
-                ))}
-              </select>
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {GRID_PRESETS[layout.units ?? 'ft'].map(([size, unit]) => (
-              <button
-                key={`${size}${unit}`}
-                type="button"
-                onClick={() => onChange({ gridSize: size, gridUnit: unit })}
-                className={cn(
-                  'rounded-md px-2 py-0.5 tabular-nums ring-1 ring-stone-200 transition hover:bg-stone-100 dark:ring-stone-700 dark:hover:bg-stone-800',
-                  g.size === size && g.unit === unit && 'bg-sky-600/15 text-sky-700 ring-sky-600/30 dark:text-sky-300'
-                )}
-              >
-                {size} {unit}
-              </button>
-            ))}
-          </div>
-          <div className={row}>
-            <span title="Every this many lines, one is brighter">Bright line every</span>
-            <span className="flex w-36 items-center gap-1.5">
-              <NumberInput compact value={drafting.gridMajor} min={1} max={50} onCommit={(n) => onChange({ gridMajor: Math.round(n) })} className="w-16" />
-              <span className="text-stone-500">lines</span>
-            </span>
-          </div>
-          <p className="text-[11px] leading-snug text-stone-500">
-            The grid counts from the left edge, and from the ground (front view) or the front wall (top view). Alt (Option) turns grid snap off while you hold it. Lines closer than a few pixels are not drawn: zoom in to see them.
-          </p>
+          <GridFields drafting={drafting} layout={layout} onChange={onChange} />
         </div>
       ) : null}
     </span>
   );
 }
 
-function ContextMenu({ menu, onClose }: { menu: { x: number; y: number; title: string; items: MenuItem[] }; onClose: () => void }) {
+function ContextMenu({ menu, sheet, onClose }: { menu: { x: number; y: number; title: string; items: MenuItem[] }; sheet?: boolean; onClose: () => void }) {
+  // On a phone, an action sheet that rises from the bottom, with big rows, as phone apps do.
+  if (sheet)
+    return (
+      <div className="fixed inset-0 z-50 flex items-end bg-stone-950/40" onContextMenu={(e) => e.preventDefault()}>
+        <div
+          data-layout-menu
+          role="menu"
+          className="max-h-[80dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-2 text-base shadow-2xl dark:bg-stone-900"
+          style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))' }}
+        >
+          <p className="truncate px-3 pt-2 pb-2 text-center text-xs font-medium text-stone-500">{menu.title}</p>
+          {menu.items.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onClose();
+                it.run();
+              }}
+              className={cn(
+                'flex min-h-12 w-full items-center rounded-xl px-3 text-left active:bg-stone-100 dark:active:bg-stone-800',
+                it.danger ? 'text-red-600 dark:text-red-400' : 'text-stone-800 dark:text-stone-100'
+              )}
+            >
+              {it.label}
+            </button>
+          ))}
+          <button type="button" onClick={onClose} className="mt-1 flex min-h-12 w-full items-center justify-center rounded-xl bg-stone-100 font-semibold text-stone-800 active:bg-stone-200 dark:bg-stone-800 dark:text-stone-100">
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
   // Keep it on screen.
   const x = Math.min(menu.x, window.innerWidth - 260);
   const y = Math.min(menu.y, window.innerHeight - 48 - menu.items.length * 36);
@@ -4202,30 +4759,159 @@ function ContextMenu({ menu, onClose }: { menu: { x: number; y: number; title: s
   );
 }
 
-/** The drawing area of a 2D viewport: reports its size, and passes wheel events (which must not scroll the page) to the camera. */
-function PaneBody({ onSize, onWheel, children }: { onSize: (w: number, h: number) => void; onWheel: (e: WheelEvent, rect: DOMRect) => void; children: ReactNode }) {
+/** How long a finger holds still for a long press (the touch screen's right-click), in ms. */
+const LONG_PRESS_MS = 500;
+
+/**
+ * The drawing area of a 2D viewport: reports its size, and passes wheel events (which must not
+ * scroll the page) to the camera. On a touch screen it also takes the gestures the drawing never
+ * sees: two fingers pinch to zoom and drag to pan, and a long press opens the right-click menu
+ * of what is under the finger.
+ */
+function PaneBody({
+  onSize,
+  onWheel,
+  onTouchFirst,
+  onPinchStart,
+  onPinch,
+  children
+}: {
+  onSize: (w: number, h: number) => void;
+  onWheel: (e: WheelEvent, rect: DOMRect) => void;
+  /** A first finger comes down (before the drawing sees it). */
+  onTouchFirst: () => void;
+  /** A second finger came down: a pinch starts. */
+  onPinchStart: () => void;
+  /** The two fingers moved: from where they came down, to where they are (pixels in the pane). */
+  onPinch: (from: Pair, to: Pair) => void;
+  children: ReactNode;
+}) {
   const el = useRef<HTMLDivElement>(null);
-  const sizeRef = useRef(onSize);
-  sizeRef.current = onSize;
-  const wheelRef = useRef(onWheel);
-  wheelRef.current = onWheel;
+  const cb = useRef({ onSize, onWheel, onTouchFirst, onPinchStart, onPinch });
+  cb.current = { onSize, onWheel, onTouchFirst, onPinchStart, onPinch };
   useEffect(() => {
     const d = el.current;
     if (!d) return;
-    const ro = new ResizeObserver(() => sizeRef.current(d.clientWidth, d.clientHeight));
+    const ro = new ResizeObserver(() => cb.current.onSize(d.clientWidth, d.clientHeight));
     ro.observe(d);
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
-      wheelRef.current(e, d.getBoundingClientRect());
+      cb.current.onWheel(e, d.getBoundingClientRect());
     };
+
+    // Touch. These listen in the capture phase, so they see every finger before the drawing does.
+    const fingers = new Map<number, { x: number; y: number }>();
+    let pair: { ids: [number, number]; from: Pair } | null = null;
+    /** After a pinch or a long press, the fingers left down do nothing until all of them lift. */
+    let locked = false;
+    let press: { id: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+    /** Until when the browser's own menu (a long press on Android) is kept away. */
+    let touchUntil = 0;
+    const at = (e: PointerEvent) => {
+      const r = d.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+    const pairOf = (ids: [number, number]): Pair | null => {
+      const a = fingers.get(ids[0]);
+      const b = fingers.get(ids[1]);
+      return a && b ? [{ ...a }, { ...b }] : null;
+    };
+    const endPress = () => {
+      if (press) clearTimeout(press.timer);
+      press = null;
+    };
+    const down = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      fingers.set(e.pointerId, at(e));
+      touchUntil = Infinity;
+      if (fingers.size === 1) {
+        locked = false;
+        cb.current.onTouchFirst();
+        const { clientX: x, clientY: y } = e;
+        endPress();
+        press = {
+          id: e.pointerId,
+          x,
+          y,
+          timer: setTimeout(() => {
+            press = null;
+            const target = document.elementFromPoint(x, y);
+            if (!target || !d.contains(target)) return;
+            const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 });
+            target.dispatchEvent(menu);
+            // Something opened a menu: this finger is done.
+            if (menu.defaultPrevented) {
+              locked = true;
+              navigator.vibrate?.(15);
+            }
+          }, LONG_PRESS_MS)
+        };
+        return;
+      }
+      // A second finger neither draws nor selects.
+      endPress();
+      e.stopPropagation();
+      d.setPointerCapture(e.pointerId);
+      if (fingers.size === 2 && !pair) {
+        const ids = [...fingers.keys()] as [number, number];
+        pair = { ids, from: pairOf(ids)! };
+        locked = true;
+        cb.current.onPinchStart();
+      }
+    };
+    const move = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !fingers.has(e.pointerId)) return;
+      fingers.set(e.pointerId, at(e));
+      if (press?.id === e.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) endPress();
+      if (pair) {
+        const to = pairOf(pair.ids);
+        if (to) cb.current.onPinch(pair.from, to);
+      }
+      if (locked) e.stopPropagation();
+    };
+    const up = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !fingers.has(e.pointerId)) return;
+      fingers.delete(e.pointerId);
+      if (press?.id === e.pointerId) endPress();
+      if (pair?.ids.includes(e.pointerId)) pair = null;
+      if (!fingers.size) {
+        locked = false;
+        touchUntil = performance.now() + 800;
+      }
+    };
+    const nativeMenu = (e: MouseEvent) => {
+      // The browser's own long-press menu: the long press above opens ours instead.
+      if (e.isTrusted && (fingers.size || performance.now() < touchUntil)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    // Safari's own pinch would zoom the whole page.
+    const gesture = (e: Event) => e.preventDefault();
+    const opts = { capture: true };
     d.addEventListener('wheel', wheel, { passive: false });
+    d.addEventListener('pointerdown', down, opts);
+    d.addEventListener('pointermove', move, opts);
+    d.addEventListener('pointerup', up, opts);
+    d.addEventListener('pointercancel', up, opts);
+    d.addEventListener('contextmenu', nativeMenu, opts);
+    d.addEventListener('gesturestart', gesture);
+    d.addEventListener('gesturechange', gesture);
     return () => {
       ro.disconnect();
+      endPress();
       d.removeEventListener('wheel', wheel);
+      d.removeEventListener('pointerdown', down, opts);
+      d.removeEventListener('pointermove', move, opts);
+      d.removeEventListener('pointerup', up, opts);
+      d.removeEventListener('pointercancel', up, opts);
+      d.removeEventListener('contextmenu', nativeMenu, opts);
+      d.removeEventListener('gesturestart', gesture);
+      d.removeEventListener('gesturechange', gesture);
     };
   }, []);
   return (
-    <div ref={el} className="relative min-h-0 flex-1 overflow-hidden">
+    <div ref={el} className="relative min-h-0 flex-1 overflow-hidden [-webkit-touch-callout:none]">
       {children}
     </div>
   );

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
-import { Activity, Clapperboard, ExternalLink, Gamepad2, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
+import { Activity, ChevronDown, Clapperboard, ExternalLink, Gamepad2, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
 import { ThemeSwitcher } from '../../components/ThemeToggle.tsx';
 import { api } from '../../lib/api.ts';
 import { useEvents } from '../../lib/useEvents.ts';
@@ -51,17 +51,21 @@ export function AdminLayout() {
 
   // The layout and sequence editors are workspaces: on wide screens they fill the window below the header.
   const workspace = /^\/admin\/(layout|sequences)\/?$/.test(location.pathname);
+  // The layout editor fills the window on phones too, like an app: a slim header, with the
+  // sections in a menu instead of a second row of tabs.
+  const app = /^\/admin\/layout\/?$/.test(location.pathname);
 
   return (
-    <div className={cn('min-h-dvh', workspace && 'lg:flex lg:h-dvh lg:min-h-0 lg:flex-col')}>
+    <div className={cn('min-h-dvh', workspace && 'lg:flex lg:h-dvh lg:min-h-0 lg:flex-col', app && 'flex h-dvh min-h-0 flex-col overflow-hidden')}>
       <header className="sticky top-0 z-30 shrink-0 border-b border-stone-200/80 bg-stone-50/80 backdrop-blur-lg dark:border-stone-800/80 dark:bg-stone-950/80">
-        <div className={cn('mx-auto flex h-16 items-center gap-4 px-4 sm:px-6', !workspace && 'max-w-6xl')}>
+        <div className={cn('mx-auto flex items-center', app ? 'h-12 gap-2 px-2 md:h-16 md:gap-4 md:px-6' : 'h-16 gap-4 px-4 sm:px-6', !workspace && 'max-w-6xl')}>
           <NavLink to="/admin" className="flex items-center gap-2.5 font-semibold tracking-tight">
             <span className="grid size-8 place-items-center rounded-xl bg-stone-900 text-accent-400 dark:bg-accent-400 dark:text-stone-950">
               <Lightbulb className="size-[18px]" />
             </span>
             <span className="hidden sm:inline">WLED Presets</span>
           </NavLink>
+          {app ? <NavMenu /> : null}
           <nav className="hidden items-center gap-1 md:flex">
             {NAV.map((n) => (
               <NavItem key={n.to} {...n} />
@@ -74,18 +78,18 @@ export function AdminLayout() {
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white"
             >
-              Public page <ExternalLink className="size-3.5" />
+              <span className={cn(app && 'max-sm:hidden')}>Public page</span> <ExternalLink className="size-3.5" />
             </a>
             <UserMenu username={session!.user!.username} />
           </div>
         </div>
-        <nav className="flex gap-1 overflow-x-auto px-3 pb-2 md:hidden">
+        <nav className={cn('flex gap-1 overflow-x-auto px-3 pb-2 md:hidden', app && 'hidden')}>
           {NAV.map((n) => (
             <NavItem key={n.to} {...n} />
           ))}
         </nav>
       </header>
-      <main className={workspace ? 'lg:min-h-0 lg:flex-1' : 'mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10'}>
+      <main className={app ? 'min-h-0 flex-1' : workspace ? 'lg:min-h-0 lg:flex-1' : 'mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10'}>
         <Outlet />
       </main>
     </div>
@@ -108,6 +112,63 @@ function NavItem({ to, label, icon: Icon }: (typeof NAV)[number]) {
       <Icon className="size-4" />
       {label}
     </NavLink>
+  );
+}
+
+/** On a phone, in a workspace: the sections of the admin pages, in a menu under the current one. */
+function NavMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+  const current = NAV.find((n) => location.pathname.startsWith(`/admin/${n.to}`)) ?? NAV[0];
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  const Icon = current.icon;
+  return (
+    <div ref={ref} className="relative md:hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-white px-3 text-sm font-medium shadow-sm ring-1 ring-stone-200 dark:bg-stone-800 dark:ring-stone-700"
+      >
+        <Icon className="size-4" />
+        {current.label}
+        <ChevronDown className="size-3.5 text-stone-500" />
+      </button>
+      {open ? (
+        <div role="menu" className="absolute left-0 mt-2 w-56 rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
+          {NAV.map((n) => (
+            <NavLink
+              key={n.to}
+              to={n.to}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium',
+                  isActive ? 'bg-stone-100 text-stone-900 dark:bg-stone-800 dark:text-white' : 'text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800'
+                )
+              }
+            >
+              <n.icon className="size-4" />
+              {n.label}
+            </NavLink>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
