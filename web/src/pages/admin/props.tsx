@@ -1,7 +1,7 @@
 // A property inspector, as in CAD and design programs: folding sections, with one property per
 // row (the label on the left, the value on the right). Drag a number's label left or right to
 // change the number (Shift: 10 times faster), or use the arrow keys in the field.
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { inputBase } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
@@ -32,17 +32,29 @@ function useOpen(id: string, fallback: boolean): [boolean, () => void] {
   return [open, toggle];
 }
 
-/** A section of the inspector that folds away. It remembers if it is open. */
+/**
+ * An accordion: inside one, only one section is open at a time (the one named `open`), so a
+ * small screen shows one group of settings instead of a long page of them.
+ */
+export const PropAccordion = createContext<{ open: string | null; set: (id: string | null) => void } | null>(null);
+
+/** A section of the inspector that folds away. It remembers if it is open (in an accordion, the accordion does). */
 export function PropSection({ id, title, actions, children, defaultOpen = true }: { id: string; title: ReactNode; actions?: ReactNode; children: ReactNode; defaultOpen?: boolean }) {
-  const [open, toggle] = useOpen(id, defaultOpen);
+  const [own, toggleOwn] = useOpen(id, defaultOpen);
+  const acc = useContext(PropAccordion);
+  const open = acc ? acc.open === id : own;
+  const toggle = acc ? () => acc.set(open ? null : id) : toggleOwn;
   return (
     <section className="border-b border-stone-200 dark:border-stone-800">
-      <div className="flex h-8 items-center gap-1 pr-2">
+      <div className={cn('flex items-center gap-1 pr-2', acc ? 'h-11' : 'h-8')}>
         <button
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-3 text-left text-[11px] font-semibold tracking-wide text-stone-600 uppercase hover:text-stone-950 dark:text-stone-400 dark:hover:text-white"
+          className={cn(
+            'flex h-full min-w-0 flex-1 items-center gap-1.5 px-3 text-left font-semibold tracking-wide text-stone-600 uppercase hover:text-stone-950 dark:text-stone-400 dark:hover:text-white',
+            acc ? 'text-xs' : 'text-[11px]'
+          )}
         >
           <ChevronDown className={cn('size-3.5 shrink-0 transition', !open && '-rotate-90')} />
           <span className="truncate">{title}</span>
