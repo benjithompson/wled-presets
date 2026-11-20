@@ -2,7 +2,9 @@
 // a video editor. Drag clips to move them (also to another layer; Alt-drag copies), drag their
 // edges to trim, drag the knobs at their top corners to fade. Clips that overlap on a layer cross
 // over. Drag on empty space to select several; click it to move the playhead there.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
+// By touch: a tap selects a clip and a drag moves a selected one; one finger scrolls, two pinch
+// to zoom, and a drag on the ruler moves the playhead.
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
 import { Eye, EyeOff, GripVertical, Lock, Music, Plus, Unlock, Upload, Volume2, VolumeX } from 'lucide-react';
 import { effectInfo, paletteColors, type EffectId } from '../../../../../shared/effects.ts';
 import type { Layout } from '../../../../../shared/layout.ts';
@@ -12,6 +14,10 @@ import { PEAKS_PER_SECOND, type AudioEngine, type Clock } from './audio.ts';
 import { findAudioClip, findClip, fmtTime, makeClip, MIN_CLIP, round, snapPoints, snapTime, targetsLabel, type Selection } from './model.ts';
 
 export const HEADER_W = 208;
+/** On a phone the layer names get a narrow column; their switches are in the inspector. */
+const COMPACT_HEADER_W = 112;
+const Compact = createContext(false);
+const useHeaderW = () => (useContext(Compact) ? COMPACT_HEADER_W : HEADER_W);
 const RULER_H = 30;
 export const TRACK_H = 56;
 const AUDIO_H = 64;
@@ -84,7 +90,8 @@ export function Timeline({
   onAudioFiles,
   onPickAudio,
   apiRef,
-  hoverObject
+  hoverObject,
+  compact = false
 }: {
   seq: Sequence;
   layout: Layout | undefined;
@@ -109,6 +116,8 @@ export function Timeline({
   apiRef: MutableRefObject<TimelineApi | null>;
   /** An object under the pointer in the preview: clips that light it are marked. */
   hoverObject: string | null;
+  /** A phone: narrow layer names, without their switches. */
+  compact?: boolean;
 }) {
   useClockTick(clock, 12);
   const scroller = useRef<HTMLDivElement>(null);
@@ -127,9 +136,12 @@ export function Timeline({
   ppsRef.current = pps;
   const selRef = useRef(sel);
   selRef.current = sel;
+  const headerW = compact ? COMPACT_HEADER_W : HEADER_W;
+  const hwRef = useRef(headerW);
+  hwRef.current = headerW;
 
   const now = clock.time();
-  const contentW = Math.max(seq.duration * pps + 160, view.w - HEADER_W);
+  const contentW = Math.max(seq.duration * pps + 160, view.w - headerW);
   const selected = new Set(sel && (sel.kind === 'clips' || sel.kind === 'audio') ? sel.ids : []);
   const { major, minor } = rulerStep(pps);
   const beat = seq.bpm ? 60 / seq.bpm : null;
@@ -148,16 +160,44 @@ export function Timeline({
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
-      const x = e.clientX - r.left - HEADER_W + el.scrollLeft;
+      const x = e.clientX - r.left - hwRef.current + el.scrollLeft;
       const t = x / ppsRef.current;
       const next = Math.min(MAX_PPS, Math.max(MIN_PPS, ppsRef.current * Math.exp(-e.deltaY * 0.004)));
       setPps(next);
-      requestAnimationFrame(() => (el.scrollLeft = t * next - (e.clientX - r.left - HEADER_W)));
+      requestAnimationFrame(() => (el.scrollLeft = t * next - (e.clientX - r.left - hwRef.current)));
     };
     el.addEventListener('wheel', wheel, { passive: false });
+    // Two fingers pinch to zoom, at the point between them.
+    let pinch: { d: number; pps: number; t: number; x: number } | null = null;
+    const spread = (e: TouchEvent) => Math.max(30, Math.abs(e.touches[0].clientX - e.touches[1].clientX));
+    const between = (e: TouchEvent) => (e.touches[0].clientX + e.touches[1].clientX) / 2 - el.getBoundingClientRect().left - hwRef.current;
+    const touchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      const x = between(e);
+      pinch = { d: spread(e), pps: ppsRef.current, t: (x + el.scrollLeft) / ppsRef.current, x };
+    };
+    const touchMove = (e: TouchEvent) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const p = pinch;
+      const next = Math.min(MAX_PPS, Math.max(MIN_PPS, (p.pps * spread(e)) / p.d));
+      setPps(next);
+      requestAnimationFrame(() => (el.scrollLeft = p.t * next - p.x));
+    };
+    const touchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinch = null;
+    };
+    el.addEventListener('touchstart', touchStart, { passive: true });
+    el.addEventListener('touchmove', touchMove, { passive: false });
+    el.addEventListener('touchend', touchEnd);
+    el.addEventListener('touchcancel', touchEnd);
     return () => {
       el.removeEventListener('scroll', upd);
       el.removeEventListener('wheel', wheel);
+      el.removeEventListener('touchstart', touchStart);
+      el.removeEventListener('touchmove', touchMove);
+      el.removeEventListener('touchend', touchEnd);
+      el.removeEventListener('touchcancel', touchEnd);
       ro.disconnect();
     };
   }, [setPps]);
@@ -166,14 +206,14 @@ export function Timeline({
     fit: () => {
       const el = scroller.current;
       if (!el) return;
-      setPps(Math.min(MAX_PPS, Math.max(MIN_PPS, (el.clientWidth - HEADER_W - 40) / Math.max(1, seqRef.current.duration))));
+      setPps(Math.min(MAX_PPS, Math.max(MIN_PPS, (el.clientWidth - hwRef.current - 40) / Math.max(1, seqRef.current.duration))));
       el.scrollLeft = 0;
     },
     reveal: (t: number) => {
       const el = scroller.current;
       if (!el) return;
       const x = t * ppsRef.current;
-      const w = el.clientWidth - HEADER_W;
+      const w = el.clientWidth - hwRef.current;
       if (x < el.scrollLeft + 20 || x > el.scrollLeft + w - 40) el.scrollLeft = Math.max(0, x - w * 0.15);
     }
   };
@@ -182,7 +222,7 @@ export function Timeline({
 
   const timeAt = (clientX: number) => {
     const r = content.current!.getBoundingClientRect();
-    return (clientX - r.left - HEADER_W) / ppsRef.current;
+    return (clientX - r.left - hwRef.current) / ppsRef.current;
   };
 
   useEffect(() => {
@@ -206,8 +246,8 @@ export function Timeline({
           if (!d.moved) return;
           setMarquee({ x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1 });
           // Clips the box touches.
-          const t0 = (Math.min(d.x0, d.x1) - HEADER_W) / k;
-          const t1 = (Math.max(d.x0, d.x1) - HEADER_W) / k;
+          const t0 = (Math.min(d.x0, d.x1) - hwRef.current) / k;
+          const t1 = (Math.max(d.x0, d.x1) - hwRef.current) / k;
           const y0 = Math.min(d.y0, d.y1) - RULER_H;
           const y1 = Math.max(d.y0, d.y1) - RULER_H;
           const ids: string[] = [];
@@ -288,11 +328,10 @@ export function Timeline({
       }
       if (d.kind === 'marquee') {
         setMarquee(null);
-        // A click (no box): move the playhead there.
-        if (!d.moved) seek(Math.max(0, Math.min(seqRef.current.duration, d.t)));
+        // A click (no box): move the playhead there. Not when a finger scrolled the timeline (cancel).
+        if (!d.moved && e.type !== 'pointercancel') seek(Math.max(0, Math.min(seqRef.current.duration, d.t)));
       }
       if (d.kind === 'move' && !d.moved && d.reselect) setSel({ kind: d.audio ? 'audio' : 'clips', ids: [d.reselect] });
-      void e;
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -324,6 +363,8 @@ export function Timeline({
     } else {
       ids = [c.id];
       setSel({ kind, ids });
+      // A finger selects a clip first, and drags it once it is selected: a finger on any other clip scrolls the timeline.
+      if (e.pointerType === 'touch') return;
     }
     if (locked) return;
     let orig = seq;
@@ -456,11 +497,13 @@ export function Timeline({
   const endX = seq.duration * pps;
 
   return (
-    <div ref={scroller} className="relative h-full overflow-auto overscroll-contain bg-stone-50 select-none dark:bg-stone-950" data-timeline>
-      <div ref={content} className="relative" style={{ width: HEADER_W + contentW, minHeight: '100%' }}>
+    <Compact.Provider value={compact}>
+    {/* Touch: one finger scrolls (or drags a selected clip), two fingers pinch to zoom; the page itself does not zoom. */}
+    <div ref={scroller} className="relative h-full touch-pan-x touch-pan-y overflow-auto overscroll-contain bg-stone-50 select-none dark:bg-stone-950" data-timeline>
+      <div ref={content} className="relative" style={{ width: headerW + contentW, minHeight: '100%' }}>
         {/* Ruler */}
         <div className="sticky top-0 z-30 flex border-b border-stone-200 bg-white/95 backdrop-blur dark:border-stone-800 dark:bg-stone-900/95" style={{ height: RULER_H }}>
-          <div className="sticky left-0 z-40 flex shrink-0 items-center gap-1 border-r border-stone-200 bg-white px-2 dark:border-stone-800 dark:bg-stone-900" style={{ width: HEADER_W }}>
+          <div className="sticky left-0 z-40 flex shrink-0 items-center gap-1 border-r border-stone-200 bg-white px-2 dark:border-stone-800 dark:bg-stone-900" style={{ width: headerW }}>
             <span className="flex-1 text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Layers</span>
             <button
               type="button"
@@ -471,7 +514,7 @@ export function Timeline({
               <Plus className="size-3.5" />
             </button>
           </div>
-          <div className="relative cursor-text" style={{ width: contentW }} onPointerDown={pressRuler} onDoubleClick={(e) => addMarkerAt(timeAt(e.clientX))}>
+          <div className="relative cursor-text touch-none" style={{ width: contentW }} onPointerDown={pressRuler} onDoubleClick={(e) => addMarkerAt(timeAt(e.clientX))}>
             {ticks.map(({ t, major: big }) => (
               <div key={t} className="pointer-events-none absolute bottom-0" style={{ left: t * pps }}>
                 <div className={cn('w-px', big ? 'h-3 bg-stone-400 dark:bg-stone-500' : 'h-1.5 bg-stone-300 dark:bg-stone-700')} />
@@ -579,8 +622,8 @@ export function Timeline({
 
         {/* Drop row: a new layer */}
         <div className="flex border-b border-stone-200 dark:border-stone-800" style={{ height: 30 }}>
-          <div className="sticky left-0 z-20 flex shrink-0 items-center border-r border-stone-200 bg-stone-50 px-2 text-[11px] text-stone-400 dark:border-stone-800 dark:bg-stone-950" style={{ width: HEADER_W }}>
-            Drop an effect below for a new layer
+          <div className="sticky left-0 z-20 flex shrink-0 items-center border-r border-stone-200 bg-stone-50 px-2 text-[11px] text-stone-400 dark:border-stone-800 dark:bg-stone-950" style={{ width: headerW }}>
+            {compact ? 'New layer' : 'Drop an effect below for a new layer'}
           </div>
           <div
             className={cn('relative text-[11px] text-stone-400', ghost && ghost.track === seq.tracks.length && 'bg-sky-500/10')}
@@ -635,7 +678,7 @@ export function Timeline({
                 <div className="pointer-events-none absolute inset-y-0 right-0 bg-stone-200/50 dark:bg-stone-900/70" style={{ left: endX }} />
                 {at.clips.length === 0 ? (
                   <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={() => onPickAudio(at.id)} className="absolute inset-y-2 left-2 flex items-center gap-2 rounded-md border border-dashed border-stone-300 px-3 text-xs text-stone-500 hover:border-violet-400 hover:text-violet-600 dark:border-stone-700">
-                    <Music className="size-3.5" /> Add music: click, or drop an audio file here
+                    <Music className="size-3.5" /> {compact ? 'Add music' : 'Add music: click, or drop an audio file here'}
                   </button>
                 ) : null}
                 {at.clips.map((c) => (
@@ -656,7 +699,7 @@ export function Timeline({
           );
         })}
         <div className="flex" style={{ height: 34 }}>
-          <div className="sticky left-0 z-20 flex shrink-0 items-center gap-1 border-r border-stone-200 bg-stone-50 px-2 dark:border-stone-800 dark:bg-stone-950" style={{ width: HEADER_W }}>
+          <div className="sticky left-0 z-20 flex shrink-0 items-center gap-1 border-r border-stone-200 bg-stone-50 px-2 dark:border-stone-800 dark:bg-stone-950" style={{ width: headerW }}>
             <button
               type="button"
               onClick={() => change({ ...seq, audio: [...seq.audio, { id: newId('audio'), name: `Audio ${seq.audio.length + 1}`, clips: [], volume: 1 }] })}
@@ -678,6 +721,7 @@ export function Timeline({
         ) : null}
       </div>
     </div>
+    </Compact.Provider>
   );
 
   function addMarkerAt(t: number) {
@@ -753,6 +797,8 @@ function Playhead({ clock, pps, apiRef }: { clock: Clock; pps: number; apiRef: M
   const el = useRef<HTMLDivElement>(null);
   const ppsRef = useRef(pps);
   ppsRef.current = pps;
+  const hw = useRef(0);
+  hw.current = useHeaderW();
   useLayoutEffect(() => {
     let raf = 0;
     let last = -1;
@@ -761,7 +807,7 @@ function Playhead({ clock, pps, apiRef }: { clock: Clock; pps: number; apiRef: M
       const t = clock.time();
       if (t === last && !clock.playing) return;
       last = t;
-      if (el.current) el.current.style.transform = `translateX(${HEADER_W + t * ppsRef.current}px)`;
+      if (el.current) el.current.style.transform = `translateX(${hw.current + t * ppsRef.current}px)`;
       // Follow the playhead while playing.
       if (clock.playing && !clock.scrubbing) apiRef.current?.reveal(t);
     };
@@ -798,25 +844,29 @@ function TrackHeader({
   icon?: ReactNode;
   children: ReactNode;
 }) {
+  const compact = useContext(Compact);
   return (
     <div
       className={cn(
         'sticky left-0 z-20 flex shrink-0 items-center gap-1 border-r border-stone-200 pr-1.5 dark:border-stone-800',
+        compact && 'pl-2',
         selected ? 'bg-sky-50 dark:bg-sky-950/60' : 'bg-white dark:bg-stone-900'
       )}
-      style={{ width: HEADER_W }}
+      style={{ width: useHeaderW() }}
       onPointerDown={onSelect}
     >
-      <span
-        title="Drag up or down to reorder"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          onGrip(e);
-        }}
-        className="flex h-full w-4 shrink-0 cursor-grab items-center justify-center text-stone-300 hover:text-stone-600 active:cursor-grabbing dark:text-stone-600"
-      >
-        <GripVertical className="size-3.5" />
-      </span>
+      {compact ? null : (
+        <span
+          title="Drag up or down to reorder"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            onGrip(e);
+          }}
+          className="flex h-full w-4 shrink-0 cursor-grab items-center justify-center text-stone-300 hover:text-stone-600 active:cursor-grabbing dark:text-stone-600"
+        >
+          <GripVertical className="size-3.5" />
+        </span>
+      )}
       <div className="min-w-0 flex-1" onDoubleClick={onStartRename}>
         {renaming ? (
           <input
@@ -838,9 +888,11 @@ function TrackHeader({
         )}
         <p className="truncate text-[10px] text-stone-500">{sub}</p>
       </div>
-      <div className="flex shrink-0 items-center" onPointerDown={(e) => e.stopPropagation()}>
-        {children}
-      </div>
+      {compact ? null : (
+        <div className="flex shrink-0 items-center" onPointerDown={(e) => e.stopPropagation()}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
@@ -901,7 +953,7 @@ function ClipBlock({
     <div
       className={cn(
         'group absolute top-1 overflow-hidden rounded-md text-white shadow-sm transition-[box-shadow]',
-        selected ? 'z-10 ring-2 ring-sky-400 ring-offset-1 ring-offset-white dark:ring-offset-stone-950' : 'ring-1 ring-black/20',
+        selected ? 'z-10 touch-none ring-2 ring-sky-400 ring-offset-1 ring-offset-white dark:ring-offset-stone-950' : 'ring-1 ring-black/20',
         active && 'shadow-[0_0_14px_rgba(255,255,255,0.35)]',
         hovered && !selected && 'ring-2 ring-amber-400',
         over && 'ring-2 ring-violet-500',
@@ -948,18 +1000,18 @@ function ClipBlock({
       </div>
       {!locked ? (
         <>
-          <div className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize hover:bg-white/50" onPointerDown={(e) => onEdge(e, 'trimStart')} title="Drag to trim the start" />
-          <div className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize hover:bg-white/50" onPointerDown={(e) => onEdge(e, 'trimEnd')} title="Drag to trim the end" />
+          <div className={cn('absolute inset-y-0 left-0 w-1.5 cursor-ew-resize hover:bg-white/50', w >= 64 && 'pointer-coarse:w-4')} onPointerDown={(e) => onEdge(e, 'trimStart')} title="Drag to trim the start" />
+          <div className={cn('absolute inset-y-0 right-0 w-1.5 cursor-ew-resize hover:bg-white/50', w >= 64 && 'pointer-coarse:w-4')} onPointerDown={(e) => onEdge(e, 'trimEnd')} title="Drag to trim the end" />
           {!ov ? (
             <div
-              className="absolute top-0.5 size-2.5 -translate-x-1/2 cursor-ew-resize rounded-full bg-white opacity-0 shadow ring-1 ring-black/30 group-hover:opacity-100"
+              className={cn('absolute top-0.5 size-2.5 -translate-x-1/2 cursor-ew-resize rounded-full bg-white opacity-0 shadow ring-1 ring-black/30 group-hover:opacity-100 pointer-coarse:size-3.5', selected && w >= 48 && 'pointer-coarse:opacity-100')}
               style={{ left: Math.max(5, fin) }}
               onPointerDown={(e) => onEdge(e, 'fadeIn')}
               title="Drag to fade in"
             />
           ) : null}
           <div
-            className="absolute top-0.5 size-2.5 translate-x-1/2 cursor-ew-resize rounded-full bg-white opacity-0 shadow ring-1 ring-black/30 group-hover:opacity-100"
+            className={cn('absolute top-0.5 size-2.5 translate-x-1/2 cursor-ew-resize rounded-full bg-white opacity-0 shadow ring-1 ring-black/30 group-hover:opacity-100 pointer-coarse:size-3.5', selected && w >= 48 && 'pointer-coarse:opacity-100')}
             style={{ right: Math.max(5, fout) }}
             onPointerDown={(e) => onEdge(e, 'fadeOut')}
             title="Drag to fade out"
@@ -996,7 +1048,7 @@ function AudioBlock({
   const H = AUDIO_H - 8;
   // Only the part on the screen is drawn (a long song at a close zoom is very wide).
   const left = clip.start * pps;
-  const vis0 = Math.max(0, view.x - HEADER_W - left);
+  const vis0 = Math.max(0, view.x - useHeaderW() - left);
   const vis1 = Math.min(w, view.x + view.w - left);
   useEffect(() => {
     if (state === 'none') void engine.load(clip.fileId);
@@ -1026,7 +1078,7 @@ function AudioBlock({
     <div
       className={cn(
         'absolute top-1 cursor-grab overflow-hidden rounded-md bg-gradient-to-b from-violet-600 to-violet-800 text-white shadow-sm active:cursor-grabbing',
-        selected ? 'z-10 ring-2 ring-sky-400 ring-offset-1 ring-offset-white dark:ring-offset-stone-950' : 'ring-1 ring-black/20',
+        selected ? 'z-10 touch-none ring-2 ring-sky-400 ring-offset-1 ring-offset-white dark:ring-offset-stone-950' : 'ring-1 ring-black/20',
         muted && 'opacity-60'
       )}
       style={{ left, width: w, height: H }}
@@ -1038,8 +1090,8 @@ function AudioBlock({
         {clip.name}
         {state === 'loading' ? ' · loading…' : state === 'error' ? ' · could not load' : ''}
       </p>
-      <div className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize hover:bg-white/50" onPointerDown={(e) => onEdge(e, 'trimStart')} />
-      <div className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize hover:bg-white/50" onPointerDown={(e) => onEdge(e, 'trimEnd')} />
+      <div className={cn('absolute inset-y-0 left-0 w-1.5 cursor-ew-resize hover:bg-white/50', w >= 64 && 'pointer-coarse:w-4')} onPointerDown={(e) => onEdge(e, 'trimStart')} />
+      <div className={cn('absolute inset-y-0 right-0 w-1.5 cursor-ew-resize hover:bg-white/50', w >= 64 && 'pointer-coarse:w-4')} onPointerDown={(e) => onEdge(e, 'trimEnd')} />
     </div>
   );
 }

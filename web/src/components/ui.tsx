@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { cn } from '../lib/utils.ts';
+import { MoreButton, type ActionItem } from './mobile.tsx';
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
 type Size = 'sm' | 'md' | 'icon';
@@ -70,14 +71,38 @@ export function CardHeader({ title, description, actions }: { title: ReactNode; 
   );
 }
 
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+/**
+ * A page's title, what it is for, and its buttons. `more`: the actions after the main ones:
+ * buttons on wide screens, a ⋯ menu on a phone. On a phone a long description is cut to two
+ * lines, with More to read all of it.
+ */
+export function PageHeader({ title, description, actions, more }: { title: string; description?: ReactNode; actions?: ReactNode; more?: ActionItem[] }) {
+  const [full, setFull] = useState(false);
+  const long = typeof description === 'string' && description.length > 110;
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        {description ? <p className="mt-1 max-w-prose text-sm text-stone-500 dark:text-stone-400">{description}</p> : null}
-      </div>
-      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    <div className="mb-5 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 md:mb-6 md:items-end">
+      <h1 className="col-start-1 row-start-1 text-2xl font-semibold tracking-tight">{title}</h1>
+      {more?.length || actions ? (
+        <div className="col-start-2 row-start-1 flex flex-wrap items-center justify-end gap-2 md:row-span-2">
+          {more?.map((m) => (
+            <Button key={m.label} onClick={m.run} disabled={m.disabled} className="max-md:hidden">
+              {m.icon ? <m.icon /> : null} {m.label}
+            </Button>
+          ))}
+          {more?.length ? <MoreButton items={more} title={title} className="-mr-2 md:hidden" /> : null}
+          {actions}
+        </div>
+      ) : null}
+      {description ? (
+        <div className="col-span-2 col-start-1 row-start-2 md:col-span-1">
+          <p className={cn('max-w-prose text-sm text-stone-500 dark:text-stone-400', long && !full && 'max-md:line-clamp-2')}>{description}</p>
+          {long ? (
+            <button type="button" onClick={() => setFull((v) => !v)} className="mt-0.5 text-sm font-medium text-stone-700 md:hidden dark:text-stone-300">
+              {full ? 'Less' : 'More'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -202,13 +227,14 @@ export function Dialog({
         if (e.target === ref.current) onClose();
       }}
       className={cn(
-        'm-auto w-[calc(100%-2rem)] rounded-2xl bg-white p-0 text-stone-900 shadow-2xl ring-1 ring-stone-200 backdrop:bg-stone-950/40 backdrop:backdrop-blur-sm dark:bg-stone-900 dark:text-stone-100 dark:ring-stone-800',
+        // On a phone it rises from the bottom, as a sheet.
+        'm-auto w-[calc(100%-2rem)] rounded-2xl bg-white p-0 max-sm:mx-0 max-sm:mt-auto max-sm:mb-0 max-sm:w-full max-sm:max-w-none max-sm:animate-sheet-in max-sm:rounded-b-none text-stone-900 shadow-2xl ring-1 ring-stone-200 backdrop:bg-stone-950/40 backdrop:backdrop-blur-sm dark:bg-stone-900 dark:text-stone-100 dark:ring-stone-800',
         size === 'sm' ? 'max-w-sm' : size === 'lg' ? 'max-w-2xl' : size === 'xl' ? 'max-w-6xl' : 'max-w-lg'
       )}
     >
       {open ? (
-        <div className="flex max-h-[85dvh] flex-col">
-          <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3">
+        <div className="flex max-h-[85dvh] flex-col max-sm:max-h-[92dvh]">
+          <div className="flex items-start justify-between gap-4 px-5 pt-5 pb-3 sm:px-6">
             <div>
               <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
               {description ? <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">{description}</p> : null}
@@ -217,8 +243,14 @@ export function Dialog({
               <X />
             </Button>
           </div>
-          {children ? <div className="overflow-y-auto px-6 py-2">{children}</div> : null}
-          {footer ? <div className="flex flex-wrap justify-end gap-2 border-t border-stone-100 px-6 py-4 dark:border-stone-800">{footer}</div> : null}
+          {children ? <div className="overflow-y-auto overscroll-contain px-5 py-2 sm:px-6">{children}</div> : null}
+          {footer ? (
+            <div
+              className="flex flex-wrap justify-end gap-2 border-t border-stone-100 px-5 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] sm:px-6 sm:pb-4 dark:border-stone-800 max-sm:[&>button]:h-11 max-sm:[&>button]:flex-1 max-sm:[&>button]:justify-center"
+            >
+              {footer}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </dialog>

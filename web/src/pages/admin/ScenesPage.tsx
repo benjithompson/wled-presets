@@ -8,6 +8,7 @@ import type { Layout } from '../../../../shared/layout.ts';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, Scene } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Select, Spinner, StatusDot } from '../../components/ui.tsx';
+import { MoreButton } from '../../components/mobile.tsx';
 import { api, type Overview, isQueued } from '../../lib/api.ts';
 import { downloadJson, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
@@ -137,27 +138,23 @@ export function ScenesPage() {
   };
 
   const enabledDevices = data?.devices.filter((d) => d.enabled) ?? [];
+  const openSequence = (id: string) => navigate(`/admin/sequences?open=${encodeURIComponent(id)}`);
+  const openEffects = (id: string) => navigate(`/admin/layout?scene=${encodeURIComponent(id)}`);
 
   return (
     <>
       <PageHeader
         title="Scenes"
         description="A scene is one button on the public page. Each device plays one of its WLED presets or a built-in effect drawn by the server, all at the same time. For an effect on single objects, use the layout editor."
+        more={[
+          { label: 'Effects per object', icon: Sparkles, run: () => navigate('/admin/layout') },
+          { label: 'Export', icon: Download, run: () => void exportScenes(), disabled: !data?.scenes.length },
+          { label: 'Import', icon: Upload, run: () => fileInput.current?.click() }
+        ]}
         actions={
-          <>
-            <Button onClick={() => navigate('/admin/layout')} title="Give single objects or segments effects in the layout editor, then save them as a scene">
-              <Sparkles /> Effects per object
-            </Button>
-            <Button onClick={exportScenes} disabled={!data?.scenes.length}>
-              <Download /> Export
-            </Button>
-            <Button onClick={() => fileInput.current?.click()}>
-              <Upload /> Import
-            </Button>
-            <Button variant="primary" onClick={() => setEditing('new')} disabled={!enabledDevices.length}>
-              <Plus /> New scene
-            </Button>
-          </>
+          <Button variant="primary" onClick={() => setEditing('new')} disabled={!enabledDevices.length}>
+            <Plus /> New scene
+          </Button>
         }
       />
       <input ref={fileInput} type="file" accept="application/json,.json" hidden onChange={(e) => (pickFile(e.target.files?.[0]), (e.target.value = ''))} />
@@ -195,8 +192,8 @@ export function ScenesPage() {
               const isDefault = data.settings.defaultSceneId === s.id;
               const isCurrent = data.state.currentSceneId === s.id;
               return (
-                <li key={s.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
-                  <div className="flex flex-col">
+                <li key={s.id} className="flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5">
+                  <div className="flex flex-col max-md:hidden">
                     <button
                       type="button"
                       aria-label={`Move ${s.name} up`}
@@ -247,25 +244,41 @@ export function ScenesPage() {
                       </div>
                     ) : null}
                   </div>
-                  <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => apply.mutate(s.id)} loading={apply.isPending && apply.variables === s.id} disabled={!playable}>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => apply.mutate(s.id)} loading={apply.isPending && apply.variables === s.id} disabled={!playable} className="max-md:h-10">
                       <Play /> Try
                     </Button>
                     {seq ? (
-                      <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/sequences?open=${encodeURIComponent(seq.id)}`)} title="Open the sequence in the sequence editor">
+                      <Button size="sm" variant="ghost" onClick={() => openSequence(seq.id)} title="Open the sequence in the sequence editor" className="max-md:hidden">
                         <Clapperboard /> Sequence
                       </Button>
                     ) : fx.layoutItems ? (
-                      <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/layout?scene=${encodeURIComponent(s.id)}`)} title="Change the effects in the layout editor">
+                      <Button size="sm" variant="ghost" onClick={() => openEffects(s.id)} title="Change the effects in the layout editor" className="max-md:hidden">
                         <Sparkles /> Effects
                       </Button>
                     ) : null}
-                    <Button size="sm" variant="ghost" onClick={() => setEditing(s)}>
+                    <Button size="sm" variant="ghost" onClick={() => setEditing(s)} className="max-md:hidden">
                       <Pencil /> Edit
                     </Button>
-                    <Button size="sm" variant="ghost" aria-label={`Delete ${s.name}`} onClick={() => setDeleting(s)} className="hover:text-red-600 dark:hover:text-red-400">
+                    <Button size="sm" variant="ghost" aria-label={`Delete ${s.name}`} onClick={() => setDeleting(s)} className="hover:text-red-600 max-md:hidden dark:hover:text-red-400">
                       <Trash2 />
                     </Button>
+                    <MoreButton
+                      className="md:hidden"
+                      label={`More for ${s.name}`}
+                      title={s.name}
+                      items={[
+                        { label: 'Edit', icon: Pencil, run: () => setEditing(s) },
+                        ...(seq
+                          ? [{ label: 'Open the sequence', icon: Clapperboard, run: () => openSequence(seq.id) }]
+                          : fx.layoutItems
+                            ? [{ label: 'Effects in the layout editor', icon: Sparkles, run: () => openEffects(s.id) }]
+                            : []),
+                        { label: 'Move up', icon: ArrowUp, disabled: i === 0, run: () => move(i, -1) },
+                        { label: 'Move down', icon: ArrowDown, disabled: i === data.scenes.length - 1, run: () => move(i, 1) },
+                        { label: 'Delete', icon: Trash2, danger: true, run: () => setDeleting(s) }
+                      ]}
+                    />
                   </div>
                 </li>
               );
