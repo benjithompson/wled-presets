@@ -1,4 +1,5 @@
 import type { GameStatus, Stage } from '../../../shared/layout.ts';
+import type { PaintStroke } from '../../../shared/paint.ts';
 import type { Frame } from './frame.ts';
 
 export interface GameInput {
@@ -21,6 +22,13 @@ export interface Game {
    * button). Called for every connected player.
    */
   playerStatus?(playerId: string): Partial<GameStatusFields>;
+  /** Light Painter: part of a stroke from a finger on the picture of the yard. */
+  paint?(e: PaintStroke & { playerId: string }): void;
+  /**
+   * With nobody waiting, the game ends after this long without input (default: a few minutes).
+   * A painting is there to be looked at, so it stays up longer.
+   */
+  readonly idleAfterMs?: number;
   /** A player closed the page. */
   leave?(playerId: string): void;
   /** A player picked a choice for the next game (see GameStatus.settings). */

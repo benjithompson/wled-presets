@@ -1,4 +1,4 @@
-import { Bomb, CircleDot, Droplets, Layers, Music, Palette, Repeat, Rocket, Swords, type LucideIcon } from 'lucide-react';
+import { Bomb, CircleDot, Droplets, Layers, Music, Paintbrush, Palette, Repeat, Rocket, Swords, type LucideIcon } from 'lucide-react';
 
 /** Each game's icon and colors: the gradient of its icon tile, and the colors of its strip. */
 export const GAME_LOOKS: Record<string, { icon: LucideIcon; className: string; colors: string[] }> = {
@@ -10,6 +10,7 @@ export const GAME_LOOKS: Record<string, { icon: LucideIcon; className: string; c
   colorgate: { icon: Palette, className: 'from-emerald-400 via-indigo-500 to-fuchsia-500 shadow-indigo-500/30', colors: ['#34d399', '#6366f1', '#d946ef'] },
   ricochet: { icon: Repeat, className: 'from-emerald-400 via-teal-300 to-sky-400 shadow-emerald-500/30', colors: ['#34d399', '#f8fafc', '#38bdf8'] },
   beads: { icon: CircleDot, className: 'from-emerald-400 via-cyan-400 to-fuchsia-500 shadow-cyan-500/30', colors: ['#34d399', '#22d3ee', '#d946ef'] },
+  paint: { icon: Paintbrush, className: 'from-rose-400 via-amber-300 to-sky-400 shadow-rose-500/30', colors: ['#fb7185', '#fcd34d', '#4ade80', '#38bdf8', '#c084fc'] },
   beat: { icon: Music, className: 'from-cyan-400 via-blue-500 to-amber-300 shadow-cyan-500/30', colors: ['#22d3ee', '#3b82f6', '#fcd34d'] }
 };
 

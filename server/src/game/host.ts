@@ -23,6 +23,8 @@ import { beatGame } from './beat.ts';
 import { colorgateGame } from './colorgate.ts';
 import { ricochetGame } from './ricochet.ts';
 import { sliceGame } from './slice.ts';
+import { paintGame } from './paint.ts';
+import { cleanStroke, type PaintStroke } from '../../../shared/paint.ts';
 import type { Game, GameFactory } from './types.ts';
 
 const CREATE: Record<string, GameFactory> = {
@@ -34,7 +36,8 @@ const CREATE: Record<string, GameFactory> = {
   colorgate: colorgateGame,
   ricochet: ricochetGame,
   beads: beadsGame,
-  beat: beatGame
+  beat: beatGame,
+  paint: paintGame
 };
 
 export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({ tagline: _, ...info }) => ({ ...info, create: CREATE[info.id] }));
@@ -48,7 +51,8 @@ type ClientMessage =
   | { type: 'leaveLine' }
   | { type: 'stop' }
   | { type: 'leave' }
-  | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string };
+  | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string }
+  | ({ type: 'paint' } & PaintStroke);
 
 /** What a scene plays on the lights: effects on the yard and its objects, or a sequence (it loops). */
 export interface Show {
@@ -439,6 +443,15 @@ export class GameHost implements FrameSource {
         this.refused.delete(client.id);
         this.log(`High score named: ${msg.initials.slice(0, 3).toUpperCase()}`);
       } else if (result === 'refused') this.refused.add(client.id);
+    } else if (msg.type === 'paint') {
+      // A finger moving over the picture of the yard (Light Painter): many a second, and each one
+      // changes only the lights, so the status goes out only if it changed.
+      if (!theirs || !this.game.paint) return;
+      const stroke = cleanStroke(msg);
+      if (!stroke) return;
+      this.lastInput = Date.now();
+      this.game.paint({ ...stroke, playerId: client.id });
+      return this.sendStatus(false);
     } else if (msg.type === 'setting' && typeof msg.id === 'string' && typeof msg.value === 'string' && CONTROL_ID.test(msg.id) && CONTROL_ID.test(msg.value)) {
       if (!theirs) return;
       this.lastInput = Date.now();
@@ -480,7 +493,7 @@ export class GameHost implements FrameSource {
     if ([...this.clients.values()].some((c) => c.visitor.id === holder)) this.awaySince = null;
     else if (now - (this.awaySince ??= now) > AWAY_MS) return line.release(holder, 'the player left');
     const waiting = line.waitingCount() > 0;
-    if (now - this.lastInput > (waiting ? IDLE_WAITING_MS : IDLE_AFTER_MS)) return line.release(holder, 'nobody played');
+    if (now - this.lastInput > (waiting ? IDLE_WAITING_MS : (this.game.idleAfterMs ?? IDLE_AFTER_MS))) return line.release(holder, 'nobody played');
     const phase = this.game.status().phase;
     if (ENDED.has(phase)) this.overSince ??= now;
     else if (!SHOWS_BOARD.has(phase)) this.overSince = null;
@@ -500,7 +513,7 @@ export class GameHost implements FrameSource {
   }
 
   tick(dt: number): LightFrame | null {
-    if (this.game.id !== 'idle' && Date.now() - this.lastInput > IDLE_AFTER_MS) {
+    if (this.game.id !== 'idle' && Date.now() - this.lastInput > (this.game.idleAfterMs ?? IDLE_AFTER_MS)) {
       this.game = idleGame(this.gameStage);
     }
     const gameOn = this.game.id !== 'idle';
