@@ -4,7 +4,6 @@ import { useSearchParams } from 'react-router';
 import {
   ArrowLeftRight,
   ChevronDown,
-  ChevronUp,
   Ellipsis,
   Magnet,
   Clapperboard,
@@ -113,6 +112,7 @@ import { api } from '../../lib/api.ts';
 import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useMedia } from '../../lib/useMedia.ts';
+import { ActionSheet, BottomSheet, type SheetSize } from '../../components/mobile.tsx';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
@@ -324,7 +324,7 @@ export function LayoutPage() {
     } catch {}
   };
   /** The bottom sheet on a phone: just its tabs, half the screen, or all of it. */
-  const [sheet, setSheet] = useState<'peek' | 'half' | 'full'>('peek');
+  const [sheet, setSheet] = useState<SheetSize>('peek');
   const [sheetTab, setSheetTab] = useState<'objects' | 'details'>('details');
   /** On a phone, the inspector shows one section at a time: the open one, for objects, a multi-selection and the yard. */
   const [accOpen, setAccOpen] = useState<Record<'object' | 'multi' | 'yard', string | null>>({ object: 'object', multi: 'multi-effect', yard: 'yardfx' });
@@ -332,8 +332,6 @@ export function LayoutPage() {
   const [addOpen, setAddOpen] = useState(false);
   /** The phone's one-line hint, opened to show all of it. */
   const [hintOpen, setHintOpen] = useState(false);
-  /** Where a swipe on the bottom sheet's handle started (screen y). */
-  const sheetDrag = useRef<number | null>(null);
 
   // Viewports: how they share the space, which view each one shows, and one view made big.
   const [viewport, setViewportState] = useState(readViewport);
@@ -3189,86 +3187,37 @@ export function LayoutPage() {
     return <PropAccordion.Provider value={{ open: accOpen[key], set: (id) => setAccOpen((a) => ({ ...a, [key]: id })) }}>{body}</PropAccordion.Provider>;
   };
 
-  const SHEETS = ['peek', 'half', 'full'] as const;
-  const stepSheet = (d: number) => setSheet((x) => SHEETS[Math.max(0, Math.min(SHEETS.length - 1, SHEETS.indexOf(x) + d))]);
-  const sheetTabButton = (t: 'objects' | 'details', content: ReactNode) => (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={sheetTab === t}
-      onClick={() => (setSheetTab(t), sheet === 'peek' && setSheet('half'))}
-      className={cn(
-        'inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition [&_svg]:size-4 [&_svg]:shrink-0',
-        sheetTab === t && sheet !== 'peek' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-950 dark:text-white' : 'text-stone-600 dark:text-stone-300'
-      )}
-    >
-      {content}
-    </button>
-  );
   const SelIcon = sel ? KIND_ICONS[sel.kind] : null;
-  /** The phone's bottom sheet: the object list and the inspector, in two tabs. Swipe or tap the handle to open and close it. */
+  /** The phone's bottom sheet: the object list and the inspector, in two tabs. */
   const phoneSheet = (
-    <section
-      aria-label="Objects and properties"
-      className={cn(
-        'flex min-h-0 shrink-0 flex-col border-t border-stone-200 bg-white text-sm shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.3)] dark:border-stone-800 dark:bg-stone-900',
-        sheet === 'half' && 'h-[45dvh]',
-        sheet === 'full' && 'flex-1'
-      )}
-      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-    >
-      <button
-        type="button"
-        aria-label={sheet === 'peek' ? 'Open the panel' : 'Close the panel'}
-        className="flex h-6 w-full shrink-0 touch-none items-center justify-center"
-        onPointerDown={(e) => {
-          sheetDrag.current = e.clientY;
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerUp={(e) => {
-          const y = sheetDrag.current;
-          sheetDrag.current = null;
-          if (y == null) return;
-          const dy = e.clientY - y;
-          if (dy < -24) stepSheet(1);
-          else if (dy > 24) stepSheet(-1);
-          else setSheet((x) => (x === 'peek' ? 'half' : 'peek'));
-        }}
-        onPointerCancel={() => (sheetDrag.current = null)}
-        // The keyboard (a click with no pointer) opens and closes it too.
-        onClick={(e) => e.detail === 0 && setSheet((x) => (x === 'peek' ? 'half' : 'peek'))}
-      >
-        <span className="h-1 w-10 rounded-full bg-stone-300 dark:bg-stone-600" />
-      </button>
-      <div className="flex shrink-0 items-center gap-1 px-2 pb-2">
-        <div role="tablist" aria-label="Panel" className="flex min-w-0 flex-1 rounded-lg bg-stone-100 p-0.5 dark:bg-stone-800">
-          {sheetTabButton(
-            'objects',
+    <BottomSheet
+      label="Objects and properties"
+      size={sheet}
+      onSize={setSheet}
+      tab={sheetTab}
+      onTab={setSheetTab}
+      tabs={[
+        {
+          id: 'objects',
+          content: (
             <>
               <List /> Objects <span className="text-stone-500 tabular-nums">{layout.fixtures.length}</span>
             </>
-          )}
-          {sheetTabButton(
-            'details',
+          )
+        },
+        {
+          id: 'details',
+          content: (
             <>
               {SelIcon ? <SelIcon /> : null}
               <span className="truncate">{sel ? sel.name : multiItems.length >= 2 ? `${multiItems.length} selected` : 'Yard'}</span>
             </>
-          )}
-        </div>
-        {sheet !== 'peek' ? (
-          <button type="button" onClick={() => setSheet(sheet === 'full' ? 'half' : 'full')} aria-label={sheet === 'full' ? 'Make the panel smaller' : 'Make the panel full height'} className={iconButton}>
-            {sheet === 'full' ? <Minimize2 /> : <Maximize2 />}
-          </button>
-        ) : null}
-        <button type="button" onClick={() => setSheet(sheet === 'peek' ? 'half' : 'peek')} aria-label={sheet === 'peek' ? 'Open the panel' : 'Close the panel'} className={iconButton}>
-          {sheet === 'peek' ? <ChevronUp /> : <ChevronDown />}
-        </button>
-      </div>
-      {sheet !== 'peek' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain border-t border-stone-200 dark:border-stone-800">{sheetTab === 'objects' ? objectList(false) : phoneDetails()}</div>
-      ) : null}
-    </section>
+          )
+        }
+      ]}
+    >
+      {sheetTab === 'objects' ? objectList(false) : phoneDetails()}
+    </BottomSheet>
   );
 
   return (
@@ -4692,39 +4641,7 @@ function GridSettings({ drafting, layout, onChange }: { drafting: Drafting; layo
 
 function ContextMenu({ menu, sheet, onClose }: { menu: { x: number; y: number; title: string; items: MenuItem[] }; sheet?: boolean; onClose: () => void }) {
   // On a phone, an action sheet that rises from the bottom, with big rows, as phone apps do.
-  if (sheet)
-    return (
-      <div className="fixed inset-0 z-50 flex items-end bg-stone-950/40" onContextMenu={(e) => e.preventDefault()}>
-        <div
-          data-layout-menu
-          role="menu"
-          className="max-h-[80dvh] w-full overflow-y-auto rounded-t-2xl bg-white p-2 text-base shadow-2xl dark:bg-stone-900"
-          style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))' }}
-        >
-          <p className="truncate px-3 pt-2 pb-2 text-center text-xs font-medium text-stone-500">{menu.title}</p>
-          {menu.items.map((it) => (
-            <button
-              key={it.label}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                onClose();
-                it.run();
-              }}
-              className={cn(
-                'flex min-h-12 w-full items-center rounded-xl px-3 text-left active:bg-stone-100 dark:active:bg-stone-800',
-                it.danger ? 'text-red-600 dark:text-red-400' : 'text-stone-800 dark:text-stone-100'
-              )}
-            >
-              {it.label}
-            </button>
-          ))}
-          <button type="button" onClick={onClose} className="mt-1 flex min-h-12 w-full items-center justify-center rounded-xl bg-stone-100 font-semibold text-stone-800 active:bg-stone-200 dark:bg-stone-800 dark:text-stone-100">
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
+  if (sheet) return <ActionSheet data-layout-menu title={menu.title} items={menu.items} onClose={onClose} />;
   // Keep it on screen.
   const x = Math.min(menu.x, window.innerWidth - 260);
   const y = Math.min(menu.y, window.innerHeight - 48 - menu.items.length * 36);

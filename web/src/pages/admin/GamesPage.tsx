@@ -7,6 +7,7 @@ import { ChevronDown, Gamepad2, Radio, RotateCcw, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import { activeLeds, buildStage, editorPulse, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofHidden, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
 import { Badge, Button, Card, CardHeader, Empty, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
+import { PhoneActionBar } from '../../components/mobile.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
@@ -114,15 +115,26 @@ export function GamesPage() {
       <PageHeader
         title="Games"
         description="Choose the lights that games play on. Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light."
+        more={[
+          {
+            label: 'Use every light',
+            icon: RotateCcw,
+            run: () => setDraft({}),
+            disabled: !fixtures.length || (!area.exclude?.length && !Object.keys(area.skip ?? {}).length && !Object.keys(area.trim ?? {}).length)
+          }
+        ]}
         actions={
           <>
-            <Button onClick={() => setOnLights((v) => !v)} title="Show this picture on the real lights, so you can see which lights are in">
-              <Radio className={onLights ? 'text-emerald-500' : undefined} /> {onLights ? 'Showing on the lights' : 'Show on the lights'}
+            <Button
+              onClick={() => setOnLights((v) => !v)}
+              title="Show this picture on the real lights, so you can see which lights are in"
+              aria-label={onLights ? 'Showing on the lights' : 'Show on the lights'}
+              aria-pressed={onLights}
+            >
+              <Radio className={onLights ? 'text-emerald-500' : undefined} /> <span className="sm:hidden">Lights</span>
+              <span className="max-sm:hidden">{onLights ? 'Showing on the lights' : 'Show on the lights'}</span>
             </Button>
-            <Button onClick={() => setDraft({})} disabled={!fixtures.length || (!area.exclude?.length && !Object.keys(area.skip ?? {}).length && !Object.keys(area.trim ?? {}).length)} title="Games use every light">
-              <RotateCcw /> Use every light
-            </Button>
-            <Button variant="primary" onClick={() => save.mutate()} disabled={!dirty} loading={save.isPending}>
+            <Button variant="primary" onClick={() => save.mutate()} disabled={!dirty} loading={save.isPending} className="max-md:hidden">
               <Save /> Save
             </Button>
           </>
@@ -187,6 +199,14 @@ export function GamesPage() {
           })}
         </div>
       )}
+
+      <PhoneActionBar show={dirty}>
+        <span className="min-w-0 flex-1 text-sm text-stone-600 dark:text-stone-300">Unsaved changes</span>
+        <Button onClick={() => setDraft(null)}>Discard</Button>
+        <Button variant="primary" onClick={() => save.mutate()} loading={save.isPending}>
+          <Save /> Save
+        </Button>
+      </PhoneActionBar>
     </>
   );
 }

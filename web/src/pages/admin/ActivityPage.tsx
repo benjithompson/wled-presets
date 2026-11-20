@@ -35,7 +35,7 @@ export function ActivityPage() {
   return (
     <>
       <PageHeader title="Activity" description="What happened, newest first. New entries appear live." />
-      <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1">
+      <div className="-mx-4 mb-4 flex gap-1.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
         {FILTERS.map((f) => (
           <button
             key={f.label}

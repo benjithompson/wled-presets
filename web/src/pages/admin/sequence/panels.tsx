@@ -33,7 +33,8 @@ export function Browser({
   onTransition,
   swatch,
   hover,
-  setHover
+  setHover,
+  touch = false
 }: {
   layout: Layout | undefined;
   seq: Sequence;
@@ -49,6 +50,8 @@ export function Browser({
   swatch: (id: string) => string | null;
   hover: string | null;
   setHover: (id: string | null) => void;
+  /** A touch screen: a tap adds an effect at the playhead (there is no dragging), and picks objects one after another. */
+  touch?: boolean;
 }) {
   const [tab, setTab] = useState<BrowserTab>(() => {
     try {
@@ -74,7 +77,7 @@ export function Browser({
             type="button"
             onClick={() => choose(t)}
             className={cn(
-              'flex-1 rounded-md px-2 py-1 text-xs font-medium capitalize transition',
+              'flex-1 rounded-md px-2 py-1 text-xs font-medium capitalize transition pointer-coarse:py-2',
               tab === t ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800'
             )}
           >
@@ -86,12 +89,12 @@ export function Browser({
         {tab === 'effects' ? (
           <>
             <p className="px-1 pb-2 text-[11px] leading-snug text-stone-500">
-              Drag an effect onto a layer, or double-click a layer. It plays on <b className="text-stone-700 dark:text-stone-300">{targetsLabel(layout, picked.length ? picked : [YARD])}</b> (pick objects in the Objects tab or the preview).
+              {touch ? 'Tap an effect to add it at the playhead, on the selected layer.' : 'Drag an effect onto a layer, or double-click a layer.'} It plays on <b className="text-stone-700 dark:text-stone-300">{targetsLabel(layout, picked.length ? picked : [YARD])}</b> (pick objects in the Objects tab or the preview).
             </p>
             {BROWSER_GROUPS.map((group) => (
               <div key={group.label} className="mb-3">
                 <p className="px-1 pb-1 text-[10px] font-semibold tracking-wide text-stone-500 uppercase">{group.label}</p>
-                <div className="grid grid-cols-2 gap-1.5">
+                <div className="grid grid-cols-2 gap-1.5 sm:max-lg:grid-cols-3">
                   {EFFECTS.filter(group.has).map((e) => (
                     <button
                       key={e.id}
@@ -102,8 +105,8 @@ export function Browser({
                         ev.dataTransfer.effectAllowed = 'copy';
                         setBrush(e.id);
                       }}
-                      onClick={() => setBrush(e.id)}
-                      onDoubleClick={() => onAdd(e.id)}
+                      onClick={() => (setBrush(e.id), touch && onAdd(e.id))}
+                      onDoubleClick={() => !touch && onAdd(e.id)}
                       title={`${e.description}\nDrag onto a layer · double-click to add at the playhead`}
                       className={cn(
                         'group flex cursor-grab flex-col gap-1 rounded-lg p-1.5 text-left ring-1 transition active:cursor-grabbing',
@@ -121,7 +124,9 @@ export function Browser({
         ) : tab === 'transitions' ? (
           <>
             <p className="px-1 pb-2 text-[11px] leading-snug text-stone-500">
-              Drag a transition onto a clip: it is how the clip comes in. Overlap two clips on one layer to cross over from one to the other (also from one object to another). Click one to give it to the selected clips.
+              {touch
+                ? 'Tap one to give it to the selected clips: it is how a clip comes in. Overlap two clips on one layer to cross over from one to the other (also from one object to another).'
+                : 'Drag a transition onto a clip: it is how the clip comes in. Overlap two clips on one layer to cross over from one to the other (also from one object to another). Click one to give it to the selected clips.'}
             </p>
             <div className="space-y-1">
               {TRANSITIONS.map((t) => (
@@ -147,7 +152,9 @@ export function Browser({
           </>
         ) : (
           <>
-            <p className="px-1 pb-2 text-[11px] leading-snug text-stone-500">New clips play on the picked objects. Click to pick one, Ctrl/⌘-click to pick several. The dot shows each object’s color right now.</p>
+            <p className="px-1 pb-2 text-[11px] leading-snug text-stone-500">
+              {touch ? 'New clips play on the picked objects. Tap to pick one, tap more to pick several.' : 'New clips play on the picked objects. Click to pick one, Ctrl/⌘-click to pick several.'} The dot shows each object’s color right now.
+            </p>
             <ul className="space-y-0.5">
               {allTargets(layout).map((t) => {
                 const on = picked.includes(t.key);
@@ -161,11 +168,11 @@ export function Browser({
                       onMouseEnter={() => t.depth === 0 && t.key !== YARD && setHover(t.key)}
                       onMouseLeave={() => setHover(null)}
                       onClick={(e) => {
-                        if (e.ctrlKey || e.metaKey || e.shiftKey) setPicked(on ? picked.filter((k) => k !== t.key) : [...picked.filter((k) => k !== YARD), t.key].filter((k) => t.key !== YARD || k === YARD));
+                        if (touch || e.ctrlKey || e.metaKey || e.shiftKey) setPicked(on ? picked.filter((k) => k !== t.key) : [...picked.filter((k) => k !== YARD), t.key].filter((k) => t.key !== YARD || k === YARD));
                         else setPicked(on && picked.length === 1 ? [] : [t.key]);
                       }}
                       className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs',
+                        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs pointer-coarse:py-2.5 pointer-coarse:text-sm',
                         t.depth && 'pl-7',
                         on ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/60 dark:text-sky-100' : hover === t.key ? 'bg-amber-50 dark:bg-amber-950/40' : 'hover:bg-stone-100 dark:hover:bg-stone-800'
                       )}
@@ -222,7 +229,8 @@ export function Inspector({
   onSplit,
   onDuplicate,
   onDelete,
-  audioLength
+  audioLength,
+  touch = false
 }: {
   seq: Sequence;
   layout: Layout | undefined;
@@ -236,6 +244,8 @@ export function Inspector({
   onDelete: () => void;
   /** Length of an audio file, when it is loaded. */
   audioLength: (fileId: string) => number | null;
+  /** A touch screen: the help talks about taps, and leaves out the keyboard. */
+  touch?: boolean;
 }) {
   if (sel?.kind === 'clips' && sel.ids.length === 1) {
     const f = findClip(seq, sel.ids[0]);
@@ -374,16 +384,25 @@ export function Inspector({
       </PropSection>
       <PropSection id="seq-help" title="How it works">
         <ul className="list-disc space-y-1 pl-4 text-[11px] leading-snug text-stone-600 dark:text-stone-400">
-          <li>Pick objects (Objects tab, or click them in the preview), then drag an effect onto a layer. With nothing picked, it plays on the whole yard.</li>
+          {touch ? (
+            <>
+              <li>Pick objects (Objects tab, or tap them in the preview), then tap an effect in Library: it starts at the playhead. With nothing picked, it plays on the whole yard.</li>
+              <li>Tap a clip to select it, then drag it to move it, or drag its ends to trim it. Two fingers pinch the timeline to zoom; drag on the ruler to move the playhead.</li>
+            </>
+          ) : (
+            <li>Pick objects (Objects tab, or click them in the preview), then drag an effect onto a layer. With nothing picked, it plays on the whole yard.</li>
+          )}
           <li>Upper layers cover lower ones. Set a layer to Add to put sparkles over a wash.</li>
-          <li>Drag a clip over the end of another on the same layer to cross over: from one effect, or one object, to the next. Drop a transition on it to choose how.</li>
+          <li>Drag a clip over the end of another on the same layer to cross over: from one effect, or one object, to the next. {touch ? 'Give it a transition to choose how.' : 'Drop a transition on it to choose how.'}</li>
           <li>Drag the knobs at a clip’s top corners to fade it in and out.</li>
           <li>Turn on Lights to see it on the real lights as you edit. Use a sequence in a scene to put it on the public page.</li>
         </ul>
       </PropSection>
-      <PropSection id="seq-keys" title="Keyboard and mouse" defaultOpen={false}>
-        <Shortcuts />
-      </PropSection>
+      {touch ? null : (
+        <PropSection id="seq-keys" title="Keyboard and mouse" defaultOpen={false}>
+          <Shortcuts />
+        </PropSection>
+      )}
     </>
   );
 }

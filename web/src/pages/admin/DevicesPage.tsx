@@ -4,6 +4,7 @@ import { ChevronDown, Pencil, Play, Plus, Radar, RefreshCw, Router, Trash2 } fro
 import { toast } from 'sonner';
 import type { DeviceWithStatus, DiscoveredDevice } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Spinner, StatusDot, Switch } from '../../components/ui.tsx';
+import { MoreButton } from '../../components/mobile.tsx';
 import { api, type DeviceInput, type PresetImport } from '../../lib/api.ts';
 import { cn, errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
@@ -61,18 +62,14 @@ export function DevicesPage() {
         description={
           devices.length ? `${online} of ${enabled} enabled device(s) online. Status refreshes every few seconds.` : 'The WLED controllers that this app sends commands to.'
         }
+        more={[
+          { label: syncAll.isPending ? 'Importing presets…' : 'Import all presets', icon: RefreshCw, run: () => syncAll.mutate(), disabled: !enabled || syncAll.isPending },
+          { label: 'Discover', icon: Radar, run: () => setDiscovering(true) }
+        ]}
         actions={
-          <>
-            <Button onClick={() => syncAll.mutate()} loading={syncAll.isPending} disabled={!enabled}>
-              <RefreshCw /> Import all presets
-            </Button>
-            <Button onClick={() => setDiscovering(true)}>
-              <Radar /> Discover
-            </Button>
-            <Button variant="primary" onClick={() => setEditing('new')}>
-              <Plus /> Add device
-            </Button>
-          </>
+          <Button variant="primary" onClick={() => setEditing('new')}>
+            <Plus /> Add device
+          </Button>
         }
       />
 
@@ -107,7 +104,7 @@ export function DevicesPage() {
               const open = expanded === d.id;
               return (
                 <li key={d.id}>
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3.5 sm:px-5">
+                  <div className="flex items-center gap-x-3 gap-y-2 py-3.5 pr-2 pl-4 sm:gap-x-4 sm:px-5">
                     <StatusDot online={d.enabled ? d.online : null} />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -123,26 +120,45 @@ export function DevicesPage() {
                         {d.info?.leds?.count ? <span>{d.info.leds.count} LEDs</span> : null}
                         {d.online === false && d.lastSeen ? <span>Last seen {relativeTime(d.lastSeen)}</span> : null}
                       </p>
-                    </div>
-                    <div className="flex items-center gap-1">
                       <button
                         type="button"
                         onClick={() => setExpanded(open ? null : d.id)}
                         aria-expanded={open}
-                        className="inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-stone-600 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-800"
+                        className="-ml-2 inline-flex h-9 items-center gap-1 rounded-lg px-2 text-[13px] font-medium text-stone-600 md:hidden dark:text-stone-400"
                       >
                         {presets.length} preset{presets.length === 1 ? '' : 's'}
                         <ChevronDown className={cn('size-3.5 transition', open && 'rotate-180')} />
                       </button>
-                      <Button size="sm" variant="ghost" aria-label={`Edit ${d.name}`} onClick={() => setEditing(d)}>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setExpanded(open ? null : d.id)}
+                        aria-expanded={open}
+                        className="inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-stone-600 hover:bg-stone-100 max-md:hidden dark:text-stone-400 dark:hover:bg-stone-800"
+                      >
+                        {presets.length} preset{presets.length === 1 ? '' : 's'}
+                        <ChevronDown className={cn('size-3.5 transition', open && 'rotate-180')} />
+                      </button>
+                      <Button size="sm" variant="ghost" aria-label={`Edit ${d.name}`} onClick={() => setEditing(d)} className="max-md:hidden">
                         <Pencil />
                       </Button>
-                      <Button size="sm" variant="ghost" aria-label={`Remove ${d.name}`} onClick={() => setDeleting(d)} className="hover:text-red-600 dark:hover:text-red-400">
+                      <Button size="sm" variant="ghost" aria-label={`Remove ${d.name}`} onClick={() => setDeleting(d)} className="hover:text-red-600 max-md:hidden dark:hover:text-red-400">
                         <Trash2 />
                       </Button>
                       <span className="ml-1">
                         <Switch label={`${d.name} enabled`} checked={d.enabled} onChange={() => toggle.mutate(d)} disabled={toggle.isPending} />
                       </span>
+                      <MoreButton
+                        className="md:hidden"
+                        label={`More for ${d.name}`}
+                        title={d.name}
+                        items={[
+                          { label: 'Edit', icon: Pencil, run: () => setEditing(d) },
+                          { label: 'Import its presets', icon: RefreshCw, disabled: !d.enabled, run: () => syncOne.mutate(d.id) },
+                          { label: 'Remove', icon: Trash2, danger: true, run: () => setDeleting(d) }
+                        ]}
+                      />
                     </div>
                   </div>
                   {open ? (

@@ -117,8 +117,11 @@ export function SettingsPage() {
           </div>
         </Card>
 
-        <div className="flex justify-end">
-          <Button type="submit" variant="primary" loading={save.isPending}>
+        {/* On a phone the button stays at the bottom of the screen while the settings are in view. */}
+        <div
+          className="flex justify-end max-md:sticky max-md:bottom-0 max-md:z-20 max-md:-mx-4 max-md:border-t max-md:border-stone-200 max-md:bg-stone-50/90 max-md:px-4 max-md:pt-3 max-md:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] max-md:backdrop-blur-lg dark:max-md:border-stone-800 dark:max-md:bg-stone-950/90"
+        >
+          <Button type="submit" variant="primary" loading={save.isPending} className="max-md:h-11 max-md:w-full max-md:justify-center">
             Save settings
           </Button>
         </div>

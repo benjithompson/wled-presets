@@ -7,6 +7,9 @@
 //   │ timeline: ruler, layers of clips, audio tracks                   │
 //   └──────────────────────────────────────────────────────────────────┘
 //
+// On a phone (or a narrow window) it is one column, like a mobile app: the preview, the
+// transport and the timeline, with the browser and the inspector in a bottom sheet.
+//
 // The preview draws the same frames the server sends to the lights (shared/sequence.ts).
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -16,6 +19,7 @@ import {
   Clapperboard,
   Copy,
   FilePlus2,
+  Flag,
   Lightbulb,
   LightbulbOff,
   Magnet,
@@ -27,6 +31,8 @@ import {
   Save,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
   Undo2,
   ZoomIn,
@@ -36,7 +42,9 @@ import { toast } from 'sonner';
 import { effectInfo, paletteColors, toBytes, YARD, type EffectId } from '../../../../../shared/effects.ts';
 import { buildStage, type Layout, type Stage } from '../../../../../shared/layout.ts';
 import { activeAt, clipEnd, emptySequence, newId, SequencePlayer, transitionInfo, type SeqClip, type Sequence } from '../../../../../shared/sequence.ts';
-import { ConfirmDialog, Spinner } from '../../../components/ui.tsx';
+import { Button, ConfirmDialog, Spinner } from '../../../components/ui.tsx';
+import { BottomSheet, MoreButton, type SheetSize } from '../../../components/mobile.tsx';
+import { useMedia } from '../../../lib/useMedia.ts';
 import { api } from '../../../lib/api.ts';
 import { cn, errorText } from '../../../lib/utils.ts';
 import { useInFront } from '../../../lib/useInFront.ts';
@@ -111,6 +119,17 @@ export function SequencePage() {
   const [confirm, setConfirm] = useState<{ title: string; body: ReactNode; label: string; danger?: boolean; run: () => void } | null>(null);
   const [menu, setMenu] = useState(false);
   const [timelineH, setTimelineH] = useState(() => Number(readLocal(HEIGHT_KEY, '320')) || 320);
+  // Wide screens get the editor's panels side by side; a phone (or a narrow window) gets one
+  // column, with the library and the inspector in a bottom sheet.
+  const wide = useMedia('(min-width: 1024px)');
+  /** Touch: taps instead of drags and double-clicks. */
+  const coarse = useMedia('(pointer: coarse)');
+  const [sheet, setSheet] = useState<SheetSize>('peek');
+  const [sheetTab, setSheetTab] = useState<'library' | 'details'>('library');
+  // Something new selected (a tap on a clip): the sheet shows its properties.
+  useEffect(() => {
+    if (sel) setSheetTab('details');
+  }, [sel]);
 
   const clock = useMemo(() => new Clock(), []);
   const audio = useMemo(() => new AudioEngine(), []);
@@ -624,181 +643,158 @@ export function SequencePage() {
   // The whole yard is not outlined: that would be everything.
   const outline = outlineKeys.includes(YARD) ? [] : [...new Set(outlineKeys.map((k) => k.split('#')[0]))];
 
-  return (
-    <div className="flex flex-col lg:h-full lg:min-h-0">
-      {/* Toolbar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-stone-200 bg-white px-2 py-1.5 dark:border-stone-800 dark:bg-stone-900">
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setMenu((v) => !v)}
-            className="flex h-8 max-w-64 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold hover:bg-stone-100 dark:hover:bg-stone-800"
-            aria-haspopup="menu"
-            aria-expanded={menu}
-          >
-            <Clapperboard className="size-4 shrink-0 text-sky-600" />
-            <span className="truncate">{seq.name}</span>
-            {dirty ? <span className="size-2 shrink-0 rounded-full bg-amber-500" title="Not saved" /> : null}
-            <ChevronDown className="size-3.5 shrink-0 text-stone-400" />
-          </button>
-          {menu ? (
-            <SequenceMenu
-              current={seq.id}
-              list={list.sequences}
-              onClose={() => setMenu(false)}
-              onOpen={(id) => guard(() => void loadById(id))}
-              onNew={() => guard(() => open(emptySequence(`Sequence ${list.sequences.length + 1}`), false))}
-              onDuplicate={() => open({ ...seq, id: '', name: `${seq.name} copy` }, false)}
-              onDelete={() =>
-                setConfirm({ title: `Delete “${seq.name}”?`, body: 'Scenes that play it stop playing it. Audio files stay uploaded.', label: 'Delete sequence', danger: true, run: () => void remove() })
-              }
-            />
-          ) : null}
-        </div>
-        <ToolButton onClick={() => void save()} disabled={busy || (!dirty && !!seq.id)} title="Save (Ctrl/⌘+S)" primary={dirty || !seq.id}>
-          <Save /> Save
-        </ToolButton>
-        <Divider />
-        <ToolButton onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)">
-          <Undo2 />
-        </ToolButton>
-        <ToolButton onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)">
-          <Redo2 />
-        </ToolButton>
-        <Divider />
-        <Transport clock={clock} duration={seq.duration} onToggle={toggle} onStart={() => seek(0)} onEnd={() => seek(seq.duration)} />
-        <ToolButton onClick={() => change({ ...seq, loop: !seq.loop || undefined })} active={!!seq.loop} title="Loop: start again at the end">
-          <Repeat />
-        </ToolButton>
-        <Divider />
-        <ToolButton onClick={() => setSnap((v) => (writeLocal('seq.snap', v ? 'off' : 'on'), !v))} active={snap} title="Snap to clips, markers, the playhead and beats (N)">
-          <Magnet />
-        </ToolButton>
-        <ToolButton onClick={() => setPps(pps / 1.4)} title="Zoom out (−)">
-          <ZoomOut />
-        </ToolButton>
-        <ToolButton onClick={() => setPps(pps * 1.4)} title="Zoom in (+)">
-          <ZoomIn />
-        </ToolButton>
-        <ToolButton onClick={() => timelineApi.current?.fit()} title="Zoom to fit (\)">
-          <Maximize2 />
-        </ToolButton>
-        <div className="ml-auto flex items-center gap-1">
-          <ToolButton
-            onClick={() => setLightsOn((v) => (writeLocal(LIGHTS_KEY, v ? 'off' : 'on'), !v))}
-            active={lightsOn}
-            disabled={!mapped}
-            title={mapped ? (lightsOn ? `On the real lights${lightDevices.length ? `: ${lightDevices.join(', ')}` : ''}` : 'Show it on the real lights as you edit') : 'No object has a device yet (set one in Layout)'}
-          >
-            {lightsOn ? <Lightbulb /> : <LightbulbOff />} Lights
-          </ToolButton>
-          <ToolButton onClick={() => void makeScene()} disabled={busy || !seq.tracks.some((t) => t.clips.length)} title="Make a scene that plays this sequence: a button on the public page">
-            <Copy /> Use in a scene
-          </ToolButton>
-        </div>
-      </div>
+  const toggleLights = () => setLightsOn((v) => (writeLocal(LIGHTS_KEY, v ? 'off' : 'on'), !v));
+  const toggleSnap = () => setSnap((v) => (writeLocal('seq.snap', v ? 'off' : 'on'), !v));
+  const toggleLoop = () => change({ ...seq, loop: !seq.loop || undefined });
+  const lightsTitle = mapped ? (lightsOn ? `On the real lights${lightDevices.length ? `: ${lightDevices.join(', ')}` : ''}` : 'Show it on the real lights as you edit') : 'No object has a device yet (set one in Layout)';
+  const canScene = !busy && seq.tracks.some((t) => t.clips.length);
 
-      {/* Upper area: browser, preview, inspector */}
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="order-3 h-80 shrink-0 border-stone-200 bg-white lg:order-none lg:h-auto lg:w-64 lg:border-r dark:border-stone-800 dark:bg-stone-900">
-          <Browser
-            layout={layout}
-            seq={seq}
-            picked={picked}
-            setPicked={setPicked}
-            brush={brush}
-            setBrush={setBrush}
-            onAdd={addAtPlayhead}
-            onTransition={(id) => {
-              if (sel?.kind !== 'clips' || !sel.ids.length) return void toast.info('Select a clip first, or drag the transition onto a clip.');
-              change({ ...seq, tracks: seq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (sel.ids.includes(c.id) ? { ...c, transitionIn: id, fadeIn: c.fadeIn && c.fadeIn > 0.05 ? c.fadeIn : Math.min(1, c.duration / 2) } : c)) })) });
-            }}
-            swatch={(id) => fx.current?.swatches.get(id) ?? null}
-            hover={hover.id}
-            setHover={(id) => setHover((h) => ({ ...h, id }))}
-          />
-        </aside>
-        <section className="relative order-1 aspect-video min-h-0 min-w-0 flex-1 bg-[#05070f] lg:order-none lg:aspect-auto">
-          {layout ? (
-            view === 'front' ? (
-              <YardView
-                layout={layout}
-                getFrame={getFrame}
-                fill
-                highlight={outline}
-                onPick={(id, add) => {
-                  if (!id) return setPicked([]);
-                  setPicked(add ? (picked.includes(id) ? picked.filter((k) => k !== id) : [...picked.filter((k) => k !== YARD), id]) : picked.length === 1 && picked[0] === id ? [] : [id]);
-                }}
-                onHover={(id, at) => setHover({ id, ...at })}
-              />
-            ) : (
-              <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-sm text-white/50">Loading 3D view…</div>}>
-                <Scene3D layout={layout} getFrame={getFrame} selected={outline} fill onSelect={(id, add) => (id ? setPicked(add ? [...new Set([...picked, id])] : [id]) : setPicked([]))} />
-              </Suspense>
-            )
-          ) : null}
-          <div className="absolute top-2 left-2 flex gap-1">
-            {(['front', '3d'] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => (setView(v), writeLocal('seq.view', v))}
-                className={cn('rounded-lg px-2.5 py-1 text-xs font-medium ring-1 ring-white/10 backdrop-blur', view === v ? 'bg-white/85 text-stone-900' : 'bg-black/50 text-white/80 hover:bg-black/70')}
-              >
-                {v === 'front' ? 'Front' : '3D'}
-              </button>
-            ))}
-          </div>
-          {layout ? <NowPlaying clock={clock} seq={seq} layout={layout} onSelect={(id) => setSel({ kind: 'clips', ids: [id] })} /> : null}
-          {hover.id && view === 'front' ? <HoverCard clock={clock} seq={seq} id={hover.id} name={layout?.fixtures.find((f) => f.id === hover.id)?.name ?? ''} at={hover} /> : null}
-          {lightsOn && lightDevices.length ? (
-            <span className="pointer-events-none absolute top-2 right-2 rounded-lg bg-amber-400/90 px-2 py-1 text-[11px] font-semibold text-stone-950">● On the lights: {lightDevices.join(', ')}</span>
-          ) : null}
-        </section>
-        <aside className="order-4 shrink-0 overflow-y-auto border-stone-200 bg-white lg:order-none lg:w-80 lg:border-l dark:border-stone-800 dark:bg-stone-900">
-          <Inspector
-            seq={seq}
-            layout={layout}
-            sel={sel}
-            setSel={setSel}
-            change={change}
-            playhead={clock.time()}
-            picked={picked}
-            onSplit={split}
-            onDuplicate={duplicate}
-            onDelete={deleteSelection}
-            audioLength={(id) => audio.buffer(id)?.duration ?? null}
-          />
-        </aside>
-      </div>
-
-      {/* Timeline */}
-      <div onPointerDown={startResize} className="hidden h-1.5 shrink-0 cursor-ns-resize border-y border-stone-200 bg-stone-100 hover:bg-sky-200 lg:block dark:border-stone-800 dark:bg-stone-900 dark:hover:bg-sky-900" title="Drag to resize" />
-      <div className="order-2 h-[50dvh] shrink-0 lg:h-auto" style={{ height: typeof window !== 'undefined' && window.innerWidth >= 1024 ? timelineH : undefined }}>
-        <Timeline
-          seq={seq}
-          layout={layout}
-          change={change}
-          sel={sel}
-          setSel={setSel}
-          clock={clock}
-          seek={seek}
-          pps={pps}
-          setPps={setPps}
-          snap={snap}
-          audio={audio}
-          newTargets={picked}
-          brush={brush}
-          onAudioFiles={(files, trackId, at) => void addAudioFiles(files, trackId, at)}
-          onPickAudio={(trackId) => {
-            audioTarget.current = trackId;
-            audioInput.current?.click();
-          }}
-          apiRef={timelineApi}
-          hoverObject={hover.id}
+  const seqMenu = (
+    <div className="relative min-w-0">
+      <button
+        type="button"
+        onClick={() => setMenu((v) => !v)}
+        className="flex h-8 max-w-64 min-w-0 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold hover:bg-stone-100 max-lg:h-10 dark:hover:bg-stone-800"
+        aria-haspopup="menu"
+        aria-expanded={menu}
+      >
+        <Clapperboard className="size-4 shrink-0 text-sky-600" />
+        <span className="truncate">{seq.name}</span>
+        {dirty ? <span className="size-2 shrink-0 rounded-full bg-amber-500" title="Not saved" /> : null}
+        <ChevronDown className="size-3.5 shrink-0 text-stone-400" />
+      </button>
+      {menu ? (
+        <SequenceMenu
+          current={seq.id}
+          list={list.sequences}
+          onClose={() => setMenu(false)}
+          onOpen={(id) => guard(() => void loadById(id))}
+          onNew={() => guard(() => open(emptySequence(`Sequence ${list.sequences.length + 1}`), false))}
+          onDuplicate={() => open({ ...seq, id: '', name: `${seq.name} copy` }, false)}
+          onDelete={() =>
+            setConfirm({ title: `Delete “${seq.name}”?`, body: 'Scenes that play it stop playing it. Audio files stay uploaded.', label: 'Delete sequence', danger: true, run: () => void remove() })
+          }
         />
+      ) : null}
+    </div>
+  );
+
+  const preview = (
+    <>
+      {layout ? (
+        view === 'front' ? (
+          <YardView
+            layout={layout}
+            getFrame={getFrame}
+            fill
+            highlight={outline}
+            onPick={(id, add) => {
+              if (!id) return setPicked([]);
+              // A finger picks one object after another; a click picks one (Shift or Ctrl/⌘ adds).
+              setPicked(add || coarse ? (picked.includes(id) ? picked.filter((k) => k !== id) : [...picked.filter((k) => k !== YARD), id]) : picked.length === 1 && picked[0] === id ? [] : [id]);
+            }}
+            onHover={(id, at) => setHover({ id, ...at })}
+          />
+        ) : (
+          <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-sm text-white/50">Loading 3D view…</div>}>
+            <Scene3D layout={layout} getFrame={getFrame} selected={outline} fill onSelect={(id, add) => (id ? setPicked(add ? [...new Set([...picked, id])] : [id]) : setPicked([]))} />
+          </Suspense>
+        )
+      ) : null}
+      <div className="absolute top-2 left-2 flex gap-1">
+        {(['front', '3d'] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => (setView(v), writeLocal('seq.view', v))}
+            className={cn(
+              'rounded-lg px-2.5 py-1 text-xs font-medium ring-1 ring-white/10 backdrop-blur max-lg:px-3 max-lg:py-1.5',
+              view === v ? 'bg-white/85 text-stone-900' : 'bg-black/50 text-white/80 hover:bg-black/70'
+            )}
+          >
+            {v === 'front' ? 'Front' : '3D'}
+          </button>
+        ))}
       </div>
+      {layout && wide ? <NowPlaying clock={clock} seq={seq} layout={layout} onSelect={(id) => setSel({ kind: 'clips', ids: [id] })} /> : null}
+      {hover.id && view === 'front' && !coarse ? <HoverCard clock={clock} seq={seq} id={hover.id} name={layout?.fixtures.find((f) => f.id === hover.id)?.name ?? ''} at={hover} /> : null}
+      {lightsOn && lightDevices.length ? (
+        <span className="pointer-events-none absolute top-2 right-2 max-w-[50%] truncate rounded-lg bg-amber-400/90 px-2 py-1 text-[11px] font-semibold text-stone-950">
+          ● On the lights{wide ? `: ${lightDevices.join(', ')}` : ''}
+        </span>
+      ) : null}
+    </>
+  );
+
+  const browser = (
+    <Browser
+      layout={layout}
+      seq={seq}
+      picked={picked}
+      setPicked={setPicked}
+      brush={brush}
+      setBrush={setBrush}
+      onAdd={(id) => {
+        addAtPlayhead(id);
+        // On a phone: close the panel, to show the new clip on the timeline.
+        if (!wide) setSheet('peek');
+      }}
+      onTransition={(id) => {
+        if (sel?.kind !== 'clips' || !sel.ids.length) return void toast.info(coarse ? 'Tap a clip first.' : 'Select a clip first, or drag the transition onto a clip.');
+        change({ ...seq, tracks: seq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (sel.ids.includes(c.id) ? { ...c, transitionIn: id, fadeIn: c.fadeIn && c.fadeIn > 0.05 ? c.fadeIn : Math.min(1, c.duration / 2) } : c)) })) });
+      }}
+      swatch={(id) => fx.current?.swatches.get(id) ?? null}
+      hover={hover.id}
+      setHover={(id) => setHover((h) => ({ ...h, id }))}
+      touch={coarse}
+    />
+  );
+
+  const inspector = (
+    <Inspector
+      seq={seq}
+      layout={layout}
+      sel={sel}
+      setSel={setSel}
+      change={change}
+      playhead={clock.time()}
+      picked={picked}
+      onSplit={split}
+      onDuplicate={duplicate}
+      onDelete={deleteSelection}
+      audioLength={(id) => audio.buffer(id)?.duration ?? null}
+      touch={coarse}
+    />
+  );
+
+  const timeline = (
+    <Timeline
+      seq={seq}
+      layout={layout}
+      change={change}
+      sel={sel}
+      setSel={setSel}
+      clock={clock}
+      seek={seek}
+      pps={pps}
+      setPps={setPps}
+      snap={snap}
+      audio={audio}
+      newTargets={picked}
+      brush={brush}
+      onAudioFiles={(files, trackId, at) => void addAudioFiles(files, trackId, at)}
+      onPickAudio={(trackId) => {
+        audioTarget.current = trackId;
+        audioInput.current?.click();
+      }}
+      apiRef={timelineApi}
+      hoverObject={hover.id}
+      compact={!wide}
+    />
+  );
+
+  const extras = (
+    <>
       <input
         ref={audioInput}
         type="file"
@@ -825,9 +821,169 @@ export function SequencePage() {
       >
         {confirm?.body}
       </ConfirmDialog>
+    </>
+  );
+
+  // A phone (or a narrow window) is laid out like a mobile app: the preview, the transport and
+  // the timeline fill the screen, and the library and the inspector are in a bottom sheet.
+  if (!wide) {
+    const selCount = sel?.kind === 'clips' || sel?.kind === 'audio' ? sel.ids.length : 0;
+    const detailsLabel =
+      sel?.kind === 'clips' && selCount === 1
+        ? ((c) => (c ? c.name || effectInfo(c.effect.effect).name : 'Clip'))(findClip(seq, sel.ids[0])?.clip)
+        : selCount > 1
+          ? `${selCount} clips`
+          : sel?.kind === 'track'
+            ? (seq.tracks.find((t) => t.id === sel.id)?.name ?? 'Layer')
+            : sel?.kind === 'audioTrack'
+              ? (seq.audio.find((t) => t.id === sel.id)?.name ?? 'Audio')
+              : sel?.kind === 'audio'
+                ? 'Audio clip'
+                : sel?.kind === 'marker'
+                  ? 'Marker'
+                  : 'Sequence';
+    const full = sheet === 'full';
+    return (
+      <div className="flex h-full flex-col bg-stone-100 dark:bg-stone-950">
+        {/* The command bar: one row, the rest under ⋯. */}
+        <div className="flex shrink-0 items-center gap-0.5 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
+          <div className="mr-1 min-w-0 flex-1">{seqMenu}</div>
+          <button type="button" onClick={undo} disabled={!past.current.length} aria-label="Undo" className={phoneIcon}>
+            <Undo2 />
+          </button>
+          <button type="button" onClick={redo} disabled={!future.current.length} aria-label="Redo" className={phoneIcon}>
+            <Redo2 />
+          </button>
+          <button type="button" onClick={toggleLights} disabled={!mapped} aria-pressed={lightsOn} aria-label={lightsTitle} title={lightsTitle} className={cn(phoneIcon, lightsOn && 'text-amber-500 dark:text-amber-400')}>
+            {lightsOn ? <Lightbulb /> : <LightbulbOff />}
+          </button>
+          <MoreButton
+            title={seq.name}
+            label="More: loop, snapping, scenes"
+            className="rounded-lg"
+            items={[
+              { label: seq.loop ? 'Loop: on' : 'Loop: off', icon: Repeat, run: toggleLoop },
+              { label: snap ? 'Snapping: on' : 'Snapping: off', icon: Magnet, run: toggleSnap },
+              { label: 'Zoom to fit', icon: Maximize2, run: () => timelineApi.current?.fit() },
+              { label: 'Add a marker at the playhead', icon: Flag, run: addMarker },
+              { label: 'Use in a scene', icon: Copy, disabled: !canScene, run: () => void makeScene() }
+            ]}
+          />
+          <Button size="sm" variant="primary" onClick={() => void save()} disabled={busy || (!dirty && !!seq.id)} loading={busy} className="h-10">
+            <Save /> Save
+          </Button>
+        </div>
+        {full ? null : (
+          <>
+            <section className="relative h-[26dvh] min-h-36 shrink-0 bg-[#05070f]">{preview}</section>
+            {/* Transport */}
+            <div className="flex shrink-0 items-center gap-1 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
+              <Transport clock={clock} duration={seq.duration} onToggle={toggle} onStart={() => seek(0)} onEnd={() => seek(seq.duration)} big />
+              <span className="ml-auto" />
+              <button type="button" onClick={() => setPps(pps / 1.4)} aria-label="Zoom out" className={phoneIcon}>
+                <ZoomOut />
+              </button>
+              <button type="button" onClick={() => setPps(pps * 1.4)} aria-label="Zoom in" className={phoneIcon}>
+                <ZoomIn />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">{timeline}</div>
+          </>
+        )}
+        <BottomSheet
+          label="Library and properties"
+          size={sheet}
+          onSize={setSheet}
+          tab={sheetTab}
+          onTab={setSheetTab}
+          tabs={[
+            {
+              id: 'library',
+              content: (
+                <>
+                  <Sparkles /> Library
+                </>
+              )
+            },
+            {
+              id: 'details',
+              content: (
+                <>
+                  <SlidersHorizontal /> <span className="truncate">{detailsLabel}</span>
+                </>
+              )
+            }
+          ]}
+        >
+          {sheetTab === 'library' ? <div className="h-full">{browser}</div> : inspector}
+        </BottomSheet>
+        {extras}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Toolbar */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-stone-200 bg-white px-2 py-1.5 dark:border-stone-800 dark:bg-stone-900">
+        {seqMenu}
+        <ToolButton onClick={() => void save()} disabled={busy || (!dirty && !!seq.id)} title="Save (Ctrl/⌘+S)" primary={dirty || !seq.id}>
+          <Save /> Save
+        </ToolButton>
+        <Divider />
+        <ToolButton onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)">
+          <Undo2 />
+        </ToolButton>
+        <ToolButton onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)">
+          <Redo2 />
+        </ToolButton>
+        <Divider />
+        <Transport clock={clock} duration={seq.duration} onToggle={toggle} onStart={() => seek(0)} onEnd={() => seek(seq.duration)} />
+        <ToolButton onClick={toggleLoop} active={!!seq.loop} title="Loop: start again at the end">
+          <Repeat />
+        </ToolButton>
+        <Divider />
+        <ToolButton onClick={toggleSnap} active={snap} title="Snap to clips, markers, the playhead and beats (N)">
+          <Magnet />
+        </ToolButton>
+        <ToolButton onClick={() => setPps(pps / 1.4)} title="Zoom out (−)">
+          <ZoomOut />
+        </ToolButton>
+        <ToolButton onClick={() => setPps(pps * 1.4)} title="Zoom in (+)">
+          <ZoomIn />
+        </ToolButton>
+        <ToolButton onClick={() => timelineApi.current?.fit()} title="Zoom to fit (\)">
+          <Maximize2 />
+        </ToolButton>
+        <div className="ml-auto flex items-center gap-1">
+          <ToolButton onClick={toggleLights} active={lightsOn} disabled={!mapped} title={lightsTitle}>
+            {lightsOn ? <Lightbulb /> : <LightbulbOff />} Lights
+          </ToolButton>
+          <ToolButton onClick={() => void makeScene()} disabled={!canScene} title="Make a scene that plays this sequence: a button on the public page">
+            <Copy /> Use in a scene
+          </ToolButton>
+        </div>
+      </div>
+
+      {/* Upper area: browser, preview, inspector */}
+      <div className="flex min-h-0 flex-1 flex-row">
+        <aside className="w-64 shrink-0 border-r border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">{browser}</aside>
+        <section className="relative min-h-0 min-w-0 flex-1 bg-[#05070f]">{preview}</section>
+        <aside className="w-80 shrink-0 overflow-y-auto border-l border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">{inspector}</aside>
+      </div>
+
+      {/* Timeline */}
+      <div onPointerDown={startResize} className="h-1.5 shrink-0 cursor-ns-resize border-y border-stone-200 bg-stone-100 hover:bg-sky-200 dark:border-stone-800 dark:bg-stone-900 dark:hover:bg-sky-900" title="Drag to resize" />
+      <div className="shrink-0" style={{ height: timelineH }}>
+        {timeline}
+      </div>
+      {extras}
     </div>
   );
 }
+
+const phoneIcon =
+  'grid size-10 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 active:bg-stone-200 disabled:opacity-35 dark:text-stone-300 dark:hover:bg-stone-800 dark:active:bg-stone-700 [&_svg]:size-[18px]';
 
 function Divider() {
   return <span className="mx-0.5 h-5 w-px bg-stone-200 dark:bg-stone-700" />;
@@ -856,7 +1012,7 @@ function ToolButton({ children, onClick, disabled, title, active, primary }: { c
   );
 }
 
-function Transport({ clock, duration, onToggle, onStart, onEnd }: { clock: Clock; duration: number; onToggle: () => void; onStart: () => void; onEnd: () => void }) {
+function Transport({ clock, duration, onToggle, onStart, onEnd, big }: { clock: Clock; duration: number; onToggle: () => void; onStart: () => void; onEnd: () => void; big?: boolean }) {
   useClockTick(clock, 4);
   const time = useRef<HTMLSpanElement>(null);
   useEffect(() => {
@@ -870,21 +1026,33 @@ function Transport({ clock, duration, onToggle, onStart, onEnd }: { clock: Clock
   }, [clock]);
   return (
     <div className="flex items-center gap-0.5">
-      <ToolButton onClick={onStart} title="To the start (Home)">
-        <SkipBack />
-      </ToolButton>
+      {big ? (
+        <button type="button" onClick={onStart} aria-label="To the start" className={phoneIcon}>
+          <SkipBack />
+        </button>
+      ) : (
+        <ToolButton onClick={onStart} title="To the start (Home)">
+          <SkipBack />
+        </ToolButton>
+      )}
       <button
         type="button"
         onClick={onToggle}
         title={clock.playing ? 'Pause (Space)' : 'Play (Space)'}
         aria-label={clock.playing ? 'Pause' : 'Play'}
-        className="grid size-8 place-items-center rounded-full bg-sky-600 text-white shadow-sm transition hover:bg-sky-500 [&_svg]:size-4"
+        className={cn('grid place-items-center rounded-full bg-sky-600 text-white shadow-sm transition hover:bg-sky-500', big ? 'size-10 [&_svg]:size-5' : 'size-8 [&_svg]:size-4')}
       >
         {clock.playing ? <Pause /> : <Play className="translate-x-px" />}
       </button>
-      <ToolButton onClick={onEnd} title="To the end (End)">
-        <SkipForward />
-      </ToolButton>
+      {big ? (
+        <button type="button" onClick={onEnd} aria-label="To the end" className={phoneIcon}>
+          <SkipForward />
+        </button>
+      ) : (
+        <ToolButton onClick={onEnd} title="To the end (End)">
+          <SkipForward />
+        </ToolButton>
+      )}
       <span className="ml-1 rounded-md bg-stone-100 px-2 py-1 font-mono text-xs tabular-nums dark:bg-stone-800">
         <span ref={time}>{fmtTime(clock.time())}</span>
         <span className="text-stone-400"> / {fmtTime(duration, false)}</span>
