@@ -254,6 +254,35 @@ describe('Cascade', () => {
     }
   });
 
+  it('never makes white where orbs of different colors meet', () => {
+    // Random games that once lit a stray white LED: green and pink orbs side by side, mixed.
+    for (const seed of [113, 148, 189, 214, 233, 274]) {
+      let a = seed * 2654435761;
+      vi.spyOn(Math, 'random').mockImplementation(() => {
+        // mulberry32
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      });
+      const stage = buildStage(sampleLayout());
+      const game = cascadeGame(stage);
+      const frame = new Frame(stage.pixelCount);
+      press(game);
+      const roof = stage.fixtures.find((f) => f.kind === 'roof')!;
+      for (let t = 0; t < 20; t++) {
+        run(game, frame, 0.25);
+        const white: number[] = [];
+        for (let i = 0; i < roof.count; i++) {
+          const k = (roof.offset + i) * 3;
+          if (Math.min(frame.data[k], frame.data[k + 1], frame.data[k + 2]) > 0.55) white.push(i);
+        }
+        expect(Math.max(...white) - Math.min(...white), `seed ${seed}`).toBeLessThan(12);
+      }
+      vi.restoreAllMocks();
+    }
+  });
+
   it('asks for a roofline when there is none', () => {
     const layout = sampleLayout();
     layout.fixtures = layout.fixtures.filter((f) => f.kind !== 'roof');
