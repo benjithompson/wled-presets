@@ -60,8 +60,9 @@ const hsvChannel = (n: number, h6: number, v: number, vs: number) => {
   return v - vs * Math.max(0, Math.min(k, 4 - k, 1));
 };
 
+/** A color from hue (any number: it wraps around, so -0.25 is 0.75), saturation and value. */
 export function hsv(h: number, s = 1, v = 1): Rgb {
-  const h6 = h * 6;
+  const h6 = (h - Math.floor(h)) * 6;
   const vs = v * s;
   return [hsvChannel(5, h6, v, vs), hsvChannel(3, h6, v, vs), hsvChannel(1, h6, v, vs)];
 }
