@@ -1,6 +1,6 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
+import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Waves, Yard, type Part, type Sink } from './kit.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Cascade: glowing orbs in four colors roll along the roofline under real gravity: they speed up
@@ -80,6 +80,41 @@ const COMBO_BLAST = 1.35;
 
 export function cascadeGame(stage: Stage): Game {
   const yard = new Yard(stage);
+  /**
+   * The orbs' light. Each orb is drawn by itself (`one`), and each LED shows the orb that is
+   * brightest there (`orbLight`). Mixed, two colors side by side (green and pink, blue and
+   * pink) would make white where they touch, and white is the bomb.
+   */
+  const orbLayer = () => ({ rgb: new Float32Array(stage.pixelCount * 3), lit: new Uint8Array(stage.pixelCount), list: [] as number[] });
+  const one = orbLayer();
+  const orbLight = orbLayer();
+  const addOne: Sink = (i, [r, g, b], amount) => {
+    const k = i * 3;
+    if (!one.lit[i]) (one.lit[i] = 1), one.list.push(i);
+    one.rgb[k] += r * amount;
+    one.rgb[k + 1] += g * amount;
+    one.rgb[k + 2] += b * amount;
+  };
+  /** Keeps the orb just drawn on the LEDs where it is the brightest, and clears it for the next. */
+  const keepOne = () => {
+    for (const i of one.list) {
+      const k = i * 3;
+      if (!orbLight.lit[i]) (orbLight.lit[i] = 1), orbLight.list.push(i);
+      const mine = one.rgb[k] + one.rgb[k + 1] + one.rgb[k + 2];
+      if (mine > orbLight.rgb[k] + orbLight.rgb[k + 1] + orbLight.rgb[k + 2]) orbLight.rgb.set(one.rgb.subarray(k, k + 3), k);
+      one.rgb[k] = one.rgb[k + 1] = one.rgb[k + 2] = one.lit[i] = 0;
+    }
+    one.list.length = 0;
+  };
+  /** Puts the orbs' light in the frame. */
+  const drawOrbLight = () => {
+    for (const i of orbLight.list) {
+      const k = i * 3;
+      yard.add(i, [orbLight.rgb[k], orbLight.rgb[k + 1], orbLight.rgb[k + 2]]);
+      orbLight.rgb[k] = orbLight.rgb[k + 1] = orbLight.rgb[k + 2] = orbLight.lit[i] = 0;
+    }
+    orbLight.list.length = 0;
+  };
   const roof = yard.roof;
   const n = roof.n;
   const playable = n >= 30;
@@ -377,15 +412,17 @@ export function cascadeGame(stage: Stage): Game {
       const shimmer = (aimed ? 1.2 : 0.85) + 0.15 * Math.sin(clock * 9 + o.hue * 20);
       const cracked = o.armor && o.hits.size > 0;
       // A new orb arrives with a flash in its own color (not white: white is the bomb).
-      yard.roofSplat(o.pos, o.color, ORB_RADIUS, (cracked ? shimmer * (Math.random() < 0.5 ? 1 : 0.35) : shimmer) + arrive);
-      yard.roofSplat(o.pos, o.color, 3.5, aimed ? 0.3 : 0.12 + arrive * 0.4);
+      yard.roof.splat(addOne, o.pos, o.color, ORB_RADIUS, (cracked ? shimmer * (Math.random() < 0.5 ? 1 : 0.35) : shimmer) + arrive);
+      yard.roof.splat(addOne, o.pos, o.color, 3.5, aimed ? 0.3 : 0.12 + arrive * 0.4);
       // Armor: a shell of two dimmer dots in its own color; the first blast cracks it off.
       if (o.armor && !cracked) {
-        yard.roofSplat(o.pos - 2.6, o.color, 0.7, 0.5);
-        yard.roofSplat(o.pos + 2.6, o.color, 0.7, 0.5);
+        yard.roof.splat(addOne, o.pos - 2.6, o.color, 0.7, 0.5);
+        yard.roof.splat(addOne, o.pos + 2.6, o.color, 0.7, 0.5);
       }
+      keepOne();
       if (o.gold && Math.random() < 0.3) yard.roofAt(o.pos + (Math.random() - 0.5) * 6, mix(COLORS.gold, WHITE, 0.4), 0.6);
     }
+    drawOrbLight();
     if (aiming) drawBomb(reach);
     sparks.draw(yard);
   }
