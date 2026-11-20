@@ -15,6 +15,11 @@ export interface DeviceWithStatus extends Device {
   online: boolean | null; // null = not checked yet
   info: DeviceInfo | null;
   lastSeen: string | null;
+  /**
+   * What the device itself reports now: on or off, and its brightness (1 to 255; when off, the
+   * level it comes back on at). Null while it is offline, or has not said yet.
+   */
+  power: { on: boolean; bri: number } | null;
 }
 
 /** Subset of WLED /json/info that the UI shows. */

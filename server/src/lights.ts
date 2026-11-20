@@ -5,8 +5,20 @@ import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
 import { KEY, readLightControls, readSettings, writeLightControls } from './settings.ts';
-import { hexToRgb, wled, type FetchResult } from './wled.ts';
+import { baseUrl, hexToRgb, lastWrite, wled, type FetchResult, type PowerState } from './wled.ts';
 import { mergeLooks, type PresetLook } from './presetLook.ts';
+import type { Peek } from './roofView.ts';
+import { WledPeek } from './wledPeek.ts';
+
+/**
+ * A change a device reports this soon after this app told it something may be that request
+ * taking effect, so it is not taken as a change made somewhere else. WLED applies a preset a
+ * moment after the request, and tells its WebSocket at most about once a second.
+ */
+const SETTLE_MS = 2500;
+
+/** WLED's brightness (1 to 255) in percent, as the switches count it. */
+const percent = (bri: number) => Math.max(1, Math.round((bri / 255) * 100));
 
 export type PresetImport = { deviceId: string; ok: true; count: number } | { deviceId: string; ok: false; error: string };
 
@@ -37,6 +49,7 @@ export class Lights {
   private status = new Map<string, Status>();
   private revertTimer: NodeJS.Timeout | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
+  private pollMs = 10_000;
   private db: Db;
   private bus: Bus;
   private effectPlayer: EffectPlayer | null = null;
@@ -45,6 +58,23 @@ export class Lights {
   private live: (DeviceWithStatus & { switchedOff?: boolean })[] | null = null;
   /** The admin's power and brightness switches, read once and kept up to date. */
   private controlsCache: LightControls | null = null;
+
+  /** One WebSocket per enabled device: WLED says every change of its power and brightness on it. */
+  private watchers = new Map<string, { url: string; peek: WledPeek }>();
+  /** What each device last reported (see observe), and when. */
+  private seen = new Map<string, PowerState & { at: number }>();
+  /** Devices that missed an admin's power or brightness switch: they get it when they answer again. */
+  private missed = new Set<string>();
+  private refreshing: Promise<void> | null = null;
+  private refreshAgain = false;
+
+  /**
+   * Called when every light is off after a change made outside this app (WLED's own app, a
+   * button, a timer on the device), as when an admin switches them off here: the game ends.
+   */
+  onAllOff: (() => void) | null = null;
+  /** See SETTLE_MS (shorter in tests). */
+  settleMs = SETTLE_MS;
 
   constructor(db: Db, bus: Bus) {
     this.db = db;
@@ -107,6 +137,7 @@ export class Lights {
   // ---------- Status monitor ----------
 
   start(intervalMs: number) {
+    this.pollMs = intervalMs;
     void this.refreshStatus();
     this.pollTimer = setInterval(() => void this.refreshStatus(), intervalMs);
     this.restoreRevertTimer();
@@ -115,23 +146,46 @@ export class Lights {
   stop() {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.revertTimer) clearTimeout(this.revertTimer);
+    for (const w of this.watchers.values()) w.peek.close();
+    this.watchers.clear();
   }
 
   /**
    * A device's info, with its LED outputs (see DeviceInfo.outputs). The outputs are read once,
    * and again when the LED count changes: they live in the device's settings.
    */
-  private async readInfo(d: Device): Promise<FetchResult<DeviceInfo>> {
-    const r = await wled.info(d, 3000);
+  private async readInfo(d: Device): Promise<FetchResult<{ info: DeviceInfo; power: PowerState | null }>> {
+    const r = await wled.infoAndPower(d, 3000);
     if (!r.ok) return r;
+    const { info, power } = r.data;
     const prev = this.status.get(d.id)?.info;
-    if (prev?.outputs && prev.leds?.count === r.data.leds?.count) return { ...r, data: { ...r.data, outputs: prev.outputs } };
+    if (prev?.outputs && prev.leds?.count === info.leds?.count) return { ...r, data: { power, info: { ...info, outputs: prev.outputs } } };
     const o = await wled.outputs(d);
-    return o.ok ? { ...r, data: { ...r.data, outputs: o.data } } : r;
+    return o.ok ? { ...r, data: { power, info: { ...info, outputs: o.data } } } : r;
   }
 
-  async refreshStatus(): Promise<void> {
+  /** Checks every enabled device. A check asked for while one runs runs once more after it. */
+  refreshStatus(): Promise<void> {
+    if (this.refreshing) {
+      this.refreshAgain = true;
+      return this.refreshing;
+    }
+    this.refreshing = (async () => {
+      try {
+        do {
+          this.refreshAgain = false;
+          await this.checkDevices();
+        } while (this.refreshAgain);
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  private async checkDevices(): Promise<void> {
     const devices = this.db.listDevices().filter((d) => d.enabled);
+    this.syncWatchers(devices);
     // A device busy with real-time frames over Wi-Fi can answer slowly; allow 3 s.
     const results = await Promise.all(devices.map((d) => this.readInfo(d)));
     let changed = false;
@@ -142,16 +196,20 @@ export class Lights {
       const prev = this.status.get(d.id);
       const misses = r.ok ? 0 : (prev?.misses ?? 0) + 1;
       const next: Status = r.ok
-        ? { online: true, misses, info: r.data, lastSeen: new Date().toISOString() }
+        ? { online: true, misses, info: r.data.info, lastSeen: new Date().toISOString() }
         : // Offline only after two missed checks in a row, so one slow answer does not flash "offline".
           { online: prev?.online === true && misses < 2, misses, info: prev?.info ?? null, lastSeen: prev?.lastSeen ?? null };
       if (!prev || prev.online !== next.online) changed = true;
       this.status.set(d.id, next);
       this.live = null;
+      if (!next.online) this.seen.delete(d.id);
+      // The state in the answer, for a device whose WebSocket does not work.
+      else if (r.ok && r.data.power) this.observe(d, r.data.power, true);
     });
     for (const id of this.status.keys()) {
       if (!seen.has(id)) {
         this.status.delete(id);
+        this.seen.delete(id);
         this.live = null;
         changed = true;
       }
@@ -177,8 +235,142 @@ export class Lights {
   devicesWithStatus(): DeviceWithStatus[] {
     return this.db.listDevices().map((d) => {
       const s = this.status.get(d.id);
-      return { ...d, online: d.enabled ? (s?.online ?? null) : null, info: s?.info ?? null, lastSeen: s?.lastSeen ?? null };
+      const p = d.enabled && s?.online ? this.seen.get(d.id) : undefined;
+      return { ...d, online: d.enabled ? (s?.online ?? null) : null, info: s?.info ?? null, lastSeen: s?.lastSeen ?? null, power: p ? { on: p.on, bri: p.bri } : null };
     });
+  }
+
+  // ---------- What the devices report ----------
+
+  /** Keeps one WebSocket open to each enabled device, and none to the rest. */
+  private syncWatchers(enabled: Device[]) {
+    const ids = new Set(enabled.map((d) => d.id));
+    for (const [id, w] of this.watchers) {
+      if (ids.has(id)) continue;
+      w.peek.close();
+      this.watchers.delete(id);
+      this.seen.delete(id);
+      this.missed.delete(id);
+    }
+    for (const d of enabled) this.watch(d);
+  }
+
+  /** The device's WebSocket, opened if need be (again, after its address changed). */
+  private watch(d: Device): WledPeek {
+    const url = baseUrl(d);
+    const w = this.watchers.get(d.id);
+    if (w?.url === url) return w.peek;
+    w?.peek.close();
+    this.seen.delete(d.id);
+    const peek = new WledPeek(d, () => this.status.get(d.id)?.info?.leds?.count ?? 0, {
+      live: false,
+      onPower: (p) => {
+        const device = this.db.getDevice(d.id);
+        if (device?.enabled) this.observe(device, p);
+      }
+    });
+    this.watchers.set(d.id, { url, peek });
+    return peek;
+  }
+
+  /**
+   * What the device shows by itself, for the roof view, over the same WebSocket as its state
+   * (WLED takes only a few at once). Closing it only stops the colors.
+   */
+  peek(d: Device): Peek {
+    const cur = () => this.watchers.get(d.id)?.peek;
+    return {
+      get leds() {
+        return cur()?.leds ?? null;
+      },
+      get step() {
+        return cur()?.step ?? 1;
+      },
+      get at() {
+        return cur()?.at ?? 0;
+      },
+      get on() {
+        return cur()?.on ?? null;
+      },
+      get bri() {
+        return cur()?.bri ?? null;
+      },
+      // The current one: after an address change, `d` has the old address.
+      setLive: (live: boolean) => (cur() ?? this.watch(d)).setLive(live),
+      close: () => cur()?.setLive(false)
+    };
+  }
+
+  /**
+   * A device reported its power and brightness (null: its WebSocket closed). The app follows
+   * the device: a light switched on or off, or dimmed, somewhere else (WLED's own app, a
+   * button, a timer on the device) is switched that way here too, so the switches show what
+   * the lights do, and scenes keep to it. A change that comes right after this app told the
+   * device something is that request (see SETTLE_MS). A device that missed an admin's switch
+   * while it was offline gets it now instead.
+   */
+  private observe(d: Device, power: PowerState | null, fromPoll = false) {
+    const watcher = this.watchers.get(d.id)?.peek;
+    // The WebSocket says each change as it happens: an answer to a check that was on its way
+    // meanwhile may be older.
+    if (fromPoll && watcher?.connected) return;
+    if (!power) {
+      // Gone, or only the connection: a check tells.
+      void this.refreshStatus();
+      return;
+    }
+    if (!fromPoll && this.status.get(d.id)?.online !== true) void this.refreshStatus();
+    const now = Date.now();
+    const prev = this.seen.get(d.id);
+    this.seen.set(d.id, { ...power, at: now });
+    if (this.missed.delete(d.id)) {
+      void this.sendSwitches(d);
+    } else {
+      // Before the first report: what the switches say.
+      const before = prev ?? { on: !this.isOff(d.id), bri: this.levelOf(d.id), at: now - this.settleMs };
+      // This app's own request if it went since the last report, and the change came soon
+      // after it (a check can come up to one interval later than the WebSocket).
+      const wrote = lastWrite(d);
+      const ours = wrote > before.at - this.settleMs && now - wrote < this.settleMs + (fromPoll ? this.pollMs : 0);
+      if (!ours) this.follow(d, power, before);
+    }
+    if (!prev || prev.on !== power.on || prev.bri !== power.bri) this.bus.emit('devices');
+  }
+
+  /** Sets the switches to a change made on the device (see observe). */
+  private follow(d: Device, now: PowerState, before: { on: boolean; bri: number | null }) {
+    const c = this.controls();
+    let next = c;
+    const what: string[] = [];
+    if (now.on !== before.on && now.on === this.isOff(d.id)) {
+      next = { ...next, off: now.on ? next.off.filter((id) => id !== d.id) : [...next.off, d.id] };
+      what.push(`switched ${now.on ? 'on' : 'off'}`);
+    }
+    // A level set here follows the device; with none, each scene's presets set it anyway.
+    const level = this.levelOf(d.id);
+    if (now.bri !== before.bri && level != null && now.bri !== level) {
+      next = { ...next, brightness: { ...next.brightness, devices: { ...next.brightness.devices, [d.id]: percent(now.bri) } } };
+      what.push(`brightness ${percent(now.bri)}%`);
+    }
+    if (next === c) return;
+    this.saveControls(next);
+    this.log('info', 'power', `"${d.name}" ${what.join(', ')} outside this app`, { deviceId: d.id, on: now.on, bri: now.bri });
+    this.bus.emit('state');
+    if (!now.on && this.allOff()) {
+      this.cancelRevert();
+      this.onAllOff?.();
+    }
+  }
+
+  /** Sends the device what the switches say: off, or on at its level. */
+  private sendSwitches(d: Device) {
+    return this.isOff(d.id) ? wled.power(d, false) : wled.power(d, true, this.levelOf(d.id));
+  }
+
+  /** Devices that did not get a switch get it when they answer again (see observe). */
+  private noteMissed(result: ApplyResult) {
+    for (const id of result.applied) this.missed.delete(id);
+    for (const f of result.failed) this.missed.add(f.deviceId);
   }
 
   publicState(): PublicState {
@@ -233,6 +425,7 @@ export class Lights {
       const prev = this.status.get(id);
       if (prev && prev.online !== r.ok) {
         this.status.set(id, { ...prev, online: r.ok });
+        if (!r.ok) this.seen.delete(id);
         this.live = null;
       }
     });
@@ -352,6 +545,7 @@ export class Lights {
     if (!on && this.allOff()) this.cancelRevert();
     const devices = target.filter((d) => d.enabled);
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.power(device, on, this.levelOf(device.id)) })));
+    this.noteMissed(result);
     // A device that was getting frames is given back on the next frame, and over HTTP that
     // switches it on again: say off once more after that.
     if (!on) setTimeout(() => void Promise.all(devices.filter((d) => this.isOff(d.id)).map((d) => wled.power(d, false))), 600).unref?.();
@@ -380,6 +574,7 @@ export class Lights {
       return bri == null ? [] : [{ device, run: () => wled.brightness(device, bri) }];
     });
     const result = await this.fanOut(work);
+    this.noteMissed(result);
     const what = deviceId ? `"${devices[0]?.name ?? deviceId}"` : 'All lights';
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what}: brightness ${pct == null ? (deviceId ? 'follows all lights' : 'set by each scene') : `${pct}%`}`, result, actor);
     this.bus.emit('devices');
