@@ -22,6 +22,8 @@ import {
   LayoutPanelLeft,
   Lightbulb,
   LightbulbOff,
+  Lock,
+  LockOpen,
   List,
   LocateFixed,
   Maximize2,
@@ -101,7 +103,8 @@ import {
   type Spin,
   type TreeShape,
   type Units,
-  type Zigzag
+  type Zigzag,
+  keepLocked
 } from '../../../../shared/layout.ts';
 import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { Stage } from '../../../../shared/layout.ts';
@@ -154,6 +157,8 @@ type Drag =
   | { kind: 'move'; side: ViewSide; id: string; from: UV; original: Point[] }
   | { kind: 'radius'; side: ViewSide; id: string }
   | { kind: 'treeHeight'; id: string }
+  /** A press on a locked object: it stays put; moving the pointer says why. */
+  | { kind: 'locked'; id: string; from: UV; warned: boolean }
   | { kind: 'ground' }
   | { kind: 'newBush'; side: ViewSide; center: UV; radius: number }
   | { kind: 'newTree'; side: ViewSide; base: UV; size: number }
@@ -271,9 +276,28 @@ function FacingProp({ f, hint, onChange }: { f: Fixture; hint: string; onChange:
   return <PropNumber label="Faces" unit="°" decimal value={f.facing ?? 0} min={-360} max={360} step={15} steppers onChange={(n) => onChange({ facing: n || undefined })} hint={hint} />;
 }
 
+/** Shown with where an object sits, while it is locked. */
+function LockedNote({ onUnlock }: { onUnlock: () => void }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-800 ring-1 ring-amber-500/30 ring-inset dark:text-amber-300">
+      <Lock className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">Locked in place: it cannot be moved, resized or deleted. Its LEDs, wiring and effect can still change.</span>
+      <PropButton onClick={onUnlock}>
+        <LockOpen /> Unlock
+      </PropButton>
+    </div>
+  );
+}
+
 /** The shape of a bush, a tree or a semicircle, and how its LEDs run over it. */
-function ShapeProps({ f, m, onChange }: { f: Fixture; m: Measure; onChange: (patch: Partial<Fixture>) => void }) {
-  const width = <PropDistance label="Width" value={(f.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />;
+function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked: boolean; onChange: (patch: Partial<Fixture>) => void }) {
+  /** Its size and turn: a locked object keeps them (its pattern and wiring can still change). */
+  const place = (el: ReactNode) => (
+    <fieldset disabled={locked} className="contents">
+      {el}
+    </fieldset>
+  );
+  const width = place(<PropDistance label="Width" value={(f.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
   if (f.kind === 'bush') {
     return (
       <>
@@ -298,14 +322,16 @@ function ShapeProps({ f, m, onChange }: { f: Fixture; m: Measure; onChange: (pat
     return (
       <>
         {width}
-        <PropDistance
-          label="Height"
-          hint="From the straight edge to the top of the round. Half the width: a true half circle."
-          value={f.height ?? f.radius ?? 60}
-          m={m}
-          min={0.1}
-          onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })}
-        />
+        {place(
+          <PropDistance
+            label="Height"
+            hint="From the straight edge to the top of the round. Half the width: a true half circle."
+            value={f.height ?? f.radius ?? 60}
+            m={m}
+            min={0.1}
+            onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })}
+          />
+        )}
         <PropSelect<Zigzag>
           label="Zigzag"
           hint={
@@ -323,19 +349,21 @@ function ShapeProps({ f, m, onChange }: { f: Fixture; m: Measure; onChange: (pat
           onChange={(zigzag) => onChange({ zigzag })}
         />
         <PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />
-        <PropNumber
-          label="Turn"
-          unit="°"
-          decimal
-          value={f.rotation ?? 0}
-          min={-360}
-          max={360}
-          step={15}
-          steppers
-          onChange={(n) => onChange({ rotation: n || undefined })}
-          hint="Clockwise, as seen from the front: 90 puts the round side to the right, 180 turns it upside down"
-        />
-        <FacingProp f={f} onChange={onChange} hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left" />
+        {place(
+          <PropNumber
+            label="Turn"
+            unit="°"
+            decimal
+            value={f.rotation ?? 0}
+            min={-360}
+            max={360}
+            step={15}
+            steppers
+            onChange={(n) => onChange({ rotation: n || undefined })}
+            hint="Clockwise, as seen from the front: 90 puts the round side to the right, 180 turns it upside down"
+          />
+        )}
+        {place(<FacingProp f={f} onChange={onChange} hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left" />)}
         <PropNote>The point is the middle of the straight edge.</PropNote>
       </>
     );
@@ -356,7 +384,7 @@ function ShapeProps({ f, m, onChange }: { f: Fixture; m: Measure; onChange: (pat
         onChange={(shape) => onChange({ shape: shape === 'cone' ? undefined : shape })}
       />
       {width}
-      <PropDistance label="Height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />
+      {place(<PropDistance label="Height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
       <PropSelect<NonNullable<Fixture['pattern']>>
         label="LED pattern"
         hint={
@@ -397,7 +425,7 @@ function ShapeProps({ f, m, onChange }: { f: Fixture; m: Measure; onChange: (pat
         ]}
         onChange={(spin) => onChange({ spin: spin === 'ccw' ? undefined : spin })}
       />
-      <FacingProp f={f} onChange={onChange} hint={`Turned as seen from above: where ${spiral ? 'the spiral' : 'the first strand'} starts. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`} />
+      {place(<FacingProp f={f} onChange={onChange} hint={`Turned as seen from above: where ${spiral ? 'the spiral' : 'the first strand'} starts. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`} />)}
       <PropNote>The point is the middle of the base.</PropNote>
     </>
   );
@@ -687,8 +715,11 @@ export function LayoutPage() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
-  /** Changes the layout, and keeps the state before it for Undo. */
-  const edit = (fn: (l: Layout) => Layout) => {
+  /**
+   * Changes the layout, and keeps the state before it for Undo. Locked objects stay where they
+   * are (see keepLocked), unless `force` (Revert).
+   */
+  const edit = (fn: (l: Layout) => Layout, force = false) => {
     const cur = layoutRef.current;
     if (!cur) return;
     const now = Date.now();
@@ -698,8 +729,20 @@ export function LayoutPage() {
       setHistoryTick((n) => n + 1);
     }
     lastEdit.current = now;
-    setLayout((l) => (l ? fn(l) : l));
+    setLayout((l) => {
+      if (!l) return l;
+      const next = fn(l);
+      if (force) return next;
+      const kept = keepLocked(l, next);
+      if (kept.blocked.length) lockedNote(kept.blocked);
+      return kept.layout;
+    });
   };
+  /** Says (one toast at a time) why a locked object did not move. */
+  const lockedNote = (names: string[]) =>
+    toast.error(`${names.length > 1 ? `${names.length} objects are` : `${names[0]} is`} locked in place. Unlock ${names.length > 1 ? 'them' : 'it'} to move, reshape or delete ${names.length > 1 ? 'them' : 'it'}.`, { id: 'locked' });
+  const setLocked = (ids: string[], locked: boolean) =>
+    edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => (ids.includes(f.id) ? { ...f, locked: locked || undefined } : f)) }));
   const undo = () => {
     const prev = past.current.pop();
     if (!prev || !layoutRef.current) return;
@@ -824,6 +867,8 @@ export function LayoutPage() {
   };
 
   const remove = (id: string) => {
+    const f = layout?.fixtures.find((x) => x.id === id);
+    if (f?.locked) return lockedNote([f.name]);
     edit((l) => ({ ...l, fixtures: l.fixtures.filter((f) => f.id !== id) }));
     setSelected(null);
   };
@@ -1118,11 +1163,14 @@ export function LayoutPage() {
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (multi.length) {
           // The whole objects in the selection go; segments stay (delete a segment's points instead).
-          const ids = new Set(multi.filter((x) => effectTarget(x).segment == null));
-          if (!ids.size) return void toast.error('Only segments are selected. To delete a segment, delete its points.');
+          const whole = multi.filter((x) => effectTarget(x).segment == null);
+          if (!whole.length) return void toast.error('Only segments are selected. To delete a segment, delete its points.');
+          const ids = new Set(whole.filter((id) => !layout?.fixtures.find((f) => f.id === id)?.locked));
+          if (!ids.size) return void lockedNote(whole.map((id) => layout?.fixtures.find((f) => f.id === id)?.name ?? id));
           edit((l) => ({ ...l, fixtures: l.fixtures.filter((f) => !ids.has(f.id)) }));
           setMulti([]);
-          toast.success(`${ids.size} object(s) deleted. Ctrl/⌘+Z brings them back.`);
+          const kept = whole.length - ids.size;
+          toast.success(`${ids.size} object(s) deleted${kept ? `; ${kept} locked one(s) kept` : ''}. Ctrl/⌘+Z brings them back.`);
         } else if (sel && isLine(sel) && corner != null && sel.points[corner]) deletePoint(sel, corner);
         else if (selected) remove(selected);
       } else if (e.key === 'F2' && selected) {
@@ -1462,6 +1510,7 @@ export function LayoutPage() {
 
   /** Adds a point on segment k and selects it; with `drag`, the pointer then moves it. */
   const addPointOn = (f: Fixture, k: number, raw: UV, side: ViewSide, drag?: RPointerEvent) => {
+    if (f.locked) return void (drag?.stopPropagation(), setSelected(f.id), lockedNote([f.name]));
     update(f.id, insertPoint(f, k, pointOnLine(f, k, raw, side)));
     if (f.id !== selected) keepPart.current = true;
     setSelected(f.id);
@@ -1506,6 +1555,7 @@ export function LayoutPage() {
       { label: 'Select', run: () => setSelected(f.id) },
       { label: 'Zoom to this object', keys: 'F', run: () => (setSelected(f.id), frameSelection(f.id)) },
       { label: 'Rename', keys: 'F2', run: () => (setSelected(f.id), setRenaming(f.id)) },
+      { label: f.locked ? 'Unlock' : 'Lock in place', run: () => setLocked([f.id], !f.locked) },
       { label: `Delete ${f.name}`, keys: 'Delete', danger: true, run: () => remove(f.id) }
     ]);
 
@@ -1577,6 +1627,9 @@ export function LayoutPage() {
     if ((tool !== 'select' && tool !== 'edit') || panMode || e.button !== 0) return;
     e.stopPropagation();
     if (id) setSelected(id);
+    // A locked object is selected, but stays where it is.
+    const target = 'id' in d ? d.id : null;
+    if (target && layout?.fixtures.find((f) => f.id === target)?.locked) d = { kind: 'locked', id: target, from: viewPoint(e, side), warned: false };
     svgs.current[side]?.setPointerCapture(e.pointerId);
     // A new drag is a new step for Undo.
     lastEdit.current = 0;
@@ -1617,7 +1670,13 @@ export function LayoutPage() {
     }
     setCursor({ ...p, side });
     const f = 'id' in drag ? layout.fixtures.find((x) => x.id === drag.id) : undefined;
-    if (drag.kind === 'vertex' && f) {
+    if (drag.kind === 'locked') {
+      // Past a small wobble of the pointer: say why it does not move.
+      if (!drag.warned && f && Math.hypot(p.u - drag.from.u, p.v - drag.from.v) > tolFor(side)) {
+        lockedNote([f.name]);
+        setDrag({ ...drag, warned: true });
+      }
+    } else if (drag.kind === 'vertex' && f) {
       const i = drag.index;
       const V = (q: Point) => toView(q, side, zMin);
       // Shift: move the point straight across or straight up and down from where it was (to
@@ -1997,7 +2056,7 @@ export function LayoutPage() {
       { label: 'Layout file…', run: () => fileMenu(at) },
       { label: 'Custom objects…', run: () => setLibrary(true) }
     ];
-    if (dirty) items.push({ label: 'Revert to the saved layout', danger: true, run: () => (edit(() => saved!), setSelected(null)) });
+    if (dirty) items.push({ label: 'Revert to the saved layout', danger: true, run: () => (edit(() => saved!, true), setSelected(null)) });
     setMenu({ ...at, title: 'Layout', items });
   }
 
@@ -2350,7 +2409,7 @@ export function LayoutPage() {
               }
               startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
             };
-            const hitClass = tool === 'select' && !panMode ? 'cursor-move' : '';
+            const hitClass = tool === 'select' && !panMode ? (f.locked ? 'cursor-pointer' : 'cursor-move') : '';
             if (f.kind === 'custom' || f.kind === 'semicircle') {
               const paths = objectPaths(f, scale).map((path) => path.map(V));
               // A semicircle that is not turned: handles for its width and (from the front) its height.
@@ -2370,8 +2429,8 @@ export function LayoutPage() {
                   ) : null}
                   {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
                   {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
-                  {isSel && square ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
-                  {isSel && square && front ? handle('h', { u: c.u, v: c.v - (f.height ?? r) }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
+                  {isSel && square && !f.locked ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
+                  {isSel && square && front && !f.locked ? handle('h', { u: c.u, v: c.v - (f.height ?? r) }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
                 </g>
               );
             }
@@ -2392,8 +2451,8 @@ export function LayoutPage() {
                 ) : null}
                 {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
                 {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
-                {isSel ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
-                {isSel && f.kind === 'tree' && front ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
+                {isSel && !f.locked ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
+                {isSel && f.kind === 'tree' && front && !f.locked ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
               </g>
             );
           })}
@@ -2931,12 +2990,15 @@ export function LayoutPage() {
           </PropSection>
 
           <PropSection key="position" id="position" title={isLine(sel) && corner != null && sel.points[corner] ? `Position of ${pointName(sel, corner)}` : 'Position'}>
-            <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
+            {sel.locked ? <LockedNote onUnlock={() => setLocked([sel.id], false)} /> : null}
+            <fieldset disabled={!!sel.locked} className="contents">
+              <PositionProps f={sel} point={corner} m={m} ground={ground} onChange={(patch) => update(sel.id, patch)} />
+            </fieldset>
           </PropSection>
 
           {!isLine(sel) && sel.kind !== 'custom' ? (
             <PropSection key="shape" id="shape" title="Shape">
-              <ShapeProps f={sel} m={m} onChange={(patch) => update(sel.id, patch)} />
+              <ShapeProps f={sel} m={m} locked={!!sel.locked} onChange={(patch) => update(sel.id, patch)} />
             </PropSection>
           ) : null}
           </>
@@ -3016,6 +3078,16 @@ export function LayoutPage() {
                   )}
                   {open ? (
                     <span className="flex shrink-0" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => setLocked([f.id], !f.locked)}
+                        aria-pressed={!!f.locked}
+                        title={f.locked ? 'Locked in place: click to unlock' : 'Lock in place, so it cannot be moved, reshaped or deleted by mistake'}
+                        aria-label={f.locked ? 'Unlock this object' : 'Lock this object in place'}
+                        className={cn('grid size-7 place-items-center rounded-md hover:bg-white/15 [&_svg]:size-4', f.locked && 'bg-white/20')}
+                      >
+                        {f.locked ? <Lock /> : <LockOpen />}
+                      </button>
                       <button type="button" onClick={() => frameSelection()} title="Zoom to this object (F)" aria-label="Zoom to this object" className="grid size-7 place-items-center rounded-md hover:bg-white/15 [&_svg]:size-4">
                         <Scan />
                       </button>
@@ -3024,9 +3096,12 @@ export function LayoutPage() {
                       </button>
                     </span>
                   ) : (
-                    <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
-                      {ledRange(f).first}–{ledRange(f).last}
-                    </span>
+                    <>
+                      {f.locked ? <Lock aria-label="Locked in place" className={cn('size-3 shrink-0', on ? 'text-white/80' : 'text-stone-500')} /> : null}
+                      <span className={cn('text-[11px] tabular-nums', on ? 'text-white/80' : 'text-stone-500')}>
+                        {ledRange(f).first}–{ledRange(f).last}
+                      </span>
+                    </>
                   )}
                 </div>
                 {open ? (
@@ -3077,6 +3152,20 @@ export function LayoutPage() {
               </li>
             ))}
           </ul>
+          {(() => {
+            const ids = multiItems.map((it) => effectTarget(it.key).id);
+            const locked = layout.fixtures.filter((f) => ids.includes(f.id) && f.locked).length;
+            return (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <PropButton onClick={() => setLocked(ids, true)} disabled={locked === new Set(ids).size} title="Lock them in place, so they cannot be moved, reshaped or deleted by mistake">
+                  <Lock /> Lock all
+                </PropButton>
+                <PropButton onClick={() => setLocked(ids, false)} disabled={!locked}>
+                  <LockOpen /> Unlock all
+                </PropButton>
+              </div>
+            );
+          })()}
         </PropSection>
         <PropSection key="multi-effect" id="multi-effect" title={`Effect${multiShown ? ` · ${EFFECT_NAMES[multiShown.effect]}` : ''}`}>
           {multiMixed ? (
@@ -3509,7 +3598,7 @@ export function LayoutPage() {
               <ChevronDown />
             </Button>
             <span className="ml-auto" />
-            <Button size="sm" variant="ghost" onClick={() => (edit(() => saved!), setSelected(null))} disabled={!dirty || busy} title="Go back to the saved layout">
+            <Button size="sm" variant="ghost" onClick={() => (edit(() => saved!, true), setSelected(null))} disabled={!dirty || busy} title="Go back to the saved layout">
               <RotateCcw /> Revert
             </Button>
             <Button size="sm" variant="primary" onClick={save} disabled={!dirty || overlapCount > 0} loading={busy} title="Save the layout (Ctrl/⌘+S)">
