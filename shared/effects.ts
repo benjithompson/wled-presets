@@ -9,75 +9,6 @@
 
 import { activeLeds, isLine, segmentLeds, type Fixture, type Layout, type Stage } from './layout.ts';
 
-export type EffectId =
-  // Basics
-  | 'solid'
-  | 'gradient'
-  | 'blocks'
-  | 'rainbow'
-  | 'colorloop'
-  | 'breathe'
-  | 'blink'
-  | 'strobe'
-  | 'chase'
-  | 'wipe'
-  | 'twinkle'
-  | 'sparkle'
-  | 'bounce'
-  // 1-D
-  | 'aurora'
-  | 'fireworks'
-  | 'inferno'
-  | 'meteors'
-  | 'ocean'
-  | 'plasma'
-  | 'starlight'
-  | 'storm'
-  | 'raindrops'
-  | 'candy'
-  // 3-D
-  | 'wash'
-  | 'scanner'
-  | 'bonfire'
-  | 'vortex'
-  | 'shockwave'
-  | 'nebula'
-  | 'snowfall'
-  | 'fireflies'
-  | 'starburst'
-  | 'equalizer'
-  | 'hyperspace'
-  | 'digitalrain'
-  | 'tesla'
-  | 'blackhole'
-  | 'lavalamp'
-  | 'helix'
-  | 'hologram'
-  | 'orbits'
-  | 'supernova'
-  | 'kaleidoscope';
-export type PaletteId =
-  | 'rainbow'
-  | 'aurora'
-  | 'fire'
-  | 'ocean'
-  | 'ice'
-  | 'candy'
-  | 'christmas'
-  | 'party'
-  | 'sunset'
-  | 'warm'
-  | 'storm'
-  | 'halloween'
-  | 'neon'
-  | 'galaxy'
-  | 'snow'
-  | 'spectrum'
-  | 'matrix'
-  | 'plasma'
-  | 'lava'
-  | 'custom';
-/** Which way a 3-D effect moves through space. Right, up and toward the street are positive. */
 export type Direction = 'right' | 'left' | 'up' | 'down' | 'toward' | 'away' | 'out' | 'in';
 
 export const DIRECTIONS: Record<Direction, string> = {
@@ -136,32 +67,32 @@ export interface EffectInfo {
   reverse?: string;
 }
 
-export const EFFECTS: EffectInfo[] = [
-  { id: 'solid', name: 'Solid color', description: 'One steady color. With several colors, the string is split into equal parts, one per color.', palette: 'custom', colors: ['#ffb46e'], speed: false, energy: 0, space: '1d', basic: true },
-  { id: 'gradient', name: 'Gradient', description: 'The colors blend smoothly from one end of the string to the other, standing still.', palette: 'sunset', size: 'Length', speed: false, energy: 0.05, space: '1d', basic: true },
-  { id: 'blocks', name: 'Color blocks', description: 'Blocks of each color side by side, standing still: red, green, red, green…', palette: 'christmas', size: 'Block size', speed: false, energy: 0.05, space: '1d', basic: true },
-  { id: 'rainbow', name: 'Rainbow', description: 'The colors roll smoothly along the string.', palette: 'rainbow', size: 'Length', energy: 0.4, space: '1d', basic: true },
-  { id: 'colorloop', name: 'Color fade', description: 'All the lights fade together from one color to the next.', palette: 'rainbow', energy: 0.25, space: '1d', basic: true, uniform: true },
-  { id: 'breathe', name: 'Breathe', description: 'The lights slowly brighten and dim, like breathing. With several colors, each breath takes the next one.', palette: 'custom', colors: ['#2a6cff'], intensity: 'Depth', energy: 0.15, space: '1d', basic: true, uniform: true },
-  { id: 'blink', name: 'Blink', description: 'On and off. With several colors, each blink takes the next one.', palette: 'christmas', intensity: 'Time on', energy: 0.5, space: '1d', basic: true, uniform: true },
-  { id: 'strobe', name: 'Strobe', description: 'Short, bright flashes, like a strobe light.', palette: 'snow', intensity: 'Flash length', energy: 1, space: '1d', basic: true, uniform: true },
-  { id: 'chase', name: 'Theater chase', description: 'Dots of light march along the string, with dark gaps between them, like the lights around a theater sign.', palette: 'christmas', intensity: 'Dot length', size: 'Spacing', energy: 0.55, space: '1d', basic: true },
-  { id: 'wipe', name: 'Color wipe', description: 'Each color in turn fills the string from one end to the other. With one color, it fills and then empties.', palette: 'christmas', intensity: 'Pause when full', size: 'Soft edge', energy: 0.45, space: '1d', basic: true },
-  { id: 'twinkle', name: 'Twinkle', description: 'Lights glow up at random, each in one of the colors, and fade away again.', palette: 'christmas', intensity: 'Twinkles', size: 'Twinkle length', energy: 0.3, space: '1d', basic: true },
-  { id: 'sparkle', name: 'Sparkle', description: 'Steady colors with bright white sparkles that flash on and off.', palette: 'ice', intensity: 'Sparkles', size: 'Sparkle length', energy: 0.35, space: '1d', basic: true },
-  { id: 'bounce', name: 'Bouncing dot', description: 'A dot of light runs from end to end and back, with a fading tail. With several colors, every run takes the next one.', palette: 'custom', colors: ['#ff1800'], intensity: 'Tail', size: 'Dot size', energy: 0.55, space: '1d', basic: true },
-  { id: 'aurora', name: 'Aurora', description: 'Curtains of light that fold, drift and shimmer, like the northern lights.', palette: 'aurora', intensity: 'Shimmer', size: 'Curtain width', energy: 0.3, space: '1d' },
-  { id: 'fireworks', name: 'Fireworks', description: 'Rockets climb and burst into sparks that slow down, cool and crackle.', palette: 'party', intensity: 'Rockets', size: 'Burst size', energy: 0.85, space: '1d' },
-  { id: 'inferno', name: 'Inferno', description: 'Flames that lick and flicker, with sparks that drift away.', palette: 'fire', intensity: 'Heat', size: 'Flame size', energy: 0.6, space: '1d' },
-  { id: 'meteors', name: 'Meteor shower', description: 'Meteors streak both ways and leave trails that crumble into glowing dust.', palette: 'ice', intensity: 'Meteors', size: 'Trail length', energy: 0.7, space: '1d' },
-  { id: 'ocean', name: 'Ocean', description: 'Waves of different lengths roll and cross; white foam breaks on the crests.', palette: 'ocean', intensity: 'Swell', size: 'Wavelength', energy: 0.4, space: '1d' },
-  { id: 'plasma', name: 'Plasma', description: 'Liquid color that swirls and folds into itself.', palette: 'rainbow', intensity: 'Contrast', size: 'Blob size', energy: 0.45, space: '1d' },
-  { id: 'starlight', name: 'Starlight', description: 'Every LED is a star that twinkles at its own pace. Now and then, a shooting star.', palette: 'warm', intensity: 'Stars', size: 'Twinkle length', energy: 0.2, space: '1d' },
-  { id: 'storm', name: 'Lightning storm', description: 'Dark clouds roll; lightning strikes in flickering forks and lights up the sky.', palette: 'storm', intensity: 'Strikes', size: 'Bolt size', energy: 0.75, space: '1d' },
-  { id: 'raindrops', name: 'Raindrops', description: 'Drops land and send out ripples that spread, cross and fade.', palette: 'ice', intensity: 'Rain', size: 'Ripple size', energy: 0.45, space: '1d' },
-  { id: 'candy', name: 'Candy cane', description: 'Crisp stripes that roll along, with a glint of light sweeping over them.', palette: 'candy', intensity: 'Shine', size: 'Stripe width', energy: 0.35, space: '1d' },
-  {
-    id: 'wash',
+/** Every effect, by id, in the order the pickers list them. */
+const EFFECT_INFO = {
+  solid: { name: 'Solid color', description: 'One steady color. With several colors, the string is split into equal parts, one per color.', palette: 'custom', colors: ['#ffb46e'], speed: false, energy: 0, space: '1d', basic: true },
+  gradient: { name: 'Gradient', description: 'The colors blend smoothly from one end of the string to the other, standing still.', palette: 'sunset', size: 'Length', speed: false, energy: 0.05, space: '1d', basic: true },
+  blocks: { name: 'Color blocks', description: 'Blocks of each color side by side, standing still: red, green, red, green…', palette: 'christmas', size: 'Block size', speed: false, energy: 0.05, space: '1d', basic: true },
+  rainbow: { name: 'Rainbow', description: 'The colors roll smoothly along the string.', palette: 'rainbow', size: 'Length', energy: 0.4, space: '1d', basic: true },
+  colorloop: { name: 'Color fade', description: 'All the lights fade together from one color to the next.', palette: 'rainbow', energy: 0.25, space: '1d', basic: true, uniform: true },
+  breathe: { name: 'Breathe', description: 'The lights slowly brighten and dim, like breathing. With several colors, each breath takes the next one.', palette: 'custom', colors: ['#2a6cff'], intensity: 'Depth', energy: 0.15, space: '1d', basic: true, uniform: true },
+  blink: { name: 'Blink', description: 'On and off. With several colors, each blink takes the next one.', palette: 'christmas', intensity: 'Time on', energy: 0.5, space: '1d', basic: true, uniform: true },
+  strobe: { name: 'Strobe', description: 'Short, bright flashes, like a strobe light.', palette: 'snow', intensity: 'Flash length', energy: 1, space: '1d', basic: true, uniform: true },
+  chase: { name: 'Theater chase', description: 'Dots of light march along the string, with dark gaps between them, like the lights around a theater sign.', palette: 'christmas', intensity: 'Dot length', size: 'Spacing', energy: 0.55, space: '1d', basic: true },
+  wipe: { name: 'Color wipe', description: 'Each color in turn fills the string from one end to the other. With one color, it fills and then empties.', palette: 'christmas', intensity: 'Pause when full', size: 'Soft edge', energy: 0.45, space: '1d', basic: true },
+  twinkle: { name: 'Twinkle', description: 'Lights glow up at random, each in one of the colors, and fade away again.', palette: 'christmas', intensity: 'Twinkles', size: 'Twinkle length', energy: 0.3, space: '1d', basic: true },
+  sparkle: { name: 'Sparkle', description: 'Steady colors with bright white sparkles that flash on and off.', palette: 'ice', intensity: 'Sparkles', size: 'Sparkle length', energy: 0.35, space: '1d', basic: true },
+  bounce: { name: 'Bouncing dot', description: 'A dot of light runs from end to end and back, with a fading tail. With several colors, every run takes the next one.', palette: 'custom', colors: ['#ff1800'], intensity: 'Tail', size: 'Dot size', energy: 0.55, space: '1d', basic: true },
+  aurora: { name: 'Aurora', description: 'Curtains of light that fold, drift and shimmer, like the northern lights.', palette: 'aurora', intensity: 'Shimmer', size: 'Curtain width', energy: 0.3, space: '1d' },
+  fireworks: { name: 'Fireworks', description: 'Rockets climb and burst into sparks that slow down, cool and crackle.', palette: 'party', intensity: 'Rockets', size: 'Burst size', energy: 0.85, space: '1d' },
+  inferno: { name: 'Inferno', description: 'Flames that lick and flicker, with sparks that drift away.', palette: 'fire', intensity: 'Heat', size: 'Flame size', energy: 0.6, space: '1d' },
+  meteors: { name: 'Meteor shower', description: 'Meteors streak both ways and leave trails that crumble into glowing dust.', palette: 'ice', intensity: 'Meteors', size: 'Trail length', energy: 0.7, space: '1d' },
+  ocean: { name: 'Ocean', description: 'Waves of different lengths roll and cross; white foam breaks on the crests.', palette: 'ocean', intensity: 'Swell', size: 'Wavelength', energy: 0.4, space: '1d' },
+  plasma: { name: 'Plasma', description: 'Liquid color that swirls and folds into itself.', palette: 'rainbow', intensity: 'Contrast', size: 'Blob size', energy: 0.45, space: '1d' },
+  starlight: { name: 'Starlight', description: 'Every LED is a star that twinkles at its own pace. Now and then, a shooting star.', palette: 'warm', intensity: 'Stars', size: 'Twinkle length', energy: 0.2, space: '1d' },
+  storm: { name: 'Lightning storm', description: 'Dark clouds roll; lightning strikes in flickering forks and lights up the sky.', palette: 'storm', intensity: 'Strikes', size: 'Bolt size', energy: 0.75, space: '1d' },
+  raindrops: { name: 'Raindrops', description: 'Drops land and send out ripples that spread, cross and fade.', palette: 'ice', intensity: 'Rain', size: 'Ripple size', energy: 0.45, space: '1d' },
+  candy: { name: 'Candy cane', description: 'Crisp stripes that roll along, with a glint of light sweeping over them.', palette: 'candy', intensity: 'Shine', size: 'Stripe width', energy: 0.35, space: '1d' },
+  wash: {
     name: 'Color wash',
     description: 'Broad bands of color roll through space: across the yard, up a tree, or out from the middle.',
     palette: 'rainbow',
@@ -171,8 +102,7 @@ export const EFFECTS: EffectInfo[] = [
     space: '3d',
     directions: ['right', 'left', 'up', 'down', 'toward', 'away', 'out', 'in']
   },
-  {
-    id: 'scanner',
+  scanner: {
     name: 'Laser scan',
     description: 'A thin plane of light sweeps back and forth through everything, with a glowing trail. A new color on every pass.',
     palette: 'neon',
@@ -182,10 +112,9 @@ export const EFFECTS: EffectInfo[] = [
     space: '3d',
     directions: ['right', 'up', 'toward', 'out']
   },
-  { id: 'bonfire', name: 'Bonfire', description: 'Fire that climbs from the ground: bushes burn, flames lick up the walls, sparks rise into the night.', palette: 'fire', intensity: 'Flame height', size: 'Flame size', energy: 0.6, space: '3d', reverse: 'Flames hang from the top' },
-  { id: 'vortex', name: 'Vortex', description: 'Spiral arms spin: around the trunk of a tree, or like a pinwheel on a flat object or the house.', palette: 'christmas', intensity: 'Arms', size: 'Twist', energy: 0.5, space: '3d', reverse: 'Spin the other way' },
-  {
-    id: 'shockwave',
+  bonfire: { name: 'Bonfire', description: 'Fire that climbs from the ground: bushes burn, flames lick up the walls, sparks rise into the night.', palette: 'fire', intensity: 'Flame height', size: 'Flame size', energy: 0.6, space: '3d', reverse: 'Flames hang from the top' },
+  vortex: { name: 'Vortex', description: 'Spiral arms spin: around the trunk of a tree, or like a pinwheel on a flat object or the house.', palette: 'christmas', intensity: 'Arms', size: 'Twist', energy: 0.5, space: '3d', reverse: 'Spin the other way' },
+  shockwave: {
     name: 'Shockwaves',
     description: 'Rings of light burst from random spots and roll over every light they reach.',
     palette: 'party',
@@ -195,8 +124,7 @@ export const EFFECTS: EffectInfo[] = [
     space: '3d',
     directions: ['out', 'in']
   },
-  {
-    id: 'nebula',
+  nebula: {
     name: 'Nebula',
     description: 'A glowing cloud of color drifts through space; every object shows its own slice of it, with a few stars.',
     palette: 'galaxy',
@@ -206,12 +134,11 @@ export const EFFECTS: EffectInfo[] = [
     space: '3d',
     directions: ['right', 'left', 'up', 'down', 'toward', 'away']
   },
-  { id: 'snowfall', name: 'Snowfall', description: 'Flakes drift down past the lights; where they touch, the lights sparkle and keep a soft glow that melts away.', palette: 'snow', intensity: 'Snow', size: 'Flake size', energy: 0.25, space: '3d', reverse: 'Rise like bubbles' },
-  { id: 'fireflies', name: 'Fireflies', description: 'Glowing orbs wander lazily through the yard, from bush to roof, and blink on and off.', palette: 'aurora', intensity: 'Fireflies', size: 'Glow size', energy: 0.3, space: '3d' },
-  { id: 'starburst', name: 'Starburst', description: 'Fireworks in 3-D: shells rise and burst into spheres of sparks that grow, fall, crackle and fade over the house.', palette: 'party', intensity: 'Shells', size: 'Burst size', energy: 0.9, space: '3d' },
-  { id: 'equalizer', name: 'Equalizer', description: 'Bars of light bounce to a beat across the yard, like a music visualizer, with peaks that fall slowly.', palette: 'spectrum', intensity: 'Energy', size: 'Bar width', energy: 0.8, space: '3d', reverse: 'Bars hang from the top' },
-  {
-    id: 'hyperspace',
+  snowfall: { name: 'Snowfall', description: 'Flakes drift down past the lights; where they touch, the lights sparkle and keep a soft glow that melts away.', palette: 'snow', intensity: 'Snow', size: 'Flake size', energy: 0.25, space: '3d', reverse: 'Rise like bubbles' },
+  fireflies: { name: 'Fireflies', description: 'Glowing orbs wander lazily through the yard, from bush to roof, and blink on and off.', palette: 'aurora', intensity: 'Fireflies', size: 'Glow size', energy: 0.3, space: '3d' },
+  starburst: { name: 'Starburst', description: 'Fireworks in 3-D: shells rise and burst into spheres of sparks that grow, fall, crackle and fade over the house.', palette: 'party', intensity: 'Shells', size: 'Burst size', energy: 0.9, space: '3d' },
+  equalizer: { name: 'Equalizer', description: 'Bars of light bounce to a beat across the yard, like a music visualizer, with peaks that fall slowly.', palette: 'spectrum', intensity: 'Energy', size: 'Bar width', energy: 0.8, space: '3d', reverse: 'Bars hang from the top' },
+  hyperspace: {
     name: 'Hyperspace',
     description: 'Stars stream out of the middle of the yard as if you fly through them. Every few seconds they stretch into streaks, and the jump ends in a white flash.',
     palette: 'ice',
@@ -221,21 +148,28 @@ export const EFFECTS: EffectInfo[] = [
     space: '3d',
     directions: ['out', 'in']
   },
-  { id: 'digitalrain', name: 'Digital rain', description: 'Columns of glowing code pour down the house, each drop with a white-hot head and a flickering trail.', palette: 'matrix', intensity: 'Rain', size: 'Column width', energy: 0.55, space: '3d', reverse: 'Rain upward' },
-  { id: 'tesla', name: 'Plasma globe', description: 'Crackling tendrils of electricity reach from a glowing core out to every corner, wander, fork and flicker.', palette: 'plasma', intensity: 'Tendrils', size: 'Bolt width', energy: 0.7, space: '3d' },
-  { id: 'blackhole', name: 'Black hole', description: 'A dark hole with a burning ring of light; a tilted disk of fire swirls around it, faster near the middle, and now and then jets shoot up and down.', palette: 'fire', intensity: 'Jets', size: 'Hole size', energy: 0.45, space: '3d', reverse: 'Spin the other way' },
-  { id: 'lavalamp', name: 'Lava lamp', description: 'Big glowing blobs rise, sink, stretch and melt into each other, all through the yard.', palette: 'lava', intensity: 'Blobs', size: 'Blob size', energy: 0.25, space: '3d' },
-  { id: 'helix', name: 'Double helix', description: 'Two strands of light twist around each other across the yard or up a tree, joined by colored rungs, with a pulse running along them.', palette: 'neon', intensity: 'Rungs', size: 'Twist length', energy: 0.45, space: '3d', reverse: 'Twist the other way' },
-  { id: 'hologram', name: 'Hologram', description: 'A wireframe cube, a diamond and a four-dimensional tesseract turn in the air over the yard, with scan lines and glitches.', palette: 'ice', intensity: 'Glitch', size: 'Line width', energy: 0.55, space: '3d' },
-  { id: 'orbits', name: 'Orbits', description: 'Comets with long tails race around a glowing nucleus on tilted orbits, like an atom, in front of and behind each other.', palette: 'party', intensity: 'Comets', size: 'Comet size', energy: 0.55, space: '3d' },
-  { id: 'supernova', name: 'Supernova', description: 'A star shudders and collapses, explodes in a flash, and a ragged shock wave rolls over the yard; it leaves a glowing cloud and a spinning pulsar.', palette: 'sunset', intensity: 'Afterglow', size: 'Blast size', energy: 0.9, space: '3d' },
-  { id: 'kaleidoscope', name: 'Kaleidoscope', description: 'Colors fold into mirrored wedges around the middle of the yard and keep turning, with glints along the mirrors.', palette: 'rainbow', intensity: 'Mirrors', size: 'Pattern size', energy: 0.5, space: '3d', reverse: 'Turn the other way' }
-];
+  digitalrain: { name: 'Digital rain', description: 'Columns of glowing code pour down the house, each drop with a white-hot head and a flickering trail.', palette: 'matrix', intensity: 'Rain', size: 'Column width', energy: 0.55, space: '3d', reverse: 'Rain upward' },
+  tesla: { name: 'Plasma globe', description: 'Crackling tendrils of electricity reach from a glowing core out to every corner, wander, fork and flicker.', palette: 'plasma', intensity: 'Tendrils', size: 'Bolt width', energy: 0.7, space: '3d' },
+  blackhole: { name: 'Black hole', description: 'A dark hole with a burning ring of light; a tilted disk of fire swirls around it, faster near the middle, and now and then jets shoot up and down.', palette: 'fire', intensity: 'Jets', size: 'Hole size', energy: 0.45, space: '3d', reverse: 'Spin the other way' },
+  lavalamp: { name: 'Lava lamp', description: 'Big glowing blobs rise, sink, stretch and melt into each other, all through the yard.', palette: 'lava', intensity: 'Blobs', size: 'Blob size', energy: 0.25, space: '3d' },
+  helix: { name: 'Double helix', description: 'Two strands of light twist around each other across the yard or up a tree, joined by colored rungs, with a pulse running along them.', palette: 'neon', intensity: 'Rungs', size: 'Twist length', energy: 0.45, space: '3d', reverse: 'Twist the other way' },
+  hologram: { name: 'Hologram', description: 'A wireframe cube, a diamond and a four-dimensional tesseract turn in the air over the yard, with scan lines and glitches.', palette: 'ice', intensity: 'Glitch', size: 'Line width', energy: 0.55, space: '3d' },
+  orbits: { name: 'Orbits', description: 'Comets with long tails race around a glowing nucleus on tilted orbits, like an atom, in front of and behind each other.', palette: 'party', intensity: 'Comets', size: 'Comet size', energy: 0.55, space: '3d' },
+  supernova: { name: 'Supernova', description: 'A star shudders and collapses, explodes in a flash, and a ragged shock wave rolls over the yard; it leaves a glowing cloud and a spinning pulsar.', palette: 'sunset', intensity: 'Afterglow', size: 'Blast size', energy: 0.9, space: '3d' },
+  kaleidoscope: { name: 'Kaleidoscope', description: 'Colors fold into mirrored wedges around the middle of the yard and keep turning, with glints along the mirrors.', palette: 'rainbow', intensity: 'Mirrors', size: 'Pattern size', energy: 0.5, space: '3d', reverse: 'Turn the other way' }
+} satisfies Record<string, Omit<EffectInfo, 'id'>>;
+
+/** An effect's id: one of EFFECT_INFO's. */
+export type EffectId = keyof typeof EFFECT_INFO;
+
+export const EFFECTS: EffectInfo[] = Object.entries(EFFECT_INFO).map(([id, e]) => ({ id: id as EffectId, ...e }));
 
 /** True for effects that light each LED by where it is in space (3-D). */
 export const isSpatial = (id: EffectId) => effectInfo(id).space === '3d';
 
-export const effectInfo = (id: EffectId) => EFFECTS.find((e) => e.id === id) ?? EFFECTS[0];
+const EFFECT_BY_ID = new Map(EFFECTS.map((e) => [e.id, e]));
+
+export const effectInfo = (id: EffectId): EffectInfo => EFFECT_BY_ID.get(id) ?? EFFECTS[0];
 
 export interface PaletteInfo {
   id: PaletteId;
@@ -245,30 +179,38 @@ export interface PaletteInfo {
   cyclic?: boolean;
 }
 
-export const PALETTES: PaletteInfo[] = [
-  { id: 'rainbow', name: 'Rainbow', colors: ['#ff0000', '#ff8000', '#ffe000', '#00ff40', '#00c0ff', '#2040ff', '#c000ff'], cyclic: true },
-  { id: 'aurora', name: 'Aurora', colors: ['#00ff6a', '#00ffb4', '#00b4ff', '#4a3cff', '#c03cff'] },
-  { id: 'fire', name: 'Fire', colors: ['#000000', '#6a0000', '#e01000', '#ff6000', '#ffb020', '#fff0b0'] },
-  { id: 'ocean', name: 'Ocean', colors: ['#000a30', '#00307a', '#0068c0', '#00b8d8', '#90f4ff'] },
-  { id: 'ice', name: 'Ice', colors: ['#0a1aff', '#3a8cff', '#7fd4ff', '#e0f6ff'] },
-  { id: 'candy', name: 'Candy cane', colors: ['#ff0012', '#ffffff'], cyclic: true },
-  { id: 'christmas', name: 'Christmas', colors: ['#ff0a14', '#00d040', '#ffb428', '#ffffff'], cyclic: true },
-  { id: 'party', name: 'Party', colors: ['#ff1070', '#ff8000', '#ffe800', '#20ff60', '#00b0ff', '#8a2cff'], cyclic: true },
-  { id: 'sunset', name: 'Sunset', colors: ['#3a0070', '#b0106a', '#ff3a20', '#ff9400', '#ffd870'] },
-  { id: 'warm', name: 'Warm white', colors: ['#ff9a40', '#ffc078', '#ffe0b0', '#fff4e0'] },
-  { id: 'storm', name: 'Storm', colors: ['#0a0830', '#26307a', '#6a70ff', '#c8d0ff', '#ffffff'] },
-  { id: 'halloween', name: 'Halloween', colors: ['#ff5a00', '#9a00ff', '#40ff00', '#ff9a00'], cyclic: true },
-  { id: 'neon', name: 'Neon', colors: ['#ff00aa', '#00e5ff', '#8a2cff', '#00ff88'], cyclic: true },
-  { id: 'galaxy', name: 'Galaxy', colors: ['#0a0038', '#3a10b0', '#9020d0', '#ff3fa0', '#ffd0ec'] },
-  { id: 'snow', name: 'Snow', colors: ['#ffffff', '#d8ecff', '#a8d4ff'] },
-  { id: 'spectrum', name: 'Level meter', colors: ['#00ff40', '#a0ff00', '#ffe000', '#ff8000', '#ff0020'] },
-  { id: 'matrix', name: 'Code green', colors: ['#002a08', '#00a028', '#30ff60', '#c8ffd0'] },
-  { id: 'plasma', name: 'Plasma', colors: ['#7a2cff', '#ff40ff', '#40b0ff', '#c070ff'], cyclic: true },
-  { id: 'lava', name: 'Lava', colors: ['#ff1a00', '#ff7a00', '#ff0060', '#ffc400'], cyclic: true },
-  { id: 'custom', name: 'My colors', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true }
-];
+/** Every palette, by id, in the order the pickers list them. */
+const PALETTE_INFO = {
+  rainbow: { name: 'Rainbow', colors: ['#ff0000', '#ff8000', '#ffe000', '#00ff40', '#00c0ff', '#2040ff', '#c000ff'], cyclic: true },
+  aurora: { name: 'Aurora', colors: ['#00ff6a', '#00ffb4', '#00b4ff', '#4a3cff', '#c03cff'] },
+  fire: { name: 'Fire', colors: ['#000000', '#6a0000', '#e01000', '#ff6000', '#ffb020', '#fff0b0'] },
+  ocean: { name: 'Ocean', colors: ['#000a30', '#00307a', '#0068c0', '#00b8d8', '#90f4ff'] },
+  ice: { name: 'Ice', colors: ['#0a1aff', '#3a8cff', '#7fd4ff', '#e0f6ff'] },
+  candy: { name: 'Candy cane', colors: ['#ff0012', '#ffffff'], cyclic: true },
+  christmas: { name: 'Christmas', colors: ['#ff0a14', '#00d040', '#ffb428', '#ffffff'], cyclic: true },
+  party: { name: 'Party', colors: ['#ff1070', '#ff8000', '#ffe800', '#20ff60', '#00b0ff', '#8a2cff'], cyclic: true },
+  sunset: { name: 'Sunset', colors: ['#3a0070', '#b0106a', '#ff3a20', '#ff9400', '#ffd870'] },
+  warm: { name: 'Warm white', colors: ['#ff9a40', '#ffc078', '#ffe0b0', '#fff4e0'] },
+  storm: { name: 'Storm', colors: ['#0a0830', '#26307a', '#6a70ff', '#c8d0ff', '#ffffff'] },
+  halloween: { name: 'Halloween', colors: ['#ff5a00', '#9a00ff', '#40ff00', '#ff9a00'], cyclic: true },
+  neon: { name: 'Neon', colors: ['#ff00aa', '#00e5ff', '#8a2cff', '#00ff88'], cyclic: true },
+  galaxy: { name: 'Galaxy', colors: ['#0a0038', '#3a10b0', '#9020d0', '#ff3fa0', '#ffd0ec'] },
+  snow: { name: 'Snow', colors: ['#ffffff', '#d8ecff', '#a8d4ff'] },
+  spectrum: { name: 'Level meter', colors: ['#00ff40', '#a0ff00', '#ffe000', '#ff8000', '#ff0020'] },
+  matrix: { name: 'Code green', colors: ['#002a08', '#00a028', '#30ff60', '#c8ffd0'] },
+  plasma: { name: 'Plasma', colors: ['#7a2cff', '#ff40ff', '#40b0ff', '#c070ff'], cyclic: true },
+  lava: { name: 'Lava', colors: ['#ff1a00', '#ff7a00', '#ff0060', '#ffc400'], cyclic: true },
+  custom: { name: 'My colors', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true }
+} satisfies Record<string, Omit<PaletteInfo, 'id'>>;
 
-export const paletteInfo = (id: PaletteId) => PALETTES.find((p) => p.id === id) ?? PALETTES[0];
+/** A palette's id: one of PALETTE_INFO's. */
+export type PaletteId = keyof typeof PALETTE_INFO;
+
+export const PALETTES: PaletteInfo[] = Object.entries(PALETTE_INFO).map(([id, p]) => ({ id: id as PaletteId, ...p }));
+
+const PALETTE_BY_ID = new Map(PALETTES.map((p) => [p.id, p]));
+
+export const paletteInfo = (id: PaletteId): PaletteInfo => PALETTE_BY_ID.get(id) ?? PALETTES[0];
 
 /** The hex colors an effect shows: its palette's, or your own for "custom". */
 export function paletteColors(s: Pick<EffectSettings, 'palette' | 'colors'>): string[] {
