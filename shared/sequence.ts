@@ -7,7 +7,7 @@
 // The server plays sequences on the real lights, and the editor draws the same frames in the
 // browser. Keep this file free of Node and DOM APIs.
 
-import { effectTarget, isSpatial, RunSet, YARD, type EffectSettings } from './effects.ts';
+import { effectObjects, effectTarget, isSpatial, RunSet, YARD, type EffectSettings } from './effects.ts';
 import { activeLeds, isLine, segmentLeds, type Layout, type Stage } from './layout.ts';
 
 export type BlendMode = 'normal' | 'add' | 'lighten' | 'multiply';
@@ -144,18 +144,7 @@ export function overlapOf(a: SeqClip, b: SeqClip): number {
 
 /** The ids of the objects a sequence lights (on layers that play). */
 export function sequenceObjects(seq: Pick<Sequence, 'tracks'>, layout: Pick<Layout, 'fixtures'>): string[] {
-  const ids = new Set(layout.fixtures.map((f) => f.id));
-  const out = new Set<string>();
-  for (const t of seq.tracks) {
-    if (t.hidden) continue;
-    for (const c of t.clips)
-      for (const key of c.targets) {
-        if (key === YARD) return [...ids];
-        const id = effectTarget(key).id;
-        if (ids.has(id)) out.add(id);
-      }
-  }
-  return [...out];
+  return effectObjects(layout, seq.tracks.flatMap((t) => (t.hidden ? [] : t.clips.flatMap((c) => c.targets))));
 }
 
 /** Every effect used in a sequence, for its look on the public page. */
