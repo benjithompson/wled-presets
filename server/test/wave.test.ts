@@ -92,8 +92,9 @@ describe('a ball with LEDs on its top only (an upside-down bowl)', () => {
     expect(Math.hypot(px[0].x - 800, px[0].z - 200)).toBeCloseTo(120, 0);
     expect(800 - px.at(-1)!.y).toBeCloseTo(120, 0);
     expect(Math.hypot(px.at(-1)!.x - 800, px.at(-1)!.z - 200)).toBeLessThan(5);
-    const gaps = px.slice(1).map((p, i) => Math.hypot(p.x - px[i].x, p.y - px[i].y, p.z - px[i].z));
-    expect(Math.max(...gaps) / Math.min(...gaps)).toBeLessThan(1.25);
+    // Even along the wire (but at the middle, where it curls in tightly).
+    const gaps = px.slice(1).map((p, i) => Math.hypot(p.x - px[i].x, p.y - px[i].y, p.z - px[i].z)).slice(0, -3);
+    expect(Math.max(...gaps) / Math.min(...gaps)).toBeLessThan(1.1);
   });
 
   it('starts in the middle when it starts at the top, and winds either way', () => {
