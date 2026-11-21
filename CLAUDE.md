@@ -14,6 +14,6 @@
 
 ## Pull requests and releases
 
-- Work on a branch and open a PR to `main`. The user merges, squash-merging.
+- Work on a branch and open a PR to `main`. The user merges, squash-merging, or types `/sendit` ([.claude/skills/sendit/SKILL.md](.claude/skills/sendit/SKILL.md)), which ships the work end to end, merge and deploy included.
 - **Every PR bumps `version` in `package.json`** (minor for features, patch for fixes) and uses that version in its title (`v2.22.0: …`).
 - Merging is the release. CI ([.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml)) runs the checks, tags the merge `vX.Y.Z`, makes a GitHub release and publishes the Docker image (`latest`, `X.Y.Z`, `X.Y`, `X`). Don't tag by hand. After a merge, check that the "CI and Docker" run passed, then deploy it (see above).
