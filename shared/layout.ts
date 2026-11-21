@@ -11,13 +11,27 @@ import type { LightType } from './lights.ts';
  * roof: the roofline, a line of LEDs that games use as "the roof".
  * line: any other line of LEDs (windows, doors, a fence, a path); edited like a roof line.
  * bush: LEDs spread over a dome.
- * tree: a cone, with LEDs in a spiral or in strands from the base to the top.
+ * tree: a cone (or a cylinder, or a ball: see TreeShape), with LEDs in a spiral or in strands
+ *   from the base to the top.
+ * semicircle: a flat half-disc standing on its straight edge (a sunrise, a fan), with the LEDs
+ *   in a zigzag across it (see Zigzag).
  * custom: your own shape (a star, a wreath, an arch…), drawn in the object designer. Its
  *   design can be saved to the library and placed many times.
  */
-export type FixtureKind = 'roof' | 'line' | 'bush' | 'tree' | 'custom';
+export type FixtureKind = 'roof' | 'line' | 'bush' | 'tree' | 'semicircle' | 'custom';
 /** Bush: fill, ring, spiral. Tree: spiral, strands. */
 export type FixturePattern = 'fill' | 'ring' | 'spiral' | 'strands';
+/** A tree's sides: a cone (a tree), a cylinder (a wrapped post or column), or a sphere (a ball of lights) on its base. */
+export type TreeShape = 'cone' | 'cylinder' | 'sphere';
+/** Which way a spiral winds, as seen from above, following the wire from LED 0: counterclockwise or clockwise. */
+export type Spin = 'ccw' | 'cw';
+/**
+ * How a semicircle's zigzag runs, from LED 0: down (rows across, from the top down), up (rows
+ * across, from the bottom up), right (columns, from the left to the right) or left (columns,
+ * from the right to the left). Up mirrors down, left mirrors right. Rows start at the left and
+ * columns at the ground.
+ */
+export type Zigzag = 'down' | 'up' | 'right' | 'left';
 export type Units = 'ft' | 'm';
 
 /**
@@ -77,16 +91,27 @@ export interface Fixture {
   kind: FixtureKind;
   /** Roof and line: the polyline from the first LED to the last; inner points are corners. Bush: [center]. Tree: [center of the base]. */
   points: Point[];
-  /** Bush and tree: radius in layout units (tree: at the base). */
+  /** Bush, tree and semicircle: radius in layout units (tree: at the base, or the widest; semicircle: half its width). */
   radius?: number;
-  /** Tree only: height from the base to the top, in layout units. */
+  /** Tree: height from the base to the top, in layout units. Semicircle: from its straight edge to the top of the round (default: the radius). */
   height?: number;
   /** Bush and tree: how the LEDs are spread over the object. */
   pattern?: FixturePattern;
   /** Tree with a spiral: how many times the LEDs go around from the base to the top. */
   turns?: number;
-  /** Tree with strands: the number of strands. They zigzag: up the first, down the second, and so on. */
+  /**
+   * Tree with strands: the number of strands. They zigzag: up the first, down the second, and so on.
+   * Semicircle: the number of rows (or columns) of its zigzag.
+   */
   strands?: number;
+  /** Tree: the shape of its sides. Not set: a cone. */
+  shape?: TreeShape;
+  /** Tree: which way its spiral winds (or its strands go round), seen from above (see Spin). Not set: counterclockwise. */
+  spin?: Spin;
+  /** Tree with a spiral: where LED 0 is, at the base or at the top. Not set: the base. */
+  start?: 'base' | 'top';
+  /** Semicircle: how its zigzag runs (see Zigzag). Not set: down. */
+  zigzag?: Zigzag;
   /** Number of LEDs. */
   pixels: number;
   /** What the LEDs are: a LightType id (see shared/lights.ts). Not set: unknown. */
@@ -97,9 +122,13 @@ export interface Fixture {
   designId?: string;
   /** Custom: size as a factor of the design (1: as designed). */
   size?: number;
-  /** Custom: turned clockwise, in degrees, as seen from the front. */
+  /** Custom and semicircle: turned clockwise, in degrees, as seen from the front. */
   rotation?: number;
-  /** Custom: which way it faces, in degrees: 0 faces the street, 90 faces right (as seen from the street). */
+  /**
+   * Custom, semicircle and tree: turned about the upright axis, as seen from above, in degrees.
+   * Which way its front faces: 0 the street, 90 right (as seen from the street), -90 left, 180
+   * the house. A tree's front is where its spiral (or first strand) starts.
+   */
   facing?: number;
   /** The WLED device that drives these LEDs. Null: simulation only. */
   deviceId: string | null;
@@ -316,6 +345,7 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
   const n = Math.max(0, Math.floor(f.pixels));
   if (n === 0) return [];
   if (f.kind === 'tree') return treePixels(f, n);
+  if (f.kind === 'semicircle') return semicirclePixels(f, n);
   if (f.kind === 'custom') {
     const at = designTransform(f, scale);
     return designLeds(f.design ?? [], n).map(at);
@@ -369,17 +399,49 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
 
 const p3 = (p: Point): Point3 => ({ x: p.x, y: p.y, z: pz(p) });
 
-/** The LEDs of a tree: a cone from the base point up. */
+/**
+ * A tree's radius at height u (0 at the base, 1 at the top), as a share of its radius: a cone
+ * narrows to a point (almost: the LEDs at the top sit just off the axis), a cylinder keeps its
+ * width, a sphere (an ellipsoid when its height is not its width) is widest halfway up.
+ */
+export function treeWidthAt(shape: TreeShape | undefined, u: number): number {
+  if (shape === 'cylinder') return 1;
+  if (shape === 'sphere') return 2 * Math.sqrt(Math.max(0, u * (1 - u)));
+  return 1 - u * 0.96;
+}
+
+/** The outline of a tree from the front, at its base: a triangle, a rectangle or an ellipse. */
+export function treeOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'shape'>): Point[] {
+  const b = f.points[0] ?? { x: 0, y: 0 };
+  const r = f.radius ?? 80;
+  const h = f.height ?? 240;
+  if (f.shape === 'sphere') {
+    return Array.from({ length: 36 }, (_, i) => {
+      const a = (i / 36) * Math.PI * 2;
+      return { x: b.x + Math.sin(a) * r, y: b.y - h / 2 + (Math.cos(a) * h) / 2 };
+    });
+  }
+  const top = f.shape === 'cylinder' ? [-r, r] : [0];
+  return [{ x: b.x - r, y: b.y }, ...top.map((dx) => ({ x: b.x + dx, y: b.y - h })), { x: b.x + r, y: b.y }];
+}
+
+/**
+ * The LEDs of a tree, from the base point up. Angles start at its front (the street, unless it
+ * is turned: `facing`) and grow counterclockwise as seen from above (`spin`: or clockwise).
+ */
 function treePixels(f: Fixture, n: number): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
   const r = f.radius ?? 80;
   const h = f.height ?? 240;
+  const face = ((f.facing ?? 0) * Math.PI) / 180;
+  const sign = f.spin === 'cw' ? -1 : 1;
   const out: Point3[] = [];
-  // u: 0 at the base, 1 at the top. The angle starts at the front (toward the street).
+  // u: 0 at the base, 1 at the top. Angle 0 is the front; going round counterclockwise as
+  // seen from above (the street at the bottom), the LEDs move to the right as seen from the street.
   const at = (u: number, a: number): Point3 => {
-    const rad = r * (1 - u * 0.96);
-    return { x: b.x + Math.sin(a) * rad, y: b.y - u * h, z: bz + Math.cos(a) * rad };
+    const rad = r * treeWidthAt(f.shape, u);
+    return { x: b.x + Math.sin(face + sign * a) * rad, y: b.y - u * h, z: bz + Math.cos(face + sign * a) * rad };
   };
   if (f.pattern === 'strands') {
     const s = Math.max(1, Math.min(n, Math.round(f.strands ?? 12)));
@@ -395,13 +457,116 @@ function treePixels(f: Fixture, n: number): Point3[] {
     return out;
   }
   const turns = f.turns ?? 8;
+  const fromTop = f.start === 'top';
+  const heightAt = spiralHeights(f.shape, r, h, turns);
   for (let i = 0; i < n; i++) {
+    // s: how far along the wire from LED 0. The angle grows along the wire from the front, so
+    // a spiral from the top starts at the front too, and winds the way it is set as it comes down.
     const s = n > 1 ? i / (n - 1) : 0;
-    // The wire is longer near the base, where the cone is wide: spread the LEDs by length.
-    const u = 1 - Math.sqrt(1 - s);
-    out.push(at(u, u * turns * Math.PI * 2));
+    const u = heightAt(fromTop ? 1 - s : s);
+    out.push(at(u, (fromTop ? 1 - u : u) * turns * Math.PI * 2));
   }
   return out;
+}
+
+/**
+ * For a spiral from the base up: the height u (0..1) at the share s (0..1) of the wire's
+ * length, so the LEDs spread evenly along the wire (closer in height where the shape is wide).
+ */
+function spiralHeights(shape: TreeShape | undefined, r: number, h: number, turns: number): (s: number) => number {
+  // A cone: the wire's length is about proportional to the width there (as it always was).
+  if (!shape || shape === 'cone') return (s) => 1 - Math.sqrt(1 - s);
+  if (shape === 'cylinder') return (s) => s;
+  // Otherwise: measure the wire in small steps, and look the share up.
+  const K = 256;
+  const len = new Float64Array(K + 1);
+  let px = 0;
+  let py = 0;
+  let pzz = 0;
+  for (let k = 0; k <= K; k++) {
+    const u = k / K;
+    const rad = r * treeWidthAt(shape, u);
+    const a = u * turns * Math.PI * 2;
+    const x = Math.sin(a) * rad;
+    const y = u * h;
+    const z = Math.cos(a) * rad;
+    if (k) len[k] = len[k - 1] + Math.hypot(x - px, y - py, z - pzz);
+    px = x;
+    py = y;
+    pzz = z;
+  }
+  const total = len[K];
+  return (s) => {
+    if (!(total > 0)) return s;
+    const want = Math.max(0, Math.min(1, s)) * total;
+    let lo = 0;
+    let hi = K;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (len[mid] < want) lo = mid;
+      else hi = mid;
+    }
+    const span = len[hi] - len[lo];
+    return (lo + (span > 0 ? Math.max(0, Math.min(1, (want - len[lo]) / span)) : 0)) / K;
+  };
+}
+
+// ---------- Semicircles ----------
+
+/**
+ * The wire of a semicircle's zigzag, in layout units: x to the right, y up, (0, 0) the middle
+ * of its straight edge, the round side up (before it is turned). One point at each end of each
+ * row (or column).
+ */
+export function zigzagPath(f: Pick<Fixture, 'radius' | 'height' | 'strands' | 'zigzag'>): DesignPoint[] {
+  const r = f.radius ?? 60;
+  const h = f.height ?? r;
+  const rows = Math.max(1, Math.min(64, Math.round(f.strands ?? 8)));
+  const way = f.zigzag ?? 'down';
+  const out: DesignPoint[] = [];
+  for (let i = 0; i < rows; i++) {
+    const t = (i + 0.5) / rows;
+    // Every other row (or column) runs back the other way.
+    const back = i % 2 === 1;
+    if (way === 'down' || way === 'up') {
+      const y = way === 'down' ? h * (1 - t) : h * t;
+      const w = r * Math.sqrt(Math.max(0, 1 - (y / h) ** 2));
+      out.push({ x: back ? w : -w, y }, { x: back ? -w : w, y });
+    } else {
+      const x = way === 'right' ? r * (2 * t - 1) : r * (1 - 2 * t);
+      const top = h * Math.sqrt(Math.max(0, 1 - (x / r) ** 2));
+      out.push({ x, y: back ? top : 0 }, { x, y: back ? 0 : top });
+    }
+  }
+  return out;
+}
+
+/** From a semicircle's own layout units to the yard: turned and facing as the object is, at its point. */
+const semicircleTransform = (f: Pick<Fixture, 'points' | 'rotation' | 'facing'>) => designTransform({ points: f.points, rotation: f.rotation, facing: f.facing }, 1);
+
+/** The LEDs of a semicircle: spread evenly along its zigzag. */
+function semicirclePixels(f: Fixture, n: number): Point3[] {
+  return designLeds([{ points: zigzagPath(f) }], n).map(semicircleTransform(f));
+}
+
+/** The outline of a semicircle in the yard: over the round side, then back along the straight edge. */
+export function semicircleOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'rotation' | 'facing'>): Point3[] {
+  const r = f.radius ?? 60;
+  const h = f.height ?? r;
+  const at = semicircleTransform(f);
+  const arc = Array.from({ length: 33 }, (_, i) => (i / 32) * Math.PI).map((a) => at({ x: -Math.cos(a) * r, y: Math.sin(a) * h }));
+  return [...arc, arc[0]];
+}
+
+/** True for objects drawn by their wire (lines, custom objects and semicircles; see objectPaths), not as a circle or a tree. */
+export const drawnByPaths = (f: { kind: FixtureKind }) => isLine(f) || f.kind === 'custom' || f.kind === 'semicircle';
+
+/** The wire of an object drawn by its paths (see drawnByPaths), one path per stroke. Others: none. */
+export function objectPaths(f: Fixture, scale = DEFAULT_SCALE): Point3[][] {
+  if (isLine(f)) return [f.points.map(p3)];
+  if (f.kind === 'custom') return designPaths(f, scale);
+  if (f.kind === 'semicircle') return [semicircleOutline(f)];
+  return [];
 }
 
 // ---------- Custom objects ----------
@@ -1335,6 +1500,7 @@ export const GAME_ROLE_RGB: Record<FixtureKind, [number, number, number]> = {
   bush: [40, 220, 110],
   tree: [30, 200, 180],
   line: [150, 110, 255],
+  semicircle: [150, 110, 255],
   custom: [150, 110, 255]
 };
 /** LEDs that games leave out. */

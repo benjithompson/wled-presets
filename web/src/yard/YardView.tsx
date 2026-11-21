@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type React from 'react';
-import { AERIAL_OPACITY, buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Point } from '../../../shared/layout.ts';
+import { AERIAL_OPACITY, buildStage, drawnByPaths, FEET_PER_METER, layoutGround, layoutScale, objectPaths, treeOutline, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
 
@@ -336,8 +336,8 @@ export function YardView({
           const c = view(f.points[0] ?? { x: 0, y: 0 });
           const r = f.radius ?? 60;
           ctx.beginPath();
-          if (isLine(f) || f.kind === 'custom') {
-            for (const path of isLine(f) ? [f.points] : designPaths(f, layoutScale(layout)))
+          if (drawnByPaths(f)) {
+            for (const path of objectPaths(f, layoutScale(layout)))
               path.forEach((p, i) => {
                 const q = view(p);
                 if (i) ctx.lineTo(X(q.u), Y(q.v));
@@ -347,10 +347,11 @@ export function YardView({
             // From above, bushes and trees are circles.
             ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
           } else if (f.kind === 'tree') {
-            const th = f.height ?? 240;
-            ctx.moveTo(X(c.u - r), Y(c.v));
-            ctx.lineTo(X(c.u), Y(c.v - th));
-            ctx.lineTo(X(c.u + r), Y(c.v));
+            treeOutline(f).forEach((p, i) => {
+              const q = view(p);
+              if (i) ctx.lineTo(X(q.u), Y(q.v));
+              else ctx.moveTo(X(q.u), Y(q.v));
+            });
             ctx.closePath();
           } else if (hl) {
             ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);

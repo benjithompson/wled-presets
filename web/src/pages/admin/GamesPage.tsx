@@ -20,7 +20,7 @@ const ROLES: { kind: FixtureKind[]; label: string; role: string }[] = [
   { kind: ['roof'], label: 'Roof', role: 'where the game is played' },
   { kind: ['bush'], label: 'Bushes', role: 'hold what you win' },
   { kind: ['tree'], label: 'Trees', role: 'meters that fill up' },
-  { kind: ['line', 'custom'], label: 'Other lights', role: 'the house reacts' }
+  { kind: ['line', 'semicircle', 'custom'], label: 'Other lights', role: 'the house reacts' }
 ];
 
 const css = (c: [number, number, number]) => `rgb(${c.join(' ')})`;

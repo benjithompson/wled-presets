@@ -32,6 +32,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Rainbow,
   RotateCcw,
   Rows2,
   Ruler,
@@ -78,8 +79,10 @@ import {
   MAX_FIXTURE_PIXELS,
   paintMatch,
   pointOffsets,
-  designPaths,
   designReach,
+  drawnByPaths,
+  objectPaths,
+  treeOutline,
   lineLengths,
   resizeSegment,
   AERIAL_OPACITY,
@@ -94,7 +97,10 @@ import {
   type Layout,
   type MatchProbe,
   type Point,
-  type Units
+  type Spin,
+  type TreeShape,
+  type Units,
+  type Zigzag
 } from '../../../../shared/layout.ts';
 import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { Stage } from '../../../../shared/layout.ts';
@@ -119,11 +125,11 @@ import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
 
 /** align: lines the picture from above up with the yard (no button: the Pictures menu starts it). */
-type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'measure' | 'align';
+type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'semicircle' | 'measure' | 'align';
 type LineTool = 'roof' | 'line';
 const isLineTool = (t: Tool): t is LineTool => t === 'roof' || t === 'line';
 /** One-key shortcuts, as in most drawing programs. */
-const TOOL_KEYS: Record<string, Tool> = { v: 'select', a: 'edit', c: 'split', h: 'pan', r: 'roof', l: 'line', b: 'bush', t: 'tree', m: 'measure' };
+const TOOL_KEYS: Record<string, Tool> = { v: 'select', a: 'edit', c: 'split', h: 'pan', r: 'roof', l: 'line', b: 'bush', t: 'tree', u: 'semicircle', m: 'measure' };
 /** A line being drawn. `cont`: it continues an existing line from one of its ends. */
 type Draft = { side: ViewSide; pts: UV[]; cont?: { id: string; at: 'first' | 'last' } };
 type MenuItem = { label: string; keys?: string; danger?: boolean; run: () => void };
@@ -148,6 +154,7 @@ type Drag =
   | { kind: 'ground' }
   | { kind: 'newBush'; side: ViewSide; center: UV; radius: number }
   | { kind: 'newTree'; side: ViewSide; base: UV; size: number }
+  | { kind: 'newSemicircle'; side: ViewSide; base: UV; radius: number }
   | { kind: 'pan'; side: ViewSide; x: number; y: number; cam: Cam };
 type ViewName = ViewSide | '3d';
 /** How the viewports share the space, as in CAD programs. */
@@ -192,11 +199,11 @@ const PHONE_VIEW_KEY = 'layout.phoneView';
 const DRAFTING_KEY = 'layout.drafting';
 const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
 const VIEW_NOTES: Record<ViewName, string> = { front: 'as seen from the street', top: 'from above, the street at the bottom', '3d': 'drag to turn, right-drag to pan' };
-const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', measure: 'Measure', align: 'Align picture' };
-const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, custom: Shapes };
+const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', measure: 'Measure', align: 'Align picture' };
+const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, semicircle: Rainbow, custom: Shapes };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
 const BASE_K = 1.6;
-const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree', custom: 'Custom object' };
+const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', custom: 'Custom object' };
 
 function readShowOnLights() {
   try {
@@ -253,6 +260,143 @@ function measureOf(layout: Layout): Measure {
 function PropDistance({ label, value, m, onChange, min = -100_000, hint }: { label: string; value: number | null; m: Measure; onChange: (layoutUnits: number) => void; min?: number; hint?: string }) {
   return (
     <PropNumber label={label} hint={hint} decimal value={value == null ? null : m.show(value)} min={min} step={m.units === 'm' ? 0.1 : 0.5} unit={m.units} onChange={(n) => onChange(n * m.per)} />
+  );
+}
+
+/** Which way an object faces, as seen from above (see Fixture.facing). */
+function FacingProp({ f, hint, onChange }: { f: Fixture; hint: string; onChange: (patch: Partial<Fixture>) => void }) {
+  return <PropNumber label="Faces" unit="°" decimal value={f.facing ?? 0} min={-360} max={360} step={15} steppers onChange={(n) => onChange({ facing: n || undefined })} hint={hint} />;
+}
+
+/** The shape of a bush, a tree or a semicircle, and how its LEDs run over it. */
+function ShapeProps({ f, m, onChange }: { f: Fixture; m: Measure; onChange: (patch: Partial<Fixture>) => void }) {
+  const width = <PropDistance label="Width" value={(f.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />;
+  if (f.kind === 'bush') {
+    return (
+      <>
+        {width}
+        <PropSelect<NonNullable<Fixture['pattern']>>
+          label="LED pattern"
+          value={f.pattern ?? 'fill'}
+          options={[
+            ['fill', 'Net over the bush'],
+            ['ring', 'Ring around the edge'],
+            ['spiral', 'Spiral from the middle']
+          ]}
+          onChange={(pattern) => onChange({ pattern })}
+        />
+        <PropNote>The point is the middle of the bush, as seen from the front.</PropNote>
+      </>
+    );
+  }
+  if (f.kind === 'semicircle') {
+    const way = f.zigzag ?? 'down';
+    const across = way === 'down' || way === 'up';
+    return (
+      <>
+        {width}
+        <PropDistance
+          label="Height"
+          hint="From the straight edge to the top of the round. Half the width: a true half circle."
+          value={f.height ?? f.radius ?? 60}
+          m={m}
+          min={0.1}
+          onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })}
+        />
+        <PropSelect<Zigzag>
+          label="Zigzag"
+          hint={
+            across
+              ? `The wire runs across and back, row by row. LED 0 is at the left end of the ${way === 'down' ? 'top' : 'bottom'} row.`
+              : `The wire runs up and down, column by column. LED 0 is at the foot of the ${way === 'right' ? 'left' : 'right'}-most column.`
+          }
+          value={way}
+          options={[
+            ['down', 'From the top down'],
+            ['up', 'From the bottom up'],
+            ['right', 'From the left to the right'],
+            ['left', 'From the right to the left']
+          ]}
+          onChange={(zigzag) => onChange({ zigzag })}
+        />
+        <PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />
+        <PropNumber
+          label="Turn"
+          unit="°"
+          decimal
+          value={f.rotation ?? 0}
+          min={-360}
+          max={360}
+          step={15}
+          steppers
+          onChange={(n) => onChange({ rotation: n || undefined })}
+          hint="Clockwise, as seen from the front: 90 puts the round side to the right, 180 turns it upside down"
+        />
+        <FacingProp f={f} onChange={onChange} hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left" />
+        <PropNote>The point is the middle of the straight edge.</PropNote>
+      </>
+    );
+  }
+  const spiral = f.pattern !== 'strands';
+  const fromTop = spiral && f.start === 'top';
+  return (
+    <>
+      <PropSelect<TreeShape>
+        label="Shape"
+        hint="How wide it is going up. A sphere fits in its width and height: make them the same for a round ball."
+        value={f.shape ?? 'cone'}
+        options={[
+          ['cone', 'Cone (a tree)'],
+          ['cylinder', 'Cylinder (a post, a column)'],
+          ['sphere', 'Sphere (a ball)']
+        ]}
+        onChange={(shape) => onChange({ shape: shape === 'cone' ? undefined : shape })}
+      />
+      {width}
+      <PropDistance label="Height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />
+      <PropSelect<NonNullable<Fixture['pattern']>>
+        label="LED pattern"
+        hint={
+          spiral
+            ? `LED 0 is at the ${fromTop ? 'top' : 'base'}, at the front; the spiral goes ${fromTop ? 'down to the base' : 'up to the top'}.`
+            : 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
+        }
+        value={spiral ? 'spiral' : 'strands'}
+        options={[
+          ['spiral', 'Spiral around it'],
+          ['strands', 'Strands, base to top']
+        ]}
+        onChange={(pattern) => onChange({ pattern })}
+      />
+      {spiral ? (
+        <>
+          <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
+          <PropSelect<'base' | 'top'>
+            label="Starts"
+            value={f.start ?? 'base'}
+            options={[
+              ['base', 'At the base'],
+              ['top', 'At the top']
+            ]}
+            onChange={(start) => onChange({ start: start === 'base' ? undefined : start })}
+          />
+        </>
+      ) : (
+        <PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />
+      )}
+      <PropSelect<Spin>
+        label={spiral ? 'Winds' : 'Goes round'}
+        hint={spiral ? 'As seen from above, following the wire from LED 0' : 'Which way the strands go round from the first, as seen from above'}
+        value={f.spin ?? 'ccw'}
+        options={[
+          ['ccw', 'Counterclockwise'],
+          ['cw', 'Clockwise']
+        ]}
+        onChange={(spin) => onChange({ spin: spin === 'ccw' ? undefined : spin })}
+      />
+      <FacingProp f={f} onChange={onChange} hint={`Turned as seen from above: where ${spiral ? 'the spiral' : 'the first strand'} starts. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`} />
+      <PropNote>The point is the middle of the base.</PropNote>
+    </>
   );
 }
 
@@ -1120,8 +1264,8 @@ export function LayoutPage() {
   /** The box around an object in a view, in view units. */
   const boxOf = (f: Fixture, side: ViewSide): Box => {
     const V = (p: Point) => toView(p, side, zMin);
-    if (isLine(f) || f.kind === 'custom') {
-      const pts = isLine(f) ? f.points : designPaths(f, layout ? layoutScale(layout) : undefined).flat();
+    if (drawnByPaths(f)) {
+      const pts: Point[] = objectPaths(f, layout ? layoutScale(layout) : undefined).flat();
       if (!pts.length) pts.push(f.points[0]);
       const us = pts.map((p) => V(p).u);
       const vs = pts.map((p) => V(p).v);
@@ -1380,10 +1524,10 @@ export function LayoutPage() {
       setDraft((d) => (d.side === side && d.pts.length ? { ...d, pts: [...d.pts, s.at] } : { side, pts: [s.at] }));
       return;
     }
-    if (tool === 'bush' || tool === 'tree') {
+    if (tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
       const p = snapAt(e, side).at;
       svgs.current[side]?.setPointerCapture(e.pointerId);
-      setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : { kind: 'newTree', side, base: p, size: 0 });
+      setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : tool === 'tree' ? { kind: 'newTree', side, base: p, size: 0 } : { kind: 'newSemicircle', side, base: p, radius: 0 });
       return;
     }
     if (tool === 'align') {
@@ -1440,7 +1584,7 @@ export function LayoutPage() {
         hint = snapAt(e, side, tape && !tape.b && tape.side === side ? tape.a : null);
       } else if (tool === 'align' && side === 'top' && alignPts.length % 2) {
         hint = snapAt(e, side, alignPts[alignPts.length - 1]);
-      } else if (tool === 'bush' || tool === 'tree') {
+      } else if (tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
         hint = snapAt(e, side);
       } else if (tool === 'edit' || tool === 'split') {
         const s = snapPoint(p, targetsFor(side, undefined, true), tolFor(side), { snap: drafting.snap !== e.altKey });
@@ -1493,11 +1637,35 @@ export function LayoutPage() {
       setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.center.u, (p.v - drag.center.v) / (side === 'front' ? 0.72 : 1))) });
     } else if (drag.kind === 'newTree') {
       setDrag({ ...drag, size: Math.round(side === 'front' ? Math.max(0, drag.base.v - p.v) : Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
+    } else if (drag.kind === 'newSemicircle') {
+      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
     }
   }
 
   function onPointerUp() {
     setSnapHint(null);
+    if (layout && drag?.kind === 'newSemicircle') {
+      const s = layoutScale(layout);
+      const b = drag.base;
+      const r = Math.max(15, drag.radius || Math.round(0.6 * s));
+      const lt = lightsOf(layout, layout.lights);
+      // Front view: its straight edge where you pressed, half a meter in front of the wall. From above: on the ground.
+      const base: Point = drag.side === 'front' ? { x: b.u, y: b.v, z: Math.round(0.5 * s) } : { x: b.u, y: Math.round(layoutGround(layout)), z: Math.round(b.v + zMin) };
+      addFixture({
+        id: uid(),
+        name: `Semicircle ${layout.fixtures.filter((f) => f.kind === 'semicircle').length + 1}`,
+        kind: 'semicircle',
+        points: [base],
+        radius: r,
+        strands: 8,
+        zigzag: 'down',
+        pixels: lt?.perStrand ?? 100,
+        ...(lt ? { lights: lt.id } : {}),
+        deviceId: null,
+        startPixel: 0,
+        reversed: false
+      });
+    }
     if (layout && (drag?.kind === 'newBush' || drag?.kind === 'newTree')) {
       const s = layoutScale(layout);
       const ground = layoutGround(layout);
@@ -1885,6 +2053,8 @@ export function LayoutPage() {
               ? 'Press on the middle of the bush and drag out to its edge.'
               : tool === 'tree'
                 ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
+                : tool === 'semicircle'
+                  ? 'Press on the middle of its straight (bottom) edge and drag out to one end.'
                 : tool === 'measure'
                   ? 'Tap two points to measure the distance between them. Then type the real distance to set the scale.'
                   : tool === 'align'
@@ -1906,6 +2076,8 @@ export function LayoutPage() {
               ? 'Press on the middle of the bush and drag out to its edge.'
               : tool === 'tree'
                 ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
+                : tool === 'semicircle'
+                  ? 'Press on the middle of its straight (bottom) edge and drag out to one end.'
                 : tool === 'measure'
                   ? 'Click two points to measure the distance between them. Then type the real distance to set the scale (or, in the top view, the scale of the picture from above).'
                   : tool === 'align'
@@ -2145,7 +2317,7 @@ export function LayoutPage() {
                 </g>
               );
             }
-            // Bush or tree.
+            // Bush, tree, custom object or semicircle.
             const c = V(f.points[0]);
             const r = f.radius ?? 60;
             const h = f.kind === 'tree' ? (f.height ?? 240) : 0;
@@ -2158,8 +2330,10 @@ export function LayoutPage() {
               startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
             };
             const hitClass = tool === 'select' && !panMode ? 'cursor-move' : '';
-            if (f.kind === 'custom') {
-              const paths = designPaths(f, scale).map((path) => path.map(V));
+            if (f.kind === 'custom' || f.kind === 'semicircle') {
+              const paths = objectPaths(f, scale).map((path) => path.map(V));
+              // A semicircle that is not turned: handles for its width and (from the front) its height.
+              const square = f.kind === 'semicircle' && !f.rotation && !f.facing;
               const b = boxOf(f, side);
               const pad = 10 * k;
               return (
@@ -2175,19 +2349,22 @@ export function LayoutPage() {
                   ) : null}
                   {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
                   {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
+                  {isSel && square ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
+                  {isSel && square && front ? handle('h', { u: c.u, v: c.v - (f.height ?? r) }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
                 </g>
               );
             }
+            const outline = f.kind === 'tree' && front ? treeOutline(f).map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
             return (
               <g key={f.id}>
                 {f.kind === 'tree' && front ? (
-                  <polygon points={`${c.u - r},${c.v} ${c.u},${c.v - h} ${c.u + r},${c.v}`} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                  <polygon points={outline} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 ) : (
                   <ellipse cx={c.u} cy={c.v} rx={r} ry={front ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 )}
                 {multi.includes(f.id) ? (
                   f.kind === 'tree' && front ? (
-                    <polygon points={`${c.u - r},${c.v} ${c.u},${c.v - h} ${c.u + r},${c.v}`} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                    <polygon points={outline} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   ) : (
                     <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(front ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   )
@@ -2270,6 +2447,21 @@ export function LayoutPage() {
             ) : (
               <circle cx={drag.base.u} cy={drag.base.v} r={drag.size} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
             )
+          ) : null}
+          {drag?.kind === 'newSemicircle' && drag.side === side ? (
+            <path
+              // From the front: the round side up. From above: a flat object is a line.
+              d={
+                front
+                  ? `M ${drag.base.u - drag.radius} ${drag.base.v} A ${drag.radius} ${drag.radius} 0 0 1 ${drag.base.u + drag.radius} ${drag.base.v} Z`
+                  : `M ${drag.base.u - drag.radius} ${drag.base.v} L ${drag.base.u + drag.radius} ${drag.base.v}`
+              }
+              fill="rgba(52,211,153,0.15)"
+              stroke="#34d399"
+              strokeWidth={2.5 * k}
+              strokeDasharray={dash(8, 6)}
+              pointerEvents="none"
+            />
           ) : null}
 
           {snapHint?.side === side ? <SnapMarker s={snapHint} k={k} /> : null}
@@ -2686,52 +2878,7 @@ export function LayoutPage() {
 
           {!isLine(sel) && sel.kind !== 'custom' ? (
             <PropSection key="shape" id="shape" title="Shape">
-              <PropDistance label="Width" value={(sel.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => update(sel.id, { radius: Math.max(5, Math.round(lu / 2)) })} />
-              {sel.kind === 'tree' ? <PropDistance label="Height" value={sel.height ?? 240} m={m} min={0.1} onChange={(lu) => update(sel.id, { height: Math.max(5, Math.round(lu)) })} /> : null}
-              {sel.kind === 'bush' ? (
-                <PropSelect<NonNullable<Fixture['pattern']>>
-                  label="LED pattern"
-                  value={sel.pattern ?? 'fill'}
-                  options={[
-                    ['fill', 'Net over the bush'],
-                    ['ring', 'Ring around the edge'],
-                    ['spiral', 'Spiral from the middle']
-                  ]}
-                  onChange={(pattern) => update(sel.id, { pattern })}
-                />
-              ) : (
-                <>
-                  <PropSelect<NonNullable<Fixture['pattern']>>
-                    label="LED pattern"
-                    hint={
-                      sel.pattern === 'strands'
-                        ? 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
-                        : 'LED 0 is at the base, at the front; the spiral goes up to the top.'
-                    }
-                    value={sel.pattern === 'strands' ? 'strands' : 'spiral'}
-                    options={[
-                      ['spiral', 'Spiral around the tree'],
-                      ['strands', 'Strands, base to top']
-                    ]}
-                    onChange={(pattern) => update(sel.id, { pattern })}
-                  />
-                  {sel.pattern === 'strands' ? (
-                    <PropNumber label="Strands" value={sel.strands ?? 12} min={1} max={64} onChange={(n) => update(sel.id, { strands: Math.round(n) })} />
-                  ) : (
-                    <PropNumber
-                      label="Turns"
-                      hint="Turns of the spiral from the base to the top"
-                      decimal
-                      value={sel.turns ?? 8}
-                      min={0.5}
-                      max={100}
-                      step={0.5}
-                      onChange={(n) => update(sel.id, { turns: n })}
-                    />
-                  )}
-                </>
-              )}
-              <PropNote>{sel.kind === 'tree' ? 'The point is the middle of the base.' : 'The point is the middle of the bush, as seen from the front.'}</PropNote>
+              <ShapeProps f={sel} m={m} onChange={(patch) => update(sel.id, patch)} />
             </PropSection>
           ) : null}
           </>
@@ -3085,6 +3232,7 @@ export function LayoutPage() {
     ['line', Spline, 'Line'],
     ['bush', Circle, 'Bush'],
     ['tree', TreePine, 'Tree'],
+    ['semicircle', Rainbow, 'Semicircle'],
     ['custom', Shapes, 'Custom']
   ];
   const addTool = addTools.find(([t]) => t === tool);
@@ -3113,7 +3261,7 @@ export function LayoutPage() {
       <span className="ml-auto" />
       <DraftingMenu drafting={drafting} layout={layout} onChange={setDrafting} />
       {addOpen ? (
-        <div className="absolute inset-x-0 top-full grid grid-cols-5 gap-1 border-b border-stone-200 bg-stone-50 p-1.5 shadow-lg dark:border-stone-800 dark:bg-stone-900">
+        <div className="absolute inset-x-0 top-full grid grid-cols-6 gap-1 border-b border-stone-200 bg-stone-50 p-1.5 shadow-lg dark:border-stone-800 dark:bg-stone-900">
           {addTools.map(([t, Icon, label]) => (
             <button
               key={t}
@@ -3334,6 +3482,7 @@ export function LayoutPage() {
               {toolButton('line', Spline)}
               {toolButton('bush', Circle)}
               {toolButton('tree', TreePine)}
+              {toolButton('semicircle', Rainbow)}
               <button
                 type="button"
                 onClick={() => setLibrary(true)}
@@ -3799,7 +3948,7 @@ function PositionProps({ f, point, m, ground, onChange }: { f: Fixture; point: n
       </>
     );
   }
-  return xyz(0, f.kind === 'tree' ? 'Base height' : 'Height');
+  return xyz(0, f.kind === 'tree' || f.kind === 'semicircle' ? 'Base height' : 'Height');
 }
 
 /** Every point of a line, so an edit to one point leaves all the others where they are. */
@@ -4152,8 +4301,8 @@ function LedLabels({ f, corner, segment, V, side, k, scale }: { f: Fixture; corn
       {text}
     </text>
   );
-  if (f.kind === 'custom') {
-    const pts = designPaths(f, scale).flat().map(V);
+  if (f.kind === 'custom' || f.kind === 'semicircle') {
+    const pts = objectPaths(f, scale).flat().map(V);
     const { first, last } = ledRange(f);
     if (!pts.length) return null;
     const u = (Math.min(...pts.map((q) => q.u)) + Math.max(...pts.map((q) => q.u))) / 2;
@@ -4863,7 +5012,7 @@ function RenameInput({ value, onDone }: { value: string; onDone: (name: string |
 
 const SHORTCUTS: [string, string][] = [
   ['V  A  C  H', 'Select, edit points, split, pan'],
-  ['R  L  B  T', 'Roofline, line, bush, tree'],
+  ['R  L  B  T  U', 'Roofline, line, bush, tree, semicircle'],
   ['M', 'Measure'],
   ['P', 'Play or stop the effects'],
   ['Wheel, pinch', 'Zoom at the pointer'],

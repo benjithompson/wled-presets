@@ -235,7 +235,7 @@ export class Yard {
     const byX = (a: Part, b: Part) => a.x - b.x;
     this.bushes = parts.filter((p) => p.fixture.kind === 'bush').sort(byX);
     this.trees = parts.filter((p) => p.fixture.kind === 'tree').sort(byX);
-    this.decor = parts.filter((p) => p.fixture.kind === 'line' || p.fixture.kind === 'custom').sort(byX);
+    this.decor = parts.filter((p) => p.fixture.kind === 'line' || p.fixture.kind === 'semicircle' || p.fixture.kind === 'custom').sort(byX);
     const roofXs = Array.from(this.roof.x);
     this.middle = roofXs.length ? (Math.min(...roofXs) + Math.max(...roofXs)) / 2 : stage.width / 2;
     this.ground = stage.groundY;
