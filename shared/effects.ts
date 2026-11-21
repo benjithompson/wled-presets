@@ -45,7 +45,17 @@ export type EffectId =
   | 'snowfall'
   | 'fireflies'
   | 'starburst'
-  | 'equalizer';
+  | 'equalizer'
+  | 'hyperspace'
+  | 'digitalrain'
+  | 'tesla'
+  | 'blackhole'
+  | 'lavalamp'
+  | 'helix'
+  | 'hologram'
+  | 'orbits'
+  | 'supernova'
+  | 'kaleidoscope';
 export type PaletteId =
   | 'rainbow'
   | 'aurora'
@@ -63,6 +73,9 @@ export type PaletteId =
   | 'galaxy'
   | 'snow'
   | 'spectrum'
+  | 'matrix'
+  | 'plasma'
+  | 'lava'
   | 'custom';
 /** Which way a 3-D effect moves through space. Right, up and toward the street are positive. */
 export type Direction = 'right' | 'left' | 'up' | 'down' | 'toward' | 'away' | 'out' | 'in';
@@ -196,7 +209,27 @@ export const EFFECTS: EffectInfo[] = [
   { id: 'snowfall', name: 'Snowfall', description: 'Flakes drift down past the lights; where they touch, the lights sparkle and keep a soft glow that melts away.', palette: 'snow', intensity: 'Snow', size: 'Flake size', energy: 0.25, space: '3d', reverse: 'Rise like bubbles' },
   { id: 'fireflies', name: 'Fireflies', description: 'Glowing orbs wander lazily through the yard, from bush to roof, and blink on and off.', palette: 'aurora', intensity: 'Fireflies', size: 'Glow size', energy: 0.3, space: '3d' },
   { id: 'starburst', name: 'Starburst', description: 'Fireworks in 3-D: shells rise and burst into spheres of sparks that grow, fall, crackle and fade over the house.', palette: 'party', intensity: 'Shells', size: 'Burst size', energy: 0.9, space: '3d' },
-  { id: 'equalizer', name: 'Equalizer', description: 'Bars of light bounce to a beat across the yard, like a music visualizer, with peaks that fall slowly.', palette: 'spectrum', intensity: 'Energy', size: 'Bar width', energy: 0.8, space: '3d', reverse: 'Bars hang from the top' }
+  { id: 'equalizer', name: 'Equalizer', description: 'Bars of light bounce to a beat across the yard, like a music visualizer, with peaks that fall slowly.', palette: 'spectrum', intensity: 'Energy', size: 'Bar width', energy: 0.8, space: '3d', reverse: 'Bars hang from the top' },
+  {
+    id: 'hyperspace',
+    name: 'Hyperspace',
+    description: 'Stars stream out of the middle of the yard as if you fly through them. Every few seconds they stretch into streaks, and the jump ends in a white flash.',
+    palette: 'ice',
+    intensity: 'Stars',
+    size: 'Streak length',
+    energy: 0.85,
+    space: '3d',
+    directions: ['out', 'in']
+  },
+  { id: 'digitalrain', name: 'Digital rain', description: 'Columns of glowing code pour down the house, each drop with a white-hot head and a flickering trail.', palette: 'matrix', intensity: 'Rain', size: 'Column width', energy: 0.55, space: '3d', reverse: 'Rain upward' },
+  { id: 'tesla', name: 'Plasma globe', description: 'Crackling tendrils of electricity reach from a glowing core out to every corner, wander, fork and flicker.', palette: 'plasma', intensity: 'Tendrils', size: 'Bolt width', energy: 0.7, space: '3d' },
+  { id: 'blackhole', name: 'Black hole', description: 'A dark hole with a burning ring of light; a tilted disk of fire swirls around it, faster near the middle, and now and then jets shoot up and down.', palette: 'fire', intensity: 'Jets', size: 'Hole size', energy: 0.45, space: '3d', reverse: 'Spin the other way' },
+  { id: 'lavalamp', name: 'Lava lamp', description: 'Big glowing blobs rise, sink, stretch and melt into each other, all through the yard.', palette: 'lava', intensity: 'Blobs', size: 'Blob size', energy: 0.25, space: '3d' },
+  { id: 'helix', name: 'Double helix', description: 'Two strands of light twist around each other across the yard or up a tree, joined by colored rungs, with a pulse running along them.', palette: 'neon', intensity: 'Rungs', size: 'Twist length', energy: 0.45, space: '3d', reverse: 'Twist the other way' },
+  { id: 'hologram', name: 'Hologram', description: 'A wireframe cube, a diamond and a four-dimensional tesseract turn in the air over the yard, with scan lines and glitches.', palette: 'ice', intensity: 'Glitch', size: 'Line width', energy: 0.55, space: '3d' },
+  { id: 'orbits', name: 'Orbits', description: 'Comets with long tails race around a glowing nucleus on tilted orbits, like an atom, in front of and behind each other.', palette: 'party', intensity: 'Comets', size: 'Comet size', energy: 0.55, space: '3d' },
+  { id: 'supernova', name: 'Supernova', description: 'A star shudders and collapses, explodes in a flash, and a ragged shock wave rolls over the yard; it leaves a glowing cloud and a spinning pulsar.', palette: 'sunset', intensity: 'Afterglow', size: 'Blast size', energy: 0.9, space: '3d' },
+  { id: 'kaleidoscope', name: 'Kaleidoscope', description: 'Colors fold into mirrored wedges around the middle of the yard and keep turning, with glints along the mirrors.', palette: 'rainbow', intensity: 'Mirrors', size: 'Pattern size', energy: 0.5, space: '3d', reverse: 'Turn the other way' }
 ];
 
 /** True for effects that light each LED by where it is in space (3-D). */
@@ -229,6 +262,9 @@ export const PALETTES: PaletteInfo[] = [
   { id: 'galaxy', name: 'Galaxy', colors: ['#0a0038', '#3a10b0', '#9020d0', '#ff3fa0', '#ffd0ec'] },
   { id: 'snow', name: 'Snow', colors: ['#ffffff', '#d8ecff', '#a8d4ff'] },
   { id: 'spectrum', name: 'Level meter', colors: ['#00ff40', '#a0ff00', '#ffe000', '#ff8000', '#ff0020'] },
+  { id: 'matrix', name: 'Code green', colors: ['#002a08', '#00a028', '#30ff60', '#c8ffd0'] },
+  { id: 'plasma', name: 'Plasma', colors: ['#7a2cff', '#ff40ff', '#40b0ff', '#c070ff'], cyclic: true },
+  { id: 'lava', name: 'Lava', colors: ['#ff1a00', '#ff7a00', '#ff0060', '#ffc400'], cyclic: true },
   { id: 'custom', name: 'My colors', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true }
 ];
 
@@ -494,6 +530,12 @@ class Pal {
     return this.cyclic ? t : 1 - Math.abs(fract(t * 0.5) * 2 - 1);
   }
   /** A random color of the palette. */
+  /** The color at t (as in add), as RGB. */
+  at(t: number): Rgb {
+    const o = new Float32Array(3);
+    this.add(o, 0, t, 1);
+    return [o[0], o[1], o[2]];
+  }
   pick(rand: () => number): Rgb {
     return this.stops[Math.floor(rand() * this.stops.length) % this.stops.length];
   }
@@ -1695,6 +1737,619 @@ const equalizer: Factory = (_n, _rand, noise) => {
   };
 };
 
+// ---------- 3-D shows ----------
+// Big pictures for the whole yard: most are drawn as the street sees them (by x and y), so the
+// house front becomes one screen; the ones with depth (orbits, the plasma globe) also thread
+// through a tree.
+
+/** Where on the last segment segD2 measured the nearest point is, 0..1. */
+let segT = 0;
+
+/** Squared distance from p to the segment a..b (sets segT). */
+function segD2(px: number, py: number, pz: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dz = bz - az;
+  const L = dx * dx + dy * dy + dz * dz;
+  let u = L > 1e-12 ? ((px - ax) * dx + (py - ay) * dy + (pz - az) * dz) / L : 0;
+  u = u < 0 ? 0 : u > 1 ? 1 : u;
+  segT = u;
+  const ex = ax + dx * u - px;
+  const ey = ay + dy * u - py;
+  const ez = az + dz * u - pz;
+  return ex * ex + ey * ey + ez * ez;
+}
+
+/**
+ * Adds a glowing line from a to b, `w` wide: color ca at a with brightness ka, fading to cb and
+ * kb at b. `flat`: by front-view distance, as seen from the street.
+ */
+function line3(out: Float32Array, sp: Space, ax: number, ay: number, az: number, bx: number, by: number, bz: number, w: number, ca: Rgb, ka: number, cb: Rgb, kb: number, flat = false) {
+  if (ka <= 0 && kb <= 0) return;
+  const m = 3 * w;
+  const x0 = Math.min(ax, bx) - m;
+  const x1 = Math.max(ax, bx) + m;
+  const y0 = Math.min(ay, by) - m;
+  const y1 = Math.max(ay, by) + m;
+  const inv = 1 / (w * w);
+  const cut = 9 * w * w;
+  const n = sp.x.length;
+  for (let i = 0; i < n; i++) {
+    const x = sp.x[i];
+    if (x < x0 || x > x1) continue;
+    const y = sp.y[i];
+    if (y < y0 || y > y1) continue;
+    const d2 = flat ? segD2(x, y, 0, ax, ay, 0, bx, by, 0) : segD2(x, y, sp.z[i], ax, ay, az, bx, by, bz);
+    if (d2 > cut) continue;
+    const u = segT;
+    const g = Math.exp(-d2 * inv) * (ka + (kb - ka) * u);
+    const j = i * 3;
+    out[j] += (ca[0] + (cb[0] - ca[0]) * u) * g;
+    out[j + 1] += (ca[1] + (cb[1] - ca[1]) * u) * g;
+    out[j + 2] += (ca[2] + (cb[2] - ca[2]) * u) * g;
+  }
+}
+
+/** Adds a glowing path through `count` points (x, y, z each), without bright knots where its pieces meet. */
+function path3(out: Float32Array, sp: Space, pts: Float32Array, count: number, w: number, c: Rgb, k: number, flat = false) {
+  if (k <= 0 || count < 2) return;
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (let s = 0; s < count; s++) {
+    x0 = Math.min(x0, pts[s * 3]);
+    x1 = Math.max(x1, pts[s * 3]);
+    y0 = Math.min(y0, pts[s * 3 + 1]);
+    y1 = Math.max(y1, pts[s * 3 + 1]);
+  }
+  const m = 3 * w;
+  const inv = 1 / (w * w);
+  const cut = 9 * w * w;
+  const n = sp.x.length;
+  for (let i = 0; i < n; i++) {
+    const x = sp.x[i];
+    if (x < x0 - m || x > x1 + m) continue;
+    const y = sp.y[i];
+    if (y < y0 - m || y > y1 + m) continue;
+    const z = flat ? 0 : sp.z[i];
+    let best = cut;
+    for (let s = 0; s < count - 1; s++) {
+      const a = s * 3;
+      const d2 = flat ? segD2(x, y, 0, pts[a], pts[a + 1], 0, pts[a + 3], pts[a + 4], 0) : segD2(x, y, z, pts[a], pts[a + 1], pts[a + 2], pts[a + 3], pts[a + 4], pts[a + 5]);
+      if (d2 < best) best = d2;
+    }
+    if (best < cut) addRgb(out, i * 3, c, Math.exp(-best * inv) * k);
+  }
+}
+
+const hyperspace: Factory = (_n, rand) => {
+  const stars: { a: number; p: number; v: number; c: number }[] = [];
+  let lastU = 0;
+  const reset = (s: { a: number; p: number; v: number; c: number }, p: number) => {
+    s.a = rand() * Math.PI * 2;
+    s.p = p;
+    s.v = 0.14 + rand() * 0.22;
+    s.c = Math.floor(rand() * 16);
+  };
+  return (out, { t, dt, intensity, size, pal, space, dir }) => {
+    const count = Math.round(24 + 96 * intensity);
+    while (stars.length < count) {
+      const s = { a: 0, p: 0, v: 0, c: 0 };
+      reset(s, rand());
+      stars.push(s);
+    }
+    if (stars.length > count) stars.length = count;
+    // The jump, every 12 seconds: the stars stretch into streaks, then a white flash.
+    const T = 12;
+    const u = fract(t / T) * T;
+    const surge = smooth(6, 9, u) * (1 - smooth(9, 9.2, u));
+    const flash = u >= 9 ? Math.exp(-(u - 9) * 5) : 0;
+    if (lastU < 9 && u >= 9) for (const s of stars) reset(s, rand() * 0.7);
+    lastU = u;
+    const R = 0.55 * Math.hypot(space.ex, space.ey) || 0.5;
+    const inward = dir === 'in';
+    const w = Math.max(space.pitch * 1.2, 0.006) * (1 + surge * 0.6);
+    const len = (0.03 + 0.07 * size) * (1 + 7 * surge);
+    const speed = 1 + 4 * surge;
+    const m = pal.stops.length;
+    // Where they come from glows, and blazes up before the jump.
+    glow3(out, space, 0, 0, 0, 0.05 + 0.12 * surge, pal.stops[0], 0.35 + 1.4 * surge, true);
+    const rr = (q: number) => R * clamp01(inward ? 1 - q : q) ** 1.8;
+    for (const s of stars) {
+      s.p += s.v * speed * dt;
+      if (s.p > 1 + len) reset(s, rand() * 0.08);
+      const head = Math.min(1, s.p);
+      const tail = Math.max(0, s.p - len);
+      const rh = rr(head);
+      const rt = rr(tail);
+      const ca = Math.cos(s.a);
+      const sa = Math.sin(s.a);
+      // Nearer stars (further out) are brighter.
+      const k = 0.2 + 1.3 * (Math.max(rh, rt) / R);
+      const c = mixRgb(pal.stops[s.c % m], WHITE, 0.45);
+      line3(out, space, rt * ca, rt * sa, 0, rh * ca, rh * sa, 0, w, c, k * 0.12, c, k, true);
+    }
+    if (flash > 0.002) fillRgb(out, WHITE, flash * 1.4);
+  };
+};
+
+const digitalrain: Factory = () => (out, { t, intensity, size, pal, space, reverse }) => {
+  const n = space.x.length;
+  const K = Math.max(3, Math.min(90, Math.round((10 + 30 * Math.max(space.ex, 0.1)) / size)));
+  const drops = 1 + Math.round(intensity * 2);
+  const tail = 0.35 + 0.25 * intensity;
+  for (let i = 0; i < n; i++) {
+    const col = Math.min(K - 1, Math.floor(unitX(space, i) * K));
+    const h = reverse ? 1 - unitY(space, i) : unitY(space, i);
+    let best = 0;
+    let head = 0;
+    for (let d = 0; d < drops; d++) {
+      const v = 0.16 + 0.3 * hash01(col, d * 7 + 1);
+      const lane = t * v + hash01(col, d * 7 + 2) + d / drops;
+      const cyc = Math.floor(lane);
+      // The head falls from above the top (a new height each time) to below the bottom.
+      const y = 1.25 + 0.6 * hash01(col * 31 + d, cyc) - fract(lane) * (2.1 + tail);
+      const dist = h - y;
+      if (dist < -0.03 || dist > tail) continue;
+      if (dist < 0.03) head = Math.max(head, 1 - Math.abs(dist) / 0.03);
+      const f = 1 - Math.max(0, dist) / tail;
+      if (f > best) best = f;
+    }
+    // The glyphs flicker as they change.
+    const glyph = 0.55 + 0.45 * hash01(i, Math.floor(t * 9 + hash01(i, 5) * 9));
+    pal.add(out, i * 3, 0, 0.03);
+    if (best > 0) pal.add(out, i * 3, 0.15 + 0.85 * best, best ** 1.6 * glyph * 1.15);
+    if (head > 0) addRgb(out, i * 3, WHITE, head * 1.2);
+  }
+};
+
+const tesla: Factory = (_n, rand, noise) => {
+  const S = 16;
+  const pts = new Float32Array((S + 1) * 3);
+  const fork = new Float32Array(6 * 3);
+  const seeds = Array.from({ length: 10 }, () => rand() * 100);
+  return (out, { t, intensity, size, pal, space }) => {
+    const K = 3 + Math.round(intensity * 7);
+    const hx = Math.max(space.ex, 0.04) / 2;
+    const hy = Math.max(space.ey, 0.04) / 2;
+    const hz = Math.max(space.ez, 0.04) / 2;
+    const w = Math.max(space.pitch * 1.4, 0.009 * size);
+    const m = pal.stops.length;
+    const jit = t * 5;
+    // A shallow target (the house front): the bolts light what they pass in front of.
+    const flat = space.ez < 0.5 * Math.max(space.ex, space.ey);
+    // The core.
+    const pulse = 0.85 + 0.15 * noise.n2(3.3, t * 8);
+    glow3(out, space, 0, 0, 0, 0.07 + 0.03 * size, pal.stops[0], 0.5 * pulse, flat);
+    glow3(out, space, 0, 0, 0, 0.03 + 0.02 * size, WHITE, 1.5 * pulse, flat);
+    for (let k = 0; k < K; k++) {
+      const sd = seeds[k];
+      // Where it touches the glass wanders slowly over the sphere.
+      const th = sd + noise.n2(sd, t * 0.16) * 5;
+      const ph = Math.acos(clamp(noise.n2(sd + 40, t * 0.14) * 1.5, -1, 1));
+      const ex = Math.sin(ph) * Math.cos(th) * hx;
+      const ey = Math.cos(ph) * hy;
+      const ez = Math.sin(ph) * Math.sin(th) * hz;
+      const amp = 0.16 * Math.hypot(ex, ey, ez) + 0.01;
+      for (let s = 0; s <= S; s++) {
+        const u = s / S;
+        const env = Math.sin(Math.PI * u) * amp;
+        pts[s * 3] = ex * u + noise.n2(sd * 3 + u * 4, jit) * env;
+        pts[s * 3 + 1] = ey * u + noise.n2(sd * 3 + u * 4 + 50, jit) * env;
+        pts[s * 3 + 2] = ez * u + noise.n2(sd * 3 + u * 4 + 90, jit) * env;
+      }
+      const flick = 0.7 + 0.3 * noise.n2(sd + 9, t * 22);
+      const c = mixRgb(pal.stops[k % m], WHITE, 0.3);
+      path3(out, space, pts, S + 1, w, c, 1.4 * flick, flat);
+      // A branch now and then, from the middle of the bolt.
+      const fb = noise.n2(sd + 17, t * 1.5);
+      if (fb > 0.15) {
+        const s0 = Math.floor(S * (0.4 + 0.2 * hash01(k, Math.floor(t * 2))));
+        for (let f = 0; f < 6; f++) {
+          const u = f / 5;
+          const a = s0 * 3;
+          fork[f * 3] = pts[a] + (ex - pts[a]) * u * 0.5 + noise.n2(sd + 70 + u * 3, jit) * amp * u;
+          fork[f * 3 + 1] = pts[a + 1] + (ey - pts[a + 1]) * u * 0.2 + noise.n2(sd + 80 + u * 3, jit) * amp * u;
+          fork[f * 3 + 2] = pts[a + 2] + noise.n2(sd + 85 + u * 3, jit) * amp * u;
+        }
+        path3(out, space, fork, 6, w * 0.8, c, smooth(0.15, 0.4, fb) * 0.9 * flick, flat);
+      }
+      // Where it touches, the glass glows.
+      glow3(out, space, ex, ey, ez, 0.03 + 0.03 * size, c, 0.9 * flick, flat);
+    }
+  };
+};
+
+const blackhole: Factory = (_n, _rand, noise) => (out, { t, intensity, size, pal, space, reverse }) => {
+  const n = space.x.length;
+  const Rd = 0.5 * Math.max(space.ex, 0.25);
+  const rh = Rd * (0.07 + 0.07 * size);
+  // The disk, seen almost edge-on.
+  const tilt = 0.3;
+  const spin = reverse ? -1 : 1;
+  // Jets: how often they fire (none at 0).
+  const T = 10 - 6 * intensity;
+  const ju = fract(t / T) * T;
+  const jet = intensity > 0.02 ? smooth(0, 0.25, ju) * (1 - smooth(1.5, 3.2, ju)) : 0;
+  const front = rh + ju * 0.9;
+  const JET: Rgb = [0.55, 0.75, 1];
+  for (let i = 0; i < n; i++) {
+    const x = space.x[i];
+    const y = space.y[i];
+    const r = Math.hypot(x, y);
+    const j = i * 3;
+    // The disk: in its own plane the radius is hypot(x, y / tilt).
+    const yd = y / tilt;
+    const dr = Math.hypot(x, yd);
+    let heat = 0;
+    if (dr > rh * 1.3 && dr < Rd * 1.1) {
+      const a = Math.atan2(yd, x);
+      const q = dr / Rd;
+      // Inner rings turn faster, so the swirls shear into streaks.
+      const ap = a - spin * t * (0.35 / (q ** 1.5 + 0.12));
+      const turb = 0.5 + 0.5 * noise.fbm3(Math.cos(ap) * 1.7, Math.sin(ap) * 1.7, Math.log(q + 0.02) * 2.6, 3);
+      const band = smooth(rh * 1.3, rh * 2.3, dr) * (1 - smooth(Rd * 0.55, Rd * 1.1, dr));
+      // The side that turns toward you is brighter.
+      const dopp = 1 - 0.55 * spin * Math.cos(a);
+      heat = band * (0.3 + 0.7 * turb) * (1.25 - 0.6 * q) * dopp;
+    }
+    if (r < rh) {
+      // The shadow: only the near side of the disk crosses in front of it.
+      if (y < 0 && heat > 0) pal.add(out, j, clamp01(heat * 0.85), heat * 1.1);
+      continue;
+    }
+    if (heat > 0) pal.add(out, j, clamp01(heat * 0.85), heat * 1.1);
+    // The photon ring, right at the edge of the shadow.
+    const pr = (r - rh * 1.1) / (rh * 0.14 + space.pitch);
+    if (pr < 3) addRgb(out, j, [1, 0.85, 0.6], Math.exp(-pr * pr) * 1.6);
+    // The far side of the disk, bent by gravity into a halo over and under the hole.
+    const lr = (r - rh * 1.65) / (rh * 0.55);
+    if (lr > -3 && lr < 3) {
+      const a = Math.atan2(y, x) - spin * t * 0.6;
+      const tw = 0.6 + 0.4 * noise.n2(Math.cos(a) * 2 + 7, Math.sin(a) * 2);
+      pal.add(out, j, 0.75, Math.exp(-lr * lr) * 0.65 * tw);
+    }
+    if (jet > 0) {
+      const ay = Math.abs(y);
+      const wj = rh * 0.35 + ay * 0.1 + space.pitch;
+      const ax = Math.abs(x) / wj;
+      if (ax < 3 && ay > rh * 0.8) {
+        const knots = 0.65 + 0.35 * Math.sin(ay * 45 - ju * 25);
+        const k = Math.exp(-ax * ax) * smooth(front + 0.04, front - 0.04, ay) * jet * knots * 1.5;
+        addRgb(out, j, JET, k);
+        addRgb(out, j, WHITE, k * k * 0.4);
+      }
+    }
+    // A few stars behind it all.
+    const h = hash01(i, 7);
+    if (h > 0.985) addRgb(out, j, WHITE, 0.15 + 0.25 * (0.5 + 0.5 * Math.sin(t * 2 + h * 400)));
+  }
+};
+
+const lavalamp: Factory = (_n, rand, noise) => {
+  const blobs = Array.from({ length: 9 }, () => ({ seed: rand() * 100, ph: rand(), rate: 0.035 + rand() * 0.045, r: 0.7 + rand() * 0.6 }));
+  const bx = new Float32Array(9);
+  const by = new Float32Array(9);
+  const bz = new Float32Array(9);
+  const bi = new Float32Array(9);
+  return (out, { t, intensity, size, pal, space }) => {
+    const n = space.x.length;
+    const B = 3 + Math.round(intensity * 6);
+    const hx = space.ex / 2;
+    const hy = space.ey / 2;
+    const hz = space.ez / 2;
+    const m = pal.stops.length;
+    for (let b = 0; b < B; b++) {
+      const f = blobs[b];
+      // Heated at the bottom they rise, cool at the top and sink again.
+      by[b] = Math.sin((t * f.rate + f.ph) * Math.PI * 2) * hy * 0.85;
+      bx[b] = clamp(noise.n2(f.seed, t * 0.04) * 1.3, -1, 1) * hx;
+      bz[b] = clamp(noise.n2(f.seed + 50, t * 0.04) * 1.3, -1, 1) * hz;
+      // They swell and shrink a little as they go. Kernel reach: twice the radius.
+      const rad = Math.max(space.pitch * 3, 0.085 * size * f.r) * (1 + 0.22 * Math.sin(t * 0.6 + f.seed));
+      bi[b] = 1 / (4 * rad * rad);
+    }
+    const c: Rgb = [0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const x = space.x[i];
+      const y = space.y[i];
+      const z = space.z[i];
+      let F = 0;
+      c[0] = c[1] = c[2] = 0;
+      for (let b = 0; b < B; b++) {
+        const q = ((x - bx[b]) ** 2 + (y - by[b]) ** 2 + (z - bz[b]) ** 2) * bi[b];
+        if (q >= 1) continue;
+        const k = (1 - q) * (1 - q);
+        F += k;
+        const s = pal.stops[b % m];
+        c[0] += s[0] * k;
+        c[1] += s[1] * k;
+        c[2] += s[2] * k;
+      }
+      const j = i * 3;
+      pal.add(out, j, 0, 0.04);
+      if (F <= 0) continue;
+      c[0] /= F;
+      c[1] /= F;
+      c[2] /= F;
+      // The surface is where the field reaches 0.56 (a lone blob's radius).
+      const v = F / 0.5625;
+      const inside = smooth(0.8, 1.05, v);
+      const rim = Math.exp(-(((v - 1) / 0.13) ** 2));
+      const heat = 1.15 - 0.3 * unitY(space, i);
+      addRgb(out, j, c, (inside * 1.05 + clamp01(v) * 0.22) * heat);
+      addRgb(out, j, WHITE, rim * 0.3);
+    }
+  };
+};
+
+const helix: Factory = () => (out, { t, intensity, size, pal, space, reverse }) => {
+  const n = space.x.length;
+  // Along the longest side: across the yard, or up a tree.
+  const upright = space.ey >= Math.max(space.ex, space.ez);
+  const rb = ((upright ? space.ex : space.ey) / 2) * 0.8;
+  const rc = (space.ez / 2) * 0.8;
+  const useB = rb > 1e-4;
+  // A shallow target (the house front): as the street sees it, two waves that cross.
+  const useC = rc > 1e-4 && space.ez >= 0.5 * Math.max(space.ex, space.ey);
+  const turns = 2.4 / size;
+  const spin = (reverse ? -1 : 1) * t * 0.22;
+  const rungs = 2 + Math.round(intensity * 8);
+  const W = 0.3;
+  const pulse = fract(t * 0.07);
+  const c1 = pal.stops[0];
+  const c2 = pal.stops[1 % pal.stops.length];
+  const r1 = pal.stops[2 % pal.stops.length];
+  const r2 = pal.stops[3 % pal.stops.length];
+  for (let i = 0; i < n; i++) {
+    const a = upright ? unitY(space, i) : unitX(space, i);
+    const nb = useB ? (upright ? space.x[i] : space.y[i]) / rb : 0;
+    const nc = useC ? space.z[i] / rc : 0;
+    const th = Math.PI * 2 * (a * turns - spin);
+    const sb = useB ? Math.cos(th) : 0;
+    const sc = useC ? Math.sin(th) : 0;
+    const d1 = Math.hypot(nb - sb, nc - sc) / W;
+    const d2 = Math.hypot(nb + sb, nc + sc) / W;
+    // The strand nearer the street is brighter.
+    const zs = Math.sin(th);
+    const k1 = Math.exp(-d1 * d1) * (0.55 + 0.45 * zs);
+    const k2 = Math.exp(-d2 * d2) * (0.55 - 0.45 * zs);
+    const j = i * 3;
+    // A pulse runs along the strands.
+    const pd = (a - pulse) / 0.035;
+    const glint = pd > -3 && pd < 3 ? Math.exp(-pd * pd) : 0;
+    addRgb(out, j, c1, k1 * 1.2);
+    addRgb(out, j, c2, k2 * 1.2);
+    if (glint > 0) addRgb(out, j, WHITE, (k1 + k2) * glint);
+    // Rungs: pairs between the strands, each half its own color.
+    const rp = a * turns * rungs;
+    const ri = Math.round(rp);
+    const da = (rp - ri) / 0.13;
+    if (da > -3 && da < 3) {
+      const dd = segD2(nb, nc, 0, sb, sc, 0, -sb, -sc, 0) / (0.2 * 0.2);
+      if (dd < 9) {
+        const k = Math.exp(-da * da - dd) * 0.75;
+        const swap = hash01(ri, 11) < 0.5;
+        addRgb(out, j, segT < 0.5 === swap ? r1 : r2, k);
+      }
+    }
+  }
+};
+
+const S3 = 1 / Math.sqrt(3);
+const CUBE_V = [-1, 1].flatMap((x) => [-1, 1].flatMap((y) => [-1, 1].map((z) => [x * S3, y * S3, z * S3, 0])));
+const OCTA_V = [[1, 0, 0, 0], [-1, 0, 0, 0], [0, 1, 0, 0], [0, -1, 0, 0], [0, 0, 1, 0], [0, 0, -1, 0]];
+const TESS_V = Array.from({ length: 16 }, (_, k) => [k & 1 ? 0.5 : -0.5, k & 2 ? 0.5 : -0.5, k & 4 ? 0.5 : -0.5, k & 8 ? 0.5 : -0.5]);
+/** Pairs of vertices `apart` from each other: the edges of a shape. */
+const edgesOf = (v: number[][], apart: number) => {
+  const e: [number, number][] = [];
+  for (let a = 0; a < v.length; a++) for (let b = a + 1; b < v.length; b++) if (Math.abs(Math.hypot(...v[a].map((x, k) => x - v[b][k])) - apart) < 1e-6) e.push([a, b]);
+  return e;
+};
+const SHAPES = [
+  { v: CUBE_V, e: edgesOf(CUBE_V, 2 * S3), four: false },
+  { v: OCTA_V, e: edgesOf(OCTA_V, Math.SQRT2), four: false },
+  { v: TESS_V, e: edgesOf(TESS_V, 1), four: true }
+];
+
+const hologram: Factory = () => {
+  const P = new Float32Array(16 * 3);
+  return (out, { t, intensity, size, pal, space }) => {
+    const n = space.x.length;
+    const T = 11;
+    const cyc = Math.floor(t / T);
+    const u = t - cyc * T;
+    const shape = SHAPES[cyc % SHAPES.length];
+    // Each shape pops out of the projector and folds away again.
+    const grow = smooth(0, 0.7, u) * (1 + 0.12 * Math.sin(Math.min(u, 1.4) * 4.5) * (1 - smooth(0.7, 1.4, u))) * (1 - smooth(T - 0.5, T, u));
+    const glitch = Math.max(u < 0.5 ? 1 - u / 0.5 : 0, T - u < 0.5 ? 1 - (T - u) / 0.5 : 0);
+    const sx = Math.max(space.ex, 0.04) * 0.4 * grow;
+    const sy = Math.max(space.ey, 0.04) * 0.48 * grow;
+    const ay = t * 0.45;
+    const ax = 0.45 + 0.35 * Math.sin(t * 0.21);
+    const xw = t * 0.38;
+    const zw = t * 0.23;
+    for (let k = 0; k < shape.v.length; k++) {
+      let [x, y, z, w] = shape.v[k];
+      if (shape.four) {
+        // Turn in four dimensions, then look at it from the fourth.
+        [x, w] = [x * Math.cos(xw) - w * Math.sin(xw), x * Math.sin(xw) + w * Math.cos(xw)];
+        [z, w] = [z * Math.cos(zw) - w * Math.sin(zw), z * Math.sin(zw) + w * Math.cos(zw)];
+        const f = 1.5 / (2 - w);
+        x *= f;
+        y *= f;
+        z *= f;
+      }
+      [x, z] = [x * Math.cos(ay) + z * Math.sin(ay), -x * Math.sin(ay) + z * Math.cos(ay)];
+      [y, z] = [y * Math.cos(ax) - z * Math.sin(ax), y * Math.sin(ax) + z * Math.cos(ax)];
+      const f = 3 / (3.4 - z);
+      P[k * 3] = x * f * sx;
+      P[k * 3 + 1] = y * f * sy;
+      P[k * 3 + 2] = z;
+    }
+    const lw = Math.max(space.pitch * 1.3, 0.006 * size);
+    const depth = (z: number) => clamp01(0.5 + z * 0.45);
+    for (const [a, b] of shape.e) {
+      const za = P[a * 3 + 2];
+      const zb = P[b * 3 + 2];
+      line3(out, space, P[a * 3], P[a * 3 + 1], 0, P[b * 3], P[b * 3 + 1], 0, lw, pal.at(depth(za)), 0.35 + 0.85 * depth(za), pal.at(depth(zb)), 0.35 + 0.85 * depth(zb), true);
+    }
+    for (let k = 0; k < shape.v.length; k++) glow3(out, space, P[k * 3], P[k * 3 + 1], 0, lw * 1.8, WHITE, 0.4 + 0.6 * depth(P[k * 3 + 2]), true);
+    // The projector glows at the bottom.
+    glow3(out, space, 0, -space.ey / 2, 0, 0.06 + 0.04 * size, pal.stops[pal.stops.length - 1], 0.35 + 0.4 * grow, true);
+    // Scan lines roll up; it flickers, and glitches as the shapes change.
+    const flicker = hash01(Math.floor(t * 24), 3) > 1 - 0.12 * intensity ? 0.45 : 1;
+    const speckle = (0.03 + 0.25 * intensity) * glitch;
+    const step = Math.floor(t * 30);
+    for (let i = 0; i < n; i++) {
+      const j = i * 3;
+      const scan = (0.72 + 0.28 * Math.sin(Math.PI * 2 * (unitY(space, i) * 9 - t * 1.4))) * flicker;
+      out[j] *= scan;
+      out[j + 1] *= scan;
+      out[j + 2] *= scan;
+      if (speckle > 0 && hash01(i, step) < speckle) pal.add(out, j, hash01(i, step + 1), 0.9);
+    }
+  };
+};
+
+const orbits: Factory = (_n, rand) => {
+  const orbs = Array.from({ length: 7 }, (_, k) => ({ tilt: 0.4 + rand() * 2.3, yaw: (k / 7) * Math.PI + rand() * 0.4, rate: (0.3 + rand() * 0.25) * (rand() < 0.5 ? -1 : 1), ph: rand() * 6.28, ecc: 0.7 + rand() * 0.3 }));
+  return (out, { t, intensity, size, pal, space }) => {
+    const K = 2 + Math.round(intensity * 5);
+    // A shallow target (the house front): comets light what they pass in front of.
+    const flat = space.ez < 0.5 * Math.max(space.ex, space.ey);
+    const hx = (Math.max(space.ex, 0.05) / 2) * 0.92;
+    const hy = (Math.max(space.ey, 0.05) / 2) * 0.92;
+    const hz = (Math.max(space.ez, 0.05) / 2) * 0.92;
+    const r = Math.max(space.pitch * 1.6, 0.022 * size);
+    const m = pal.stops.length;
+    const beat = 0.8 + 0.2 * Math.sin(t * 3.2);
+    glow3(out, space, 0, 0, 0, 0.07 + 0.04 * size, pal.stops[0], 1.0 * beat, flat);
+    glow3(out, space, 0, 0, 0, 0.025 + 0.015 * size, WHITE, 1.2 * beat, flat);
+    const TAIL = 18;
+    for (let k = 0; k < K; k++) {
+      const o = orbs[k];
+      const c = pal.stops[(k + 1) % m];
+      const head = o.ph + o.rate * t * Math.PI;
+      const back = Math.sign(o.rate) * 0.055;
+      for (let s = TAIL; s >= 0; s--) {
+        const a = head - s * back;
+        // A circle, tilted and turned in space.
+        const x0 = Math.cos(a);
+        const y0 = Math.sin(a) * o.ecc;
+        const y1 = y0 * Math.cos(o.tilt);
+        const z1 = y0 * Math.sin(o.tilt);
+        const x = x0 * Math.cos(o.yaw) + z1 * Math.sin(o.yaw);
+        const z = -x0 * Math.sin(o.yaw) + z1 * Math.cos(o.yaw);
+        const fade = (1 - s / (TAIL + 1)) ** 1.6;
+        // In front of the nucleus brighter, behind it dimmer.
+        const near = 0.6 + 0.4 * z;
+        glow3(out, space, x * hx, y1 * hy, z * hz, r * (1 - 0.45 * (s / TAIL)), c, 1.25 * fade * near, flat);
+        if (s === 0) glow3(out, space, x * hx, y1 * hy, z * hz, r * 0.5, WHITE, 0.9 * near, flat);
+      }
+    }
+  };
+};
+
+const supernova: Factory = (_n, _rand, noise) => (out, { t, intensity, size, pal, space }) => {
+  const n = space.x.length;
+  const T = 10;
+  const cyc = Math.floor(t / T);
+  const u = t - cyc * T;
+  // Each star goes off somewhere else.
+  const cx = (hash01(cyc, 1) - 0.5) * space.ex * 0.5;
+  const cy = (hash01(cyc, 2) - 0.5) * space.ey * 0.4;
+  const cz = (hash01(cyc, 3) - 0.5) * space.ez * 0.5;
+  const R = (0.5 * Math.hypot(space.ex, space.ey, space.ez) || 0.5) * (0.75 + 0.45 * size);
+  const BANG = 2.4;
+  const fadeOut = 1 - smooth(T - 1.2, T, u);
+  const top = pal.stops[pal.stops.length - 1];
+  const core = mixRgb(top, WHITE, 0.5);
+  if (u < BANG) {
+    // The star shudders, faster and faster, as its shell falls in.
+    const q = u / BANG;
+    const shell = R * (1 - q * q) * 0.9;
+    const w = Math.max(space.pitch * 1.5, 0.03);
+    const rs = (0.035 + 0.03 * size) * (1 + 0.25 * Math.sin(u * (5 + q * q * 40))) * (1 - 0.6 * q * q * q);
+    for (let i = 0; i < n; i++) {
+      const d = Math.hypot(space.x[i] - cx, space.y[i] - cy, space.z[i] - cz);
+      const off = (d - shell) / w;
+      if (off > -3 && off < 3) pal.add(out, i * 3, 0.3, Math.exp(-off * off) * 0.7 * q);
+      const g = d / rs;
+      if (g < 3) addRgb(out, i * 3, core, Math.exp(-g * g) * (0.7 + 1.4 * q));
+    }
+    return;
+  }
+  const a = u - BANG;
+  const flash = Math.exp(-a * 6) * 1.8;
+  const rad = R * (1 - Math.exp(-a * 1.1)) * 1.15;
+  const w = Math.max(space.pitch * 2, 0.035 + 0.04 * a);
+  const shockK = Math.exp(-a * 0.4) * 1.6 * fadeOut;
+  const remnant = (0.2 + 0.7 * intensity) * smooth(0.2, 1.2, a) * fadeOut;
+  // The pulsar's two beams sweep round, as the street sees them.
+  const beam = Math.PI * 2 * a * 0.45;
+  const pulsar = smooth(1.5, 3, a) * fadeOut;
+  for (let i = 0; i < n; i++) {
+    const dx = space.x[i] - cx;
+    const dy = space.y[i] - cy;
+    const dz = space.z[i] - cz;
+    const d = Math.hypot(dx, dy, dz) + 1e-6;
+    const j = i * 3;
+    // A ragged front: it races ahead in some directions.
+    const rag = 1 + 0.22 * noise.n3((dx / d) * 2.2, (dy / d) * 2.2, (dz / d) * 2.2 + cyc * 7.3);
+    const off = (d - rad * rag) / w;
+    if (off > -6 && off < 3) {
+      const s = off > 0 ? Math.exp(-off * off) : Math.exp(-off * off * 0.15);
+      // White-hot at the front, the palette's colors behind it.
+      pal.add(out, j, clamp01(1 + off * 0.16), s * shockK);
+      if (off > -1.5) addRgb(out, j, WHITE, Math.exp(-off * off) * shockK * 0.45);
+    }
+    if (remnant > 0 && d < rad * rag) {
+      const fil = noise.fbm3(dx * 5.5, dy * 5.5, dz * 5.5 + cyc * 3.7 + a * 0.12, 3);
+      const v = smooth(-0.05, 0.45, fil) * smooth(0, 0.35 * rad, d);
+      if (v > 0) pal.add(out, j, 0.25 + 0.6 * clamp01(d / (rad * rag)), v * remnant);
+    }
+    if (pulsar > 0) {
+      const ang = Math.atan2(dy, dx) - beam;
+      const db = Math.abs(Math.atan2(Math.sin(ang), Math.cos(ang)));
+      const off2 = Math.min(db, Math.PI - db) / 0.13;
+      if (off2 < 3) addRgb(out, j, [0.7, 0.85, 1], Math.exp(-off2 * off2) * Math.exp(-(d / R) * 2) * pulsar * 0.9);
+      const g = d / 0.025;
+      if (g < 3) addRgb(out, j, WHITE, Math.exp(-g * g) * pulsar * (0.6 + 0.6 * (Math.sin(t * 25) > 0 ? 1 : 0)));
+    }
+    if (flash > 0.002) addRgb(out, j, core, flash * (0.4 + 0.6 * Math.exp(-d / R)));
+  }
+};
+
+const kaleidoscope: Factory = (_n, _rand, noise) => (out, { t, intensity, size, pal, space, reverse }) => {
+  const n = space.x.length;
+  const N = 3 + Math.round(intensity * 7);
+  const wedge = Math.PI / N;
+  const rot = (reverse ? -1 : 1) * t * 0.12;
+  const f = 3.2 / size;
+  const seam = Math.max(space.pitch * 1.2, 0.006);
+  for (let i = 0; i < n; i++) {
+    const x = space.x[i];
+    const y = space.y[i];
+    const r = Math.hypot(x, y);
+    // Fold every direction into one wedge, mirrored.
+    let a = Math.atan2(y, x) + rot;
+    a = ((a % (2 * wedge)) + 2 * wedge) % (2 * wedge);
+    if (a > wedge) a = 2 * wedge - a;
+    const px = r * Math.cos(a) * f;
+    const py = r * Math.sin(a) * f;
+    const v = noise.fbm3(px + t * 0.11, py - t * 0.07, t * 0.09 + space.z[i] * 1.5, 3);
+    const rings = 0.5 + 0.5 * Math.cos(Math.PI * 2 * (r * f * 0.9 - t * 0.3));
+    const bright = clamp01(0.5 + v * 1.9) ** 1.4;
+    const j = i * 3;
+    pal.add(out, j, pal.wave(v * 1.5 + r * 0.9 - t * 0.05), (0.12 + 1.05 * bright) * (0.6 + 0.4 * rings));
+    // Glints along the mirrors.
+    const edge = (Math.min(a, wedge - a) * r) / seam;
+    if (edge < 3) addRgb(out, j, WHITE, Math.exp(-edge * edge) * 0.35 * bright);
+  }
+};
+
 const FACTORIES: Record<EffectId, Factory> = {
   solid,
   gradient,
@@ -1728,7 +2383,17 @@ const FACTORIES: Record<EffectId, Factory> = {
   snowfall,
   fireflies,
   starburst,
-  equalizer
+  equalizer,
+  hyperspace,
+  digitalrain,
+  tesla,
+  blackhole,
+  lavalamp,
+  helix,
+  hologram,
+  orbits,
+  supernova,
+  kaleidoscope
 };
 
 /** One running effect on `n` LEDs: along a string (1-D), or at the places in `space` (3-D). */
