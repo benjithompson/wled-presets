@@ -36,7 +36,12 @@ export function ledBox(layout: Layout, side: ViewSide, zRange: [number, number])
   if (!b) return fitBox(layout, side, zRange);
   const size = viewSize(layout, side, zRange);
   const pad = Math.max(0.06 * Math.max(b.x1 - b.x0, b.y1 - b.y0), 0.02 * Math.max(size.w, size.h));
-  return { x: b.x0 - pad, y: b.y0 - pad, w: b.x1 - b.x0 + 2 * pad, h: b.y1 - b.y0 + 2 * pad };
+  return {
+    x: b.x0 - pad,
+    y: b.y0 - pad,
+    w: b.x1 - b.x0 + 2 * pad,
+    h: b.y1 - b.y0 + 2 * pad
+  };
 }
 
 /** A box grown about its middle to a shape (width over height), so it fills a view of that shape. */
@@ -67,6 +72,13 @@ function ledBounds(layout: Layout, side: ViewSide, zRange: [number, number]) {
     y1 = Math.max(y1, v);
   }
   return x0 > x1 ? null : { x0, y0, x1, y1 };
+}
+
+/** True when the first `n` bytes of two arrays are the same. */
+function sameBytes(a: Uint8Array, b: Uint8Array, n: number) {
+  if (a.length < n || b.length < n) return false;
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** A point in view coordinates (u to the right, v down). */
@@ -141,7 +153,13 @@ export function YardView({
   const highlightRef = useRef<Set<string>>(new Set());
   highlightRef.current = new Set(highlight == null ? [] : Array.isArray(highlight) ? highlight : [highlight]);
   /** What the last frame drew, to find the LED under the pointer. */
-  const hitRef = useRef<{ stage: ReturnType<typeof buildStage>; pos: Float32Array; vb: Box; w: number; h: number } | null>(null);
+  const hitRef = useRef<{
+    stage: ReturnType<typeof buildStage>;
+    pos: Float32Array;
+    vb: Box;
+    w: number;
+    h: number;
+  } | null>(null);
   // Read on every frame, so panning and zooming do not restart the drawing loop.
   const boxRef = useRef<Box>(fit);
   boxRef.current = viewBox ?? fit;
@@ -169,8 +187,25 @@ export function YardView({
     const defaultGridStep = layout.units === 'm' ? scale : (scale * 5) / FEET_PER_METER;
     // Grid lines count from the left edge, and from the ground (front) or the front wall (top).
     const gridV0 = top ? -zMin : layoutGround(layout);
+    // Layers, all reused from frame to frame:
+    // - base: what does not change while the view holds still (sky, pictures, grid, guides, unlit
+    //   bulbs), drawn again only when the view moves or the canvas changes size;
+    // - bloom: the lit bulbs, a quarter of the size, written pixel by pixel;
+    // - glow: the bloom blurred, at the same small size (blurring the full-size canvas costs
+    //   sixteen times as much, and a wide blur looks the same).
+    const base = document.createElement('canvas');
     const bloom = document.createElement('canvas');
     const bctx = bloom.getContext('2d')!;
+    const glow = document.createElement('canvas');
+    const gctx = glow.getContext('2d')!;
+    let bloomPixels: ImageData | null = null;
+    let baseKey = '';
+    let drawnKey = '';
+    let drawn: Uint8Array | null = null;
+    let drawnCopy = new Uint8Array(0);
+    // Lit bulbs by color (quantized, 32 levels a channel): one path and one fill per color.
+    const byColor = new Map<number, number[]>();
+    const cores = Array.from({ length: 8 }, () => [] as number[]);
     let bg: HTMLImageElement | null = null;
     if (layout.background) {
       bg = new Image();
@@ -195,15 +230,14 @@ export function YardView({
         cv.width = w;
         cv.height = h;
       }
-      // Checked on its own: a new layout makes a new bloom layer while the canvas size stays the same.
-      const bw = Math.max(1, Math.round(w / 4));
-      const bh = Math.max(1, Math.round(h / 4));
-      if (bloom.width !== bw || bloom.height !== bh) {
-        bloom.width = bw;
-        bloom.height = bh;
-      }
       const vb = boxRef.current;
-      hitRef.current = { stage, pos, vb, w: cv.clientWidth, h: cv.clientHeight };
+      hitRef.current = {
+        stage,
+        pos,
+        vb,
+        w: cv.clientWidth,
+        h: cv.clientHeight
+      };
       const sx = w / vb.w;
       const sy = h / vb.h;
       const X = (u: number) => (u - vb.x) * sx;
@@ -211,146 +245,164 @@ export function YardView({
       // Bulbs and glow grow when you zoom in, up to a limit.
       const s = Math.min(sx, sy, 3 * dpr);
 
-      // Background: the photo, darkened so the lights read as night, or a night sky.
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.filter = 'none';
-      const sky = ctx.createLinearGradient(0, 0, 0, h);
-      sky.addColorStop(0, '#05070f');
-      sky.addColorStop(1, '#0d0b10');
-      ctx.fillStyle = sky;
-      ctx.fillRect(0, 0, w, h);
-      if (!top && bg?.complete && bg.naturalWidth) {
-        ctx.globalAlpha = 0.42;
-        ctx.drawImage(bg, X(0), Y(0), size.w * sx, size.h * sy);
-        ctx.globalAlpha = 1;
-      }
-      if (aerial && aerialImg?.complete && aerialImg.naturalWidth) {
-        // In view units: moved to its middle, turned, then drawn about its middle.
-        const aw = aerial.width;
-        const ah = aerial.width * aerial.aspect;
-        ctx.save();
-        ctx.globalAlpha = aerial.opacity ?? AERIAL_OPACITY;
-        ctx.setTransform(sx, 0, 0, sy, X(aerial.x), Y(aerial.z - zMin));
-        ctx.rotate((aerial.rotation * Math.PI) / 180);
-        ctx.drawImage(aerialImg, -aw / 2, -ah / 2, aw, ah);
-        ctx.restore();
-      }
-      if (fill && edge && !top) {
-        // The edge of the picture.
-        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-        ctx.lineWidth = dpr;
-        ctx.strokeRect(X(0), Y(0), size.w * sx, size.h * sy);
-      }
-      if (top) {
-        // The house behind the front wall (depth 0).
-        ctx.fillStyle = 'rgba(255,255,255,0.025)';
-        ctx.fillRect(0, 0, w, Math.max(0, Y(-zMin)));
-      }
-      if (gridRef.current) {
-        // Grid lines; every `gridMajor`th line is brighter. Lines closer than 6 pixels are left out.
-        const u0 = vb.x;
-        const v0 = vb.y;
-        const { step: setStep, major: every } = gridSizeRef.current;
-        const gridStep = setStep && setStep > 0 ? setStep : defaultGridStep;
-        const lines = (major: boolean) => {
-          const step = gridStep * (major ? Math.max(1, Math.round(every)) : 1);
-          if (step * sx < 6 * dpr) return;
-          ctx.beginPath();
-          for (let u = Math.ceil(u0 / step) * step; u <= u0 + vb.w; u += step) (ctx.moveTo(X(u), 0), ctx.lineTo(X(u), h));
-          for (let v = gridV0 + Math.ceil((v0 - gridV0) / step) * step; v <= v0 + vb.h; v += step) (ctx.moveTo(0, Y(v)), ctx.lineTo(w, Y(v)));
-          ctx.stroke();
-        };
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = top ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.045)';
-        lines(false);
-        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-        lines(true);
-      }
-      if (top) {
-        ctx.strokeStyle = 'rgba(251,191,36,0.35)';
-        ctx.lineWidth = 2 * dpr;
-        ctx.beginPath();
-        ctx.moveTo(0, Y(-zMin));
-        ctx.lineTo(w, Y(-zMin));
-        ctx.stroke();
-      }
-
-      // Guides: the wire of each object, so its shape shows even when its LEDs are off.
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (const f of layout.fixtures) {
-        const hl = highlightRef.current.has(f.id);
-        ctx.strokeStyle = hl ? 'rgba(40,170,255,0.9)' : 'rgba(255,255,255,0.08)';
-        ctx.lineWidth = (hl ? 3 : 1.5) * dpr;
-        const c = view(f.points[0] ?? { x: 0, y: 0 });
-        const r = f.radius ?? 60;
-        ctx.beginPath();
-        if (isLine(f) || f.kind === 'custom') {
-          for (const path of isLine(f) ? [f.points] : designPaths(f, layoutScale(layout)))
-            path.forEach((p, i) => {
-              const q = view(p);
-              if (i) ctx.lineTo(X(q.u), Y(q.v));
-              else ctx.moveTo(X(q.u), Y(q.v));
-            });
-        } else if (top) {
-          // From above, bushes and trees are circles.
-          ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
-        } else if (f.kind === 'tree') {
-          const th = f.height ?? 240;
-          ctx.moveTo(X(c.u - r), Y(c.v));
-          ctx.lineTo(X(c.u), Y(c.v - th));
-          ctx.lineTo(X(c.u + r), Y(c.v));
-          ctx.closePath();
-        } else if (hl) {
-          ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);
-        }
-        ctx.stroke();
-      }
-
-      const frame = getFrameRef.current((performance.now() - t0) / 1000);
       const n = stage.pixelCount;
       const bulb = Math.max(1.2, 2.6 * s * dpr);
       const onScreen = (x: number, y: number) => x > -40 && y > -40 && x < w + 40 && y < h + 40;
 
-      // Unlit bulbs.
-      ctx.fillStyle = 'rgba(255,255,255,0.10)';
-      for (let i = 0; i < n; i++) {
-        // LEDs in skipped segments are not drawn: they stay dark on the house too.
-        if (!stage.active[i]) continue;
-        const x = X(pos[i * 2]);
-        const y = Y(pos[i * 2 + 1]);
-        if (onScreen(x, y)) ctx.fillRect(x - bulb / 2, y - bulb / 2, bulb, bulb);
+      // The still part of the picture: drawn again only when it changed.
+      const bgReady = !!(bg?.complete && bg.naturalWidth);
+      const aerialReady = !!(aerialImg?.complete && aerialImg.naturalWidth);
+      const key = `${w}x${h} ${vb.x},${vb.y},${vb.w},${vb.h} ${[...highlightRef.current].join(',')} ${gridRef.current} ${gridSizeRef.current.step} ${gridSizeRef.current.major} ${bgReady} ${aerialReady}`;
+      if (key !== baseKey) {
+        baseKey = key;
+        if (base.width !== w || base.height !== h) {
+          base.width = w;
+          base.height = h;
+        }
+        paintBase(base.getContext('2d')!);
       }
-      if (!frame || frame.length < n * 3) return;
+      function paintBase(ctx: CanvasRenderingContext2D) {
+        // Background: the photo, darkened so the lights read as night, or a night sky.
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.filter = 'none';
+        const sky = ctx.createLinearGradient(0, 0, 0, h);
+        sky.addColorStop(0, '#05070f');
+        sky.addColorStop(1, '#0d0b10');
+        ctx.fillStyle = sky;
+        ctx.fillRect(0, 0, w, h);
+        if (!top && bg?.complete && bg.naturalWidth) {
+          ctx.globalAlpha = 0.42;
+          ctx.drawImage(bg, X(0), Y(0), size.w * sx, size.h * sy);
+          ctx.globalAlpha = 1;
+        }
+        if (aerial && aerialImg?.complete && aerialImg.naturalWidth) {
+          // In view units: moved to its middle, turned, then drawn about its middle.
+          const aw = aerial.width;
+          const ah = aerial.width * aerial.aspect;
+          ctx.save();
+          ctx.globalAlpha = aerial.opacity ?? AERIAL_OPACITY;
+          ctx.setTransform(sx, 0, 0, sy, X(aerial.x), Y(aerial.z - zMin));
+          ctx.rotate((aerial.rotation * Math.PI) / 180);
+          ctx.drawImage(aerialImg, -aw / 2, -ah / 2, aw, ah);
+          ctx.restore();
+        }
+        if (fill && edge && !top) {
+          // The edge of the picture.
+          ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+          ctx.lineWidth = dpr;
+          ctx.strokeRect(X(0), Y(0), size.w * sx, size.h * sy);
+        }
+        if (top) {
+          // The house behind the front wall (depth 0).
+          ctx.fillStyle = 'rgba(255,255,255,0.025)';
+          ctx.fillRect(0, 0, w, Math.max(0, Y(-zMin)));
+        }
+        if (gridRef.current) {
+          // Grid lines; every `gridMajor`th line is brighter. Lines closer than 6 pixels are left out.
+          const u0 = vb.x;
+          const v0 = vb.y;
+          const { step: setStep, major: every } = gridSizeRef.current;
+          const gridStep = setStep && setStep > 0 ? setStep : defaultGridStep;
+          const lines = (major: boolean) => {
+            const step = gridStep * (major ? Math.max(1, Math.round(every)) : 1);
+            if (step * sx < 6 * dpr) return;
+            ctx.beginPath();
+            for (let u = Math.ceil(u0 / step) * step; u <= u0 + vb.w; u += step) (ctx.moveTo(X(u), 0), ctx.lineTo(X(u), h));
+            for (let v = gridV0 + Math.ceil((v0 - gridV0) / step) * step; v <= v0 + vb.h; v += step) (ctx.moveTo(0, Y(v)), ctx.lineTo(w, Y(v)));
+            ctx.stroke();
+          };
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = top ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.045)';
+          lines(false);
+          ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+          lines(true);
+        }
+        if (top) {
+          ctx.strokeStyle = 'rgba(251,191,36,0.35)';
+          ctx.lineWidth = 2 * dpr;
+          ctx.beginPath();
+          ctx.moveTo(0, Y(-zMin));
+          ctx.lineTo(w, Y(-zMin));
+          ctx.stroke();
+        }
 
-      // Bloom: draw lit bulbs into a quarter-size layer, blur it, add it. The layer keeps the
-      // brightest bulb per spot ('lighten'), not the sum, so dense strips do not blow out.
-      bctx.clearRect(0, 0, bloom.width, bloom.height);
-      bctx.globalCompositeOperation = 'lighten';
-      const bsx = bloom.width / w;
-      const bsy = bloom.height / h;
-      for (let i = 0; i < n; i++) {
-        const r = frame[i * 3],
-          gg = frame[i * 3 + 1],
-          b = frame[i * 3 + 2];
-        if (r + gg + b < 12) continue;
-        const x = X(pos[i * 2]);
-        const y = Y(pos[i * 2 + 1]);
-        if (!onScreen(x, y)) continue;
-        bctx.fillStyle = `rgb(${r},${gg},${b})`;
-        const size = Math.max(1.5, 7 * s * dpr * bsx);
-        bctx.fillRect(x * bsx - size / 2, y * bsy - size / 2, size, size);
+        // Guides: the wire of each object, so its shape shows even when its LEDs are off.
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        for (const f of layout.fixtures) {
+          const hl = highlightRef.current.has(f.id);
+          ctx.strokeStyle = hl ? 'rgba(40,170,255,0.9)' : 'rgba(255,255,255,0.08)';
+          ctx.lineWidth = (hl ? 3 : 1.5) * dpr;
+          const c = view(f.points[0] ?? { x: 0, y: 0 });
+          const r = f.radius ?? 60;
+          ctx.beginPath();
+          if (isLine(f) || f.kind === 'custom') {
+            for (const path of isLine(f) ? [f.points] : designPaths(f, layoutScale(layout)))
+              path.forEach((p, i) => {
+                const q = view(p);
+                if (i) ctx.lineTo(X(q.u), Y(q.v));
+                else ctx.moveTo(X(q.u), Y(q.v));
+              });
+          } else if (top) {
+            // From above, bushes and trees are circles.
+            ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
+          } else if (f.kind === 'tree') {
+            const th = f.height ?? 240;
+            ctx.moveTo(X(c.u - r), Y(c.v));
+            ctx.lineTo(X(c.u), Y(c.v - th));
+            ctx.lineTo(X(c.u + r), Y(c.v));
+            ctx.closePath();
+          } else if (hl) {
+            ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);
+          }
+          ctx.stroke();
+        }
+
+        // Unlit bulbs.
+        ctx.fillStyle = 'rgba(255,255,255,0.10)';
+        for (let i = 0; i < n; i++) {
+          // LEDs in skipped segments are not drawn: they stay dark on the house too.
+          if (!stage.active[i]) continue;
+          const x = X(pos[i * 2]);
+          const y = Y(pos[i * 2 + 1]);
+          if (onScreen(x, y)) ctx.fillRect(x - bulb / 2, y - bulb / 2, bulb, bulb);
+        }
       }
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.filter = `blur(${Math.max(2, 10 * s * dpr)}px)`;
-      ctx.drawImage(bloom, 0, 0, w, h);
-      ctx.globalAlpha = 0.6;
-      ctx.filter = `blur(${Math.max(4, 26 * s * dpr)}px)`;
-      ctx.drawImage(bloom, 0, 0, w, h);
-      ctx.globalAlpha = 1;
+
+      const frame = getFrameRef.current((performance.now() - t0) / 1000);
+      const lit = !!frame && frame.length >= n * 3;
+      // Nothing new: the frames come 30 times a second, the screen asks up to 120.
+      if (key === drawnKey && (lit ? drawn === frame && sameBytes(frame, drawnCopy, n * 3) : drawn === null)) return;
+      drawnKey = key;
+      drawn = lit ? frame : null;
+      if (lit) {
+        if (drawnCopy.length !== n * 3) drawnCopy = new Uint8Array(n * 3);
+        drawnCopy.set(frame.subarray(0, n * 3));
+      }
+
+      ctx.globalCompositeOperation = 'copy';
       ctx.filter = 'none';
+      ctx.globalAlpha = 1;
+      ctx.drawImage(base, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      if (!lit) return;
 
-      // Crisp bulbs on top, with a white-hot core when bright.
+      // Bloom: lit bulbs in a quarter-size layer, blurred, added. The layer keeps the brightest
+      // bulb per spot (per channel), not the sum, so dense strips do not blow out.
+      const bw = Math.max(1, Math.round(w / 4));
+      const bh = Math.max(1, Math.round(h / 4));
+      if (bloom.width !== bw || bloom.height !== bh) {
+        bloom.width = glow.width = bw;
+        bloom.height = glow.height = bh;
+      }
+      if (!bloomPixels || bloomPixels.width !== bw || bloomPixels.height !== bh) bloomPixels = bctx.createImageData(bw, bh);
+      const px = bloomPixels.data;
+      px.fill(0);
+      const bsx = bw / w;
+      const bsy = bh / h;
+      const half = Math.max(1.5, 7 * s * dpr * bsx) / 2;
+      byColor.forEach((list) => (list.length = 0));
+      for (const c of cores) c.length = 0;
       for (let i = 0; i < n; i++) {
         const r = frame[i * 3],
           gg = frame[i * 3 + 1],
@@ -360,17 +412,66 @@ export function YardView({
         const x = X(pos[i * 2]);
         const y = Y(pos[i * 2 + 1]);
         if (!onScreen(x, y)) continue;
-        ctx.fillStyle = `rgb(${r},${gg},${b})`;
-        ctx.beginPath();
-        ctx.arc(x, y, bulb * 0.9, 0, Math.PI * 2);
-        ctx.fill();
-        if (m > 160) {
-          ctx.fillStyle = `rgba(255,255,255,${((m - 160) / 95) * 0.8})`;
-          ctx.beginPath();
-          ctx.arc(x, y, bulb * 0.45, 0, Math.PI * 2);
-          ctx.fill();
+        const q = ((r >> 3) << 10) | ((gg >> 3) << 5) | (b >> 3);
+        let list = byColor.get(q);
+        if (!list) byColor.set(q, (list = []));
+        list.push(i);
+        if (m > 160) cores[Math.min(7, ((m - 160) * 8) / 96) | 0].push(i);
+        if (r + gg + b < 12) continue;
+        const bx = x * bsx;
+        const by = y * bsy;
+        const x0 = Math.max(0, Math.round(bx - half));
+        const x1 = Math.min(bw, Math.max(x0 + 1, Math.round(bx + half)));
+        const y0 = Math.max(0, Math.round(by - half));
+        const y1 = Math.min(bh, Math.max(y0 + 1, Math.round(by + half)));
+        for (let yy = y0; yy < y1; yy++) {
+          for (let k = (yy * bw + x0) * 4, e = (yy * bw + x1) * 4; k < e; k += 4) {
+            if (px[k] < r) px[k] = r;
+            if (px[k + 1] < gg) px[k + 1] = gg;
+            if (px[k + 2] < b) px[k + 2] = b;
+            px[k + 3] = 255;
+          }
         }
       }
+      bctx.putImageData(bloomPixels, 0, 0);
+      gctx.globalCompositeOperation = 'copy';
+      gctx.filter = `blur(${Math.max(2, 10 * s * dpr) * bsx}px)`;
+      gctx.drawImage(bloom, 0, 0);
+      gctx.globalCompositeOperation = 'lighter';
+      gctx.globalAlpha = 0.6;
+      gctx.filter = `blur(${Math.max(4, 26 * s * dpr) * bsx}px)`;
+      gctx.drawImage(bloom, 0, 0);
+      gctx.globalAlpha = 1;
+      gctx.filter = 'none';
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.drawImage(glow, 0, 0, w, h);
+
+      // Crisp bulbs on top (added, like the glow), with a white-hot core when bright: one path per color.
+      const rad = bulb * 0.9;
+      byColor.forEach((list, q) => {
+        if (!list.length) return;
+        ctx.fillStyle = `rgb(${((q >> 10) << 3) | 4},${(((q >> 5) & 31) << 3) | 4},${((q & 31) << 3) | 4})`;
+        ctx.beginPath();
+        for (const i of list) {
+          const x = X(pos[i * 2]);
+          const y = Y(pos[i * 2 + 1]);
+          ctx.moveTo(x + rad, y);
+          ctx.arc(x, y, rad, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      });
+      cores.forEach((list, step) => {
+        if (!list.length) return;
+        ctx.fillStyle = `rgba(255,255,255,${(((step + 0.5) * 12) / 95) * 0.8})`;
+        ctx.beginPath();
+        for (const i of list) {
+          const x = X(pos[i * 2]);
+          const y = Y(pos[i * 2 + 1]);
+          ctx.moveTo(x + bulb * 0.45, y);
+          ctx.arc(x, y, bulb * 0.45, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      });
       ctx.globalCompositeOperation = 'source-over';
     };
     raf = requestAnimationFrame(draw);
@@ -423,7 +524,10 @@ export function YardView({
   return (
     <div
       className={cn('relative mx-auto w-full overflow-hidden rounded-2xl bg-[#05070f] ring-1 ring-white/10', className)}
-      style={{ aspectRatio: `${fit.w} / ${fit.h}`, maxWidth: maxHeight ? `calc(${maxHeight} * ${fit.w / fit.h})` : undefined }}
+      style={{
+        aspectRatio: `${fit.w} / ${fit.h}`,
+        maxWidth: maxHeight ? `calc(${maxHeight} * ${fit.w / fit.h})` : undefined
+      }}
     >
       <canvas ref={canvas} className={cn('absolute inset-0 h-full w-full', onPick && 'cursor-pointer')} {...pointer} />
       {children}
