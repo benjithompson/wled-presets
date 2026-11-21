@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Waves, Yard, type Part, type Sink } from './kit.ts';
+import { NIGHT_MOOD, overMood, Show, turnHue, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Cascade: glowing orbs in four colors roll along the roofline under real gravity: they speed up
@@ -18,6 +19,11 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // The yard: each popped orb drips its color off the gutter, past the windows, into the bush
 // below, so the bushes fill up with a picture of the chain (full bushes: the target is reached).
 // Trees fill up like a thermometer as the chain grows. Windows and doors flash with every burst.
+//
+// The whole yard plays along (see show.ts): calm blue while you aim, red and throbbing when the
+// fuse runs low or on the last life; a chain heats it up, every pop pulses the house in the orb's
+// color, combos and every fifth pop send up fireworks in their colors, reaching the target sweeps
+// gold up the house, and a cleared level ends in a finale.
 
 type Phase = 'ready' | 'aim' | 'chain' | 'clear' | 'fail' | 'over';
 
@@ -62,7 +68,6 @@ const END = 1.35;
 /** A press counts where the spark was this long ago: the phone and Wi-Fi are a little late. */
 const LAG = 0.08;
 const ORB_RADIUS = 1.4;
-const NIGHT: Rgb = [0.025, 0.008, 0.05];
 /**
  * The orbs' colors: few, far apart on real LEDs, and none of the colors that mean something
  * else (white: the bomb, gold: points, red: a miss).
@@ -124,6 +129,11 @@ export function cascadeGame(stage: Stage): Game {
   const decorFlare = new Flare(3.5);
   const bushPaint: (Paint | null)[][] = yard.bushes.map((b) => Array.from({ length: b.count }, () => null));
   const bushNext = yard.bushes.map(() => 0);
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  for (const b of yard.bushes) show.dim(b, 0.6);
+  /** The colors popped in this chain (for the yard's mood). */
+  let chainColors: Rgb[] = [];
 
   let phase: Phase = 'ready';
   let phaseTime = 0;
@@ -172,6 +182,7 @@ export function cascadeGame(stage: Stage): Game {
     orbs = [];
     blasts = [];
     chain = 0;
+    chainColors = [];
     combos = 0;
     swept = false;
     lifeBack = false;
@@ -219,6 +230,8 @@ export function cascadeGame(stage: Stage): Game {
     sparks.clear();
     motes.clear();
     waves.clear();
+    show.clear();
+    show.sweep(COLORS.hint, { dir: 'up', amount: 0.5 });
     spawn(level);
     setPhase('aim');
   }
@@ -232,6 +245,8 @@ export function cascadeGame(stage: Stage): Game {
       sparks.burst(pos, [WHITE, [0.7, 0.8, 1]], 30, n * 0.35, 0.9);
       waves.add(p.x, p.y, [0.6, 0.7, 1], { amount: 0.5 });
       decorFlare.add(WHITE, 0.6);
+      show.ripple(p.x, p.y, [0.6, 0.7, 1], { amount: 0.5 });
+      show.pulse([0.6, 0.7, 1], 0.12);
     }
   }
 
@@ -270,6 +285,15 @@ export function cascadeGame(stage: Stage): Game {
     if (o.gold) waves.add(p.x, p.y, COLORS.gold, { amount: 1 });
     else if (combo || chain % 5 === 0) waves.add(p.x, p.y, o.color, { amount: combo ? 1 : 0.8 });
     paintBush(p.x, p.y, o.color);
+    chainColors.push(o.color);
+    show.pulse(o.color, o.gold ? 0.2 : combo ? 0.12 : 0.06);
+    if (o.gold) show.explode(p.x, p.y, COLORS.gold, { size: 1.2 });
+    else if (combo || chain % 5 === 0) show.rocket([o.color, by.color], { size: 0.6 + Math.min(0.8, chain * 0.04), kind: combo ? 'ring' : 'peony' });
+    // The target reached mid-chain: gold sweeps up the house.
+    if (chain === target) {
+      show.sweep(COLORS.gold, { dir: 'up', amount: 0.7 });
+      show.pulse(COLORS.gold, 0.2);
+    }
   }
 
   /** The bomb goes off where it was (a tap: where the player saw it). */
@@ -307,6 +331,11 @@ export function cascadeGame(stage: Stage): Game {
       // The bushes erupt, the roof answers with fireworks.
       for (const b of yard.bushes) waves.add(b.x, b.top, COLORS.gold, { amount: 0.9 });
       newBest = record('cascade', score).isNew || newBest;
+      // A finale in the colors of the chain; a clean sweep gets a bigger one and a rainbow sweep.
+      const popped = chainColors.length ? chainColors : ORB_COLORS;
+      show.finale(swept ? 8 : 5, { colors: Array.from({ length: 4 }, (_, k) => [popped[(k * 3) % popped.length], k % 2 ? COLORS.gold : popped[(k * 3 + 1) % popped.length]]) });
+      show.sweep(COLORS.gold, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.7 });
+      if (swept) show.sweep(hsv(clock * 0.2), { dir: 'out', amount: 0.8, duration: 1.2 });
     } else {
       lives--;
       // What is left fizzles and falls off the gutter.
@@ -315,10 +344,17 @@ export function cascadeGame(stage: Stage): Game {
         motes.drop(p.x, p.y, mix(o.color, COLORS.bad, 0.6), { vx: (Math.random() - 0.5) * 60, size: 20 });
       }
       orbs = [];
+      const mid = roof.point(n / 2);
       if (lives <= 0) {
         newBest = record('cascade', score).isNew;
+        // The house blows, and the yard goes dark red (gold fireworks for a new best).
+        show.gameOver(mid.x, mid.y, { newBest });
         setPhase('over');
-      } else setPhase('fail');
+      } else {
+        show.explode(mid.x, mid.y, COLORS.bad, { size: 1.2 });
+        show.sweep(COLORS.bad, { dir: 'down', amount: 0.6, duration: 0.7 });
+        setPhase('fail');
+      }
     }
   }
 
@@ -383,7 +419,6 @@ export function cascadeGame(stage: Stage): Game {
   // ---------- Drawing ----------
 
   function drawRoof() {
-    for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT, 1 + 0.4 * Math.sin(clock * 0.7 + i * 0.05));
     for (const b of blasts) {
       const r = blastSize(b);
       const life = b.t < HOLD ? 1 : Math.max(0, 1 - (b.t - HOLD) / (END - HOLD));
@@ -455,10 +490,7 @@ export function cascadeGame(stage: Stage): Game {
     yard.bushes.forEach((b, bi) => {
       for (let i = 0; i < b.count; i++) {
         const p = bushPaint[bi][i];
-        if (!p) {
-          yard.add(b.offset + i, [0.02, 0.03, 0.06]);
-          continue;
-        }
+        if (!p) continue;
         const fresh = p.age < 0.25 ? 1 - p.age / 0.25 : 0;
         const twinkle = phase === 'clear' ? 0.6 + 0.7 * Math.max(0, Math.sin(clock * 9 + i * 2.7)) : 0.55 + 0.1 * Math.sin(clock * 3 + i);
         yard.add(b.offset + i, mix(p.color, WHITE, fresh), twinkle + fresh);
@@ -475,17 +507,40 @@ export function cascadeGame(stage: Stage): Game {
         const done = t >= 1;
         const c = done ? mix(COLORS.gold, WHITE, Math.max(0, Math.sin(clock * 8 + i * 1.7)) * 0.6) : heat(u * 0.85);
         yard.add(part.offset + i, c, done ? 0.9 : 0.6);
-      } else yard.add(part.offset + i, [0.02, 0.015, 0.04]);
+      }
     }
   }
 
+  /** The house: the show's canvas, with the flare of every burst. */
   function drawDecor(part: Part) {
-    const c = decorFlare.color;
-    const heatGlow = Math.min(1, chain / 12);
-    for (let i = 0; i < part.count; i++) {
-      yard.add(part.offset + i, NIGHT, 1.2);
-      yard.add(part.offset + i, c, 1.1);
-      if (heatGlow > 0.3) yard.add(part.offset + i, hsv((clock * 0.4 + i * 0.03) % 1), (heatGlow - 0.3) * 0.25);
+    for (let i = 0; i < part.count; i++) yard.add(part.offset + i, decorFlare.color, 0.6);
+  }
+
+
+  /** The yard's mood from the game's state. */
+  function moodNow(): Mood {
+    const t = target ? Math.min(1.5, chain / target) : 0;
+    switch (phase) {
+      case 'ready':
+        // Waiting: the orbs' colors drift round the house.
+        return { a: ORB_COLORS[Math.floor(clock / 3) % ORB_COLORS.length], b: ORB_COLORS[(Math.floor(clock / 3) + 2) % ORB_COLORS.length], level: 1, drift: 1.4 };
+      case 'aim': {
+        // The fuse burning down, or the last life: red, throbbing faster as the fuse runs out.
+        if (fuse < 3) return { a: COLORS.bad, b: [0.5, 0, 0.2], level: 1.1, throb: 3 };
+        if (lives === 1) return { a: mix(NIGHT_MOOD.a, COLORS.bad, 0.45), b: NIGHT_MOOD.b, level: 0.9, throb: 0.8 };
+        return { ...NIGHT_MOOD, level: 0.8 + 0.05 * Math.min(6, level) };
+      }
+      case 'chain': {
+        // A chain heats the yard up, in the color of the last pop.
+        const last = chainColors.at(-1) ?? NIGHT_MOOD.b;
+        return { a: mix(NIGHT_MOOD.a, heat(0.3 + 0.45 * Math.min(1, t)), Math.min(1, t)), b: mix(NIGHT_MOOD.b, last, 0.7), level: 0.9 + 0.6 * Math.min(1, t), drift: 1 + t };
+      }
+      case 'clear':
+        return { a: COLORS.gold, b: turnHue(chainColors.at(-1) ?? ORB_COLORS[1], 0), level: 1.4, drift: 1.8 };
+      case 'fail':
+        return { a: [0.6, 0.03, 0.02], b: [0.35, 0.05, 0.3], level: 0.8, drift: 0.5 };
+      case 'over':
+        return overMood(phaseTime);
     }
   }
 
@@ -520,6 +575,10 @@ export function cascadeGame(stage: Stage): Game {
       motes.update(dt);
       waves.update(dt);
       decorFlare.update(dt);
+      show.update(dt);
+      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2.5, dt);
+      // The roof is the playfield: the backdrop stays dim there while you aim, so the orbs and the bomb stand out.
+      show.roofLevel = phase === 'aim' ? 0.4 : 0.7;
       meter += (chain - meter) * Math.min(1, dt * 6);
       for (const p of bushPaint) for (const x of p) if (x) x.age += dt;
 
@@ -532,6 +591,10 @@ export function cascadeGame(stage: Stage): Game {
         if (Math.random() < dt * (swept ? 10 : 5)) {
           const colors = bushPaint.flat().filter((x): x is Paint => !!x).map((x) => x.color);
           sparks.burst(Math.random() * n, colors.length ? [colors[Math.floor(Math.random() * colors.length)], WHITE] : [hsv(Math.random()), WHITE], 26, n * 0.3);
+        }
+        if (Math.random() < dt * (swept ? 2.5 : 1.2)) {
+          const popped = chainColors.length ? chainColors : ORB_COLORS;
+          show.rocket([popped[Math.floor(Math.random() * popped.length)], COLORS.gold], { size: 0.8 + Math.random() * 0.5 });
         }
         if (phaseTime > 4) next();
       }
@@ -549,6 +612,7 @@ export function cascadeGame(stage: Stage): Game {
       if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
       motes.draw();
       waves.draw();
+      show.draw(frame);
     },
 
     status(): GameStatusFields {

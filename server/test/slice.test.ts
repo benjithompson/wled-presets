@@ -110,7 +110,8 @@ describe('Slice', () => {
     const tree = yard.trees[0];
     const first = yard.bushes[0];
     press(game);
-    run(game, frame, 0.1);
+    // Once the new game's colors have swept up the yard.
+    run(game, frame, 1);
     expect(lit(tree)).toBe(0);
     expect(lit(first)).toBe(0);
     dropAt(game, frame, lo);

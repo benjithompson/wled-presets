@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Trail, Waves, Yard, type Part } from './kit.ts';
+import { overMood, Show, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Ricochet: a white comet races along the roofline toward a green gate. Tap while it is in the
@@ -21,8 +22,13 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // The yard: every 10 catches the streak flies from the gate into the next bush, which lights up
 // in its own color (the next one fills faintly from the ground as the catches add up). When every
 // bush is lit they all flash gold and start over in new colors. Trees are a speedometer, filling
-// from the base up as the comet speeds up. Windows and doors catch the color of every catch and
-// glow warmer as the speed climbs.
+// from the base up as the comet speeds up. Windows and doors catch the color of every catch.
+//
+// The whole yard is a light show around the game (see Show): it glows in a mood that heats up
+// from deep blue to fire as the comet speeds up, pumps gold on every catch, sends up a firework
+// for each one (a bigger one for a PERFECT), sweeps gold up the house every 10 catches and blows
+// up red at the end. On the roof the show stays faint, so the comet stays the only white and the
+// gate the only green there.
 
 type Phase = 'ready' | 'running' | 'over';
 
@@ -42,8 +48,6 @@ const POP_PERFECT = 0.45;
 
 const COMET_TAIL: Rgb = [0.45, 0.7, 1];
 const GATE: Rgb = [0.15, 1, 0.45];
-const NIGHT: Rgb = [0.01, 0.012, 0.035];
-const BUSH_DARK: Rgb = [0.015, 0.03, 0.02];
 /** Bush colors: none of white (the comet), gold (points) or red (the mistake). */
 const BUSH_COLORS: Rgb[] = [
   [0.05, 1, 0.12],
@@ -73,6 +77,15 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   const motes = new Motes(yard);
   const waves = new Waves(yard);
   const flare = new Flare(3);
+  // The yard around the roof: a mood that heats up with the speed, and fireworks for catches.
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  // The roof is the playfield: while the comet runs, the show stays off it (fireworks bursting
+  // over the roof would add up to white, and white is only the comet) and the game draws a faint
+  // backdrop there in the mood's colors itself. Waiting and after the end, the show has it too.
+  show.roofLevel = 0.5;
+  /** The mood now (set every frame), for the roof's own backdrop. */
+  let mood: Mood = { a: [0, 0, 0], b: [0, 0, 0] };
   const trail = new Trail(Math.max(1, n));
   /** How far the comet still had to go to the gate's middle, lately. */
   const seen = new Recent<number>(0.4);
@@ -175,6 +188,8 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   function start() {
     reset();
     setPhase('running');
+    show.clear();
+    show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
   }
 
   /** The streak flies from the gate into the next bush; a full yard flashes and starts over. */
@@ -190,9 +205,12 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       arrive: () => {
         litTarget[index] = 1;
         flare.add(color, 0.8);
+        show.explode(bush.x, bush.top, color, { size: 0.8 });
         if (litTarget.every((v) => v >= 1)) {
           flashAll = 1.6;
           for (const b of bushes) waves.add(b.x, b.top, COLORS.gold, { amount: 0.5 });
+          // A full yard: fireworks in every bush's color.
+          show.finale(Math.max(4, bushes.length * 2), { colors: bushes.map((_, i) => [bushColor(i), COLORS.gold]) });
         }
       }
     });
@@ -212,6 +230,18 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       sincePerfect = 0;
       flare.add(COLORS.gold, 1.1);
     } else flare.add(COLORS.gold, 0.45);
+    // The yard: a gold kick, and a firework (a big one for a PERFECT, with a ring through the house).
+    show.pulse(COLORS.gold, perfect ? 0.14 : 0.07);
+    show.rocket([COLORS.gold, bushColor(Math.floor(catches / PER_BUSH))], { size: perfect ? 1.1 : 0.6, kind: perfect ? 'ring' : undefined });
+    if (perfect) {
+      const p = roof.point(gate);
+      show.ripple(p.x, p.y, COLORS.gold, { amount: 0.5 });
+    }
+    // Every 10 catches (a new bush, a faster comet): gold sweeps up the whole yard and a volley goes up.
+    if (catches % PER_BUSH === 0) {
+      show.sweep(COLORS.gold, { dir: 'up', amount: 0.6 });
+      show.finale(3, { colors: [[COLORS.gold, bushColor(Math.floor(catches / PER_BUSH) - 1)]] });
+    }
     if (catches % PER_BUSH === 0) winBush();
     // Turn around at once, a little faster, and the next gate is already there.
     dir = -dir;
@@ -230,7 +260,23 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     }
     litTarget.fill(0);
     newBest = record('ricochet', score).isNew;
+    // The house blows, and the yard goes dark red (gold fireworks for a new best).
+    const p = roof.point(at);
+    show.gameOver(p.x, p.y, { newBest });
     setPhase('over');
+  }
+
+  /**
+   * The yard's mood: a slow rainbow while it waits; deep blue and violet at the start of a run,
+   * heating up through magenta to fire as the comet speeds up; dark red after the end.
+   */
+  function moodNow(): Mood {
+    if (phase === 'ready') return { a: hsv(clock * 0.04), b: hsv(clock * 0.04 + 0.3), level: 0.9, drift: 1.4 };
+    if (phase === 'over') return overMood(phaseTime);
+    const t = Math.max(0, Math.min(1, (speed - startSpeed) / (maxSpeed - startSpeed)));
+    const a = t < 0.5 ? mix([0.1, 0.15, 0.75], [0.7, 0.05, 0.75], t * 2) : mix([0.7, 0.05, 0.75], [1, 0.3, 0.02], t * 2 - 1);
+    const b = t < 0.5 ? mix([0.4, 0.05, 0.7], [1, 0.05, 0.4], t * 2) : mix([1, 0.05, 0.4], [1, 0.05, 0.05], t * 2 - 1);
+    return { a, b, level: 0.9 + 0.5 * t, drift: 1 + 1.5 * t };
   }
 
   function input(e: GameInput) {
@@ -276,7 +322,12 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   }
 
   function drawRoof() {
-    for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT);
+    // The roof's faint backdrop in the mood's colors, drifting along it (far too dim to look white or green).
+    if (phase === 'running') {
+      const k = 0.05 * (mood.level ?? 1);
+      // Not under the comet's tail: it would push the tail toward white.
+      for (let i = 0; i < n; i++) yard.roofAt(i, mix(mood.a, mood.b, 0.5 + 0.5 * Math.sin(i * 0.06 - clock * 0.8)), k * Math.max(0, 1 - trail.level[i] * 10));
+    }
     drawPops();
     if (phase !== 'over') drawGate(GATE);
     trail.draw(yard, (v) => mix(COMET_TAIL, WHITE, v * v * 0.7), 0.9);
@@ -303,7 +354,6 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
           yard.add(b.offset + i, mix(color, COLORS.gold, f * 0.7), 0.5 + f * 0.5);
         } else if (u < filled) yard.add(b.offset + i, color, 0.65 * sparkle);
         else if (phase === 'running' && bi === next && litTarget[bi] < 1 && u < partial) yard.add(b.offset + i, color, 0.18);
-        else yard.add(b.offset + i, BUSH_DARK);
       }
     });
   }
@@ -315,7 +365,6 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     for (let i = 0; i < part.count; i++) {
       const u = part.up[i];
       if (u <= level) yard.add(part.offset + i, heat(u * 0.9), 0.6 + (u > level - 0.05 ? 0.3 : 0));
-      else yard.add(part.offset + i, [0.02, 0.015, 0.04]);
       // A perfect catch: a gold flash that runs up the tree.
       if (sincePerfect < 0.6) {
         const d = u - sincePerfect / 0.5;
@@ -324,13 +373,9 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     }
   }
 
+  /** The house: the show's canvas, with a touch of the flare of every catch. */
   function drawDecor(part: Part) {
-    const warm = phase === 'running' ? (speed - startSpeed) / (maxSpeed - startSpeed) : 0;
-    for (let i = 0; i < part.count; i++) {
-      yard.add(part.offset + i, NIGHT, 1.5);
-      yard.add(part.offset + i, heat(0.2 + warm * 0.4), warm * 0.25);
-      yard.add(part.offset + i, flare.color, 1);
-    }
+    for (let i = 0; i < part.count; i++) yard.add(part.offset + i, flare.color, 0.15);
   }
 
   function step(dt: number) {
@@ -346,6 +391,8 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       gate = n / 2;
       halfWidth = startHalf;
       ({ pos, dir } = bounce(pos, dir, (n / 5) * dt, n));
+      // Now and then a firework, to draw a crowd.
+      if (Math.random() < dt * 0.35) show.rocket([hsv(Math.random()), hsv(Math.random())], { size: 0.8 });
     }
     if (phase === 'over' && phaseTime > 10) {
       reset();
@@ -355,6 +402,10 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
     motes.update(dt);
     waves.update(dt);
     flare.update(dt);
+    show.update(dt);
+    mood = moodNow();
+    if (phase !== 'over' || phaseTime > 1.5) show.followMood(mood, 2, dt);
+    show.roofShare = phase === 'running' ? 0 : Math.min(1, show.roofShare + dt * 2);
     sincePerfect += dt;
     sinceCatch += dt;
     for (const p of pops) p.t += dt;
@@ -398,6 +449,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       }
       motes.draw();
       waves.draw();
+      show.draw(frame);
     },
 
     status(): GameStatusFields {

@@ -3,6 +3,7 @@ import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 import { ORB_COLORS } from './cascade.ts';
 import { hash, lookOf, STAGE_BARS, type Scene } from './beatStages.ts';
 import { bestScore, COLORS, css, Flare, heat, Motes, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
+import { overMood, Show, turnHue, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Beat Drop: a rhythm game on the roofline, with four colors. Notes in green, cyan, blue and
@@ -249,6 +250,14 @@ export function beatGame(stage: Stage): BeatGame {
   const motes = new Motes(yard);
   const waves = new Waves(yard);
   const decorFlare = new Flare(3);
+  // The whole yard plays along: its mood follows the stage, it pumps on every beat, and
+  // fireworks go up for PERFECTs, holds and every new multiplier.
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  // The roof has its own backdrop (the stage's look), kept clear around the notes.
+  show.roofShare = 0;
+  /** The beat the yard last pumped on. */
+  let lastBeat = -1;
 
   // The zone: RUNWAY meters past the late edge of its band at its widest (the fastest notes of
   // any difficulty), counted from the first step of the roof that can be seen from the street;
@@ -363,6 +372,12 @@ export function beatGame(stage: Stage): BeatGame {
   /** How strong the backdrop is: by difficulty, and stronger each time round the stages. */
   const lookK = () => (demo ? 1 : LOOK_K[level] * (1 + 0.2 * Math.min(3, Math.floor(stageNow / 6))));
 
+  /** The yard's mood in a stage: its color and a neighbour, brighter with the multiplier. */
+  function moodOf(st: number): Mood {
+    const accent = lookOf(st).accent;
+    return { a: accent, b: turnHue(accent, 0.12), level: 0.9 + 0.25 * (mult() - 1), drift: 1 + 0.3 * (mult() - 1) };
+  }
+
   const ripple = (color: Rgb, amount: number, opts: Partial<Ripple> = {}) => ripples.push({ age: 0, life: 0.9, speed: span / 0.7, width: 5, color, amount, ...opts });
 
   const pickFrom = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
@@ -465,6 +480,8 @@ export function beatGame(stage: Stage): BeatGame {
     sparks.clear();
     motes.clear();
     waves.clear();
+    show.clear();
+    show.setMood(moodOf(0), { wipe: roof.startsLeft ? 'right' : 'left' });
     setPhase('play');
   }
 
@@ -491,6 +508,8 @@ export function beatGame(stage: Stage): BeatGame {
     hitFlash = 0;
     hitColor = single() ? COLORS.gold : toneColor(note.tone);
     if (perfect) ripple(COLORS.gold, 0.14, { life: 0.6, width: 3 });
+    show.pulse(hitColor, perfect ? 0.12 : 0.06);
+    if (perfect && !demo) show.rocket([hitColor, COLORS.gold], { size: 0.6 + 0.1 * mult() });
     sparks.burst(line, [COLORS.gold, mix(COLORS.gold, WHITE, 0.5)], perfect ? 26 : 12, n * (perfect ? 0.18 : 0.11), perfect ? 0.9 : 0.6);
     decorFlare.add(hitColor, perfect ? 0.45 : 0.25);
     decorFlare.add(COLORS.gold, perfect ? 0.2 : 0.1);
@@ -513,6 +532,9 @@ export function beatGame(stage: Stage): BeatGame {
     ripple(m >= MAX_MULT ? hsv(clock * 0.3) : COLORS.gold, 0.25, { life: 0.8, width: 4 });
     sparks.burst(line, [COLORS.gold, shine], 10 + 3 * m, n * 0.06, 0.6);
     decorFlare.add(COLORS.gold, 0.5 + 0.1 * m);
+    // Up goes a volley, one firework more at every step, and gold sweeps up the yard.
+    show.sweep(COLORS.gold, { dir: 'up', amount: 0.6 });
+    show.finale(1 + m, { colors: m >= MAX_MULT ? [[hsv(0)], [hsv(0.2)], [hsv(0.45)], [hsv(0.6)], [hsv(0.8)]] : [[COLORS.gold, hitColor]] });
     const b = yard.bushes.length;
     if (b) {
       const lit = Math.max(1, Math.round((b * (mult() - 1)) / (MAX_MULT - 1)));
@@ -528,6 +550,9 @@ export function beatGame(stage: Stage): BeatGame {
       dropFrom = bushLevel;
       // The multiplier shatters: red sparks all along the roof.
       for (let k = 0; k < 6; k++) sparks.burst(line + span * (0.12 + 0.15 * k + 0.05 * Math.random()), [COLORS.bad, [1, 0.25, 0]], 6, n * 0.05, 0.6);
+      // And the yard: red debris falls off every bush that was lit, and red runs away along the house.
+      yard.bushes.forEach((bush, bi) => bi < Math.ceil(bushLevel - 0.05) && show.explode(bush.x, bush.top, COLORS.bad, { size: 0.7 }));
+      show.sweep(COLORS.bad, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.5, duration: 0.6 });
     }
     streak = 0;
   }
@@ -541,6 +566,9 @@ export function beatGame(stage: Stage): BeatGame {
     judge('MISS', 'miss');
     missFlash = 0;
     sparks.burst(line, [COLORS.bad, [1, 0.25, 0]], 10, n * 0.1, 0.5);
+    const lp = linePoint();
+    show.ripple(lp.x, lp.y, COLORS.bad, { amount: 0.6 });
+    show.pulse(COLORS.bad, 0.15);
     // Red runs out along the whole roof, twice.
     ripple(COLORS.bad, 0.55, { width: 7 });
     ripple(COLORS.bad, 0.35, { width: 4, speed: span / 1.1, life: 1.2 });
@@ -572,6 +600,7 @@ export function beatGame(stage: Stage): BeatGame {
       sparks.burst(line, [COLORS.gold, mix(COLORS.gold, WHITE, 0.5), single() ? TAIL : hitColor], 24, n * 0.17, 0.9);
       decorFlare.add(hitColor, 0.4);
       decorFlare.add(COLORS.gold, 0.3);
+      if (!demo) show.rocket([hitColor, COLORS.gold], { size: 1, kind: 'ring' });
     } else {
       note.state = 'broken';
       if (!demo) {
@@ -599,6 +628,9 @@ export function beatGame(stage: Stage): BeatGame {
       motes.drop(p.x, p.y, mix(single() ? TAIL : toneColor(note.tone), COLORS.bad, 0.5), { vx: (Math.random() - 0.5) * 60, size: 20 });
     }
     notes = [];
+    // The house blows, and the yard goes dark red (gold fireworks for a new best).
+    const lp = linePoint();
+    show.gameOver(lp.x, lp.y, { newBest });
     setPhase('over');
   }
 
@@ -659,6 +691,9 @@ export function beatGame(stage: Stage): BeatGame {
       const p = linePoint();
       waves.add(p.x, p.y, look.accent, { amount: 0.6 });
       decorFlare.add(look.accent, 0.8);
+      // The new stage wipes across the whole yard, with fireworks in its colors.
+      show.setMood(moodOf(st), { wipe: roof.startsLeft ? 'right' : 'left' });
+      if (!demo) show.finale(4, { colors: [[look.accent, turnHue(look.accent, 0.15)]] });
       if (!demo) announced = clock;
     }
     const t = song - LAG;
@@ -955,7 +990,6 @@ export function beatGame(stage: Stage): BeatGame {
       const on = Math.max(0, Math.min(1, bushLevel - bi));
       const color = mult() >= MAX_MULT ? mix(COLORS.gold, WHITE, 0.25 * beat) : COLORS.gold;
       for (let i = 0; i < bush.count; i++) {
-        yard.add(bush.offset + i, [0.02, 0.02, 0.05]);
         if (on > 0) yard.add(bush.offset + i, color, on * (0.4 + 0.45 * beat + 0.1 * Math.sin(clock * 6 + i * 2.1)));
         // The multiplier lost: the bushes that were lit flash red as they go out.
         if (drop && bi < Math.ceil(dropFrom - 0.05)) yard.add(bush.offset + i, COLORS.bad, drop * 0.4);
@@ -973,21 +1007,22 @@ export function beatGame(stage: Stage): BeatGame {
     const color = health < 0.25 ? COLORS.bad : hsv(0.33 * Math.min(1, (health - 0.15) / 0.75));
     for (let i = 0; i < part.count; i++) {
       if (part.up[i] <= health) yard.add(part.offset + i, color, 0.6 * blink);
-      else yard.add(part.offset + i, [0.02, 0.015, 0.04]);
       // A new multiplier: a gold band runs up the tree.
       if (powerAge < 0.8) yard.add(part.offset + i, COLORS.gold, 0.7 * Math.exp(-(((part.up[i] - powerAge / 0.6) / 0.12) ** 2)));
     }
   }
 
+  /** The house: the show's backdrop pumping to the music, and the flare of every hit. */
   function drawDecor(part: Part) {
-    // The house bounces to the music: a soft pulse on every beat, warmer with the multiplier.
-    const beat = Math.exp(-beatPhase() * 6);
-    const tint = mix(lookOf(stageNow).accent, heat(0.4), (mult() - 1) / (MAX_MULT - 1));
-    for (let i = 0; i < part.count; i++) {
-      yard.add(part.offset + i, NIGHT, 1.2);
-      if (phase !== 'over') yard.add(part.offset + i, tint, 0.08 + 0.22 * beat);
-      yard.add(part.offset + i, decorFlare.color, 1);
-    }
+    for (let i = 0; i < part.count; i++) yard.add(part.offset + i, decorFlare.color, 0.5);
+  }
+
+  /** The yard's mood from the game's state: the stage, the multiplier, and red when health runs low. */
+  function moodNow(): Mood {
+    if (phase === 'over') return overMood(phaseTime);
+    const m = moodOf(stageNow);
+    if (phase === 'play' && !demo && health < 0.3) return { a: COLORS.bad, b: mix(m.a, COLORS.bad, 0.6), level: 1.1, throb: barNow().bpm / 60 };
+    return m;
   }
 
   restart(true);
@@ -1044,6 +1079,14 @@ export function beatGame(stage: Stage): BeatGame {
       motes.update(dt);
       waves.update(dt);
       decorFlare.update(dt);
+      show.update(dt);
+      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
+      // The yard pumps on every beat, harder with the multiplier.
+      const { beats } = barPhase();
+      if (beats !== lastBeat && phase !== 'over') {
+        lastBeat = beats;
+        show.pulse(lookOf(stageNow).accent, demo ? 0.04 : 0.05 + 0.025 * mult());
+      }
 
       drawRoof();
       drawBushes();
@@ -1052,6 +1095,7 @@ export function beatGame(stage: Stage): BeatGame {
       if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
       motes.draw();
       waves.draw();
+      show.draw(frame);
       drawPosts(frame);
     },
 
