@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { AERIAL_OPACITY, buildStage, designPaths, FEET_PER_METER, isLine, layoutGround, layoutScale, type Layout, type Stage } from '../../../shared/layout.ts';
+import { AERIAL_OPACITY, buildStage, FEET_PER_METER, layoutGround, layoutScale, objectPaths, type Layout, type Stage } from '../../../shared/layout.ts';
 import { cn } from '../lib/utils.ts';
 
 type CameraPreset = 'street' | 'front' | 'top' | 'side';
@@ -221,7 +221,7 @@ export function Scene3D({
 
     // Wires of the lines, so their shape shows even where the LEDs are off.
     layout.fixtures.forEach((f) => {
-      const paths = isLine(f) ? [f.points] : f.kind === 'custom' ? designPaths(f, scale) : [];
+      const paths = objectPaths(f, scale);
       const hl = Array.isArray(selected) ? selected.includes(f.id) : f.id === selected;
       for (const path of paths) {
         if (path.length < 2) continue;
