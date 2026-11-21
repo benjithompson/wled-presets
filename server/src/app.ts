@@ -828,6 +828,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // active: sent only by an editor window that is in front (an older page that does not send it is ignored).
   // play: show the objects' effects (the editor's working copy) instead of the editor's colors.
   // area: the Games page shows the game area instead.
+  const checkAxis = z.enum(['x', 'y', 'z']);
   const previewSchema = z.object({
     active: z.literal(true),
     layout: layoutShape,
@@ -838,6 +839,14 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     area: gameAreaInput.nullable().optional(),
     probe: z
       .object({ point: z.number().int().min(0).max(10_000), offset: z.number().int().min(-2000).max(4000) })
+      .nullable()
+      .optional(),
+    check: z
+      .discriminatedUnion('kind', [
+        z.object({ kind: z.literal('slice'), axis: checkAxis, at: z.number().min(-100_000).max(100_000).nullable() }),
+        z.object({ kind: z.literal('bands'), axis: checkAxis, step: z.number().min(1).max(100_000) }),
+        z.object({ kind: z.enum(['picture', 'chase']), id: z.string().min(1).max(64) })
+      ])
       .nullable()
       .optional(),
     photo: z
