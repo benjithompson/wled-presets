@@ -138,6 +138,7 @@ import { KIND_ICONS, KIND_LABELS } from '../../lib/kinds.ts';
 import { EditHistory } from './editHistory.ts';
 import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
+import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { useMedia } from '../../lib/useMedia.ts';
 import { ActionSheet, BottomSheet, type SheetSize } from '../../components/mobile.tsx';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
@@ -1316,32 +1317,11 @@ export function LayoutPage() {
   /** The object designer lights an object for its photo: this preview waits meanwhile. */
   const [photoLights, setPhotoLights] = useState(false);
   const previewing = showOnLights && mapped && inFront && !photoLights;
-  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 && !probe && !layoutCheck, probe, check: layoutCheck }) : null;
-  useEffect(() => {
-    if (!previewBody) return;
-    let alive = true;
-    const send = () =>
-      api
-        .previewLayout(previewBody)
-        .then((r) => alive && setPreviewDevices(r.devices))
-        .catch(() => alive && setPreviewDevices([]));
-    const t = setTimeout(send, 40);
-    const keep = setInterval(send, 5000);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-      clearInterval(keep);
-    };
-  }, [previewBody]);
-  useEffect(() => {
-    if (!previewing) return;
-    const stop = () => void api.stopLayoutPreview().catch(() => {});
-    window.addEventListener('pagehide', stop);
-    return () => {
-      window.removeEventListener('pagehide', stop);
-      stop();
-    };
-  }, [previewing]);
+  useLightsPreview(previewing && layout ? { layout, selected, corner, segment, play: playing && fxCount > 0 && !probe && !layoutCheck, probe, check: layoutCheck } : null, {
+    active: previewing,
+    onDevices: setPreviewDevices,
+    onError: () => setPreviewDevices([])
+  });
   const toggleShow = () => {
     setShowOnLights((v) => {
       try {

@@ -1,7 +1,7 @@
 // Games: which lights the games on /play use. Leave out lights that cannot be seen (around a
 // corner of the house, behind a tree), whole objects, segments of a line, or LEDs at its ends.
 // Scenes and effects still use every light.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Gamepad2, Radio, RotateCcw, Save } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,6 +12,7 @@ import { PhoneActionBar } from '../../components/mobile.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
+import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { LineCard } from './LineCard.tsx';
 
@@ -72,32 +73,11 @@ export function GamesPage() {
 
   // Show on the lights: the same picture on the real lights, kept alive while the page is open.
   const inFront = useInFront();
-  const previewBody = onLights && inFront && layout ? JSON.stringify({ active: true, layout, selected: focus?.id ?? null, corner: null, segment: focus?.segment ?? null, area: tidy(area) }) : null;
-  useEffect(() => {
-    if (!previewBody) return;
-    let alive = true;
-    const send = () =>
-      api
-        .previewLayout(previewBody)
-        .then((r) => alive && setLightNames(r.devices))
-        .catch((e) => alive && (setLightNames([]), toast.error(errorText(e))));
-    const t = setTimeout(send, 40);
-    const keep = setInterval(send, 5000);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-      clearInterval(keep);
-    };
-  }, [previewBody]);
-  useEffect(() => {
-    if (!onLights || !inFront) return;
-    const stop = () => void api.stopLayoutPreview().catch(() => {});
-    window.addEventListener('pagehide', stop);
-    return () => {
-      window.removeEventListener('pagehide', stop);
-      stop();
-    };
-  }, [onLights, inFront]);
+  useLightsPreview(onLights && inFront && layout ? { layout, selected: focus?.id ?? null, corner: null, segment: focus?.segment ?? null, area: tidy(area) } : null, {
+    active: onLights && inFront,
+    onDevices: setLightNames,
+    onError: (e) => (setLightNames([]), toast.error(errorText(e)))
+  });
 
   const fixtures = layout?.fixtures ?? [];
   const inGame = (f: Fixture) => gameLeds(f, area).reduce((n, v) => n + v, 0);
