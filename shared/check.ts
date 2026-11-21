@@ -13,7 +13,7 @@
 //   - a chase: one light runs along the object's wire from LED 0, so you can follow where the
 //     real string starts and which way it goes.
 
-import { DEFAULT_SCALE, fixturePixels, layoutGround, wavePasses, type Fixture, type Layout, type Stage } from './layout.ts';
+import { DEFAULT_SCALE, fixturePixels, isLine, layoutGround, wavePasses, type Fixture, type Layout, type Stage } from './layout.ts';
 
 /** x: across (left to right), y: height, z: depth (from the house toward the street). */
 export type CheckAxis = 'x' | 'y' | 'z';
@@ -237,7 +237,7 @@ export function wiringGuesses(f: Fixture, scale = DEFAULT_SCALE): WiringGuess[] 
 }
 
 function guessesFor(f: Fixture): WiringGuess[] {
-  if (f.kind === 'roof' || f.kind === 'line') {
+  if (isLine(f)) {
     return [
       { label: 'LED 0 at the first point', patch: { reversed: false } },
       { label: 'LED 0 at the last point', patch: { reversed: true } }

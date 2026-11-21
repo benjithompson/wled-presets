@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { MAX_SEQUENCE_SECONDS, TRANSITIONS, type TransitionId } from '../../shared/sequence.ts';
+import { MAX_SEQUENCE_SECONDS, TRANSITIONS, type AudioClip, type AudioTrack, type Marker, type SeqClip, type SeqTrack, type Sequence, type TransitionId } from '../../shared/sequence.ts';
 import { effectSettingsSchema } from './layoutStore.ts';
+import type { SchemaOf } from './schemaOf.ts';
 
 const id = z.string().min(1).max(64);
 const seconds = z.number().finite().min(0).max(MAX_SEQUENCE_SECONDS);
@@ -20,7 +21,7 @@ const clipSchema = z.object({
   transitionIn: transition.optional(),
   transitionOut: transition.optional(),
   name: z.string().trim().max(80).optional()
-});
+} satisfies SchemaOf<SeqClip>);
 
 const trackSchema = z.object({
   id,
@@ -31,9 +32,9 @@ const trackSchema = z.object({
   hidden: z.boolean().optional(),
   solo: z.boolean().optional(),
   locked: z.boolean().optional()
-});
+} satisfies SchemaOf<SeqTrack>);
 
-const audioClipSchema = z.object({ id, fileId: id, name: z.string().max(200), start: seconds, offset: seconds, duration: z.number().finite().min(0.05).max(MAX_SEQUENCE_SECONDS) });
+const audioClipSchema = z.object({ id, fileId: id, name: z.string().max(200), start: seconds, offset: seconds, duration: z.number().finite().min(0.05).max(MAX_SEQUENCE_SECONDS) } satisfies SchemaOf<AudioClip>);
 
 const audioTrackSchema = z.object({
   id,
@@ -41,7 +42,7 @@ const audioTrackSchema = z.object({
   clips: z.array(audioClipSchema).max(200),
   volume: z.number().min(0).max(1),
   muted: z.boolean().optional()
-});
+} satisfies SchemaOf<AudioTrack>);
 
 /** A sequence as the editor sends it (the id comes from the URL). */
 export const sequenceInput = z.object({
@@ -51,8 +52,8 @@ export const sequenceInput = z.object({
   bpm: z.number().min(20).max(400).optional(),
   tracks: z.array(trackSchema).max(64),
   audio: z.array(audioTrackSchema).max(16).default([]),
-  markers: z.array(z.object({ id, t: seconds, label: z.string().max(60).optional() })).max(1000).default([])
-});
+  markers: z.array(z.object({ id, t: seconds, label: z.string().max(60).optional() } satisfies SchemaOf<Marker>)).max(1000).default([])
+} satisfies SchemaOf<Omit<Sequence, 'id' | 'updatedAt'>>);
 
 // Audio files sit next to the database, one file per upload.
 export function audioDir(databasePath: string) {
