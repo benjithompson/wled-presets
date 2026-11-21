@@ -3314,7 +3314,7 @@ export function LayoutPage() {
                   data-object-row={f.id}
                   aria-current={on ? 'true' : undefined}
                   aria-expanded={open}
-                  title={partly ? 'Some of its segments are selected' : undefined}
+                  title={partly ? 'Some of its segments are selected' : open ? 'Click to close it (nothing selected)' : undefined}
                   onClick={(e) => {
                     if (tool !== 'select') chooseTool('select');
                     if (e.ctrlKey || e.metaKey) {
@@ -3326,6 +3326,10 @@ export function LayoutPage() {
                       const b = ids.indexOf(f.id);
                       if (a >= 0) return pickTargets(ids.slice(Math.min(a, b), Math.max(a, b) + 1));
                       setSelected(f.id);
+                    } else if (open && !multi.length) {
+                      // A click on the open object's header closes it: nothing is selected.
+                      setSelected(null);
+                      return;
                     } else setSelected(f.id);
                     listAnchor.current = f.id;
                     // On a phone, the list hands over to the object's properties.
