@@ -10,12 +10,8 @@ import { GameHost } from '../src/game/host.ts';
 import { Yard } from '../src/game/kit.ts';
 import { overflowGame } from '../src/game/overflow.ts';
 import type { Game } from '../src/game/types.ts';
+import { press, pressAs, release, releaseAs, run, seedRandom } from './harness.ts';
 
-const press = (g: Game, playerId = 'p') => g.input({ playerId, action: 'press' });
-const release = (g: Game, playerId = 'p') => g.input({ playerId, action: 'release' });
-const run = (g: Game, frame: Frame, seconds: number) => {
-  for (let i = 0; i < Math.round(seconds * 60); i++) g.update(1 / 60, frame);
-};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -192,13 +188,7 @@ describe('Cascade', () => {
 
   it('pops orbs over a few tries, and paints the bushes with their colors', () => {
     // Fixed random numbers: blind taps miss every orb in about 1 game in 60.
-    let seed = 7;
-    vi.spyOn(Math, 'random').mockImplementation(() => {
-      seed = (seed + 0x6d2b79f5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    });
+    seedRandom(7);
     const stage = buildStage(sampleLayout());
     const game = cascadeGame(stage);
     const frame = new Frame(stage.pixelCount);
@@ -257,14 +247,7 @@ describe('Cascade', () => {
   it('never makes white where orbs of different colors meet', () => {
     // Random games that once lit a stray white LED: green and pink orbs side by side, mixed.
     for (const seed of [113, 148, 189, 214, 233, 274]) {
-      let a = seed * 2654435761;
-      vi.spyOn(Math, 'random').mockImplementation(() => {
-        // mulberry32
-        a = (a + 0x6d2b79f5) | 0;
-        let t = Math.imul(a ^ (a >>> 15), 1 | a);
-        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-      });
+      seedRandom(seed * 2654435761);
       const stage = buildStage(sampleLayout());
       const game = cascadeGame(stage);
       const frame = new Frame(stage.pixelCount);
@@ -338,8 +321,8 @@ describe('Overflow', () => {
     const frame = new Frame(stage.pixelCount);
     press(game);
     run(game, frame, 0.5);
-    press(game, 'a');
-    release(game, 'b');
+    pressAs(game, 'a');
+    releaseAs(game, 'b');
     expect(game.status().phase).toBe('pour');
     game.leave!('a');
     expect(game.status().phase).toBe('settle');
@@ -373,14 +356,14 @@ describe('Roof Duel', () => {
     const game = duelGame(stage);
     const frame = new Frame(stage.pixelCount);
     const n = stage.roofPath.length;
-    press(game, 'a');
+    pressAs(game, 'a');
     expect(game.playerStatus!('a').you).toMatchObject({ name: 'Fire' });
     expect(game.status().phase).toBe('lobby');
-    press(game, 'b');
+    pressAs(game, 'b');
     expect(game.playerStatus!('b').you).toMatchObject({ name: 'Ice' });
     expect(game.status().phase).toBe('countdown');
     // A third phone watches.
-    press(game, 'c');
+    pressAs(game, 'c');
     expect(game.playerStatus!('c')).toMatchObject({ you: null, button: '👀' });
 
     run(game, frame, 3.5);
@@ -389,14 +372,14 @@ describe('Roof Duel', () => {
     const receiverId = serverId === 'a' ? 'b' : 'a';
     // Fire's end is on the left: roof position 0 on the sample roof.
     const receiverEnd = receiverId === 'a' ? 0 : n - 1;
-    press(game, serverId);
+    pressAs(game, serverId);
     expect(game.status().phase).toBe('rally');
 
     let hitIt = false;
     for (let i = 0; i < 600; i++) {
       game.update(1 / 60, frame);
       if (Math.abs(ball(stage, frame) - receiverEnd) < n * 0.06) {
-        press(game, receiverId);
+        pressAs(game, receiverId);
         hitIt = true;
         break;
       }
@@ -415,22 +398,22 @@ describe('Roof Duel', () => {
     const stage = buildStage(sampleLayout());
     const game = duelGame(stage);
     const frame = new Frame(stage.pixelCount);
-    press(game, 'a');
-    press(game, 'a');
+    pressAs(game, 'a');
+    pressAs(game, 'a');
     expect(game.status().phase).toBe('countdown');
     expect(game.status().scores![1].name).toMatch(/house/);
     game.leave!('a');
     // Nobody is left: back to the lobby.
     expect(game.status().phase).toBe('lobby');
-    press(game, 'a');
-    press(game, 'b');
+    pressAs(game, 'a');
+    pressAs(game, 'b');
     game.leave!('b');
     expect(game.status().scores![1].name).toMatch(/house/);
     // The house serves and plays on its own until someone scores.
     run(game, frame, 3.1);
     for (let i = 0; i < 60 * 60 && game.status().phase !== 'point'; i++) {
       game.update(1 / 60, frame);
-      if (game.playerStatus!('a').button === 'SERVE') press(game, 'a');
+      if (game.playerStatus!('a').button === 'SERVE') pressAs(game, 'a');
     }
     expect(game.status().phase).toBe('point');
   });

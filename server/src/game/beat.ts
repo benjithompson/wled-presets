@@ -2,8 +2,9 @@ import type { ArcadeHud, GameControl, GameSetting, Stage } from '../../../shared
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 import { ORB_COLORS } from './cascade.ts';
 import { hash, lookOf, STAGE_BARS, type Scene } from './beatStages.ts';
-import { bestScore, COLORS, css, Flare, heat, Motes, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
-import { overMood, Show, turnHue, type Mood } from './show.ts';
+import { COLORS, css, Flare, Sparks, Yard, type Part } from './kit.ts';
+import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
+import { overMood, turnHue, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Beat Drop: a rhythm game on the roofline, with four colors. Notes in green, cyan, blue and
@@ -191,7 +192,6 @@ interface Ripple {
   amount: number;
 }
 
-const NIGHT: Rgb = [0.02, 0.008, 0.045];
 const MISSED: Rgb = [0.12, 0.1, 0.16];
 const DARK: Rgb = [0, 0, 0];
 /** The one-color game's look: white heads and end caps, cyan tails, blue bodies, a blue-white zone. */
@@ -245,14 +245,13 @@ export function beatGame(stage: Stage): BeatGame {
   const yard = new Yard(stage);
   const roof = yard.roof;
   const n = roof.n;
-  const playable = n >= 30;
+  const playable = n >= MIN_ROOF;
   const sparks = new Sparks(roof, n * 0.1, 1.8);
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
   const decorFlare = new Flare(3);
   // The whole yard plays along: its mood follows the stage, it pumps on every beat, and
   // fireworks go up for PERFECTs, holds and every new multiplier.
-  const show = new Show(yard);
+  const fx = new Fx(yard, { sparks, flare: decorFlare });
+  const { motes, waves, show } = fx;
   for (const t of yard.trees) show.dim(t, 0.45);
   // The roof has its own backdrop (the stage's look), kept clear around the notes.
   show.roofShare = 0;
@@ -279,9 +278,8 @@ export function beatGame(stage: Stage): BeatGame {
   const keep = new Float32Array(n);
   const px: Rgb = [0, 0, 0];
 
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  // The board is one per choice of colors and difficulty.
+  const round = new Round<Phase>('beat', 'ready', { board: () => `beat:${colors}:${level}`, title: (name) => `${name}: ${LEVEL_NAMES[level]}, ${COLOR_NAMES[colors]}` });
   /** Song time: the chart's clock. */
   let song = 0;
   let notes: BeatNote[] = [];
@@ -298,7 +296,6 @@ export function beatGame(stage: Stage): BeatGame {
   const cfg = () => LEVELS[level];
   const single = () => colors === '1';
   const two = () => colors === '2';
-  const bestKey = () => `beat:${colors}:${level}`;
   let travel = cfg().travelSlow;
   let demo = true;
 
@@ -342,11 +339,6 @@ export function beatGame(stage: Stage): BeatGame {
   };
   const speed = () => span / travel;
   const posAt = (t: number) => line + (t - song) * speed();
-
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
 
   /** The bar playing now (the last one started). */
   function barNow(): Bar {
@@ -477,18 +469,15 @@ export function beatGame(stage: Stage): BeatGame {
     bushLevel = 0;
     ups = 0;
     drops = 0;
-    sparks.clear();
-    motes.clear();
-    waves.clear();
-    show.clear();
+    fx.clear();
     show.setMood(moodOf(0), { wipe: roof.startsLeft ? 'right' : 'left' });
-    setPhase('play');
+    round.to('play');
   }
 
   const linePoint = () => roof.point(line);
 
   function judge(text: string, kind: Judged) {
-    judged = { text, t: clock, kind, n: ++judgedCount };
+    judged = { text, t: round.clock, kind, n: ++judgedCount };
   }
 
   function gain(points: number) {
@@ -529,7 +518,7 @@ export function beatGame(stage: Stage): BeatGame {
     powerTo = m;
     const p = linePoint();
     const shine = mix(COLORS.gold, WHITE, 0.35);
-    ripple(m >= MAX_MULT ? hsv(clock * 0.3) : COLORS.gold, 0.25, { life: 0.8, width: 4 });
+    ripple(m >= MAX_MULT ? hsv(round.clock * 0.3) : COLORS.gold, 0.25, { life: 0.8, width: 4 });
     sparks.burst(line, [COLORS.gold, shine], 10 + 3 * m, n * 0.06, 0.6);
     decorFlare.add(COLORS.gold, 0.5 + 0.1 * m);
     // Up goes a volley, one firework more at every step, and gold sweeps up the yard.
@@ -618,7 +607,7 @@ export function beatGame(stage: Stage): BeatGame {
   function gameOver() {
     health = 0;
     holder = null;
-    newBest = record(bestKey(), score).isNew;
+    newBest = round.record(score);
     // Everything still on the roof falls off the gutter.
     for (const note of notes) {
       if (note.state !== 'coming' && note.state !== 'held') continue;
@@ -631,7 +620,7 @@ export function beatGame(stage: Stage): BeatGame {
     // The house blows, and the yard goes dark red (gold fireworks for a new best).
     const lp = linePoint();
     show.gameOver(lp.x, lp.y, { newBest });
-    setPhase('over');
+    round.to('over');
   }
 
   const holding = () => notes.find((x) => x.state === 'held');
@@ -642,11 +631,11 @@ export function beatGame(stage: Stage): BeatGame {
   function press(player: string, button: string | undefined) {
     if (!playable) return;
     // Any button starts a game.
-    if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return newGame();
+    if (round.canStart) return newGame();
     // With one color, any button plays any note; with four, the big button does nothing while
     // playing. No button does anything during a hold (no note ever comes during one).
     const tone = single() ? 0 : toneOf(button);
-    if (phase !== 'play' || holder || tone < 0) return;
+    if (round.phase !== 'play' || holder || tone < 0) return;
     const { good, perfect } = cfg();
     const t = song - LAG;
     let best: BeatNote | null = null;
@@ -668,7 +657,7 @@ export function beatGame(stage: Stage): BeatGame {
   }
 
   function release(player: string, button: string | undefined) {
-    if (phase !== 'play' || !holder || player !== holder.player) return;
+    if (round.phase !== 'play' || !holder || player !== holder.player) return;
     // Only the button that holds the note lets go of it (undefined: every button of a phone that left).
     if (button !== undefined && !single() && toneOf(button) !== holder.tone) return;
     const note = holding();
@@ -694,7 +683,7 @@ export function beatGame(stage: Stage): BeatGame {
       // The new stage wipes across the whole yard, with fireworks in its colors.
       show.setMood(moodOf(st), { wipe: roof.startsLeft ? 'right' : 'left' });
       if (!demo) show.finale(4, { colors: [[look.accent, turnHue(look.accent, 0.15)]] });
-      if (!demo) announced = clock;
+      if (!demo) announced = round.clock;
     }
     const t = song - LAG;
     for (const x of notes) {
@@ -709,7 +698,7 @@ export function beatGame(stage: Stage): BeatGame {
       }
       if (x.state === 'coming' && t > x.time + cfg().good) miss(x);
       else if (x.state === 'held' && t >= x.end) finishHold(x, true, t);
-      if (phase !== 'play') return;
+      if (round.phase !== 'play') return;
     }
     // Notes that have gone past the start of the roof are gone, once judged (a note nobody
     // pressed stays until it counts as a miss, even past the end of the roof).
@@ -721,7 +710,7 @@ export function beatGame(stage: Stage): BeatGame {
 
   /** The zone's color: a warm white (blue-white with one color), tinting toward the next note's color as it comes near. */
   function zoneTint(due: BeatNote | null): Rgb {
-    const near = due && phase !== 'over' ? Math.max(0, 1 - (due.time - song) / Math.max(0.3, travel * 0.4)) : 0;
+    const near = due && round.phase !== 'over' ? Math.max(0, 1 - (due.time - song) / Math.max(0.3, travel * 0.4)) : 0;
     const base = single() ? COLORS.hint : POST;
     return near > 0 && due && !single() ? mix(base, toneColor(due.tone), 0.5 * near) : base;
   }
@@ -794,14 +783,14 @@ export function beatGame(stage: Stage): BeatGame {
    */
   function drawBackdrop(due: BeatNote | null, beat: number) {
     const { bar, beats } = barPhase();
-    const scene: Scene = { i: 0, x: 0, u: 0, span, clock, beat: beatPhase(), bar, beats, k: lookK() };
+    const scene: Scene = { i: 0, x: 0, u: 0, span, clock: round.clock, beat: beatPhase(), bar, beats, k: lookK() };
     const look = lookOf(stageNow);
     const old = lookOf(stagePrev);
     const front = stageAge < WIPE ? line + (stageAge / WIPE) * (span + 12) : Infinity;
     const missK = Math.max(0, 1 - missFlash / 0.45);
-    const fadeOut = phase === 'over' ? Math.max(0.1, 1 - phaseTime / 1.5) : 1;
-    const low = phase === 'play' && !demo && health < 0.3 ? ((0.3 - health) / 0.3) * Math.exp(-scene.beat * 6) : 0;
-    const glitch = Math.floor(clock * 30);
+    const fadeOut = round.phase === 'over' ? Math.max(0.1, 1 - round.time / 1.5) : 1;
+    const low = round.phase === 'play' && !demo && health < 0.3 ? ((0.3 - health) / 0.3) * Math.exp(-scene.beat * 6) : 0;
+    const glitch = Math.floor(round.clock * 30);
     for (let i = 0; i < n; i++) {
       px[0] = px[1] = px[2] = 0;
       scene.i = i;
@@ -846,7 +835,7 @@ export function beatGame(stage: Stage): BeatGame {
         const d = Math.abs(i - line);
         if (d > front + 8) continue;
         const edge = Math.exp(-(((d - front) / 3) ** 2));
-        const c = top ? mix(hsv((i / n) * 2 + clock * 0.8), WHITE, 0.2) : mix(COLORS.gold, WHITE, 0.3 * edge);
+        const c = top ? mix(hsv((i / n) * 2 + round.clock * 0.8), WHITE, 0.2) : mix(COLORS.gold, WHITE, 0.3 * edge);
         const a = ((d <= front ? amount : 0) + 0.2 * edge) * fade;
         bg[i * 3] += c[0] * a;
         bg[i * 3 + 1] += c[1] * a;
@@ -926,7 +915,7 @@ export function beatGame(stage: Stage): BeatGame {
         const from = held ? line : Math.max(head + 2, -6);
         const end = posAt(x.end);
         const to = Math.min(n - 1, end - 1.5);
-        const pulse = held ? 0.45 + 0.15 * Math.sin(clock * 24) : 0.3;
+        const pulse = held ? 0.45 + 0.15 * Math.sin(round.clock * 24) : 0.3;
         for (let i = Math.max(0, Math.ceil(from)); i <= to; i++) yard.roofAt(i, color, pulse * fade);
         // The end cap: bright, in the note's color.
         if (end >= 0 && end <= n - 1) yard.roofSplat(end, color, 0.9, 0.95 * fade);
@@ -961,7 +950,7 @@ export function beatGame(stage: Stage): BeatGame {
       const from = held ? line : Math.max(head, -6);
       const end = posAt(x.end);
       const to = Math.min(n - 1, end);
-      const pulse = held ? 0.75 + 0.25 * Math.sin(clock * 24) : 0.5;
+      const pulse = held ? 0.75 + 0.25 * Math.sin(round.clock * 24) : 0.5;
       for (let i = Math.max(0, Math.ceil(from)); i <= to; i++) {
         const f = (i - from) / Math.max(1, end - from);
         yard.roofAt(i, alive ? mix(TAIL, BODY_FAR, f) : MISSED, pulse * fade);
@@ -979,22 +968,22 @@ export function beatGame(stage: Stage): BeatGame {
 
   function drawBushes() {
     const b = yard.bushes.length;
-    const lit = phase === 'over' ? 0 : (b * (mult() - 1)) / (MAX_MULT - 1);
+    const lit = round.phase === 'over' ? 0 : (b * (mult() - 1)) / (MAX_MULT - 1);
     const beat = Math.exp(-beatPhase() * 4);
     const drop = Math.max(0, 1 - dropFlash / 0.6);
     // A flash in the color of the note just hit.
-    const flash = phase === 'play' && !single() ? Math.max(0, 1 - hitFlash / 0.2) : 0;
+    const flash = round.phase === 'play' && !single() ? Math.max(0, 1 - hitFlash / 0.2) : 0;
     // A new multiplier: every bush flashes and fades, brighter at every step.
     const power = powerAge < 0.8 ? (0.3 + 0.08 * powerTo) * (1 - powerAge / 0.8) : 0;
     yard.bushes.forEach((bush, bi) => {
       const on = Math.max(0, Math.min(1, bushLevel - bi));
       const color = mult() >= MAX_MULT ? mix(COLORS.gold, WHITE, 0.25 * beat) : COLORS.gold;
       for (let i = 0; i < bush.count; i++) {
-        if (on > 0) yard.add(bush.offset + i, color, on * (0.4 + 0.45 * beat + 0.1 * Math.sin(clock * 6 + i * 2.1)));
+        if (on > 0) yard.add(bush.offset + i, color, on * (0.4 + 0.45 * beat + 0.1 * Math.sin(round.clock * 6 + i * 2.1)));
         // The multiplier lost: the bushes that were lit flash red as they go out.
         if (drop && bi < Math.ceil(dropFrom - 0.05)) yard.add(bush.offset + i, COLORS.bad, drop * 0.4);
         if (flash) yard.add(bush.offset + i, hitColor, flash * 0.35);
-        if (power) yard.add(bush.offset + i, powerTo >= MAX_MULT ? hsv(bi / b + clock * 1.5) : mix(COLORS.gold, WHITE, 0.4), power);
+        if (power) yard.add(bush.offset + i, powerTo >= MAX_MULT ? hsv(bi / b + round.clock * 1.5) : mix(COLORS.gold, WHITE, 0.4), power);
       }
     });
     bushLevel += (lit - bushLevel) * 0.2;
@@ -1002,8 +991,8 @@ export function beatGame(stage: Stage): BeatGame {
 
   function drawTree(part: Part) {
     // The health meter, from the base up: green when healthy, yellow, then red and blinking.
-    const low = health < 0.25 && phase === 'play';
-    const blink = low ? (Math.sin(clock * 14) > 0 ? 1 : 0.25) : 1;
+    const low = health < 0.25 && round.phase === 'play';
+    const blink = low ? (Math.sin(round.clock * 14) > 0 ? 1 : 0.25) : 1;
     const color = health < 0.25 ? COLORS.bad : hsv(0.33 * Math.min(1, (health - 0.15) / 0.75));
     for (let i = 0; i < part.count; i++) {
       if (part.up[i] <= health) yard.add(part.offset + i, color, 0.6 * blink);
@@ -1019,9 +1008,9 @@ export function beatGame(stage: Stage): BeatGame {
 
   /** The yard's mood from the game's state: the stage, the multiplier, and red when health runs low. */
   function moodNow(): Mood {
-    if (phase === 'over') return overMood(phaseTime);
+    if (round.phase === 'over') return overMood(round.time);
     const m = moodOf(stageNow);
-    if (phase === 'play' && !demo && health < 0.3) return { a: COLORS.bad, b: mix(m.a, COLORS.bad, 0.6), level: 1.1, throb: barNow().bpm / 60 };
+    if (round.phase === 'play' && !demo && health < 0.3) return { a: COLORS.bad, b: mix(m.a, COLORS.bad, 0.6), level: 1.1, throb: barNow().bpm / 60 };
     return m;
   }
 
@@ -1030,7 +1019,7 @@ export function beatGame(stage: Stage): BeatGame {
   return {
     id: 'beat',
 
-    scoreBoard: () => ({ key: bestKey(), title: `Beat Drop: ${LEVEL_NAMES[level]}, ${COLOR_NAMES[colors]}` }),
+    scoreBoard: () => round.scoreBoard(),
 
     input(e: GameInput) {
       if (e.action === 'press') press(e.playerId, e.button);
@@ -1042,12 +1031,12 @@ export function beatGame(stage: Stage): BeatGame {
     },
 
     setting(id: string, value: string) {
-      if (phase === 'play') return;
+      if (round.phase === 'play') return;
       if (id === 'colors' && (value === '1' || value === '2' || value === '4')) colors = value;
       else if (id === 'level' && (value === 'easy' || value === 'normal' || value === 'hard')) level = value;
       else return;
       // The attract demo shows the new choice.
-      if (phase === 'ready') restart(true);
+      if (round.phase === 'ready') restart(true);
     },
 
     chart() {
@@ -1059,8 +1048,7 @@ export function beatGame(stage: Stage): BeatGame {
     },
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       hitFlash += dt;
       missFlash += dt;
       dropFlash += dt;
@@ -1070,20 +1058,16 @@ export function beatGame(stage: Stage): BeatGame {
       ripples = ripples.filter((r) => r.age < r.life);
       yard.begin(frame);
       if (!playable) return;
-      if (phase === 'ready' || phase === 'play') step(dt);
-      if (phase === 'over' && phaseTime > 10) {
+      if (round.phase === 'ready' || round.phase === 'play') step(dt);
+      if (round.timedOut) {
         restart(true);
-        setPhase('ready');
+        round.to('ready');
       }
-      sparks.update(dt);
-      motes.update(dt);
-      waves.update(dt);
-      decorFlare.update(dt);
-      show.update(dt);
-      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
+      fx.update(dt);
+      if (round.settled) show.followMood(moodNow(), 2, dt);
       // The yard pumps on every beat, harder with the multiplier.
       const { beats } = barPhase();
-      if (beats !== lastBeat && phase !== 'over') {
+      if (beats !== lastBeat && round.phase !== 'over') {
         lastBeat = beats;
         show.pulse(lookOf(stageNow).accent, demo ? 0.04 : 0.05 + 0.025 * mult());
       }
@@ -1092,15 +1076,13 @@ export function beatGame(stage: Stage): BeatGame {
       drawBushes();
       for (const t of yard.trees) drawTree(t);
       for (const d of yard.decor) drawDecor(d);
-      if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
-      motes.draw();
-      waves.draw();
-      show.draw(frame);
+      if (round.phase === 'over') endGlow(yard, round.time, 0.05);
+      fx.draw(frame);
       drawPosts(frame);
     },
 
     status(): GameStatusFields {
-      const best = bestScore(bestKey());
+      const best = round.best();
       const settings: GameSetting[] = [
         { id: 'colors', label: 'Colors', value: colors, choices: (['1', '2', '4'] as ColorCount[]).map((c) => ({ value: c, label: COLOR_NAMES[c] })) },
         {
@@ -1111,7 +1093,7 @@ export function beatGame(stage: Stage): BeatGame {
         }
       ];
       const choice = `${LEVEL_NAMES[level]}, ${COLOR_NAMES[colors]}.`;
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup();
       const stats = [
         { label: 'Score', value: score },
         { label: 'Best', value: Math.max(best, score) },
@@ -1124,7 +1106,7 @@ export function beatGame(stage: Stage): BeatGame {
       const arcade = (play: boolean): ArcadeHud => {
         const m = play ? mult() : 1;
         return {
-          score: phase === 'ready' ? 0 : score,
+          score: round.phase === 'ready' ? 0 : score,
           best,
           mult: m,
           maxMult: MAX_MULT,
@@ -1140,12 +1122,12 @@ export function beatGame(stage: Stage): BeatGame {
           ]
         };
       };
-      switch (phase) {
+      switch (round.phase) {
         case 'ready':
           return {
             ...common,
             score: 0,
-            phase,
+            phase: round.phase,
             message: single()
               ? `${choice} Tap GO! Then tap as each white note passes through the blue zone. Hold the long ones until their end goes by.`
               : `${choice} Tap GO! Then press the button in each note’s color as it passes through the lit zone. Hold the long ones until their end goes by.`,
@@ -1163,7 +1145,7 @@ export function beatGame(stage: Stage): BeatGame {
             ? single()
               ? 'Hold… let go when the white end reaches the zone.'
               : `Hold ${LABELS[holder!.tone]}… let go when the bright end reaches the zone.`
-            : clock - announced < 2
+            : round.clock - announced < 2
               ? `Stage ${stageNow + 1}: ${lookOf(stageNow).name}!`
               : judged
                 ? ''
@@ -1172,7 +1154,7 @@ export function beatGame(stage: Stage): BeatGame {
                   : 'Press the button in the note’s color as it passes through the zone.';
           return {
             ...common,
-            phase,
+            phase: round.phase,
             message,
             arcade: arcade(true),
             button: held ? 'HOLD' : 'TAP',
@@ -1185,7 +1167,7 @@ export function beatGame(stage: Stage): BeatGame {
         case 'over':
           return {
             ...common,
-            phase,
+            phase: round.phase,
             message: newBest ? `New best: ${score}! (${choice})` : `Game over: ${score} points. Longest streak ${longest}. (${choice})`,
             button: 'GO!',
             tone: 'go',

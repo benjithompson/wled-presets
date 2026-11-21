@@ -1,7 +1,8 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, css, heat, Motes, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
-import { overMood, Show, type Mood } from './show.ts';
+import { COLORS, css, heat, Sparks, Yard, type Part } from './kit.ts';
+import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
+import { overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Bead Rush: a chain of colored beads creeps along the roofline toward the launcher at the start
@@ -106,11 +107,10 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   const yard = new Yard(stage);
   const roof = yard.roof;
   const n = roof.n;
-  const playable = n >= 30;
+  const playable = n >= MIN_ROOF;
   const sparks = new Sparks(roof, n * 0.1, 1.8);
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
-  const show = new Show(yard);
+  const fx = new Fx(yard, { sparks });
+  const { motes, waves, show } = fx;
   for (const t of yard.trees) show.dim(t, 0.45);
   // The roof is the playfield, a chain of colored beads with white only for the shot: the show stays faint on it.
   show.roofShare = 0.3;
@@ -119,9 +119,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   const bushes = yard.bushes;
   const middle = bushes.length >= 3 ? Math.floor(bushes.length / 2) : -1;
 
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  const round = new Round<Phase>('beads', 'ready');
   /** Seconds of play in this game: the creep's pace comes from it. */
   let elapsed = 0;
   let lives = LIVES;
@@ -163,14 +161,9 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     return p[(at + step + p.length) % p.length];
   }
 
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
-
   /** A new bead for the back of the chain: runs of one or two, never three, of a color. */
   function newBead(): Bead {
-    if (phase === 'play' && elapsed > GOLD_AFTER && lastTone !== -1 && Math.random() < GOLD_CHANCE) {
+    if (round.phase === 'play' && elapsed > GOLD_AFTER && lastTone !== -1 && Math.random() < GOLD_CHANCE) {
       lastTone = -1;
       runLen = 1;
       return { tone: -1, age: 1 };
@@ -211,11 +204,8 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     queued = false;
     stageIndex = 0;
     stageAt = -99;
-    sparks.clear();
-    motes.clear();
-    waves.clear();
-    show.clear();
-    setPhase('play');
+    fx.clear();
+    round.to('play');
     show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
     spawnChain();
     loaded = chain[0]?.tone >= 0 ? chain[0].tone : palette()[0];
@@ -230,7 +220,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   }
 
   function fire() {
-    if (phase !== 'play') return;
+    if (round.phase !== 'play') return;
     if (shot) {
       queued = true;
       return;
@@ -240,7 +230,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
 
   /** The left or right button: the next color on the wheel. */
   function turn(step: number) {
-    if (phase !== 'play' && phase !== 'breach') return;
+    if (round.phase !== 'play' && round.phase !== 'breach') return;
     loaded = neighbour(step);
     turned = 0;
   }
@@ -248,7 +238,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   /** Another color joins the feed. */
   function nextStage() {
     stageIndex++;
-    stageAt = clock;
+    stageAt = round.clock;
     const added = palette().find((t) => !STAGES[stageIndex - 1].includes(t))!;
     const color = beadColor(added);
     const p = roof.point(n / 2);
@@ -339,9 +329,9 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       // The front blows up at the launcher, and red runs away across the yard.
       show.explode(p.x, p.y, COLORS.bad, { size: 1.3 });
       show.sweep(COLORS.bad, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.6, duration: 0.7 });
-      return setPhase('breach');
+      return round.to('breach');
     }
-    newBest = record('beads', score).isNew;
+    newBest = round.record(score);
     // The house blows, and the yard goes dark red (gold fireworks for a new best).
     show.gameOver(p.x, p.y, { newBest });
     // What is left falls off the gutter.
@@ -352,7 +342,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       motes.drop(p.x, p.y, mix(beadColor(chain[i].tone), COLORS.bad, 0.6), { vx: (Math.random() - 0.5) * 60, size: 18 });
     }
     chain = [];
-    setPhase('over');
+    round.to('over');
   }
 
   function input(e: GameInput) {
@@ -360,15 +350,13 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     if (e.button === 'left') return turn(-1);
     if (e.button === 'right') return turn(1);
     if (e.button) return;
-    if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return newGame();
+    if (round.canStart) return newGame();
     fire();
   }
 
   const danger = () => Math.max(0, Math.min(1, 1 - (front - LOSE) / (n * START - LOSE)));
 
   // ---------- Drawing ----------
-
-  /** After the game: dark red, fading. */
 
   /** Each stage's calm: violet and teal, then deeper blue, then purple. */
   const STAGE_MOODS: [Rgb, Rgb][] = [
@@ -383,21 +371,21 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
    * closes in (or on the last life after a breach); dark red after.
    */
   function moodNow(): Mood {
-    if (phase === 'ready') return { a: hsv(clock * 0.05), b: hsv(clock * 0.05 + 0.4), level: 1.1, drift: 1.4 };
-    if (phase === 'over') return overMood(phaseTime);
+    if (round.phase === 'ready') return { a: hsv(round.clock * 0.05), b: hsv(round.clock * 0.05 + 0.4), level: 1.1, drift: 1.4 };
+    if (round.phase === 'over') return overMood(round.time);
     const d = danger();
-    if (d > 0.65 || (phase === 'breach' && lives === 1)) return { a: COLORS.bad, b: [0.5, 0, 0.2], level: 1 + d * 0.4, throb: 1 + d * 2 };
+    if (d > 0.65 || (round.phase === 'breach' && lives === 1)) return { a: COLORS.bad, b: [0.5, 0, 0.2], level: 1 + d * 0.4, throb: 1 + d * 2 };
     const [a0, b0] = STAGE_MOODS[Math.min(stageIndex, STAGE_MOODS.length - 1)];
     const warm = Math.min(1, combo / 6);
     return { a: mix(a0, COLORS.gold, warm * 0.7), b: mix(b0, COLORS.fire, warm * 0.5), level: 1.1 + 0.4 * warm, drift: 1 + warm };
   }
 
   function drawRoof() {
-    const playing = phase === 'play' || phase === 'breach';
+    const playing = round.phase === 'play' || round.phase === 'breach';
     // Danger: the roof between the launcher and the chain pulses red when it is close.
     const d = playing ? danger() : 0;
     if (d > 0.7) {
-      const pulse = (0.5 + 0.5 * Math.sin(clock * (8 + d * 8))) * (d - 0.7) * 0.6;
+      const pulse = (0.5 + 0.5 * Math.sin(round.clock * (8 + d * 8))) * (d - 0.7) * 0.6;
       for (let i = 0; i < front; i++) yard.roofAt(i, COLORS.bad, pulse);
     }
     const run = frontRun().len;
@@ -408,20 +396,20 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       const color = beadColor(b.tone);
       const arrive = b.age < 0.2 ? 1 - b.age / 0.2 : 0;
       if (b.tone === -1) {
-        yard.roofSplat(pos, COLORS.gold, 0.9, 0.9 + 0.4 * Math.max(0, Math.sin(clock * 10 + i)));
+        yard.roofSplat(pos, COLORS.gold, 0.9, 0.9 + 0.4 * Math.max(0, Math.sin(round.clock * 10 + i)));
         if (Math.random() < 0.3) yard.roofAt(pos + (Math.random() - 0.5) * 3, mix(COLORS.gold, WHITE, 0.3), 0.5);
         continue;
       }
       // The front run, the one to match, glows brighter, with a halo.
       const isFront = playing && i < run;
-      yard.roofSplat(pos, color, 0.85, (isFront ? 1.1 + 0.2 * Math.sin(clock * 9) : 0.7) + arrive);
+      yard.roofSplat(pos, color, 0.85, (isFront ? 1.1 + 0.2 * Math.sin(round.clock * 9) : 0.7) + arrive);
       if (isFront) yard.roofSplat(pos, color, 2.6, 0.12);
     }
     if (playing) {
       // The launcher: the loaded bead (it flares as the color changes), and a small white mark.
       const flare = turned < 0.25 ? 1 - turned / 0.25 : 0;
       yard.roofSplat(2.5, beadColor(loaded), 1 + flare * 0.6, 1 + flare * 0.3);
-      yard.roofSplat(LAUNCH, WHITE, 0.5, 0.25 + 0.1 * Math.sin(clock * 6));
+      yard.roofSplat(LAUNCH, WHITE, 0.5, 0.25 + 0.1 * Math.sin(round.clock * 6));
     }
     if (shot) {
       const color = beadColor(shot.tone);
@@ -440,15 +428,15 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       const role = middle < 0 || bi === middle ? 0 : bi === middle - 1 ? -1 : bi === middle + 1 ? 1 : null;
       for (let i = 0; i < b.count; i++) {
         const at = b.offset + i;
-        if (phase === 'ready') {
-          const tone = BEAD_COLORS[Math.floor(clock * 0.5 + bi) % BEAD_COLORS.length].color;
-          yard.add(at, tone, 0.35 + 0.1 * Math.sin(clock * 3 + i));
-        } else if (phase === 'over') yard.add(at, COLORS.bad, 0.06 + 0.05 * Math.sin(phaseTime * 3));
-        else if (role === 0) yard.add(at, beadColor(loaded), 0.65 + 0.1 * Math.sin(clock * 4 + i * 0.7) + flare * 0.3);
+        if (round.phase === 'ready') {
+          const tone = BEAD_COLORS[Math.floor(round.clock * 0.5 + bi) % BEAD_COLORS.length].color;
+          yard.add(at, tone, 0.35 + 0.1 * Math.sin(round.clock * 3 + i));
+        } else if (round.phase === 'over') yard.add(at, COLORS.bad, 0.06 + 0.05 * Math.sin(round.time * 3));
+        else if (role === 0) yard.add(at, beadColor(loaded), 0.65 + 0.1 * Math.sin(round.clock * 4 + i * 0.7) + flare * 0.3);
         else if (role !== null) yard.add(at, beadColor(neighbour(role)), 0.3);
         else {
           const glow = Math.min(1, combo / 6);
-          if (glow > 0) yard.add(at, mix(COLORS.gold, WHITE, Math.max(0, Math.sin(clock * 9 + i * 2.3)) * 0.3), glow * (0.4 + 0.3 * Math.sin(clock * 7 + i * 1.9)));
+          if (glow > 0) yard.add(at, mix(COLORS.gold, WHITE, Math.max(0, Math.sin(round.clock * 9 + i * 2.3)) * 0.3), glow * (0.4 + 0.3 * Math.sin(round.clock * 7 + i * 1.9)));
         }
       }
     });
@@ -458,8 +446,8 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     const urgent = meter > 0.8;
     for (let i = 0; i < part.count; i++) {
       const u = part.up[i];
-      if (phase !== 'ready' && u <= meter) {
-        const c = urgent && Math.sin(clock * 14) > 0 ? COLORS.bad : heat(u * 0.9);
+      if (round.phase !== 'ready' && u <= meter) {
+        const c = urgent && Math.sin(round.clock * 14) > 0 ? COLORS.bad : heat(u * 0.9);
         yard.add(part.offset + i, c, 0.6);
       }
     }
@@ -470,25 +458,24 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   return {
     id: 'beads',
 
-    scoreBoard: () => ({ key: 'beads', title: 'Bead Rush' }),
+    scoreBoard: () => round.scoreBoard(),
 
     peek: () => ({ front, tones: chain.map((b) => b.tone), loaded, palette: [...palette()], flying: !!shot, stage: stageIndex + 1 }),
 
     input,
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       yard.begin(frame);
       if (!playable) return;
 
       turned += dt;
-      if (phase === 'play') {
+      if (round.phase === 'play') {
         elapsed += dt;
         front -= creep() * dt;
         if (stageIndex + 1 < STAGES.length && elapsed >= (stageIndex + 1) * STAGE_EVERY) nextStage();
       }
-      if (phase === 'ready') {
+      if (round.phase === 'ready') {
         front -= (n / 80) * dt;
         if (front < n * 0.3) spawnChain();
       }
@@ -498,39 +485,34 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
         front = n * FURTHEST;
         recoil = 0;
       }
-      if (phase !== 'over') feed();
+      if (round.phase !== 'over') feed();
       if (shot) {
         shot.pos += shotSpeed * dt;
         if (shot.pos >= front - SPACING) land();
       }
-      if (phase === 'play' && front <= LOSE) breach();
-      if (phase === 'breach' && phaseTime > 1.4) setPhase('play');
-      if (phase === 'over' && phaseTime > 10) {
+      if (round.phase === 'play' && front <= LOSE) breach();
+      if (round.phase === 'breach' && round.time > 1.4) round.to('play');
+      if (round.timedOut) {
         spawnChain();
-        setPhase('ready');
+        round.to('ready');
       }
       for (const b of chain) b.age += dt;
-      sparks.update(dt);
-      motes.update(dt);
-      waves.update(dt);
-      show.update(dt);
-      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
-      const target = phase === 'play' || phase === 'breach' ? danger() : 0;
+      fx.update(dt);
+      if (round.settled) show.followMood(moodNow(), 2, dt);
+      const target = round.phase === 'play' || round.phase === 'breach' ? danger() : 0;
       meter += (target - meter) * Math.min(1, dt * 6);
 
       drawRoof();
       drawBushes();
       for (const t of yard.trees) drawTree(t);
-      if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
-      motes.draw();
-      waves.draw();
+      if (round.phase === 'over') endGlow(yard, round.time, 0.05);
       // The windows, doors and the rest are the show's.
-      show.draw(frame);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      const best = bestScore('beads');
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup();
+      const best = round.best();
       const stats = [
         { label: 'Score', value: score },
         { label: 'Best', value: Math.max(best, score) },
@@ -547,18 +529,18 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
         ],
         keysHint: '← → change color, space fires'
       };
-      const news = stageIndex > 0 && clock - stageAt < NEWS ? `New color: ${BEAD_COLORS[palette().find((t) => !STAGES[stageIndex - 1].includes(t))!].name}!` : null;
-      switch (phase) {
+      const news = stageIndex > 0 && round.clock - stageAt < NEWS ? `New color: ${BEAD_COLORS[palette().find((t) => !STAGES[stageIndex - 1].includes(t))!].name}!` : null;
+      switch (round.phase) {
         case 'ready':
-          return { ...common, phase, lives: null, message: 'Tap to start! Match the front of the chain: ◀ ▶ pick a color, FIRE shoots it.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
+          return { ...common, phase: round.phase, lives: null, message: 'Tap to start! Match the front of the chain: ◀ ▶ pick a color, FIRE shoots it.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
         case 'play': {
           const message = news ?? (combo >= 2 ? `Combo ×${combo}!` : danger() > 0.75 ? 'Too close! Fire fast!' : 'Match the front of the chain! ◀ ▶ pick a color, FIRE shoots it.');
-          return { ...common, ...controls, phase, message, button: 'FIRE', tone: 'go' };
+          return { ...common, ...controls, phase: round.phase, message, button: 'FIRE', tone: 'go' };
         }
         case 'breach':
-          return { ...common, ...controls, phase, message: lives === 1 ? 'The chain reached you! Last life!' : 'The chain reached you! Push it back!', button: 'FIRE', tone: 'bad' };
+          return { ...common, ...controls, phase: round.phase, message: lives === 1 ? 'The chain reached you! Last life!' : 'The chain reached you! Push it back!', button: 'FIRE', tone: 'bad' };
         case 'over':
-          return { ...common, phase, message: newBest ? `New best: ${score}!` : `Game over: ${score} points. Best combo ×${bestCombo}.`, button: 'GO!', tone: 'go' };
+          return { ...common, phase: round.phase, message: newBest ? `New best: ${score}!` : `Game over: ${score} points. Best combo ×${bestCombo}.`, button: 'GO!', tone: 'go' };
       }
     }
   };

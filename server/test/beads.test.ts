@@ -3,13 +3,7 @@ import { buildStage, sampleLayout } from '../../shared/layout.ts';
 import { BEAD_COLORS, beadsGame, STAGE_EVERY } from '../src/game/beads.ts';
 import { Frame } from '../src/game/frame.ts';
 import { css, Yard } from '../src/game/kit.ts';
-import type { Game } from '../src/game/types.ts';
-
-const press = (g: Game, button?: string, playerId = 'p') => g.input({ playerId, action: 'press', ...(button ? { button } : {}) });
-const release = (g: Game, button?: string, playerId = 'p') => g.input({ playerId, action: 'release', ...(button ? { button } : {}) });
-const run = (g: Game, frame: Frame, seconds: number) => {
-  for (let i = 0; i < Math.round(seconds * 60); i++) g.update(1 / 60, frame);
-};
+import { press, release, run } from './harness.ts';
 
 /** Which bead color a bush shows: the one its average color points the same way as. */
 function bushTone(stage: ReturnType<typeof buildStage>, frame: Frame, index: number) {

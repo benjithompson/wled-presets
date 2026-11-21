@@ -3,12 +3,7 @@ import { buildStage, sampleLayout } from '../../shared/layout.ts';
 import { Frame } from '../src/game/frame.ts';
 import { Yard } from '../src/game/kit.ts';
 import { DROP_CROSSINGS, PERFECT_CROSSINGS, REGROW, sliceGame, TIME_MAX, TIME_START } from '../src/game/slice.ts';
-import type { Game } from '../src/game/types.ts';
-
-const press = (g: Game) => g.input({ playerId: 'p', action: 'press' });
-const run = (g: Game, frame: Frame, seconds: number) => {
-  for (let i = 0; i < Math.round(seconds * 60); i++) g.update(1 / 60, frame);
-};
+import { press, run } from './harness.ts';
 
 type Slice = ReturnType<typeof sliceGame>;
 

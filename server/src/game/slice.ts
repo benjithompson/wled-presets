@@ -1,7 +1,8 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, Flare, Motes, Recent, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
-import { NIGHT_MOOD, overMood, Show, type Mood } from './show.ts';
+import { COLORS, Flare, Recent, Sparks, Yard, type Part } from './kit.ts';
+import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
+import { NIGHT_MOOD, overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Slice: a band of light lies on the roof, the top layer of a tower. A bar of the same width, the
@@ -80,16 +81,15 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   const yard = new Yard(stage);
   const roof = yard.roof;
   const n = roof.n;
-  const playable = n >= 30;
+  const playable = n >= MIN_ROOF;
   const sparks = new Sparks(roof, n * 0.1, 1.8);
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
   const decorFlare = new Flare(3);
   /** Where the bar's low edge was lately: a tap drops it where the player saw it. */
   const seen = new Recent<number>(0.4);
   // The whole yard plays along: a calm night that heats up with the perfect streak, red and
   // throbbing when the clock runs low; fireworks for perfects, debris for every piece that breaks.
-  const show = new Show(yard);
+  const fx = new Fx(yard, { sparks, flare: decorFlare });
+  const { motes, waves, show } = fx;
   for (const t of yard.trees) show.dim(t, 0.45);
   // The roof is where the timing is: the show stays faint there, so the bar's white edges stand out.
   show.roofShare = 0.25;
@@ -104,9 +104,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   /** The middle of the band at the start: the roof right above the middle of the house. */
   const home = Math.max(startWidth / 2, Math.min(n - 1 - startWidth / 2, n ? roof.above(yard.middle) : 0));
 
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  const round = new Round<Phase>('slice', 'ready');
   let layers = 0;
   let streak = 0;
   let bestStreak = 0;
@@ -140,11 +138,6 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   /** How far off a drop can be and still count as perfect: a time window, so it stays fair when fast. */
   const tolerance = () => Math.max(1.5, Math.min(width() * 0.15, speed() * 0.03));
 
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
-
   /** The next layer comes in from the other end of the roof each time. */
   function nextBar() {
     const w = width();
@@ -156,7 +149,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
       dir = -1;
     }
     seen.clear();
-    seen.push(clock, bar);
+    seen.push(round.clock, bar);
   }
 
   function reset() {
@@ -179,13 +172,10 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
 
   function newGame() {
     newBest = false;
-    sparks.clear();
-    motes.clear();
-    waves.clear();
-    show.clear();
+    fx.clear();
     show.setMood(moodNow(), { wipe: 'up' });
     reset();
-    setPhase('sweep');
+    round.to('sweep');
   }
 
   /** A piece of the roof breaks off: it flashes red on the roof and falls from the gutter. */
@@ -270,30 +260,30 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   }
 
   function gameOver() {
-    newBest = record('slice', layers).isNew;
+    newBest = round.record(layers);
     // The band falls too.
     breakOff(lo, hi, layerColor(layers));
     for (const t of yard.trees) waves.add(t.x, t.top, COLORS.bad, { amount: 0.6 });
     // The tower comes down over everything: a red flash, red pouring down the yard, then dark red.
     const mid = roof.point((lo + hi) / 2);
     show.gameOver(mid.x, mid.y, { newBest });
-    setPhase('over');
+    round.to('over');
   }
 
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
-    if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return newGame();
-    if (phase === 'sweep') drop(seen.at(clock - LAG) ?? bar);
+    if (round.canStart) return newGame();
+    if (round.phase === 'sweep') drop(seen.at(round.clock - LAG) ?? bar);
   }
 
   // ---------- Drawing ----------
 
   function drawRoof() {
-    for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT, 1 + 0.3 * Math.sin(clock * 0.8 + i * 0.07));
+    for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT, 1 + 0.3 * Math.sin(round.clock * 0.8 + i * 0.07));
     // The last seconds on the clock: the whole roof ticks red, faster as it runs out.
     const tick = hurryTick();
     if (tick) for (let i = 0; i < n; i++) yard.roofAt(i, COLORS.bad, 0.1 * tick);
-    if (phase !== 'over') {
+    if (round.phase !== 'over') {
       // The top layer: its color, with brighter edges to line up with. It flashes after a drop.
       // The bar lies on top of it, not mixed in (two colors added up look white on real LEDs):
       // under the bar, only the band's edges show, as notches in the band's color.
@@ -301,7 +291,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
       const flash = since < 0.4 ? 1 - since / 0.4 : 0;
       const body = lastPerfect && flash ? mix(color, COLORS.gold, flash) : color;
       const w = width();
-      const under = (i: number) => phase === 'sweep' || phase === 'ready' ? i >= Math.ceil(bar) && i <= Math.floor(bar + w) : false;
+      const under = (i: number) => round.phase === 'sweep' || round.phase === 'ready' ? i >= Math.ceil(bar) && i <= Math.floor(bar + w) : false;
       for (let i = Math.ceil(lo); i <= Math.floor(hi); i++) if (!under(i)) yard.roofAt(i, body, 0.28 + flash * 0.35);
       for (const edge of [lo, hi]) {
         const i = Math.round(edge);
@@ -322,7 +312,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   function drawBar(notches: Set<number>) {
     const w = width();
     const color = layerColor(layers + 1);
-    const pulse = phase === 'ready' ? 0.5 + 0.3 * Math.sin(clock * 4) : 0.75;
+    const pulse = round.phase === 'ready' ? 0.5 + 0.3 * Math.sin(round.clock * 4) : 0.75;
     for (let i = Math.ceil(bar); i <= Math.floor(bar + w); i++) if (!notches.has(i)) yard.roofAt(i, color, pulse);
     yard.roofSplat(bar, WHITE, 0.9, 1);
     yard.roofSplat(bar + w, WHITE, 0.9, 1);
@@ -331,16 +321,16 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   function drawTrees(part: Part) {
     // The tower: the newest TREE_LAYERS layers, each a band of the tree, the newest on top.
     const shown = tower.slice(-TREE_LAYERS);
-    const falling = phase === 'over' ? Math.min(1, phaseTime / 1.5) : 0;
+    const falling = round.phase === 'over' ? Math.min(1, round.time / 1.5) : 0;
     for (let i = 0; i < part.count; i++) {
       const u = part.up[i];
       // When the tower falls, it drains down out of the tree.
       const k = Math.floor(u * TREE_LAYERS + falling * TREE_LAYERS);
       const layer = shown[k];
-      if (!layer || (phase === 'over' && u > 1 - falling)) continue;
+      if (!layer || (round.phase === 'over' && u > 1 - falling)) continue;
       const fresh = layer.t < 0.3 ? 1 - layer.t / 0.3 : 0;
-      const sparkle = layer.perfect ? 0.35 * Math.max(0, Math.sin(clock * 7 + i * 2.1)) : 0;
-      const c = phase === 'over' ? mix(layer.color, COLORS.bad, 0.5) : mix(mix(layer.color, COLORS.gold, sparkle), WHITE, fresh * 0.5);
+      const sparkle = layer.perfect ? 0.35 * Math.max(0, Math.sin(round.clock * 7 + i * 2.1)) : 0;
+      const c = round.phase === 'over' ? mix(layer.color, COLORS.bad, 0.5) : mix(mix(layer.color, COLORS.gold, sparkle), WHITE, fresh * 0.5);
       yard.add(part.offset + i, c, 0.6 + fresh * 0.5);
     }
   }
@@ -355,12 +345,12 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
       const share = REGROW / m;
       const fill = growing ? 1 : Math.max(0, Math.min(1, (streak - bi * share) / share));
       for (let i = 0; i < b.count; i++) {
-        if (phase === 'over') {
-          yard.add(b.offset + i, COLORS.bad, 0.06 * (0.6 + 0.4 * Math.sin(phaseTime * 3)));
+        if (round.phase === 'over') {
+          yard.add(b.offset + i, COLORS.bad, 0.06 * (0.6 + 0.4 * Math.sin(round.time * 3)));
           continue;
         }
         if (!fill || b.up[i] > fill) continue;
-        const twinkle = growing ? 0.55 + 0.45 * Math.max(0, Math.sin(clock * 8 + i * 2.7)) : 0.6 + 0.1 * Math.sin(clock * 3 + i);
+        const twinkle = growing ? 0.55 + 0.45 * Math.max(0, Math.sin(round.clock * 8 + i * 2.7)) : 0.6 + 0.1 * Math.sin(round.clock * 3 + i);
         yard.add(b.offset + i, mix(COLORS.gold, WHITE, fresh * 0.5), twinkle + fresh * 0.4);
       }
     });
@@ -371,7 +361,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
    * twice a second in the last 1.5; each flash fades quickly.
    */
   function hurryTick() {
-    if (phase !== 'sweep' || timeLeft >= HURRY) return 0;
+    if (round.phase !== 'sweep' || timeLeft >= HURRY) return 0;
     const rate = timeLeft < 1.5 ? 2 : 1;
     const phaseIn = (timeLeft * rate) % 1;
     // A flash right as each whole (or half) second goes by.
@@ -384,7 +374,7 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
     for (let i = 0; i < part.count; i++) {
       if (tick) yard.add(part.offset + i, COLORS.bad, 0.5 * tick);
       yard.add(part.offset + i, decorFlare.color, 1);
-      if (warm > 0) yard.add(part.offset + i, COLORS.gold, warm * 0.18 * (0.8 + 0.2 * Math.sin(clock * 2 + i * 0.3)));
+      if (warm > 0) yard.add(part.offset + i, COLORS.gold, warm * 0.18 * (0.8 + 0.2 * Math.sin(round.clock * 2 + i * 0.3)));
     }
   }
 
@@ -394,8 +384,8 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
    * tick of the clock's last seconds; dark red once the tower falls.
    */
   function moodNow(): Mood {
-    if (phase === 'over') return overMood(phaseTime);
-    if (phase === 'ready') return { a: hsv(clock * 0.04), b: hsv(clock * 0.04 + 0.35), level: 1, drift: 1.2 };
+    if (round.phase === 'over') return overMood(round.time);
+    if (round.phase === 'ready') return { a: hsv(round.clock * 0.04), b: hsv(round.clock * 0.04 + 0.35), level: 1, drift: 1.2 };
     if (timeLeft < HURRY) return { a: COLORS.bad, b: [0.5, 0, 0.15], level: 1.2, throb: timeLeft < 1.5 ? 2 : 1 };
     const warm = Math.min(1, streak / REGROW);
     const tall = Math.min(1, layers / 30);
@@ -407,20 +397,19 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
   return {
     id: 'slice',
 
-    scoreBoard: () => ({ key: 'slice', title: 'Slice' }),
+    scoreBoard: () => round.scoreBoard(),
 
     input,
 
     peek: () => ({ bar, lo, hi, time: timeLeft, crossing: crossing() }),
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       since += dt;
       yard.begin(frame);
       if (!playable) return;
 
-      if (phase === 'sweep' || phase === 'ready') {
+      if (round.phase === 'sweep' || round.phase === 'ready') {
         const end = Math.max(0, n - 1 - width());
         bar += dir * speed() * dt;
         if (bar >= end) {
@@ -432,46 +421,39 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
           dir = 1;
         }
         bar = Math.max(0, Math.min(end, bar));
-        seen.push(clock, bar);
+        seen.push(round.clock, bar);
       }
-      if (phase === 'sweep') {
+      if (round.phase === 'sweep') {
         timeLeft -= dt;
         if (timeLeft <= 0) outOfTime();
       }
       for (const c of chunks) c.t += dt;
       chunks = chunks.filter((c) => c.t < CHUNK_LIFE);
       for (const l of tower) l.t += dt;
-      sparks.update(dt);
-      motes.update(dt);
-      waves.update(dt);
-      decorFlare.update(dt);
-      show.update(dt);
-      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
+      fx.update(dt);
+      if (round.settled) show.followMood(moodNow(), 2, dt);
       // Each red tick of the clock pumps the whole yard.
       const tick = hurryTick();
       if (tick > 0.9 && ticked < 0.9) show.pulse(COLORS.bad, 0.12);
       ticked = tick;
       // Waiting for a player: now and then a firework.
-      if (phase === 'ready' && show.rocketsUp === 0 && Math.random() < dt / 2.5) show.firework({ colors: [LAYER_COLORS[Math.floor(Math.random() * 4)], COLORS.gold], size: 0.7 });
-      if (phase === 'over' && phaseTime > 10) {
+      if (round.phase === 'ready' && show.rocketsUp === 0 && Math.random() < dt / 2.5) show.firework({ colors: [LAYER_COLORS[Math.floor(Math.random() * 4)], COLORS.gold], size: 0.7 });
+      if (round.timedOut) {
         reset();
-        setPhase('ready');
+        round.to('ready');
       }
 
       drawRoof();
       drawBushes();
       for (const t of yard.trees) drawTrees(t);
       for (const d of yard.decor) drawDecor(d);
-      if (phase === 'over' && phaseTime < 0.6) yard.wash(COLORS.bad, 0.2 * (1 - phaseTime / 0.6));
-      if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.04);
-      motes.draw();
-      waves.draw();
-      show.draw(frame);
+      if (round.phase === 'over') endGlow(yard, round.time, 0.04, 0.2);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      const best = bestScore('slice');
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup();
+      const best = round.best();
       const widthPct = `${Math.round((width() / startWidth) * 100)}%`;
       const stats = [
         { label: 'Layers', value: layers },
@@ -480,9 +462,9 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
         { label: 'Best', value: Math.max(best, layers) }
       ];
       const common = { score: layers, lives: null, goal: null, stats };
-      switch (phase) {
+      switch (round.phase) {
         case 'ready':
-          return { ...common, phase, message: 'Tap to start! Drop the sliding light right on top of the band. Whatever hangs over breaks off.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
+          return { ...common, phase: round.phase, message: 'Tap to start! Drop the sliding light right on top of the band. Whatever hangs over breaks off.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
         case 'sweep': {
           const progress = { value: Math.min(streak, REGROW), max: REGROW };
           let message: string;
@@ -492,12 +474,12 @@ export function sliceGame(stage: Stage): Game & { peek(): SlicePeek } {
           else if (grew) message = `PERFECT ×${streak}!${gain} The band grows back.`;
           else if (lastPerfect) message = streak >= REGROW ? `PERFECT ×${streak}!${gain}` : `PERFECT ×${streak}!${gain} ${REGROW - streak} more to grow back.`;
           else message = `Layer ${layers}.${gain} ${Math.max(1, Math.round(lastLoss))} broke off. Line up the edges for a perfect!`;
-          return { ...common, phase, progress, message, button: 'DROP', tone: timeLeft < HURRY ? 'bad' : lastPerfect ? 'good' : 'go' };
+          return { ...common, phase: round.phase, progress, message, button: 'DROP', tone: timeLeft < HURRY ? 'bad' : lastPerfect ? 'good' : 'go' };
         }
         case 'over':
           return {
             ...common,
-            phase,
+            phase: round.phase,
             message: newBest
               ? `${timedOut ? 'Out of time! ' : ''}New best: ${layers} layers!`
               : timedOut

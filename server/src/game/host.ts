@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
 import { buildStage, CONTROL_ID, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
-import { GAME_CATALOG } from '../../../shared/games.ts';
+import { GAME_CATALOG, type GameId, type PlayMessage } from '../../../shared/games.ts';
 import { endRun, nameScore, pendingInitials, removeScore, scoreboard } from './kit.ts';
 import { DEFAULT_LINE } from '../../../shared/line.ts';
 import { Line, type Visitor } from '../line.ts';
@@ -25,10 +25,11 @@ import { ricochetGame } from './ricochet.ts';
 import { sliceGame } from './slice.ts';
 import { paintGame } from './paint.ts';
 import { whackGame } from './whack.ts';
-import { cleanStroke, type PaintStroke } from '../../../shared/paint.ts';
+import { cleanStroke } from '../../../shared/paint.ts';
+import { hasEnded, showsBoard } from './round.ts';
 import type { Game, GameFactory } from './types.ts';
 
-const CREATE: Record<string, GameFactory> = {
+const CREATE: Record<GameId, GameFactory> = {
   catcher: catcherGame,
   cascade: cascadeGame,
   overflow: overflowGame,
@@ -46,15 +47,6 @@ export const GAMES: (GameInfo & { create: GameFactory })[] = GAME_CATALOG.map(({
 
 /** A game with no input for this long goes back to the idle animation. */
 const IDLE_AFTER_MS = 3 * 60_000;
-
-type ClientMessage =
-  | { type: 'start'; game: string }
-  | { type: 'accept' }
-  | { type: 'leaveLine' }
-  | { type: 'stop' }
-  | { type: 'leave' }
-  | { type: 'input'; action: 'press' | 'release'; button?: string } | { type: 'setting'; id: string; value: string } | { type: 'initials'; id: number; initials: string }
-  | ({ type: 'paint' } & PaintStroke);
 
 /** What a scene plays on the lights: effects on the yard and its objects, or a sequence (it loops). */
 export interface Show {
@@ -74,14 +66,9 @@ function sequenceProgram(stage: Stage, layout: Layout, seq: Sequence): Program {
   return { setStage: (s, l) => p.setStage(s, l), update: (dt, out) => p.update(dt, out, true), objects: () => p.objects() };
 }
 
-/** Phases with the scoreboard on the phone: before a game and after it. */
-const SHOWS_BOARD = new Set(['ready', 'over']);
-
 /** How often the host checks that each browser is still there (WebSocket ping). */
 const HEARTBEAT_MS = 4000;
 
-/** Phases at the end of a game. */
-const ENDED = new Set(['over', 'won']);
 /** With someone waiting: the turn ends this long after the game ended (the board is on the phone)… */
 const BOARD_MS = 8000;
 /** …or, while initials are being typed, this long. */
@@ -381,7 +368,7 @@ export class GameHost implements FrameSource {
       if (now !== second) [second, sent] = [now, 0];
       if (++sent > CLOSE_AT_MESSAGES_PER_SECOND) return this.drop(ws, true);
       if (sent > MESSAGES_PER_SECOND || isBinary) return;
-      let msg: ClientMessage;
+      let msg: PlayMessage;
       try {
         msg = JSON.parse(String(raw));
       } catch {
@@ -394,7 +381,7 @@ export class GameHost implements FrameSource {
     this.pipeline.wake();
   }
 
-  private onMessage(ws: WebSocket, msg: ClientMessage) {
+  private onMessage(ws: WebSocket, msg: PlayMessage) {
     const client = this.clients.get(ws);
     if (!client) return;
     if (msg.type === 'leave') return this.drop(ws, false, true);
@@ -459,7 +446,7 @@ export class GameHost implements FrameSource {
       this.lastInput = Date.now();
       this.game.setting?.(msg.id, msg.value);
     }
-    if (msg.type === 'input' && SHOWS_BOARD.has(before) && !SHOWS_BOARD.has(this.game.status().phase)) endRun();
+    if (msg.type === 'input' && showsBoard(before) && !showsBoard(this.game.status().phase)) endRun();
     this.sendStatus(true);
   }
 
@@ -497,8 +484,8 @@ export class GameHost implements FrameSource {
     const waiting = line.waitingCount() > 0;
     if (now - this.lastInput > (waiting ? IDLE_WAITING_MS : (this.game.idleAfterMs ?? IDLE_AFTER_MS))) return line.release(holder, 'nobody played');
     const phase = this.game.status().phase;
-    if (ENDED.has(phase)) this.overSince ??= now;
-    else if (!SHOWS_BOARD.has(phase)) this.overSince = null;
+    if (hasEnded(phase)) this.overSince ??= now;
+    else if (!showsBoard(phase)) this.overSince = null;
     if (waiting && this.overSince != null) {
       const board = this.game.scoreBoard?.();
       const naming = board ? !!pendingInitials(board.key) : false;
@@ -539,7 +526,7 @@ export class GameHost implements FrameSource {
   private status(): GameStatus {
     const s: GameStatus = { ...this.game.status(), game: this.game.id === 'idle' ? null : this.game.id, players: this.clients.size, realLights: this.output.targets() };
     // The high scores, on the start and game-over screens.
-    const board = SHOWS_BOARD.has(s.phase) ? this.game.scoreBoard?.() : null;
+    const board = showsBoard(s.phase) ? this.game.scoreBoard?.() : null;
     if (board) {
       const fresh = this.freshScore && this.freshScore.until > Date.now() ? this.freshScore.id : undefined;
       s.scoreboard = { title: board.title, entries: scoreboard(board.key).map((e, i) => ({ ...e, rank: i + 1 })), ...(fresh ? { fresh } : {}) };
