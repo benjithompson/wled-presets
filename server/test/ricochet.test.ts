@@ -162,8 +162,9 @@ describe('Ricochet', () => {
       for (let i = 0; i < stage.roofPath.length; i++) {
         const k = stage.roofPath[i] * 3;
         const [r, g, b] = [frame.data[k], frame.data[k + 1], frame.data[k + 2]];
-        // White (every channel bright): the comet's head and the start of its tail.
-        if (Math.min(r, g, b) > 0.5) expect(Math.abs(i - pos)).toBeLessThan(9);
+        // White (every channel bright, none far above the others): the comet's head and the start
+        // of its tail. Where the tail crosses the gate's edge it is bright too, but plainly green.
+        if (Math.min(r, g, b) > 0.5 && Math.max(r, g, b) < 2 * Math.min(r, g, b)) expect(Math.abs(i - pos)).toBeLessThan(9);
         // Green (much more green than red): the gate.
         if (g > 0.25 && g > r * 2) expect(Math.abs(i - game.peek().gate)).toBeLessThanOrEqual(halfWidth + 3);
       }
