@@ -42,3 +42,7 @@ config.json
 
 # Local secrets
 unifi-key.txt
+
+# Unraid API access for scripts/deploy-unraid.ts (key and the server address)
+unraid/unraid-api-key.txt
+unraid/unraid-url.txt

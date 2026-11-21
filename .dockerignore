@@ -13,3 +13,5 @@ server/test
 *.md
 
 unifi-key.txt
+unraid/unraid-api-key.txt
+unraid/unraid-url.txt
