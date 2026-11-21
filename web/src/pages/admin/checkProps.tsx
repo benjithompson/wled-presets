@@ -256,7 +256,7 @@ export function ObjectCheckProps({
           ) : null}
           {tree ? (
             <PropNote>
-              A color wound around the tree instead of on one side: turn it with Faces (in Shape) until the blocks sit side by side. Thin stripes of every color: the number of {f.pattern === 'strands' ? 'strands' : 'turns'} or of
+              A color wound around the tree instead of on one side: turn it with Faces (in Shape) until the blocks sit side by side. Thin stripes of every color: the number of {f.pattern === 'strands' ? 'strands' : f.pattern === 'wave' ? 'passes' : 'turns'} or of
               LEDs is off.
             </PropNote>
           ) : f.kind === 'roof' || f.kind === 'line' ? (

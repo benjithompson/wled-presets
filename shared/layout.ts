@@ -19,8 +19,10 @@ import type { LightType } from './lights.ts';
  *   design can be saved to the library and placed many times.
  */
 export type FixtureKind = 'roof' | 'line' | 'bush' | 'tree' | 'semicircle' | 'custom';
-/** Bush: fill, ring, spiral. Tree: spiral, strands. */
-export type FixturePattern = 'fill' | 'ring' | 'spiral' | 'strands';
+/** Bush: fill, ring, spiral. Tree: spiral, strands, wave (back and forth over its front, see wavePasses). */
+export type FixturePattern = 'fill' | 'ring' | 'spiral' | 'strands' | 'wave';
+/** A side of an object, as seen from the street. */
+export type Side = 'left' | 'right';
 /** A tree's sides: a cone (a tree), a cylinder (a wrapped post or column), or a sphere (a ball of lights) on its base. */
 export type TreeShape = 'cone' | 'cylinder' | 'sphere';
 /** Which way a spiral winds, as seen from above, following the wire from LED 0: counterclockwise or clockwise. */
@@ -106,10 +108,27 @@ export interface Fixture {
   strands?: number;
   /** Tree: the shape of its sides. Not set: a cone. */
   shape?: TreeShape;
+  /**
+   * Tree shaped as a ball: how much of it has LEDs, in degrees from the top down. 180 (not set):
+   * all of it; 90: its top half, an upside-down bowl (the crown of a Japanese maple, say). The
+   * ball keeps its width and height; the LEDs stop at the edge of that cap.
+   */
+  cover?: number;
   /** Tree: which way its spiral winds (or its strands go round), seen from above (see Spin). Not set: counterclockwise. */
   spin?: Spin;
-  /** Tree with a spiral: where LED 0 is, at the base or at the top. Not set: the base. */
+  /** Tree with a spiral or a wave: where LED 0 is, at the base or at the top. Not set: the base. */
   start?: 'base' | 'top';
+  /**
+   * Tree with a wave: how far around the tree it winds back and forth, in degrees, centered on
+   * its front (see facing). Not set: 180 (its front half).
+   */
+  sweep?: number;
+  /** Tree with a wave: the height between one pass and the next, in layout units. Not set: 8 passes. */
+  spacing?: number;
+  /** Tree with a wave: the side its first pass starts on, as seen from its front. Not set: left. */
+  startSide?: Side;
+  /** Tree with a wave: the side its last pass ends on. Not set: wherever the passes end. */
+  endSide?: Side;
   /** Semicircle: how its zigzag runs (see Zigzag). Not set: down. */
   zigzag?: Zigzag;
   /** Number of LEDs. */
@@ -482,15 +501,23 @@ export function treeWidthAt(shape: TreeShape | undefined, u: number): number {
   return 1 - u * 0.96;
 }
 
-/** The outline of a tree from the front, at its base: a triangle, a rectangle or an ellipse. */
-export function treeOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'shape'>): Point[] {
+/** The share of a ball's height (0 at its bottom) where the LEDs of its cap stop (see Fixture.cover). */
+export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 'sphere' && f.cover != null && f.cover < 180 ? (1 + Math.cos((Math.max(1, f.cover) * Math.PI) / 180)) / 2 : 0);
+
+/**
+ * The outline of a tree from the front, at its base: a triangle, a rectangle or an ellipse (for
+ * a ball with LEDs on its top part only, that cap of it).
+ */
+export function treeOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'shape' | 'cover'>): Point[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const r = f.radius ?? 80;
   const h = f.height ?? 240;
   if (f.shape === 'sphere') {
-    return Array.from({ length: 36 }, (_, i) => {
-      const a = (i / 36) * Math.PI * 2;
-      return { x: b.x + Math.sin(a) * r, y: b.y - h / 2 + (Math.cos(a) * h) / 2 };
+    // Round from the top: the cap's edge, over the top, to its other edge.
+    const c = f.cover != null && f.cover < 180 ? (Math.max(1, f.cover) * Math.PI) / 180 : Math.PI;
+    return Array.from({ length: 37 }, (_, i) => {
+      const a = -c + (2 * c * i) / 36;
+      return { x: b.x + Math.sin(a) * r, y: b.y - h / 2 - (Math.cos(a) * h) / 2 };
     });
   }
   const top = f.shape === 'cylinder' ? [-r, r] : [0];
@@ -511,10 +538,15 @@ function treePixels(f: Fixture, n: number): Point3[] {
   const out: Point3[] = [];
   // u: 0 at the base, 1 at the top. Angle 0 is the front; going round counterclockwise as
   // seen from above (the street at the bottom), the LEDs move to the right as seen from the street.
+  // A ball with LEDs on its top only: u runs over that cap (u0 to 1 of the ball's height).
+  const u0 = capFloor(f);
+  const span = 1 - u0;
   const at = (u: number, a: number): Point3 => {
-    const rad = r * treeWidthAt(f.shape, u);
-    return { x: b.x + Math.sin(face + sign * a) * rad, y: b.y - u * h, z: bz + Math.cos(face + sign * a) * rad };
+    const ub = u0 + span * u;
+    const rad = r * treeWidthAt(f.shape, ub);
+    return { x: b.x + Math.sin(face + sign * a) * rad, y: b.y - ub * h, z: bz + Math.cos(face + sign * a) * rad };
   };
+  const widthAt = (u: number) => treeWidthAt(f.shape, u0 + span * u);
   if (f.pattern === 'strands') {
     const s = Math.max(1, Math.min(n, Math.round(f.strands ?? 12)));
     const per = Math.floor(n / s);
@@ -528,9 +560,11 @@ function treePixels(f: Fixture, n: number): Point3[] {
     }
     return out;
   }
+  // A wave goes left and right by its own sides: the way a spiral winds does not turn it round.
+  if (f.pattern === 'wave') return wavePixels(f, n, (u, a) => at(u, sign * a), widthAt, h * span);
   const turns = f.turns ?? 8;
   const fromTop = f.start === 'top';
-  const heightAt = spiralHeights(f.shape, r, h, turns);
+  const heightAt = spiralHeights(f.shape, r, h * span, turns, u0 > 0 ? widthAt : undefined);
   for (let i = 0; i < n; i++) {
     // s: how far along the wire from LED 0. The angle grows along the wire from the front, so
     // a spiral from the top starts at the front too, and winds the way it is set as it comes down.
@@ -541,14 +575,91 @@ function treePixels(f: Fixture, n: number): Point3[] {
   return out;
 }
 
+export const WAVE_SWEEP = 180;
+const WAVE_PASSES = 8;
+
+/**
+ * A wave's passes: how many times it crosses the tree (from one side of its sweep to the other,
+ * level), and the sides it starts and ends on. The passes are `spacing` apart, as near as can
+ * be, from the base to the top: when the end side is set, one pass more or less ends it there.
+ */
+export function wavePasses(f: Pick<Fixture, 'height' | 'spacing' | 'startSide' | 'endSide' | 'shape' | 'cover'>): { passes: number; startSide: Side; endSide: Side } {
+  // The height the passes share: a ball's cap when only its top has LEDs.
+  const h = (f.height ?? 240) * (1 - capFloor(f));
+  const startSide = f.startSide ?? 'left';
+  const want = f.spacing && f.spacing > 0 ? h / f.spacing + 1 : WAVE_PASSES;
+  let passes = Math.max(2, Math.min(200, Math.round(want)));
+  // An even number of passes ends on the side it started on.
+  const endsAt = (p: number): Side => (p % 2 === 0 ? startSide : startSide === 'left' ? 'right' : 'left');
+  if (f.endSide && endsAt(passes) !== f.endSide) passes = passes === 2 || want > passes ? passes + 1 : passes - 1;
+  return { passes, startSide, endSide: endsAt(passes) };
+}
+
+/**
+ * The LEDs of a tree with a wave: the wire runs level across the tree's front (`sweep` degrees
+ * of it), turns up in a round bend (a half circle, as wide as the passes are apart) and runs back,
+ * like the bends of a river, from the base to the top (or the top down). The LEDs are spread
+ * evenly along it. `at(u, a)`: the point at height u (0 to 1) and angle a from the front.
+ */
+function wavePixels(f: Fixture, n: number, at: (u: number, a: number) => Point3, widthAt: (u: number) => number, h: number): Point3[] {
+  const { passes, startSide } = wavePasses(f);
+  const r = f.radius ?? 80;
+  const half = ((Math.max(10, Math.min(360, f.sweep ?? WAVE_SWEEP)) / 2) * Math.PI) / 180;
+  const sigma = startSide === 'right' ? 1 : -1;
+  const du = 1 / (passes - 1);
+  // The path in (angle, height): each pass level, each bend a half circle (in real lengths).
+  const path: [number, number][] = [];
+  const bend = (k: number) => {
+    // The bend from pass k up to pass k + 1, on the side pass k ends on.
+    const side = k % 2 === 0 ? -sigma : sigma;
+    const uMid = (k + 0.5) * du;
+    const width = Math.max(1e-3, r * widthAt(uMid));
+    const ra = Math.min(half * 0.9, (h * du) / 2 / width);
+    return { side, uMid, ra, center: side * (half - ra) };
+  };
+  const bends = Array.from({ length: passes - 1 }, (_, k) => bend(k));
+  for (let k = 0; k < passes; k++) {
+    const u = k * du;
+    const from = k === 0 ? sigma * (k % 2 === 0 ? 1 : -1) * half : bends[k - 1].center;
+    const to = k === passes - 1 ? (k % 2 === 0 ? -sigma : sigma) * half : bends[k].center;
+    const steps = 32;
+    for (let i = k === 0 ? 0 : 1; i <= steps; i++) path.push([from + ((to - from) * i) / steps, u]);
+    if (k < passes - 1) {
+      const b = bends[k];
+      for (let i = 1; i < 24; i++) {
+        const phi = -Math.PI / 2 + (Math.PI * i) / 24;
+        path.push([b.center + b.side * b.ra * Math.cos(phi), b.uMid + (du / 2) * Math.sin(phi)]);
+      }
+    }
+  }
+  const fromTop = f.start === 'top';
+  const pts = (fromTop ? [...path].reverse() : path).map(([a, u]) => at(u, a));
+  // Spread the LEDs evenly by length along the path.
+  const len = new Float64Array(pts.length);
+  for (let k = 1; k < pts.length; k++) len[k] = len[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y, pts[k].z - pts[k - 1].z);
+  const total = len[pts.length - 1];
+  const out: Point3[] = [];
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const want = n > 1 ? (i / (n - 1)) * total : 0;
+    while (k < pts.length - 2 && len[k + 1] < want) k++;
+    const span = len[k + 1] - len[k];
+    const t = span > 0 ? Math.max(0, Math.min(1, (want - len[k]) / span)) : 0;
+    const p = pts[k];
+    const q = pts[k + 1];
+    out.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t, z: p.z + (q.z - p.z) * t });
+  }
+  return out;
+}
+
 /**
  * For a spiral from the base up: the height u (0..1) at the share s (0..1) of the wire's
  * length, so the LEDs spread evenly along the wire (closer in height where the shape is wide).
  */
-function spiralHeights(shape: TreeShape | undefined, r: number, h: number, turns: number): (s: number) => number {
+function spiralHeights(shape: TreeShape | undefined, r: number, h: number, turns: number, widthAt?: (u: number) => number): (s: number) => number {
   // A cone: the wire's length is about proportional to the width there (as it always was).
-  if (!shape || shape === 'cone') return (s) => 1 - Math.sqrt(1 - s);
-  if (shape === 'cylinder') return (s) => s;
+  if (!widthAt && (!shape || shape === 'cone')) return (s) => 1 - Math.sqrt(1 - s);
+  if (!widthAt && shape === 'cylinder') return (s) => s;
   // Otherwise: measure the wire in small steps, and look the share up.
   const K = 256;
   const len = new Float64Array(K + 1);
@@ -557,7 +668,7 @@ function spiralHeights(shape: TreeShape | undefined, r: number, h: number, turns
   let pzz = 0;
   for (let k = 0; k <= K; k++) {
     const u = k / K;
-    const rad = r * treeWidthAt(shape, u);
+    const rad = r * (widthAt ? widthAt(u) : treeWidthAt(shape, u));
     const a = u * turns * Math.PI * 2;
     const x = Math.sin(a) * rad;
     const y = u * h;

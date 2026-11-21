@@ -104,6 +104,10 @@ import {
   type TreeShape,
   type Units,
   type Zigzag,
+  type Side,
+  wavePasses,
+  WAVE_SWEEP,
+  capFloor,
   keepLocked,
   changeKind,
   isShapeKind,
@@ -115,6 +119,7 @@ import type { Scene } from '../../../../shared/types.ts';
 import { Badge, Button, ConfirmDialog, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { EffectProps } from './effectProps.tsx';
 import { DesignEditor } from './DesignEditor.tsx';
+import { Gizmo, screenAngle, wrapAngle, type GizmoPart } from './gizmo.tsx';
 import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
 import { paintCheck, pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
@@ -157,7 +162,12 @@ const UNDO_GROUP_MS = 600;
 type UV = { u: number; v: number };
 type Drag =
   | { kind: 'vertex'; side: ViewSide; id: string; index: number; start: UV }
-  | { kind: 'move'; side: ViewSide; id: string; from: UV; original: Point[] }
+  /** `axis`: only across (u) or only up and down / toward the street (v), from the arrows. */
+  | { kind: 'move'; side: ViewSide; id: string; from: UV; original: Point[]; axis?: 'u' | 'v' | null }
+  /** Turning with the ring: `prop` is the front view's rotation or the top view's facing. */
+  | { kind: 'rotate'; side: ViewSide; id: string; prop: 'rotation' | 'facing'; center: UV; start: number; original: number }
+  /** Resizing width and height together, about the anchor. */
+  | { kind: 'scale'; side: ViewSide; id: string; center: UV; start: number; original: Pick<Fixture, 'radius' | 'height' | 'size'> }
   | { kind: 'radius'; side: ViewSide; id: string }
   | { kind: 'treeHeight'; id: string }
   /** A press on a locked object: it stays put; moving the pointer says why. */
@@ -371,8 +381,14 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
       </>
     );
   }
-  const spiral = f.pattern !== 'strands';
-  const fromTop = spiral && f.start === 'top';
+  const pattern = f.pattern === 'strands' || f.pattern === 'wave' ? f.pattern : 'spiral';
+  const spiral = pattern === 'spiral';
+  const wave = pattern === 'wave';
+  const fromTop = (spiral || wave) && f.start === 'top';
+  const passes = wave ? wavePasses(f) : null;
+  const ball = f.shape === 'sphere';
+  /** The height its LEDs climb: a ball's cap, when only its top has LEDs. */
+  const climb = (f.height ?? 240) * (1 - capFloor(f));
   return (
     <>
       <PropSelect<TreeShape>
@@ -388,48 +404,145 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
       />
       {width}
       {place(<PropDistance label="Height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
+      {ball ? (
+        <>
+          {place(
+            <PropNumber
+              label="Roundness"
+              unit="%"
+              hint="Its height as a share of its width: 100 is a round ball, less is flatter (a squashed ball, a low dome), more is taller."
+              value={Math.round(((f.height ?? 240) / (2 * (f.radius ?? 80))) * 100)}
+              min={5}
+              max={400}
+              step={5}
+              steppers
+              onChange={(n) => onChange({ height: Math.max(5, Math.round((2 * (f.radius ?? 80) * n) / 100)) })}
+            />
+          )}
+          <PropNumber
+            label="LEDs cover"
+            unit="°"
+            hint="How much of the ball has LEDs, from the top down: 180 all of it, 90 its top half (an upside-down bowl, like the crown of a Japanese maple), less a flatter cap."
+            value={f.cover ?? 180}
+            min={10}
+            max={180}
+            step={5}
+            steppers
+            onChange={(n) => onChange({ cover: Math.round(n) >= 180 ? undefined : Math.round(n) })}
+          />
+        </>
+      ) : null}
       <PropSelect<NonNullable<Fixture['pattern']>>
         label="LED pattern"
         hint={
           spiral
-            ? `LED 0 is at the ${fromTop ? 'top' : 'base'}, at the front; the spiral goes ${fromTop ? 'down to the base' : 'up to the top'}.`
-            : 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
+            ? ball
+              ? `Seen from above, the spiral winds ${fromTop ? 'out from the middle (the top) to the edge' : 'in from the edge to the middle (the top)'}. LED 0 is at the front.`
+              : `LED 0 is at the ${fromTop ? 'top' : 'base'}, at the front; the spiral goes ${fromTop ? 'down to the base' : 'up to the top'}.`
+            : wave
+              ? 'The wire winds back and forth over the front of the tree, like a river, turning in smooth bends instead of going all the way round.'
+              : 'Strands run from the base to the top. They zigzag: LED 0 is at the base of the front strand, which goes up; the next strand comes down.'
         }
-        value={spiral ? 'spiral' : 'strands'}
+        value={pattern}
         options={[
           ['spiral', 'Spiral around it'],
+          ['wave', 'Back and forth (winding)'],
           ['strands', 'Strands, base to top']
         ]}
         onChange={(pattern) => onChange({ pattern })}
       />
-      {spiral ? (
+      {spiral || wave ? (
         <>
-          <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
+          {spiral ? (
+            <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
+          ) : null}
           <PropSelect<'base' | 'top'>
             label="Starts"
+            hint={ball && spiral ? 'Where LED 0 is: on the outside edge of the LEDs, or in the middle (the top of the ball). The spiral ends at the other.' : undefined}
             value={f.start ?? 'base'}
-            options={[
-              ['base', 'At the base'],
-              ['top', 'At the top']
-            ]}
+            options={
+              ball && spiral
+                ? [
+                    ['base', 'On the outside edge'],
+                    ['top', 'In the middle (top)']
+                  ]
+                : [
+                    ['base', 'At the base'],
+                    ['top', 'At the top']
+                  ]
+            }
             onChange={(start) => onChange({ start: start === 'base' ? undefined : start })}
           />
         </>
       ) : (
         <PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />
       )}
-      <PropSelect<Spin>
-        label={spiral ? 'Winds' : 'Goes round'}
-        hint={spiral ? 'As seen from above, following the wire from LED 0' : 'Which way the strands go round from the first, as seen from above'}
-        value={f.spin ?? 'ccw'}
-        options={[
-          ['ccw', 'Counterclockwise'],
-          ['cw', 'Clockwise']
-        ]}
-        onChange={(spin) => onChange({ spin: spin === 'ccw' ? undefined : spin })}
-      />
-      {place(<FacingProp f={f} onChange={onChange} hint={`Turned as seen from above: where ${spiral ? 'the spiral' : 'the first strand'} starts. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`} />)}
-      <PropNote>The point is the middle of the base.</PropNote>
+      {wave && passes ? (
+        <>
+          <PropNumber
+            label="Goes around"
+            unit="°"
+            hint="How far around the tree each pass goes, centered on its front (Faces): 180 covers the front half, 360 goes all the way round and back."
+            value={f.sweep ?? WAVE_SWEEP}
+            min={10}
+            max={360}
+            step={15}
+            steppers
+            onChange={(n) => onChange({ sweep: Math.round(n) === WAVE_SWEEP ? undefined : Math.round(n) })}
+          />
+          <PropDistance
+            label="Rows apart"
+            hint="The height from one pass to the next. The passes fit the tree's height, as close to this as they can."
+            value={f.spacing ?? climb / (passes.passes - 1)}
+            m={m}
+            min={0.05}
+            onChange={(lu) => onChange({ spacing: Math.max(1, Math.round(lu * 10) / 10) })}
+          />
+          <PropSelect<Side>
+            label="First LED on"
+            hint="The side of the tree its first pass starts on, as seen from its front"
+            value={passes.startSide}
+            options={[
+              ['left', 'The left'],
+              ['right', 'The right']
+            ]}
+            onChange={(x) => onChange({ startSide: x === 'left' ? undefined : x })}
+          />
+          <PropSelect<Side>
+            label="Last LED on"
+            hint="The side its last pass ends on. One pass more or less makes it end there."
+            value={passes.endSide}
+            options={[
+              ['left', 'The left'],
+              ['right', 'The right']
+            ]}
+            onChange={(x) => onChange({ endSide: x })}
+          />
+          <PropNote>
+            {passes.passes} passes, {m.text(climb / (passes.passes - 1))} apart, from the {passes.startSide} {fromTop ? 'at the top' : 'at the base'} to the {passes.endSide}{' '}
+            {fromTop ? 'at the base' : 'at the top'}.
+          </PropNote>
+        </>
+      ) : (
+        <PropSelect<Spin>
+          label={spiral ? 'Winds' : 'Goes round'}
+          hint={spiral ? 'As seen from above, following the wire from LED 0' : 'Which way the strands go round from the first, as seen from above'}
+          value={f.spin ?? 'ccw'}
+          options={[
+            ['ccw', 'Counterclockwise'],
+            ['cw', 'Clockwise']
+          ]}
+          onChange={(spin) => onChange({ spin: spin === 'ccw' ? undefined : spin })}
+        />
+      )}
+      {place(
+        <FacingProp
+          f={f}
+          onChange={onChange}
+          hint={`Turned as seen from above: ${wave ? 'the middle of the passes' : `where ${spiral ? 'the spiral' : 'the first strand'} starts`}. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`}
+        />
+      )}
+      <PropNote>{ball ? 'The point is the bottom of the ball, under the middle (below the LEDs when they cover only its top).' : 'The point is the middle of the base.'}</PropNote>
     </>
   );
 }
@@ -1705,21 +1818,34 @@ export function LayoutPage() {
     } else if (drag.kind === 'move') {
       let du = p.u - drag.from.u;
       let dv = p.v - drag.from.v;
-      // Shift: move straight across, or straight up and down (toward the street in the top view).
-      const across = Math.abs(du) >= Math.abs(dv);
-      if (e.shiftKey) {
-        if (across) dv = 0;
-        else du = 0;
-      }
+      // An arrow: along its axis only. Shift: straight across, or straight up and down (toward
+      // the street in the top view), whichever the pointer is closer to.
+      const axis = drag.axis ?? (e.shiftKey ? (Math.abs(du) >= Math.abs(dv) ? 'u' : 'v') : null);
+      if (axis === 'u') dv = 0;
+      if (axis === 'v') du = 0;
       // Grid snap: the first point of the object (the middle of a bush, the base of a tree) goes to the grid.
       const grid = gridFor(side, e);
       if (grid && drag.original[0]) {
         const a = toView(drag.original[0], side, zMin);
-        if (!e.shiftKey || across) du = onGrid(a.u + du, grid, 'u') - a.u;
-        if (!e.shiftKey || !across) dv = onGrid(a.v + dv, grid, 'v') - a.v;
+        if (axis !== 'v') du = onGrid(a.u + du, grid, 'u') - a.u;
+        if (axis !== 'u') dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
       update(drag.id, {
         points: drag.original.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : { ...q, x: q.x + du, z: (q.z ?? 0) + dv }))
+      });
+    } else if (drag.kind === 'rotate' && f) {
+      // The front view's rotation turns clockwise on the screen; facing, seen from above, the other way.
+      const d = screenAngle(drag.center, p) - drag.start;
+      const raw = drag.original + (drag.prop === 'facing' ? -d : d);
+      const val = wrapAngle(e.shiftKey ? Math.round(raw / 15) * 15 : Math.round(raw));
+      update(drag.id, { [drag.prop]: val || undefined });
+    } else if (drag.kind === 'scale' && f) {
+      const t = Math.max(0.05, Math.hypot(p.u - drag.center.u, p.v - drag.center.v) / Math.max(1, drag.start));
+      const o = drag.original;
+      update(drag.id, {
+        ...(o.radius != null ? { radius: Math.max(5, Math.round(o.radius * t)) } : {}),
+        ...(o.height != null ? { height: Math.max(5, Math.round(o.height * t)) } : {}),
+        ...(o.size != null ? { size: Math.max(0.01, Math.round(o.size * t * 100) / 100) } : {})
       });
     } else if (drag.kind === 'radius' && f) {
       update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - f.points[0].x))) });
@@ -2153,7 +2279,7 @@ export function LayoutPage() {
                   ? 'Tap two points to measure the distance between them. Then type the real distance to set the scale.'
                   : tool === 'align'
                     ? ALIGN_STEPS[alignPts.length]
-                    : 'Tap to select; drag an object or a point to move it. Long-press for actions. Pinch to zoom; drag with two fingers to pan.';
+                    : 'Tap to select; drag an object or a point to move it. On the selected object, the arrows move it along one axis, the ring turns it and the yellow squares resize it. Long-press for actions. Pinch to zoom; drag with two fingers to pan.';
   const deskHint = !has2d
     ? 'Show the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
     : panMode
@@ -2176,7 +2302,7 @@ export function LayoutPage() {
                   ? 'Click two points to measure the distance between them. Then type the real distance to set the scale (or, in the top view, the scale of the picture from above).'
                   : tool === 'align'
                     ? ALIGN_STEPS[alignPts.length]
-                  : 'Click to select; drag an object or a point to move it (Shift: straight across or straight up). Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
+                  : 'Click to select; drag an object or a point to move it (Shift: straight across or straight up). On the selected object, the arrows move it along one axis, the ring turns it (Shift: 15° steps) and the yellow squares resize it. Right-click for actions. Wheel: zoom. Middle-drag or Space-drag: pan. F: zoom to the selection.';
   const hint = coarse ? touchHint : deskHint;
 
   const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
@@ -2191,6 +2317,64 @@ export function LayoutPage() {
           ['Depth', m.text(cursor.v + zMin)]
         ]
     : null;
+
+  /**
+   * The move, turn and resize handles of the selected object in one view (see Gizmo): not for a
+   * locked object, nor while a line's point or segment is being edited.
+   */
+  const gizmoFor = (side: ViewSide, V: (p: Point) => UV, k: number) => {
+    const f = sel;
+    if (!f || f.locked || tool !== 'select' || panMode || probe || drawing || multi.length > 1) return null;
+    if (isLine(f) && (corner != null || segment != null)) return null;
+    const front = side === 'front';
+    const box = boxOf(f, side);
+    const anchor = isLine(f) ? { u: box.x + box.w / 2, v: box.y + box.h / 2 } : V(f.points[0]);
+    // A semicircle that is not turned: handles for its width and height.
+    const upright = f.kind === 'semicircle' && !f.rotation && !f.facing;
+    const turnable = front ? f.kind === 'semicircle' || f.kind === 'custom' : f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
+    // The knob: the top of the ring at no turn (front), or where it faces (top: the street is down).
+    const turn = !turnable ? null : front ? (f.rotation ?? 0) - 90 : 90 - (f.facing ?? 0);
+    const width = f.kind === 'bush' || f.kind === 'tree' || upright;
+    const height = front && (f.kind === 'tree' || upright);
+    const scalable = f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
+    // The part being dragged, in the view it is dragged in (the height handle is the front view's).
+    const d = drag && 'id' in drag && drag.id === f.id && ('side' in drag ? drag.side === side : front) ? drag : null;
+    const part: GizmoPart['kind'] | null = !d ? null : d.kind === 'radius' ? 'width' : d.kind === 'treeHeight' ? 'height' : d.kind === 'rotate' || d.kind === 'scale' || d.kind === 'move' ? d.kind : null;
+    const label =
+      part === 'rotate' && d?.kind === 'rotate'
+        ? `${f[d.prop] ?? 0}°`
+        : part === 'width'
+          ? m.text((f.radius ?? 60) * 2)
+          : part === 'height'
+            ? m.text(f.height ?? f.radius ?? 60)
+            : part === 'scale'
+              ? f.kind === 'custom'
+                ? `× ${f.size ?? 1}`
+                : `${m.text((f.radius ?? 60) * 2)} × ${m.text(f.height ?? f.radius ?? 60)}`
+              : null;
+    const start = (e: RPointerEvent, g: GizmoPart) => {
+      const at = viewPoint(e, side);
+      const d: Drag =
+        g.kind === 'move'
+          ? { kind: 'move', side, id: f.id, from: at, original: f.points, axis: g.axis }
+          : g.kind === 'rotate'
+            ? { kind: 'rotate', side, id: f.id, prop: front ? 'rotation' : 'facing', center: anchor, start: screenAngle(anchor, at), original: (front ? f.rotation : f.facing) ?? 0 }
+            : g.kind === 'scale'
+              ? {
+                  kind: 'scale',
+                  side,
+                  id: f.id,
+                  center: anchor,
+                  start: Math.hypot(at.u - anchor.u, at.v - anchor.v),
+                  original: f.kind === 'custom' ? { size: f.size ?? 1 } : { radius: f.radius ?? 60, height: f.height ?? (f.kind === 'tree' ? 240 : (f.radius ?? 60)) }
+                }
+              : g.kind === 'width'
+                ? { kind: 'radius', side, id: f.id }
+                : { kind: 'treeHeight', id: f.id };
+      startDrag(e, d, f.id, side);
+    };
+    return <Gizmo side={side} anchor={anchor} box={box} k={k} turn={turn} width={width} height={height} scale={scalable} active={part ? { part, label } : null} onStart={start} />;
+  };
 
   /** One editable view: the drawing (YardView) and the handles over it, seen through the view's camera. */
   const renderView = (side: ViewSide) => {
@@ -2426,8 +2610,6 @@ export function LayoutPage() {
             const hitClass = tool === 'select' && !panMode ? (f.locked ? 'cursor-pointer' : 'cursor-move') : '';
             if (f.kind === 'custom' || f.kind === 'semicircle') {
               const paths = objectPaths(f, scale).map((path) => path.map(V));
-              // A semicircle that is not turned: handles for its width and (from the front) its height.
-              const square = f.kind === 'semicircle' && !f.rotation && !f.facing;
               const b = boxOf(f, side);
               const pad = 10 * k;
               return (
@@ -2443,8 +2625,6 @@ export function LayoutPage() {
                   ) : null}
                   {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
                   {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
-                  {isSel && square && !f.locked ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
-                  {isSel && square && front && !f.locked ? handle('h', { u: c.u, v: c.v - (f.height ?? r) }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
                 </g>
               );
             }
@@ -2465,14 +2645,15 @@ export function LayoutPage() {
                 ) : null}
                 {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
                 {isSel ? <EndMarkers a={fixturePixels(f, scale)[0]} b={fixturePixels(f, scale).at(-1)} V={V} k={k} /> : null}
-                {isSel && !f.locked ? handle('r', { u: c.u + r, v: c.v }, 'cursor-ew-resize fill-amber-400', (e) => startDrag(e, { kind: 'radius', side, id: f.id }, f.id, side)) : null}
-                {isSel && f.kind === 'tree' && front && !f.locked ? handle('h', { u: c.u, v: c.v - h }, 'cursor-ns-resize fill-amber-400', (e) => startDrag(e, { kind: 'treeHeight', id: f.id }, f.id, side)) : null}
               </g>
             );
           })}
 
           {/* Where each new strand of the selected object starts */}
           {sel && !playing ? <StrandMarks f={sel} perStrand={lightsOf(layout, sel.lights)?.perStrand ?? null} scale={scale} V={V} k={k} labels={front} /> : null}
+
+          {/* Move, turn and resize handles on the selected object. */}
+          {gizmoFor(side, V, k)}
 
           {/* Line being drawn, with the length of the segment under the pointer */}
           {isLineTool(tool) && draft.side === side && draft.pts.length ? (
