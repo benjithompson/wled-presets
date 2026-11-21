@@ -12,6 +12,13 @@ import type { WebSocket } from 'ws';
 export const VIEW_HZ = 30;
 /** A browser that has this much unsent is slow: it skips frames instead of queueing a backlog. */
 const BACKLOG = 64 * 1024;
+/**
+ * A frame goes out this early (ms). The clock ticks 60 times a second, but Node's timers run in
+ * whole milliseconds, so a tick can come a fraction before the frame is due. Without slack that
+ * frame waits a whole tick: a 50 ms gap, then a 17 ms one, a few times a second, and the yard
+ * on the Play page stutters while the lights run smoothly.
+ */
+const SLACK = 5;
 
 export interface Viewer {
   /** It decompresses frames (asked for with ?frames=deflate). */
@@ -24,11 +31,16 @@ export class ViewStream {
   private period = 1000 / VIEW_HZ;
   private due = 0;
   private last: Uint8Array | null = null;
+  private now: () => number;
+
+  constructor(now = () => performance.now()) {
+    this.now = now;
+  }
 
   /** Sends the frame (RGB bytes in stage order) to the viewers when one is due. */
   push(bytes: Uint8Array, viewers: Iterable<[WebSocket, Viewer]>) {
-    const now = performance.now();
-    if (now < this.due) return;
+    const now = this.now();
+    if (now < this.due - SLACK) return;
     // On a steady beat; after a stall, start again from now.
     this.due = now - this.due > this.period ? now + this.period : this.due + this.period;
     const changed = !this.last || !Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).equals(this.last);
