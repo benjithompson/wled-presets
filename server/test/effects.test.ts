@@ -268,6 +268,28 @@ describe('3-D effects and the whole yard', () => {
     expect(left).not.toEqual(right);
   });
 
+  it('light the whole yard with every 3-D effect, finite and never negative', () => {
+    const out = new Float32Array(stage.pixelCount * 3);
+    for (const { id } of EFFECTS.filter((e) => e.space === '3d')) {
+      for (const k of [0, 1]) {
+        const s: EffectSettings = { ...defaultSettings(id), intensity: k, size: 1 - k, reverse: k === 1, brightness: 1 };
+        const scene = new EffectScene(stage, layout, { [YARD]: s });
+        let peak = 0;
+        let bad = 0;
+        // 14 seconds: long enough for the shows that run in cycles (a jump, a supernova, a new shape).
+        for (let f = 0; f < 14 * 30; f++) {
+          scene.update(1 / 30, out);
+          for (const v of out) {
+            if (!Number.isFinite(v) || v < 0) bad++;
+            else if (v > peak) peak = v;
+          }
+        }
+        expect(bad, `${id} k=${k}`).toBe(0);
+        expect(peak, `${id} k=${k} lights the yard`).toBeGreaterThan(0.3);
+      }
+    }
+  });
+
   it('play a 1-D effect on the yard along every object’s own string', () => {
     const scene = new EffectScene(stage, layout, { [YARD]: defaultSettings('candy') });
     expect(scene.playing()).toEqual([YARD]);
