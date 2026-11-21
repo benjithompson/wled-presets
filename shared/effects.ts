@@ -2631,3 +2631,39 @@ export function toBytes<T extends Uint8Array>(data: Float32Array, out: T): T {
   }
   return out;
 }
+
+/**
+ * A layout's effects running into a frame, following edits to the layout: objects whose effect
+ * and LED count stay the same keep running smoothly (see EffectScene).
+ */
+export class LayoutEffects {
+  stage: Stage;
+  readonly scene: EffectScene;
+  /** The frame, as colors (0..1) and as bytes. */
+  data: Float32Array;
+  bytes: Uint8Array;
+
+  constructor(stage: Stage, layout: Pick<Layout, 'fixtures' | 'effect'>) {
+    this.stage = stage;
+    this.scene = new EffectScene(stage, layout, layoutEffects(layout));
+    this.data = new Float32Array(stage.pixelCount * 3);
+    this.bytes = new Uint8Array(stage.pixelCount * 3);
+  }
+
+  /** The layout changed (and with it, maybe, its stage). */
+  sync(stage: Stage, layout: Pick<Layout, 'fixtures' | 'effect'>) {
+    this.scene.setStage(stage, layout);
+    this.scene.setEffects(layoutEffects(layout));
+    if (stage !== this.stage) {
+      this.stage = stage;
+      this.data = new Float32Array(stage.pixelCount * 3);
+      this.bytes = new Uint8Array(stage.pixelCount * 3);
+    }
+  }
+
+  /** `dt` seconds on: the frame's bytes. */
+  frame(dt: number): Uint8Array {
+    this.scene.update(dt, this.data);
+    return toBytes(this.data, this.bytes);
+  }
+}

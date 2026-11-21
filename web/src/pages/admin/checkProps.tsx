@@ -17,9 +17,9 @@ import {
   type CheckAxis,
   type LayoutCheck
 } from '../../../../shared/check.ts';
-import { layoutGround, type Fixture, type Layout, type Stage, type Units } from '../../../../shared/layout.ts';
+import { isLine, layoutGround, type Fixture, type Layout, type Stage, type Units } from '../../../../shared/layout.ts';
 import { cn } from '../../lib/utils.ts';
-import type { ViewSide } from '../../yard/YardView.tsx';
+import type { ViewSide } from '../../yard/views.ts';
 import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.tsx';
 
 /** The check the editor runs. An object's check is of the selected object. */
@@ -259,7 +259,7 @@ export function ObjectCheckProps({
               A color wound around the tree instead of on one side: turn it with Faces (in Shape) until the blocks sit side by side. Thin stripes of every color: the number of {f.pattern === 'strands' ? 'strands' : f.pattern === 'wave' ? 'passes' : 'turns'} or of
               LEDs is off.
             </PropNote>
-          ) : f.kind === 'roof' || f.kind === 'line' ? (
+          ) : isLine(f) ? (
             <PropNote>The colors change at the middle of the line. If they change somewhere else on the house, a corner sits at the wrong LED: Match to the lights (in LEDs) fixes it.</PropNote>
           ) : null}
           {lights ? <PropNote>{lights}</PropNote> : null}

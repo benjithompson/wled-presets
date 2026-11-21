@@ -1,17 +1,17 @@
 // The sequence editor's side panels: the browser (effects, transitions and objects, on the
 // left) and the inspector (properties of what is selected, on the right).
 import { useState, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Box, Circle, Copy, Crosshair, House, Rainbow, Scissors, Shapes, Spline, Trash2, TreePine } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, Copy, Crosshair, Scissors, Trash2 } from 'lucide-react';
 import { EFFECTS, effectInfo, paletteColors, YARD, type EffectId, type EffectInfo, type EffectSettings } from '../../../../../shared/effects.ts';
 import type { FixtureKind, Layout } from '../../../../../shared/layout.ts';
 import { BLEND_MODES, clipEnd, neighbours, overlapOf, TRANSITIONS, transitionInfo, type BlendMode, type SeqClip, type Sequence, type TransitionId } from '../../../../../shared/sequence.ts';
+import { KIND_ICONS } from '../../../lib/kinds.ts';
 import { cn } from '../../../lib/utils.ts';
 import { EffectProps, PaletteSwatch } from '../effectProps.tsx';
 import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from '../props.tsx';
 import { EFFECT_MIME, TRANSITION_MIME } from './Timeline.tsx';
 import { allTargets, findAudioClip, findClip, fmtTime, MIN_CLIP, round, targetName, targetsLabel, updateClips, updateTrack, type Selection } from './model.ts';
 
-const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, semicircle: Rainbow, custom: Shapes };
 
 type BrowserTab = 'effects' | 'transitions' | 'objects';
 

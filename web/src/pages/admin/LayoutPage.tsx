@@ -53,6 +53,10 @@ import {
 import { toast } from 'sonner';
 import {
   buildStage,
+  BUSH_TALL,
+  radiusOf,
+  semicircleSize,
+  treeSize,
   deviceLed,
   FEET_PER_METER,
   FIXTURE_HUES,
@@ -62,17 +66,16 @@ import {
   isLine,
   layoutGround,
   layoutScale,
-  paintEditor,
   clampPointLed,
+  pinPoint,
+  removePoint,
+  setSkipped,
+  splitLine,
+  unpinPoint,
   segmentLeds,
-  setPointLed,
-  skipAfterRemove,
-  mapSegmentEffects,
-  segmentsAfterRemove,
   deviceRuns,
   extendLine,
   insertPoint,
-  pointOnSegment,
   fromLedRange,
   isPinned,
   LAYOUT_WIDTH,
@@ -80,10 +83,8 @@ import {
   matchPoint,
   matchRange,
   MAX_FIXTURE_PIXELS,
-  paintMatch,
   pointOffsets,
   designReach,
-  drawnByPaths,
   objectPaths,
   treeOutline,
   lineLengths,
@@ -112,24 +113,29 @@ import {
   keepLocked,
   changeKind,
   isShapeKind,
+  SHAPE_KINDS,
   type ShapeKind
 } from '../../../../shared/layout.ts';
-import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
-import type { Stage } from '../../../../shared/layout.ts';
+import { deviceEffects, EFFECTS, keyDevice, effectKey, effectTarget, LayoutEffects, layoutEffects, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
+import { framePut, paintEditorView } from '../../../../shared/editorView.ts';
 import type { Scene } from '../../../../shared/types.ts';
 import { Badge, Button, ConfirmDialog, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { EffectProps } from './effectProps.tsx';
 import { DesignEditor } from './DesignEditor.tsx';
 import { Gizmo, screenAngle, wrapAngle, type GizmoPart } from './gizmo.tsx';
 import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
-import { paintCheck, pictureBlocks, validCheck } from '../../../../shared/check.ts';
+import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
-import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
+import { YardView } from '../../yard/YardView.tsx';
+import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
+import { draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
 import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
-import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
+import { onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
+import { KIND_ICONS, KIND_LABELS } from '../../lib/kinds.ts';
+import { EditHistory } from './editHistory.ts';
 import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useMedia } from '../../lib/useMedia.ts';
@@ -155,10 +161,6 @@ const below = (e: RMouseEvent<HTMLElement>): Anchor => {
   const r = e.currentTarget.getBoundingClientRect();
   return { x: r.left, y: r.bottom + 4 };
 };
-/** How far back Undo goes. */
-const UNDO_STEPS = 100;
-/** Changes closer together than this are one step for Undo (for example, one drag). */
-const UNDO_GROUP_MS = 600;
 /** A position in one view, in layout units: u to the right, v down. */
 type UV = { u: number; v: number };
 type Drag =
@@ -174,9 +176,7 @@ type Drag =
   /** A press on a locked object: it stays put; moving the pointer says why. */
   | { kind: 'locked'; id: string; from: UV; warned: boolean }
   | { kind: 'ground' }
-  | { kind: 'newBush'; side: ViewSide; center: UV; radius: number }
-  | { kind: 'newTree'; side: ViewSide; base: UV; size: number }
-  | { kind: 'newSemicircle'; side: ViewSide; base: UV; radius: number }
+  | ({ kind: 'newShape' } & ShapeDraft)
   | { kind: 'pan'; side: ViewSide; x: number; y: number; cam: Cam };
 type ViewName = ViewSide | '3d';
 /** How the viewports share the space, as in CAD programs. */
@@ -229,10 +229,8 @@ const VIEW_NOTES: Record<ViewName, string> = {
 /** The 2D views. */
 const SIDES: ViewSide[] = ['front', 'top', 'side'];
 const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', measure: 'Measure', align: 'Align picture' };
-const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, semicircle: Rainbow, custom: Shapes };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
 const BASE_K = 1.6;
-const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', custom: 'Custom object' };
 
 function readShowOnLights() {
   try {
@@ -318,6 +316,9 @@ function TiltProp({ label, value, hint, onChange }: { label: string; value: numb
 }
 
 /** The shape of a bush, a tree or a semicircle, and how its LEDs run over it. */
+/** The height a shape's size handles show: a tree's, or a semicircle's (its radius unless set). */
+const sizeHeight = (f: Fixture) => (f.kind === 'tree' ? treeSize(f).h : semicircleSize(f).h);
+
 function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked: boolean; onChange: (patch: Partial<Fixture>) => void }) {
   /** Its size and turn: a locked object keeps them (its pattern and wiring can still change). */
   const place = (el: ReactNode) => (
@@ -325,7 +326,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
       {el}
     </fieldset>
   );
-  const width = place(<PropDistance label="Width" value={(f.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
+  const width = place(<PropDistance label="Width" value={radiusOf(f) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
   if (f.kind === 'bush') {
     return (
       <>
@@ -354,7 +355,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           <PropDistance
             label="Height"
             hint="From the straight edge to the top of the round. Half the width: a true half circle."
-            value={f.height ?? f.radius ?? 60}
+            value={semicircleSize(f).h}
             m={m}
             min={0.1}
             onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })}
@@ -404,7 +405,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
   const passes = wave ? wavePasses(f) : null;
   const ball = f.shape === 'sphere';
   /** The height its LEDs climb: a ball's cap, when only its top has LEDs. */
-  const climb = (f.height ?? 240) * (1 - capFloor(f));
+  const climb = treeSize(f).h * (1 - capFloor(f));
   return (
     <>
       <PropSelect<TreeShape>
@@ -419,7 +420,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
         onChange={(shape) => onChange({ shape: shape === 'cone' ? undefined : shape })}
       />
       {width}
-      {place(<PropDistance label="Height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
+      {place(<PropDistance label="Height" value={treeSize(f).h} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
       {ball ? (
         <>
           {place(
@@ -427,12 +428,12 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
               label="Roundness"
               unit="%"
               hint="Its height as a share of its width: 100 is a round ball, less is flatter (a squashed ball, a low dome), more is taller."
-              value={Math.round(((f.height ?? 240) / (2 * (f.radius ?? 80))) * 100)}
+              value={Math.round((treeSize(f).h / (2 * treeSize(f).r)) * 100)}
               min={5}
               max={400}
               step={5}
               steppers
-              onChange={(n) => onChange({ height: Math.max(5, Math.round((2 * (f.radius ?? 80) * n) / 100)) })}
+              onChange={(n) => onChange({ height: Math.max(5, Math.round((2 * treeSize(f).r * n) / 100)) })}
             />
           )}
           <PropNumber
@@ -626,9 +627,7 @@ export function LayoutPage() {
   // Undo and redo: whole layouts. Changes in quick succession (a drag) are one step.
   const layoutRef = useRef<Layout | null>(null);
   layoutRef.current = layout;
-  const past = useRef<Layout[]>([]);
-  const future = useRef<Layout[]>([]);
-  const lastEdit = useRef(0);
+  const [history] = useState(() => new EditHistory<Layout>());
   const [, setHistoryTick] = useState(0);
   const [cursor, setCursor] = useState<(UV & { side: ViewSide }) | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -742,22 +741,16 @@ export function LayoutPage() {
   /** The scene the effects were loaded from or last saved to. */
   const [sceneRef, setSceneRef] = useState<{ id: string; name: string } | null>(null);
   const [newScene, setNewScene] = useState<string | null>(null);
-  const fxRef = useRef<{ scene: EffectScene; stage: Stage; data: Float32Array; bytes: Uint8Array; last: number } | null>(null);
+  const fxRef = useRef<{ effects: LayoutEffects; last: number } | null>(null);
   useEffect(() => {
     if (!playing || !stage || !layout) {
       fxRef.current = null;
       return;
     }
-    const cur = fxRef.current;
-    if (!cur) {
-      fxRef.current = { scene: new EffectScene(stage, layout, effects), stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), last: performance.now() };
-      return;
-    }
     // Objects whose effect and LED count stay the same keep running smoothly.
-    cur.scene.setStage(stage, layout);
-    cur.scene.setEffects(effects);
-    if (cur.stage !== stage) fxRef.current = { ...cur, stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
-  }, [playing, stage, layout, effects]);
+    if (fxRef.current) fxRef.current.effects.sync(stage, layout);
+    else fxRef.current = { effects: new LayoutEffects(stage, layout), last: performance.now() };
+  }, [playing, stage, layout]);
   // Nothing to play: stop.
   useEffect(() => {
     if (!fxCount) setPlaying(false);
@@ -779,7 +772,7 @@ export function LayoutPage() {
     }
     for (const f of layout.fixtures)
       for (const p of f.points) {
-        const r = isLine(f) ? 0 : f.kind === 'custom' ? designReach(f, s) : (f.radius ?? 60);
+        const r = isLine(f) ? 0 : f.kind === 'custom' ? designReach(f, s) : radiusOf(f);
         lo = Math.min(lo, (p.z ?? 0) - r - 1.5 * s);
         hi = Math.max(hi, (p.z ?? 0) + r + 1.5 * s);
       }
@@ -877,13 +870,7 @@ export function LayoutPage() {
   const edit = (fn: (l: Layout) => Layout, force = false) => {
     const cur = layoutRef.current;
     if (!cur) return;
-    const now = Date.now();
-    if (now - lastEdit.current > UNDO_GROUP_MS) {
-      past.current = [...past.current.slice(1 - UNDO_STEPS), cur];
-      future.current = [];
-      setHistoryTick((n) => n + 1);
-    }
-    lastEdit.current = now;
+    if (history.record(cur)) setHistoryTick((n) => n + 1);
     setLayout((l) => {
       if (!l) return l;
       const next = fn(l);
@@ -907,18 +894,14 @@ export function LayoutPage() {
   const setLocked = (ids: string[], locked: boolean) =>
     edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => (ids.includes(f.id) ? { ...f, locked: locked || undefined } : f)) }));
   const undo = () => {
-    const prev = past.current.pop();
-    if (!prev || !layoutRef.current) return;
-    future.current.push(layoutRef.current);
-    lastEdit.current = 0;
+    const prev = layoutRef.current && history.undo(layoutRef.current);
+    if (!prev) return;
     setLayout(prev);
     setHistoryTick((n) => n + 1);
   };
   const redo = () => {
-    const next = future.current.pop();
-    if (!next || !layoutRef.current) return;
-    past.current.push(layoutRef.current);
-    lastEdit.current = 0;
+    const next = layoutRef.current && history.redo(layoutRef.current);
+    if (!next) return;
     setLayout(next);
     setHistoryTick((n) => n + 1);
   };
@@ -931,7 +914,7 @@ export function LayoutPage() {
     const cur = ledRange(f);
     if (isLine(f) && f.points.length > 2 && (first === cur.first) !== (last === cur.last)) {
       const lastPoint = f.points.length - 1;
-      update(f.id, first !== cur.first ? setPointLed(f, 0, clampPointLed(f, 0, first), allPoints(f)) : setPointLed(f, lastPoint, clampPointLed(f, lastPoint, last), allPoints(f)));
+      update(f.id, first !== cur.first ? pinPoint(f, 0, clampPointLed(f, 0, first)) : pinPoint(f, lastPoint, clampPointLed(f, lastPoint, last)));
       return;
     }
     const next = fromLedRange(first, last);
@@ -945,12 +928,10 @@ export function LayoutPage() {
   const pinCorner = (f: Fixture, index: number, led: number | null) => {
     if (led != null) {
       // Only this corner moves: every other corner keeps its LED number.
-      update(f.id, setPointLed(f, index, clampPointLed(f, index, led), allPoints(f)));
+      update(f.id, pinPoint(f, index, clampPointLed(f, index, led)));
       return;
     }
-    const pins = f.points.map((_, i) => f.pointLeds?.[i] ?? null);
-    pins[index] = null;
-    update(f.id, { pointLeds: tidyPins(pins) });
+    update(f.id, unpinPoint(f, index));
   };
 
   /** Starts the wizard on a line at one of its points (default: the start). */
@@ -1000,30 +981,12 @@ export function LayoutPage() {
 
   /** Cuts a line in two at a corner. The second part starts at the next LED; raise its first LED to leave a gap. */
   const splitAt = (f: Fixture, k: number) => {
-    const off = pointOffsets(f)[k];
-    if (off < 1 || off >= f.pixels - 1) {
+    const parts = splitLine(f, k, uid());
+    if (!parts) {
       toast.error('Each part needs at least one LED. Move the corner or add LEDs first.');
       return;
     }
-    const pins = f.points.map((_, i) => f.pointLeds?.[i] ?? null);
-    const a: Fixture = {
-      ...f,
-      points: f.points.slice(0, k + 1),
-      ...fromLedRange(deviceLed(f, 0), deviceLed(f, off)),
-      pointLeds: tidyPins(pins.slice(0, k + 1)),
-      skip: nonEmpty(f.skip?.filter((x) => x < k)),
-      segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x < k ? [x] : []))
-    };
-    const b: Fixture = {
-      ...f,
-      id: uid(),
-      name: `${f.name} (part 2)`,
-      points: f.points.slice(k),
-      ...fromLedRange(deviceLed(f, off + 1), deviceLed(f, f.pixels - 1)),
-      pointLeds: tidyPins(pins.slice(k).map((p) => (p == null ? null : p - off - 1))),
-      skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k)),
-      segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x >= k ? [x - k] : []))
-    };
+    const [a, b] = parts;
     edit((l) => ({ ...l, fixtures: l.fixtures.flatMap((x) => (x.id === f.id ? [a, b] : [x])) }));
     setSelected(b.id);
     toast.success(`Split into ${a.name} and ${b.name}. Set the first LED of ${b.name} to leave a gap.`);
@@ -1043,40 +1006,12 @@ export function LayoutPage() {
   };
   /** Removes one point of a line (a line keeps at least two). */
   const deletePoint = (f: Fixture, i: number) => {
-    if (f.points.length <= 2) {
+    const patch = removePoint(f, i);
+    if (!patch) {
       toast.error('A line needs at least two points. Delete the whole line instead.');
       return;
     }
-    const last = f.points.length - 1;
-    const offs = pointOffsets(f);
-    const pins = f.points.map((_, j) => f.pointLeds?.[j] ?? null);
-    if (i === 0) {
-      // The first segment goes, with its LEDs: the line now starts at the LED of point 1.
-      const off = offs[1];
-      update(f.id, {
-        points: f.points.slice(1),
-        ...fromLedRange(deviceLed(f, off), deviceLed(f, f.pixels - 1)),
-        pointLeds: tidyPins(pins.slice(1).map((p) => (p == null ? null : p - off))),
-        skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1)),
-        segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k > 0 ? [k - 1] : []))
-      });
-    } else if (i === last) {
-      // The last segment goes, with its LEDs: the line now ends at the LED of the point before.
-      update(f.id, {
-        points: f.points.slice(0, last),
-        ...fromLedRange(deviceLed(f, 0), deviceLed(f, offs[last - 1])),
-        pointLeds: tidyPins(pins.slice(0, last)),
-        skip: nonEmpty(f.skip?.filter((k) => k < last - 1)),
-        segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k < last - 1 ? [k] : []))
-      });
-    } else {
-      update(f.id, {
-        points: f.points.filter((_, j) => j !== i),
-        pointLeds: tidyPins(pins.filter((_, j) => j !== i)),
-        skip: skipAfterRemove(f.skip, i),
-        segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterRemove(i))
-      });
-    }
+    update(f.id, patch);
     setSegment(null);
     setCorner(null);
   };
@@ -1160,22 +1095,8 @@ export function LayoutPage() {
     setLightEdit(null);
   };
 
-  /** A point from a position in one view. The coordinate that the view does not show comes from `base`. */
-  const fromView = (side: ViewSide, p: UV, base: Point): Point =>
-    side === 'front' ? { ...base, x: p.u, y: p.v } : side === 'top' ? { ...base, x: p.u, z: Math.round(p.v + zMin) } : { ...base, z: Math.round(p.u), y: p.v };
-
-  /** The 3D point of a line that sits at this spot in a view, if any. */
-  const pointAtView = (side: ViewSide, at: UV, exclude?: { id: string; index: number }): Point | undefined => {
-    for (const f of layout?.fixtures ?? []) {
-      if (!isLine(f)) continue;
-      for (let i = 0; i < f.points.length; i++) {
-        if (exclude?.id === f.id && exclude.index === i) continue;
-        const q = toView(f.points[i], side, zMin);
-        if (Math.abs(q.u - at.u) < 1 && Math.abs(q.v - at.v) < 1) return f.points[i];
-      }
-    }
-    return undefined;
-  };
+  /** The layout as one view shows it (see LayoutInView). */
+  const inView = (side: ViewSide) => new LayoutInView(layout, side, zMin);
 
   function finishLine(kind: LineTool, d = draft) {
     // A double-click adds the same point twice; drop near-duplicates.
@@ -1189,8 +1110,8 @@ export function LayoutPage() {
     const to3d = (start: Point) => {
       let prev = start;
       return uv.map((p) => {
-        const hit = pointAtView(d.side, p);
-        prev = hit ? { ...hit } : fromView(d.side, p, prev);
+        const hit = inView(d.side).pointAt(p);
+        prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev);
         return prev;
       });
     };
@@ -1430,45 +1351,27 @@ export function LayoutPage() {
     });
   };
 
-  // Simulator: the same view as the real lights get (see paintEditor).
+  // Simulator: the same picture as the real lights get (see editorFrame on the server).
   const getFrame = () => {
     if (!stage || !layout) return null;
     const fx = fxRef.current;
-    if (probe && selected) {
-      // The wizard: the same blinking LED as on the house, where the drawing puts it now.
-      const out = new Uint8Array(stage.pixelCount * 3);
-      paintMatch(layout, selected, probe, editorPulse(Date.now()), (fi, i, rgb) => {
-        const sf = stage.fixtures[fi];
-        if (i >= 0 && i < sf.count) out.set(rgb, (sf.offset + i) * 3);
-      });
-      return out;
-    }
-    if (layoutCheck) {
-      // A check: the same picture as on the house, at the same moment.
-      const out = new Uint8Array(stage.pixelCount * 3);
-      const now = Date.now();
-      paintCheck(layout, stage, layoutCheck, now, editorPulse(now), out);
-      return out;
-    }
-    if (playing && fx && fx.stage === stage) {
+    // The effects, while they play; the wizard and a check show what they test instead.
+    if (playing && fx && fx.effects.stage === stage && !(probe && selected) && !layoutCheck) {
       // Every view asks on each animation frame: draw once per frame.
       const now = performance.now();
       if (now - fx.last > 4) {
-        fx.scene.update(Math.min(0.1, (now - fx.last) / 1000), fx.data);
+        fx.effects.frame(Math.min(0.1, (now - fx.last) / 1000));
         fx.last = now;
-        toBytes(fx.data, fx.bytes);
       }
-      return fx.bytes;
+      return fx.effects.bytes;
     }
     const out = new Uint8Array(stage.pixelCount * 3);
-    // Same clock as the server, so the drawing pulses together with the real lights.
-    const pulse = editorPulse(Date.now());
-    paintEditor(layout, selected, corner, segment, pulse, (fi, i, rgb) => {
-      const sf = stage.fixtures[fi];
-      if (i >= 0 && i < sf.count) out.set(rgb, (sf.offset + i) * 3);
-    });
+    // Same clock as the server, so the drawing pulses (and a check moves) together with the real lights.
+    const now = Date.now();
+    paintEditorView(layout, stage, { selected, corner, segment, probe, check: layoutCheck }, now, editorPulse(now), framePut(stage, out), out);
     return out;
   };
+
 
   /** v minus the world coordinate in a view: the top view counts v from the back edge (zMin). */
   const offOf = (side: ViewSide) => (side === 'top' ? -zMin : 0);
@@ -1480,7 +1383,7 @@ export function LayoutPage() {
     let x1 = side === 'side' ? zRange[1] : (layout?.width ?? LAYOUT_WIDTH);
     let y1 = side === 'top' ? zRange[1] - zRange[0] : (layout?.height ?? 900);
     for (const f of layout?.fixtures ?? []) {
-      const b = boxOf(f, side);
+      const b = inView(side).box(f);
       x0 = Math.min(x0, b.x);
       y0 = Math.min(y0, b.y);
       x1 = Math.max(x1, b.x + b.w);
@@ -1494,29 +1397,6 @@ export function LayoutPage() {
   }
   const viewBoxFor = (side: ViewSide) => viewBoxOf(camFor(side), sizeOf(side), offOf(side));
 
-  /** The box around an object in a view, in view units. */
-  const boxOf = (f: Fixture, side: ViewSide): Box => {
-    const V = (p: Point) => toView(p, side, zMin);
-    if (drawnByPaths(f)) {
-      const pts: Point[] = objectPaths(f, layout ? layoutScale(layout) : undefined).flat();
-      if (!pts.length) pts.push(f.points[0]);
-      const us = pts.map((p) => V(p).u);
-      const vs = pts.map((p) => V(p).v);
-      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
-    }
-    const c = V(f.points[0]);
-    const r = f.radius ?? 60;
-    if (side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
-    if (f.kind === 'tree') {
-      // Its outline from that side (tilted, as it is), with the whole ball for a cap.
-      const pts = [...treeOutline({ ...f, cover: undefined }, side === 'side' ? 'side' : 'front').map(V)];
-      const us = pts.map((p) => p.u);
-      const vs = pts.map((p) => p.v);
-      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
-    }
-    const h = r * 0.72;
-    return { x: c.u - r, y: c.v - h, w: 2 * r, h: 2 * h };
-  };
   /** F: zoom every 2D view to the selected object, or to the whole yard when nothing is selected. */
   function frameSelection(id = selected) {
     const f = layout?.fixtures.find((x) => x.id === id);
@@ -1524,7 +1404,7 @@ export function LayoutPage() {
     const pad = layoutScale(layout) * 0.75;
     const next: Partial<Record<ViewSide, Cam>> = {};
     for (const side of SIDES) {
-      const b = boxOf(f, side);
+      const b = inView(side).box(f);
       next[side] = fitCam({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad }, sizeOf(side), offOf(side), 1);
     }
     setCams(next);
@@ -1566,7 +1446,7 @@ export function LayoutPage() {
   } | null>(null);
   const pinchCam = useRef<Cam | null>(null);
   const onTouchFirst = () => {
-    touchStart.current = { at: performance.now(), layout: layoutRef.current, past: past.current.length, draft, tape, alignPts, selected, corner, segment, multi, tool };
+    touchStart.current = { at: performance.now(), layout: layoutRef.current, past: history.mark(), draft, tape, alignPts, selected, corner, segment, multi, tool };
   };
   const onPinchStart = (side: ViewSide) => {
     const s = touchStart.current;
@@ -1575,8 +1455,7 @@ export function LayoutPage() {
     setCursor(null);
     if (s && performance.now() - s.at < 600) {
       if (s.layout && layoutRef.current !== s.layout) {
-        past.current = past.current.slice(0, s.past);
-        lastEdit.current = 0;
+        history.rollback(s.past);
         setLayout(s.layout);
         setHistoryTick((n) => n + 1);
       }
@@ -1614,17 +1493,8 @@ export function LayoutPage() {
   };
 
   /** What can be snapped to in a view. `exclude`: a point being dragged, and its two segments. */
-  const targetsFor = (side: ViewSide, exclude?: { id: string; index: number }, linesOnly = false): SnapTargets => {
-    const t = emptyTargets();
-    for (const f of layout?.fixtures ?? []) {
-      const pts = f.points.map((p) => toView(p, side, zMin));
-      if (!isLine(f)) {
-        if (!linesOnly) t.centers.push(pts[0]);
-        continue;
-      }
-      pts.forEach((p, i) => !(exclude?.id === f.id && exclude.index === i) && t.points.push(p));
-      for (let k = 0; k < pts.length - 1; k++) if (!(exclude?.id === f.id && (exclude.index === k || exclude.index === k + 1))) t.segments.push([pts[k], pts[k + 1]]);
-    }
+  const targetsFor = (side: ViewSide, exclude?: PointRef, linesOnly = false): SnapTargets => {
+    const t = inView(side).targets(exclude, linesOnly);
     if (!linesOnly && draft.side === side) {
       t.points.push(...draft.pts);
       for (let k = 0; k < draft.pts.length - 1; k++) t.segments.push([draft.pts[k], draft.pts[k + 1]]);
@@ -1655,29 +1525,10 @@ export function LayoutPage() {
     });
 
   /** The end of a line near this spot, for continuing that line. */
-  const lineEndAt = (side: ViewSide, at: UV): { f: Fixture; at: 'first' | 'last' } | null => {
-    let best: { f: Fixture; at: 'first' | 'last' } | null = null;
-    let bestD = tolFor(side);
-    for (const f of layout?.fixtures ?? []) {
-      if (!isLine(f)) continue;
-      for (const end of ['first', 'last'] as const) {
-        const q = toView(f.points[end === 'first' ? 0 : f.points.length - 1], side, zMin);
-        const d = Math.hypot(q.u - at.u, q.v - at.v);
-        if (d <= bestD) {
-          best = { f, at: end };
-          bestD = d;
-        }
-      }
-    }
-    return best;
-  };
+  const lineEndAt = (side: ViewSide, at: UV) => inView(side).lineEndAt(at, tolFor(side));
 
   /** The 3D point on segment k of a line nearest to a spot in a view. */
-  const pointOnLine = (f: Fixture, k: number, raw: UV, side: ViewSide): Point => {
-    const V = (q: Point) => toView(q, side, zMin);
-    const { at, t } = closestOnSegment(raw, V(f.points[k]), V(f.points[k + 1]));
-    return fromView(side, { u: Math.round(at.u), v: Math.round(at.v) }, pointOnSegment(f, k, t));
-  };
+  const pointOnLine = (f: Fixture, k: number, raw: UV, side: ViewSide): Point => inView(side).pointOnLine(f, k, raw);
 
   /** Adds a point on segment k and selects it; with `drag`, the pointer then moves it. */
   const addPointOn = (f: Fixture, k: number, raw: UV, side: ViewSide, drag?: RPointerEvent) => {
@@ -1727,7 +1578,7 @@ export function LayoutPage() {
       { label: 'Zoom to this object', keys: 'F', run: () => (setSelected(f.id), frameSelection(f.id)) },
       { label: 'Rename', keys: 'F2', run: () => (setSelected(f.id), setRenaming(f.id)) },
       ...(isShapeKind(f.kind)
-        ? (['bush', 'tree', 'semicircle'] as const).filter((k) => k !== f.kind).map((k) => ({ label: `Make it a ${KIND_LABELS[k].toLowerCase()}`, run: () => setKind([f.id], k) }))
+        ? SHAPE_KINDS.filter((k) => k !== f.kind).map((k) => ({ label: `Make it a ${KIND_LABELS[k].toLowerCase()}`, run: () => setKind([f.id], k) }))
         : []),
       { label: f.locked ? 'Unlock' : 'Lock in place', run: () => setLocked([f.id], !f.locked) },
       { label: `Delete ${f.name}`, keys: 'Delete', danger: true, run: () => remove(f.id) }
@@ -1742,7 +1593,7 @@ export function LayoutPage() {
       { label: 'Edit this segment', run: () => selectSegment(f.id, k) },
       {
         label: off ? 'Turn this segment on' : 'Turn this segment off (skip)',
-        run: () => update(f.id, { skip: nonEmpty(off ? f.skip?.filter((x) => x !== k) : [...(f.skip ?? []), k].sort((a, b) => a - b)) })
+        run: () => update(f.id, setSkipped(f, k, !off))
       },
       { label: `Delete ${f.name}`, danger: true, run: () => remove(f.id) }
     ]);
@@ -1775,7 +1626,7 @@ export function LayoutPage() {
     if (tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
       const p = snapAt(e, side).at;
       svgs.current[side]?.setPointerCapture(e.pointerId);
-      setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : tool === 'tree' ? { kind: 'newTree', side, base: p, size: 0 } : { kind: 'newSemicircle', side, base: p, radius: 0 });
+      setDrag({ kind: 'newShape', shape: tool, side, at: p, size: 0 });
       return;
     }
     if (tool === 'align') {
@@ -1809,7 +1660,7 @@ export function LayoutPage() {
     if (target && layout?.fixtures.find((f) => f.id === target)?.locked) d = { kind: 'locked', id: target, from: viewPoint(e, side), warned: false };
     svgs.current[side]?.setPointerCapture(e.pointerId);
     // A new drag is a new step for Undo.
-    lastEdit.current = 0;
+    history.newStep();
     setDrag(d);
   }
 
@@ -1863,8 +1714,8 @@ export function LayoutPage() {
       const s = e.shiftKey ? snapAt(e, side, drag.start, { id: f.id, index: i }, 90) : snapAt(e, side, neighbour ? V(neighbour) : null, { id: f.id, index: i });
       setSnapHint({ ...s, side });
       // On another point: take that point's position in 3D, so the two points join.
-      const hit = s.kind === 'point' ? pointAtView(side, s.at, { id: f.id, index: i }) : undefined;
-      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(side, s.at, q)) : q)) });
+      const hit = s.kind === 'point' ? inView(side).pointAt(s.at, { id: f.id, index: i }) : undefined;
+      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q)) : q)) });
     } else if (drag.kind === 'move') {
       let du = p.u - drag.from.u;
       let dv = p.v - drag.from.v;
@@ -1880,11 +1731,7 @@ export function LayoutPage() {
         if (axis !== 'v') du = onGrid(a.u + du, grid, 'u') - a.u;
         if (axis !== 'u') dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
-      update(drag.id, {
-        points: drag.original.map((q) =>
-          side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : side === 'top' ? { ...q, x: q.x + du, z: (q.z ?? 0) + dv } : { ...q, z: (q.z ?? 0) + du, y: q.y + dv }
-        )
-      });
+      update(drag.id, { points: inView(side).moved(drag.original, du, dv) });
     } else if (drag.kind === 'rotate' && f) {
       // The front view's rotation turns clockwise on the screen; facing, seen from above, the other way.
       const d = screenAngle(drag.center, p) - drag.start;
@@ -1905,74 +1752,14 @@ export function LayoutPage() {
       update(drag.id, { height: Math.max(20, Math.round(f.points[0].y - p.v)) });
     } else if (drag.kind === 'ground') {
       updateLayout({ groundY: Math.max(0, Math.min(layout.height, p.v)) });
-    } else if (drag.kind === 'newBush') {
-      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.center.u, (p.v - drag.center.v) / (side === 'front' ? 0.72 : 1))) });
-    } else if (drag.kind === 'newTree') {
-      setDrag({ ...drag, size: Math.round(side === 'front' ? Math.max(0, drag.base.v - p.v) : Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
-    } else if (drag.kind === 'newSemicircle') {
-      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
+    } else if (drag.kind === 'newShape') {
+      setDrag({ ...drag, size: draftSize(drag, p) });
     }
   }
 
   function onPointerUp() {
     setSnapHint(null);
-    if (layout && drag?.kind === 'newSemicircle') {
-      const s = layoutScale(layout);
-      const b = drag.base;
-      const r = Math.max(15, drag.radius || Math.round(0.6 * s));
-      const lt = lightsOf(layout, layout.lights);
-      // Front view: its straight edge where you pressed, half a meter in front of the wall. From above: on the ground.
-      const base: Point = drag.side === 'front' ? { x: b.u, y: b.v, z: Math.round(0.5 * s) } : { x: b.u, y: Math.round(layoutGround(layout)), z: Math.round(b.v + zMin) };
-      addFixture({
-        id: uid(),
-        name: `Semicircle ${layout.fixtures.filter((f) => f.kind === 'semicircle').length + 1}`,
-        kind: 'semicircle',
-        points: [base],
-        radius: r,
-        strands: 8,
-        zigzag: 'down',
-        pixels: lt?.perStrand ?? 100,
-        ...(lt ? { lights: lt.id } : {}),
-        deviceId: null,
-        startPixel: 0,
-        reversed: false
-      });
-    }
-    if (layout && (drag?.kind === 'newBush' || drag?.kind === 'newTree')) {
-      const s = layoutScale(layout);
-      const ground = layoutGround(layout);
-      const count = layout.fixtures.filter((f) => f.kind === (drag.kind === 'newBush' ? 'bush' : 'tree')).length;
-      if (drag.kind === 'newBush') {
-        const r = Math.max(30, drag.radius || 70);
-        const c = drag.center;
-        // From the front: the bush touches the front wall. From above: it sits on the ground.
-        const center: Point = drag.side === 'front' ? { x: c.u, y: c.v, z: r } : { x: c.u, y: Math.round(ground - r * 0.72), z: Math.round(c.v + zMin) };
-        const lt = lightsOf(layout, layout.lights);
-        // One strand of lights per bush, when the strands are known.
-        addFixture({ id: uid(), name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: lt?.perStrand ?? 60, ...(lt ? { lights: lt.id } : {}), deviceId: null, startPixel: 0, reversed: false });
-      } else {
-        const b = drag.base;
-        // From the front you drag the height; from above, the radius of the base.
-        const height = drag.side === 'front' ? Math.max(40, drag.size || 2.5 * s) : Math.max(40, (drag.size || 0.6 * s) * 3);
-        const r = Math.round(drag.side === 'front' ? height * 0.33 : Math.max(15, drag.size || 0.6 * s));
-        const base: Point = drag.side === 'front' ? { x: b.u, y: b.v, z: Math.round(r + 0.5 * s) } : { x: b.u, y: Math.round(ground), z: Math.round(b.v + zMin) };
-        addFixture({
-          id: uid(),
-          name: `Tree ${count + 1}`,
-          kind: 'tree',
-          points: [base],
-          radius: r,
-          height: Math.round(height),
-          pattern: 'spiral',
-          turns: 8,
-          pixels: lightsOf(layout, layout.lights)?.perStrand ? lightsOf(layout, layout.lights)!.perStrand! * 4 : 200,
-          ...(layout.lights && lightsOf(layout, layout.lights) ? { lights: layout.lights } : {}),
-          deviceId: null,
-          startPixel: 0,
-          reversed: false
-        });
-      }
-    }
+    if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid()));
     setDrag(null);
   }
 
@@ -2205,8 +1992,7 @@ export function LayoutPage() {
       qc.setQueryData(LAYOUT_KEY, out.layout);
       void qc.invalidateQueries({ queryKey: ['admin', 'game-area'] });
       // A new layout: start over, with nothing selected, no undo history, and the views zoomed to fit.
-      past.current = [];
-      future.current = [];
+      history.clear();
       setHistoryTick((n) => n + 1);
       setLayout(out.layout);
       setSelected(null);
@@ -2384,7 +2170,7 @@ export function LayoutPage() {
     if (!f || f.locked || tool !== 'select' || panMode || probe || drawing || multi.length > 1) return null;
     if (isLine(f) && (corner != null || segment != null)) return null;
     const front = side === 'front';
-    const box = boxOf(f, side);
+    const box = inView(side).box(f);
     const anchor = isLine(f) ? { u: box.x + box.w / 2, v: box.y + box.h / 2 } : V(f.points[0]);
     const shaped = f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
     // What the ring turns in this view: left and right from the front, which way it faces from
@@ -2405,13 +2191,13 @@ export function LayoutPage() {
       part === 'rotate' && d?.kind === 'rotate'
         ? `${f[d.prop] ?? 0}°`
         : part === 'width'
-          ? m.text((f.radius ?? 60) * 2)
+          ? m.text(radiusOf(f) * 2)
           : part === 'height'
-            ? m.text(f.height ?? f.radius ?? 60)
+            ? m.text(sizeHeight(f))
             : part === 'scale'
               ? f.kind === 'custom'
                 ? `× ${f.size ?? 1}`
-                : `${m.text((f.radius ?? 60) * 2)} × ${m.text(f.height ?? f.radius ?? 60)}`
+                : `${m.text(radiusOf(f) * 2)} × ${m.text(sizeHeight(f))}`
               : null;
     const start = (e: RPointerEvent, g: GizmoPart) => {
       const at = viewPoint(e, side);
@@ -2427,7 +2213,7 @@ export function LayoutPage() {
                   id: f.id,
                   center: anchor,
                   start: Math.hypot(at.u - anchor.u, at.v - anchor.v),
-                  original: f.kind === 'custom' ? { size: f.size ?? 1 } : { radius: f.radius ?? 60, height: f.height ?? (f.kind === 'tree' ? 240 : (f.radius ?? 60)) }
+                  original: f.kind === 'custom' ? { size: f.size ?? 1 } : { radius: radiusOf(f), height: sizeHeight(f) }
                 }
               : g.kind === 'width'
                 ? { kind: 'radius', side, id: f.id }
@@ -2580,7 +2366,7 @@ export function LayoutPage() {
                             startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
                             selectSegment(f.id, s);
                           } else if (tool === 'edit') {
-                            lastEdit.current = 0;
+                            history.newStep();
                             addPointOn(f, s, snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side), side, e);
                           } else if (tool === 'split') {
                             e.stopPropagation();
@@ -2668,8 +2454,7 @@ export function LayoutPage() {
             }
             // Bush, tree, custom object or semicircle.
             const c = V(f.points[0]);
-            const r = f.radius ?? 60;
-            const h = f.kind === 'tree' ? (f.height ?? 240) : 0;
+            const r = radiusOf(f);
             const move = (e: RPointerEvent) => {
               if (tool === 'select' && !panMode && e.button === 0 && (e.ctrlKey || e.metaKey)) {
                 e.stopPropagation();
@@ -2681,7 +2466,7 @@ export function LayoutPage() {
             const hitClass = tool === 'select' && !panMode ? (f.locked ? 'cursor-pointer' : 'cursor-move') : '';
             if (f.kind === 'custom' || f.kind === 'semicircle') {
               const paths = objectPaths(f, scale).map((path) => path.map(V));
-              const b = boxOf(f, side);
+              const b = inView(side).box(f);
               const pad = 10 * k;
               return (
                 <g key={f.id}>
@@ -2706,13 +2491,13 @@ export function LayoutPage() {
                 {f.kind === 'tree' && upright ? (
                   <polygon points={outline} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 ) : (
-                  <ellipse cx={c.u} cy={c.v} rx={r} ry={upright ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                  <ellipse cx={c.u} cy={c.v} rx={r} ry={upright ? r * BUSH_TALL : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 )}
                 {multi.includes(f.id) ? (
                   f.kind === 'tree' && upright ? (
                     <polygon points={outline} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   ) : (
-                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(upright ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(upright ? r * BUSH_TALL : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   )
                 ) : null}
                 {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
@@ -2767,48 +2552,9 @@ export function LayoutPage() {
             </>
           ) : null}
 
-          {/* Bush or tree being drawn */}
-          {drag?.kind === 'newBush' && drag.side === side ? (
-            <ellipse
-              cx={drag.center.u}
-              cy={drag.center.v}
-              rx={drag.radius}
-              ry={drag.radius * (front ? 0.72 : 1)}
-              fill="rgba(52,211,153,0.15)"
-              stroke="#34d399"
-              strokeWidth={2.5 * k}
-              strokeDasharray={dash(8, 6)}
-              pointerEvents="none"
-            />
-          ) : null}
-          {drag?.kind === 'newTree' && drag.side === side ? (
-            front ? (
-              <polygon
-                points={`${drag.base.u - drag.size * 0.33},${drag.base.v} ${drag.base.u},${drag.base.v - drag.size} ${drag.base.u + drag.size * 0.33},${drag.base.v}`}
-                fill="rgba(52,211,153,0.15)"
-                stroke="#34d399"
-                strokeWidth={2.5 * k}
-                strokeDasharray={dash(8, 6)}
-                pointerEvents="none"
-              />
-            ) : (
-              <circle cx={drag.base.u} cy={drag.base.v} r={drag.size} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
-            )
-          ) : null}
-          {drag?.kind === 'newSemicircle' && drag.side === side ? (
-            <path
-              // From the front: the round side up. From above: a flat object is a line.
-              d={
-                front
-                  ? `M ${drag.base.u - drag.radius} ${drag.base.v} A ${drag.radius} ${drag.radius} 0 0 1 ${drag.base.u + drag.radius} ${drag.base.v} Z`
-                  : `M ${drag.base.u - drag.radius} ${drag.base.v} L ${drag.base.u + drag.radius} ${drag.base.v}`
-              }
-              fill="rgba(52,211,153,0.15)"
-              stroke="#34d399"
-              strokeWidth={2.5 * k}
-              strokeDasharray={dash(8, 6)}
-              pointerEvents="none"
-            />
+          {/* A bush, tree or semicircle being drawn */}
+          {drag?.kind === 'newShape' && drag.side === side ? (
+            <path d={draftOutline(drag)} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
           ) : null}
 
           {snapHint?.side === side ? <SnapMarker s={snapHint} k={k} /> : null}
@@ -3117,12 +2863,8 @@ export function LayoutPage() {
               <SegmentProps
                 f={sel}
                 index={segment}
-                onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
-                onToggle={(on) =>
-                  update(sel.id, {
-                    skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
-                  })
-                }
+                onPoint={(point, led) => update(sel.id, pinPoint(sel, point, led))}
+                onToggle={(on) => update(sel.id, setSkipped(sel, segment, !on))}
                 onClose={() => setSegment(null)}
                 lights={lightsOf(layout, sel.lights)}
                 length={lineLengths(sel)[segment] ?? 0}
@@ -3644,10 +3386,10 @@ export function LayoutPage() {
   /** The phone's command bar: one row, the menus under ⋯. */
   const phoneBar = (
     <div className="flex shrink-0 items-center gap-0.5 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
-      <button type="button" onClick={undo} disabled={!past.current.length} aria-label="Undo" className={iconButton}>
+      <button type="button" onClick={undo} disabled={!history.canUndo} aria-label="Undo" className={iconButton}>
         <Undo2 />
       </button>
-      <button type="button" onClick={redo} disabled={!future.current.length} aria-label="Redo" className={iconButton}>
+      <button type="button" onClick={redo} disabled={!history.canRedo} aria-label="Redo" className={iconButton}>
         <Redo2 />
       </button>
       {barSep}
@@ -3835,10 +3577,10 @@ export function LayoutPage() {
             <h1 className="px-1.5 text-sm font-semibold tracking-tight">Yard layout</h1>
             {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
             {barSep}
-            <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
+            <Button size="sm" variant="ghost" onClick={undo} disabled={!history.canUndo} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
               <Undo2 />
             </Button>
-            <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
+            <Button size="sm" variant="ghost" onClick={redo} disabled={!history.canRedo} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
               <Redo2 />
             </Button>
             {barSep}
@@ -4421,17 +4163,6 @@ function PositionProps({ f, point, m, ground, onChange }: { f: Fixture; point: n
   return xyz(0, f.kind === 'tree' || f.kind === 'semicircle' ? 'Base height' : 'Height');
 }
 
-/** Every point of a line, so an edit to one point leaves all the others where they are. */
-const allPoints = (f: Fixture) => f.points.map((_, i) => i);
-
-const nonEmpty = <T,>(a: T[] | undefined) => (a?.length ? a : undefined);
-
-/** Drops a pin list that has no pins left. */
-function tidyPins(pins: (number | null)[] | undefined) {
-  // The ends are never pinned (their LEDs are the object's first and last); drop bad numbers too.
-  const out = pins?.map((p, i) => (i === 0 || i === pins.length - 1 || p == null || p < 0 ? null : p));
-  return out?.some((p) => p != null) ? out : undefined;
-}
 
 /**
  * The LED numbers of an object on its device. A line is matched to the real lights with the
@@ -4780,9 +4511,9 @@ function LedLabels({ f, corner, segment, V, side, k, scale }: { f: Fixture; corn
   }
   if (!isLine(f)) {
     const c = V(f.points[0]);
-    const r = f.radius ?? 60;
+    const r = radiusOf(f);
     const { first, last } = ledRange(f);
-    const above = side === 'top' ? r : f.kind === 'tree' ? (f.height ?? 240) : r * 0.72;
+    const above = side === 'top' ? r : f.kind === 'tree' ? treeSize(f).h : r * BUSH_TALL;
     return label(c.u, c.v - above, `LEDs ${first}–${last}`, true, 'b');
   }
   const offs = pointOffsets(f);

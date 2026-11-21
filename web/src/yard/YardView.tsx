@@ -1,96 +1,15 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type React from 'react';
-import { AERIAL_OPACITY, buildStage, drawnByPaths, FEET_PER_METER, layoutGround, layoutScale, objectPaths, treeOutline, type Layout, type Point } from '../../../shared/layout.ts';
+import { AERIAL_OPACITY, buildStage, BUSH_TALL, drawnByPaths, FEET_PER_METER, layoutGround, layoutScale, objectPaths, radiusOf, treeOutline, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
+import { fitBox, toView, viewPositions, viewSize, type ViewSide } from './views.ts';
 import { cn } from '../lib/utils.ts';
-
-/**
- * Which side the yard is seen from. Front: the picture. Top: from above, the street at the
- * bottom. Side: from the left, the street on the right (u is the depth, v the height as in front).
- */
-export type ViewSide = 'front' | 'top' | 'side';
-
-/** The size of a view, in layout units. The top view shows depths zMin (back) to zMax (street); the side view shows them across. */
-export function viewSize(layout: Layout, side: ViewSide, zRange: [number, number]) {
-  return side === 'front' ? { w: layout.width, h: layout.height } : side === 'top' ? { w: layout.width, h: zRange[1] - zRange[0] } : { w: zRange[1] - zRange[0], h: layout.height };
-}
-
-/** Where a view's yard starts across (u): the left edge, or in the side view the back (zMin). */
-const viewLeft = (side: ViewSide, zRange: [number, number]) => (side === 'side' ? zRange[0] : 0);
-
-/**
- * What a view shows when nothing else is asked for: the yard, grown to take in every LED (a
- * roof peak above the picture, a line past its edge) with room for the glow of the outer bulbs.
- */
-export function fitBox(layout: Layout, side: ViewSide, zRange: [number, number]): Box {
-  const size = viewSize(layout, side, zRange);
-  const left = viewLeft(side, zRange);
-  const b = ledBounds(layout, side, zRange);
-  if (!b) return { x: left, y: 0, w: size.w, h: size.h };
-  const { x0, y0, x1, y1 } = b;
-  // Room for the glow of the outermost bulbs.
-  const pad = 0.025 * Math.max(size.w, size.h);
-  const bx0 = Math.min(left, x0 - pad);
-  const by0 = Math.min(0, y0 - pad);
-  const bx1 = Math.max(left + size.w, x1 + pad);
-  const by1 = Math.max(size.h, y1 + pad);
-  return { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 };
-}
-
-/** Just the LEDs, with room for their glow (a game zooms in on them). */
-export function ledBox(layout: Layout, side: ViewSide, zRange: [number, number]): Box {
-  const b = ledBounds(layout, side, zRange);
-  if (!b) return fitBox(layout, side, zRange);
-  const size = viewSize(layout, side, zRange);
-  const pad = Math.max(0.06 * Math.max(b.x1 - b.x0, b.y1 - b.y0), 0.02 * Math.max(size.w, size.h));
-  return {
-    x: b.x0 - pad,
-    y: b.y0 - pad,
-    w: b.x1 - b.x0 + 2 * pad,
-    h: b.y1 - b.y0 + 2 * pad
-  };
-}
-
-/** A box grown about its middle to a shape (width over height), so it fills a view of that shape. */
-export function coverBox(b: Box, aspect: number): Box {
-  if (!(aspect > 0)) return b;
-  if (b.w / b.h < aspect) {
-    const w = b.h * aspect;
-    return { x: b.x - (w - b.w) / 2, y: b.y, w, h: b.h };
-  }
-  const h = b.w / aspect;
-  return { x: b.x, y: b.y - (h - b.h) / 2, w: b.w, h };
-}
-
-/** Where the LEDs are, in view units (null: none placed). */
-function ledBounds(layout: Layout, side: ViewSide, zRange: [number, number]) {
-  const p = buildStage(layout).positions3;
-  let x0 = Infinity;
-  let y0 = Infinity;
-  let x1 = -Infinity;
-  let y1 = -Infinity;
-  for (let i = 0; i < p.length; i += 3) {
-    const u = side === 'side' ? p[i + 2] : p[i];
-    const v = side === 'top' ? p[i + 2] - zRange[0] : p[i + 1];
-    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
-    x0 = Math.min(x0, u);
-    x1 = Math.max(x1, u);
-    y0 = Math.min(y0, v);
-    y1 = Math.max(y1, v);
-  }
-  return x0 > x1 ? null : { x0, y0, x1, y1 };
-}
 
 /** True when the first `n` bytes of two arrays are the same. */
 function sameBytes(a: Uint8Array, b: Uint8Array, n: number) {
   if (a.length < n || b.length < n) return false;
   for (let i = 0; i < n; i++) if (a[i] !== b[i]) return false;
   return true;
-}
-
-/** A point in view coordinates (u to the right, v down). */
-export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: number } {
-  return side === 'front' ? { u: p.x, v: p.y } : side === 'top' ? { u: p.x, v: (p.z ?? 0) - zMin } : { u: p.z ?? 0, v: p.y };
 }
 
 /**
@@ -184,12 +103,7 @@ export function YardView({
     const top = side === 'top';
     const sideView = side === 'side';
     // LED positions in view coordinates.
-    const n0 = stage.pixelCount;
-    const pos = new Float32Array(n0 * 2);
-    for (let i = 0; i < n0; i++) {
-      pos[i * 2] = sideView ? stage.positions3[i * 3 + 2] : stage.positions3[i * 3];
-      pos[i * 2 + 1] = top ? stage.positions3[i * 3 + 2] - zMin : stage.positions3[i * 3 + 1];
-    }
+    const pos = viewPositions(stage.positions3, side, zMin);
     const view = (p: Point) => toView(p, side, zMin);
     const scale = layoutScale(layout);
     const defaultGridStep = layout.units === 'm' ? scale : (scale * 5) / FEET_PER_METER;
@@ -361,7 +275,7 @@ export function YardView({
           ctx.strokeStyle = hl ? 'rgba(40,170,255,0.9)' : 'rgba(255,255,255,0.08)';
           ctx.lineWidth = (hl ? 3 : 1.5) * dpr;
           const c = view(f.points[0] ?? { x: 0, y: 0 });
-          const r = f.radius ?? 60;
+          const r = radiusOf(f);
           ctx.beginPath();
           if (drawnByPaths(f)) {
             for (const path of objectPaths(f, layoutScale(layout)))
@@ -381,7 +295,7 @@ export function YardView({
             });
             ctx.closePath();
           } else if (hl) {
-            ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);
+            ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * BUSH_TALL * sy + 6 * dpr, 0, 0, Math.PI * 2);
           }
           ctx.stroke();
         }

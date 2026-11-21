@@ -18,23 +18,30 @@ import type { LightType } from './lights.ts';
  * custom: your own shape (a star, a wreath, an arch…), drawn in the object designer. Its
  *   design can be saved to the library and placed many times.
  */
-export type FixtureKind = 'roof' | 'line' | 'bush' | 'tree' | 'semicircle' | 'custom';
+export const FIXTURE_KINDS = ['roof', 'line', 'bush', 'tree', 'semicircle', 'custom'] as const;
+export type FixtureKind = (typeof FIXTURE_KINDS)[number];
 /** Bush: fill, ring, spiral. Tree: spiral, strands, wave (back and forth over its front, see wavePasses). */
-export type FixturePattern = 'fill' | 'ring' | 'spiral' | 'strands' | 'wave';
+export const FIXTURE_PATTERNS = ['fill', 'ring', 'spiral', 'strands', 'wave'] as const;
+export type FixturePattern = (typeof FIXTURE_PATTERNS)[number];
 /** A side of an object, as seen from the street. */
-export type Side = 'left' | 'right';
+export const SIDES = ['left', 'right'] as const;
+export type Side = (typeof SIDES)[number];
 /** A tree's sides: a cone (a tree), a cylinder (a wrapped post or column), or a sphere (a ball of lights) on its base. */
-export type TreeShape = 'cone' | 'cylinder' | 'sphere';
+export const TREE_SHAPES = ['cone', 'cylinder', 'sphere'] as const;
+export type TreeShape = (typeof TREE_SHAPES)[number];
 /** Which way a spiral winds, as seen from above, following the wire from LED 0: counterclockwise or clockwise. */
-export type Spin = 'ccw' | 'cw';
+export const SPINS = ['ccw', 'cw'] as const;
+export type Spin = (typeof SPINS)[number];
 /**
  * How a semicircle's zigzag runs, from LED 0: down (rows across, from the top down), up (rows
  * across, from the bottom up), right (columns, from the left to the right) or left (columns,
  * from the right to the left). Up mirrors down, left mirrors right. Rows start at the left and
  * columns at the ground.
  */
-export type Zigzag = 'down' | 'up' | 'right' | 'left';
-export type Units = 'ft' | 'm';
+export const ZIGZAGS = ['down', 'up', 'right', 'left'] as const;
+export type Zigzag = (typeof ZIGZAGS)[number];
+export const UNITS = ['ft', 'm'] as const;
+export type Units = (typeof UNITS)[number];
 
 /**
  * A position in the yard, in layout units. x: from the left edge of the front view. y: down
@@ -393,7 +400,7 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
   if (f.kind === 'bush') {
     const c = f.points[0] ?? { x: 0, y: 0 };
     const cz = pz(c);
-    const r = f.radius ?? 60;
+    const r = radiusOf(f);
     const out: Point3[] = [];
     for (let i = 0; i < n; i++) {
       let a: number;
@@ -413,7 +420,7 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
       // Bushes are wider than tall. The LEDs lie on the front of a dome: the middle bulges
       // toward the street, the edge is at the bush's center depth.
       const k = Math.min(1, d / r);
-      out.push({ x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d * 0.72, z: cz + Math.sqrt(1 - k * k) * r * 0.75 });
+      out.push({ x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d * BUSH_TALL, z: cz + Math.sqrt(1 - k * k) * r * 0.75 });
     }
     return out;
   }
@@ -503,7 +510,33 @@ export type ShapeKind = (typeof SHAPE_KINDS)[number];
 export const isShapeKind = (k: FixtureKind): k is ShapeKind => (SHAPE_KINDS as readonly string[]).includes(k);
 
 /** How tall a bush looks from the front, as a share of its radius (its LEDs spread 0.72 r up and down). */
-const BUSH_TALL = 0.72;
+export const BUSH_TALL = 0.72;
+
+// A shape's size when its layout does not say (objects saved before the setting came).
+/** A tree's radius at its base. */
+const TREE_RADIUS = 80;
+/** A tree's height. */
+const TREE_HEIGHT = 240;
+/** A bush's or a semicircle's radius. */
+const SHAPE_RADIUS = 60;
+
+/** A tree's radius at its base, and its height. */
+export const treeSize = (f: Pick<Fixture, 'radius' | 'height'>) => ({ r: f.radius ?? TREE_RADIUS, h: f.height ?? TREE_HEIGHT });
+
+/** A semicircle's radius, and its height (its radius unless set). */
+export function semicircleSize(f: Pick<Fixture, 'radius' | 'height'>) {
+  const r = f.radius ?? SHAPE_RADIUS;
+  return { r, h: f.height ?? r };
+}
+
+/** A shape's radius: a bush's, a tree's at its base, a semicircle's. */
+export const radiusOf = (f: Pick<Fixture, 'kind' | 'radius'>) => f.radius ?? (f.kind === 'tree' ? TREE_RADIUS : SHAPE_RADIUS);
+
+/** A shape's height: a tree's, a semicircle's (its radius unless set), a bush's as it looks from the front. */
+export function heightOf(f: Pick<Fixture, 'kind' | 'radius' | 'height'>) {
+  if (f.kind === 'bush') return 2 * BUSH_TALL * radiusOf(f);
+  return f.kind === 'tree' ? treeSize(f).h : semicircleSize(f).h;
+}
 
 /**
  * The object made into another kind of shape (a bush into a tree, say), keeping what it is
@@ -516,9 +549,9 @@ const BUSH_TALL = 0.72;
 export function changeKind(f: Fixture, kind: ShapeKind): Fixture {
   if (f.kind === kind || !isShapeKind(f.kind)) return f;
   const p = f.points[0] ?? { x: 0, y: 0 };
-  const r = f.radius ?? 60;
+  const r = radiusOf(f);
   // The front view's bottom and height of the old shape.
-  const height = f.kind === 'bush' ? 2 * BUSH_TALL * r : f.kind === 'tree' ? (f.height ?? 240) : (f.height ?? r);
+  const height = heightOf(f);
   const bottom = f.kind === 'bush' ? p.y + BUSH_TALL * r : p.y;
   const { id, name, pixels, lights, deviceId, startPixel, reversed, effect, locked } = f;
   const keep: Fixture = { id, name, kind, points: [], radius: r, pixels, lights, deviceId, startPixel, reversed, effect, locked };
@@ -556,8 +589,7 @@ export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 's
 export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' = 'front'): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
-  const r = f.radius ?? 80;
-  const h = f.height ?? 240;
+  const { r, h } = treeSize(f);
   // Across: x in the front view, z (the depth) in the side view.
   const pt = (d: number, y: number): Point3 => (plane === 'side' ? { x: b.x, y, z: bz + d } : { x: b.x + d, y, z: bz });
   let flat: Point3[];
@@ -582,8 +614,7 @@ export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'hei
 function treePixels(f: Fixture, n: number): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
-  const r = f.radius ?? 80;
-  const h = f.height ?? 240;
+  const { r, h } = treeSize(f);
   const face = ((f.facing ?? 0) * Math.PI) / 180;
   const sign = f.spin === 'cw' ? -1 : 1;
   const out: Point3[] = [];
@@ -691,8 +722,7 @@ function surfaceToHeight(widthAt: (u: number) => number, r: number, h: number): 
 
 /** How far it is up a tree's side, over its surface from the base to the top (the LEDs' part of a ball), in layout units. */
 export function treeSurfaceLength(f: Pick<Fixture, 'radius' | 'height' | 'shape' | 'cover'>): number {
-  const r = f.radius ?? 80;
-  const h = f.height ?? 240;
+  const { r, h } = treeSize(f);
   const u0 = capFloor(f);
   const span = 1 - u0;
   const K = 256;
@@ -734,7 +764,7 @@ const WAVE_PASSES = 8;
  */
 export function wavePasses(f: Pick<Fixture, 'height' | 'spacing' | 'startSide' | 'endSide' | 'shape' | 'cover'>): { passes: number; startSide: Side; endSide: Side } {
   // The height the passes share: a ball's cap when only its top has LEDs.
-  const h = (f.height ?? 240) * (1 - capFloor(f));
+  const h = treeSize(f).h * (1 - capFloor(f));
   const startSide = f.startSide ?? 'left';
   const want = f.spacing && f.spacing > 0 ? h / f.spacing + 1 : WAVE_PASSES;
   let passes = Math.max(2, Math.min(200, Math.round(want)));
@@ -752,7 +782,7 @@ export function wavePasses(f: Pick<Fixture, 'height' | 'spacing' | 'startSide' |
  */
 function wavePixels(f: Fixture, n: number, at: (u: number, a: number) => Point3, widthAt: (u: number) => number, h: number): Point3[] {
   const { passes, startSide } = wavePasses(f);
-  const r = f.radius ?? 80;
+  const { r } = treeSize(f);
   const half = ((Math.max(10, Math.min(360, f.sweep ?? WAVE_SWEEP)) / 2) * Math.PI) / 180;
   const sigma = startSide === 'right' ? 1 : -1;
   const du = 1 / (passes - 1);
@@ -795,8 +825,7 @@ function wavePixels(f: Fixture, n: number, at: (u: number, a: number) => Point3,
  * row (or column).
  */
 export function zigzagPath(f: Pick<Fixture, 'radius' | 'height' | 'strands' | 'zigzag'>): DesignPoint[] {
-  const r = f.radius ?? 60;
-  const h = f.height ?? r;
+  const { r, h } = semicircleSize(f);
   const rows = Math.max(1, Math.min(64, Math.round(f.strands ?? 8)));
   const way = f.zigzag ?? 'down';
   const out: DesignPoint[] = [];
@@ -827,8 +856,7 @@ function semicirclePixels(f: Fixture, n: number): Point3[] {
 
 /** The outline of a semicircle in the yard: over the round side, then back along the straight edge. */
 export function semicircleOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'rotation' | 'facing' | 'tilt'>): Point3[] {
-  const r = f.radius ?? 60;
-  const h = f.height ?? r;
+  const { r, h } = semicircleSize(f);
   const at = semicircleTransform(f);
   const tilt = tiltOf({ ...f, kind: 'semicircle' });
   const arc = Array.from({ length: 33 }, (_, i) => (i / 32) * Math.PI).map((a) => tilt(at({ x: -Math.cos(a) * r, y: Math.sin(a) * h })));
@@ -1365,6 +1393,103 @@ export function insertPoint(f: Fixture, k: number, p: Point): Pick<Fixture, 'poi
   const pins = f.pointLeds ? [...f.pointLeds] : undefined;
   pins?.splice(k + 1, 0, null);
   return { points, pointLeds: pins, skip: skipAfterInsert(f.skip, k), segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterInsert(k)) };
+}
+
+const nonEmpty = <T>(a: T[] | undefined) => (a?.length ? a : undefined);
+
+/** A line's pins by point (see Fixture.pointLeds), null where a point is not pinned. */
+const pinsOf = (f: Fixture) => f.points.map((_, i) => f.pointLeds?.[i] ?? null);
+
+/**
+ * A pin list as a line keeps it: the ends are never pinned (their LEDs are the line's first and
+ * last), bad numbers go, and a list with no pins left is no list.
+ */
+export function tidyPins(pins: (number | null)[] | undefined): (number | null)[] | undefined {
+  const out = pins?.map((p, i) => (i === 0 || i === pins.length - 1 || p == null || p < 0 ? null : p));
+  return out?.some((p) => p != null) ? out : undefined;
+}
+
+/** Pins point `index` of a line to device LED `led`: every other point keeps its LED number. */
+export const pinPoint = (f: Fixture, index: number, led: number) => setPointLed(f, index, led, f.points.map((_, i) => i));
+
+/** Takes the pin off point `index` of a line. */
+export function unpinPoint(f: Fixture, index: number): Pick<Fixture, 'pointLeds'> {
+  const pins = pinsOf(f);
+  pins[index] = null;
+  return { pointLeds: tidyPins(pins) };
+}
+
+/** Turns segment k of a line off (skipped: no LEDs, see Fixture.skip) or back on. */
+export function setSkipped(f: Fixture, k: number, skipped: boolean): Pick<Fixture, 'skip'> {
+  const rest = f.skip?.filter((x) => x !== k) ?? [];
+  return { skip: nonEmpty(skipped ? [...rest, k].sort((a, b) => a - b) : rest) };
+}
+
+/**
+ * A line cut in two at corner k. The first part keeps the line's id; the second gets `id` and
+ * starts at the next LED. Pins, skipped segments and segment effects go with their part.
+ * Null: a part would have no LED.
+ */
+export function splitLine(f: Fixture, k: number, id: string): [Fixture, Fixture] | null {
+  const off = pointOffsets(f)[k];
+  if (off < 1 || off >= f.pixels - 1) return null;
+  const pins = pinsOf(f);
+  const a: Fixture = {
+    ...f,
+    points: f.points.slice(0, k + 1),
+    ...fromLedRange(deviceLed(f, 0), deviceLed(f, off)),
+    pointLeds: tidyPins(pins.slice(0, k + 1)),
+    skip: nonEmpty(f.skip?.filter((x) => x < k)),
+    segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x < k ? [x] : []))
+  };
+  const b: Fixture = {
+    ...f,
+    id,
+    name: `${f.name} (part 2)`,
+    points: f.points.slice(k),
+    ...fromLedRange(deviceLed(f, off + 1), deviceLed(f, f.pixels - 1)),
+    pointLeds: tidyPins(pins.slice(k).map((p) => (p == null ? null : p - off - 1))),
+    skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k)),
+    segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x >= k ? [x - k] : []))
+  };
+  return [a, b];
+}
+
+/**
+ * A line without point i. The first or the last point takes its segment's LEDs with it (the
+ * line then starts or ends at the next point's LED); a point inside joins its two segments.
+ * Null: a line keeps at least two points.
+ */
+export function removePoint(f: Fixture, i: number): Partial<Fixture> | null {
+  if (f.points.length <= 2) return null;
+  const last = f.points.length - 1;
+  const offs = pointOffsets(f);
+  const pins = pinsOf(f);
+  if (i === 0) {
+    const off = offs[1];
+    return {
+      points: f.points.slice(1),
+      ...fromLedRange(deviceLed(f, off), deviceLed(f, f.pixels - 1)),
+      pointLeds: tidyPins(pins.slice(1).map((p) => (p == null ? null : p - off))),
+      skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1)),
+      segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k > 0 ? [k - 1] : []))
+    };
+  }
+  if (i === last) {
+    return {
+      points: f.points.slice(0, last),
+      ...fromLedRange(deviceLed(f, 0), deviceLed(f, offs[last - 1])),
+      pointLeds: tidyPins(pins.slice(0, last)),
+      skip: nonEmpty(f.skip?.filter((k) => k < last - 1)),
+      segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k < last - 1 ? [k] : []))
+    };
+  }
+  return {
+    points: f.points.filter((_, j) => j !== i),
+    pointLeds: tidyPins(pins.filter((_, j) => j !== i)),
+    skip: skipAfterRemove(f.skip, i),
+    segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterRemove(i))
+  };
 }
 
 export interface DeviceRun {

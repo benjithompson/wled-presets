@@ -2,8 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { DIRECTIONS, EFFECTS, PALETTES, type Direction, type EffectId, type PaletteId } from '../../shared/effects.ts';
-import { deviceRuns, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, sampleLayout, type Layout } from '../../shared/layout.ts';
+import { deviceRuns, FIXTURE_KINDS, FIXTURE_PATTERNS, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, SIDES, SPINS, sampleLayout, TREE_SHAPES, UNITS, ZIGZAGS, type AerialPicture, type Design, type Fixture, type Layout } from '../../shared/layout.ts';
+import type { EffectSettings } from '../../shared/effects.ts';
+import type { LightType } from '../../shared/lights.ts';
 import type { Db } from './db.ts';
+import type { SchemaOf } from './schemaOf.ts';
 
 const KEY = 'layout';
 const BG_TYPE_KEY = 'layoutBackgroundType';
@@ -26,7 +29,7 @@ export const effectSettingsSchema = z.object({
   brightness: unit,
   reverse: z.boolean().optional(),
   direction: z.enum(Object.keys(DIRECTIONS) as [Direction, ...Direction[]]).optional()
-});
+} satisfies SchemaOf<EffectSettings>);
 
 /** Effects by layout object id, or "<object id>#<segment>" for one segment of a line. */
 export const effectsSchema = z.record(z.string().min(1).max(72), effectSettingsSchema).refine((r) => Object.keys(r).length <= 512, 'Too many effects');
@@ -43,7 +46,7 @@ const lightTypeSchema = z.object({
   spacing: z.number().min(0.001).max(10),
   perStrand: z.number().int().min(1).max(MAX_FIXTURE_PIXELS).nullable(),
   milliamps: z.number().min(0).max(1000)
-});
+} satisfies SchemaOf<LightType>);
 
 /** A custom object's strokes, in meters (at most 100 m from its anchor). */
 const meters = z.number().finite().min(-100).max(100);
@@ -59,7 +62,7 @@ const designSchema = z.object({
   strokes: strokesSchema,
   pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
   lights: id.optional()
-});
+} satisfies SchemaOf<Design>);
 
 /** The shape only. `layoutSchema` adds the checks a saved layout must pass. */
 export const layoutShape = z.object({
@@ -67,7 +70,7 @@ export const layoutShape = z.object({
   height: z.number().min(200).max(4000),
   background: z.string().max(200).nullable(),
   scale: z.number().min(1).max(10_000).optional(),
-  units: z.enum(['ft', 'm']).optional(),
+  units: z.enum(UNITS).optional(),
   groundY: coord.optional(),
   /** The whole yard's effect. */
   effect: effectSettingsSchema.optional(),
@@ -83,7 +86,7 @@ export const layoutShape = z.object({
       aspect: z.number().min(0.02).max(50),
       rotation: z.number().finite().min(-3600).max(3600),
       opacity: unit.optional()
-    })
+    } satisfies SchemaOf<AerialPicture>)
     .nullable()
     .optional(),
   fixtures: z
@@ -91,23 +94,23 @@ export const layoutShape = z.object({
       z.object({
         id: z.string().min(1).max(64),
         name: z.string().trim().min(1).max(60),
-        kind: z.enum(['roof', 'line', 'bush', 'tree', 'semicircle', 'custom']),
+        kind: z.enum(FIXTURE_KINDS),
         points: z.array(point).min(1).max(64),
         radius: z.number().min(5).max(4000).optional(),
         height: z.number().min(5).max(8000).optional(),
-        pattern: z.enum(['fill', 'ring', 'spiral', 'strands', 'wave']).optional(),
+        pattern: z.enum(FIXTURE_PATTERNS).optional(),
         sweep: z.number().min(10).max(360).optional(),
         spacing: z.number().min(1).max(8000).optional(),
-        startSide: z.enum(['left', 'right']).optional(),
-        endSide: z.enum(['left', 'right']).optional(),
+        startSide: z.enum(SIDES).optional(),
+        endSide: z.enum(SIDES).optional(),
         turns: z.number().min(0.5).max(100).optional(),
         bias: z.number().min(-1).max(1).optional(),
         strands: z.number().int().min(1).max(64).optional(),
-        shape: z.enum(['cone', 'cylinder', 'sphere']).optional(),
+        shape: z.enum(TREE_SHAPES).optional(),
         cover: z.number().min(10).max(180).optional(),
-        spin: z.enum(['ccw', 'cw']).optional(),
+        spin: z.enum(SPINS).optional(),
         start: z.enum(['base', 'top']).optional(),
-        zigzag: z.enum(['down', 'up', 'right', 'left']).optional(),
+        zigzag: z.enum(ZIGZAGS).optional(),
         pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
         lights: id.optional(),
         design: strokesSchema.optional(),
@@ -124,11 +127,11 @@ export const layoutShape = z.object({
         effect: effectSettingsSchema.optional(),
         segmentEffects: z.record(z.string().regex(/^\d{1,2}$/, 'Segment index'), effectSettingsSchema).optional(),
         locked: z.boolean().optional()
-      })
+      } satisfies SchemaOf<Fixture>)
     )
     .max(64)
     .refine((fs) => new Set(fs.map((f) => f.id)).size === fs.length, 'Object ids must be unique')
-});
+} satisfies SchemaOf<Layout>);
 
 export const layoutSchema = layoutShape.superRefine((layout, ctx) => {
     // Two objects cannot drive the same LED of a device.
