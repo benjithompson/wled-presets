@@ -66,7 +66,6 @@ import {
   isLine,
   layoutGround,
   layoutScale,
-  paintEditor,
   clampPointLed,
   pinPoint,
   removePoint,
@@ -84,7 +83,6 @@ import {
   matchPoint,
   matchRange,
   MAX_FIXTURE_PIXELS,
-  paintMatch,
   pointOffsets,
   designReach,
   objectPaths,
@@ -118,15 +116,15 @@ import {
   SHAPE_KINDS,
   type ShapeKind
 } from '../../../../shared/layout.ts';
-import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
-import type { Stage } from '../../../../shared/layout.ts';
+import { deviceEffects, EFFECTS, keyDevice, effectKey, effectTarget, LayoutEffects, layoutEffects, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
+import { framePut, paintEditorView } from '../../../../shared/editorView.ts';
 import type { Scene } from '../../../../shared/types.ts';
 import { Badge, Button, ConfirmDialog, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { EffectProps } from './effectProps.tsx';
 import { DesignEditor } from './DesignEditor.tsx';
 import { Gizmo, screenAngle, wrapAngle, type GizmoPart } from './gizmo.tsx';
 import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
-import { paintCheck, pictureBlocks, validCheck } from '../../../../shared/check.ts';
+import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
@@ -743,22 +741,16 @@ export function LayoutPage() {
   /** The scene the effects were loaded from or last saved to. */
   const [sceneRef, setSceneRef] = useState<{ id: string; name: string } | null>(null);
   const [newScene, setNewScene] = useState<string | null>(null);
-  const fxRef = useRef<{ scene: EffectScene; stage: Stage; data: Float32Array; bytes: Uint8Array; last: number } | null>(null);
+  const fxRef = useRef<{ effects: LayoutEffects; last: number } | null>(null);
   useEffect(() => {
     if (!playing || !stage || !layout) {
       fxRef.current = null;
       return;
     }
-    const cur = fxRef.current;
-    if (!cur) {
-      fxRef.current = { scene: new EffectScene(stage, layout, effects), stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3), last: performance.now() };
-      return;
-    }
     // Objects whose effect and LED count stay the same keep running smoothly.
-    cur.scene.setStage(stage, layout);
-    cur.scene.setEffects(effects);
-    if (cur.stage !== stage) fxRef.current = { ...cur, stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
-  }, [playing, stage, layout, effects]);
+    if (fxRef.current) fxRef.current.effects.sync(stage, layout);
+    else fxRef.current = { effects: new LayoutEffects(stage, layout), last: performance.now() };
+  }, [playing, stage, layout]);
   // Nothing to play: stop.
   useEffect(() => {
     if (!fxCount) setPlaying(false);
@@ -1359,45 +1351,27 @@ export function LayoutPage() {
     });
   };
 
-  // Simulator: the same view as the real lights get (see paintEditor).
+  // Simulator: the same picture as the real lights get (see editorFrame on the server).
   const getFrame = () => {
     if (!stage || !layout) return null;
     const fx = fxRef.current;
-    if (probe && selected) {
-      // The wizard: the same blinking LED as on the house, where the drawing puts it now.
-      const out = new Uint8Array(stage.pixelCount * 3);
-      paintMatch(layout, selected, probe, editorPulse(Date.now()), (fi, i, rgb) => {
-        const sf = stage.fixtures[fi];
-        if (i >= 0 && i < sf.count) out.set(rgb, (sf.offset + i) * 3);
-      });
-      return out;
-    }
-    if (layoutCheck) {
-      // A check: the same picture as on the house, at the same moment.
-      const out = new Uint8Array(stage.pixelCount * 3);
-      const now = Date.now();
-      paintCheck(layout, stage, layoutCheck, now, editorPulse(now), out);
-      return out;
-    }
-    if (playing && fx && fx.stage === stage) {
+    // The effects, while they play; the wizard and a check show what they test instead.
+    if (playing && fx && fx.effects.stage === stage && !(probe && selected) && !layoutCheck) {
       // Every view asks on each animation frame: draw once per frame.
       const now = performance.now();
       if (now - fx.last > 4) {
-        fx.scene.update(Math.min(0.1, (now - fx.last) / 1000), fx.data);
+        fx.effects.frame(Math.min(0.1, (now - fx.last) / 1000));
         fx.last = now;
-        toBytes(fx.data, fx.bytes);
       }
-      return fx.bytes;
+      return fx.effects.bytes;
     }
     const out = new Uint8Array(stage.pixelCount * 3);
-    // Same clock as the server, so the drawing pulses together with the real lights.
-    const pulse = editorPulse(Date.now());
-    paintEditor(layout, selected, corner, segment, pulse, (fi, i, rgb) => {
-      const sf = stage.fixtures[fi];
-      if (i >= 0 && i < sf.count) out.set(rgb, (sf.offset + i) * 3);
-    });
+    // Same clock as the server, so the drawing pulses (and a check moves) together with the real lights.
+    const now = Date.now();
+    paintEditorView(layout, stage, { selected, corner, segment, probe, check: layoutCheck }, now, editorPulse(now), framePut(stage, out), out);
     return out;
   };
+
 
   /** v minus the world coordinate in a view: the top view counts v from the back edge (zMin). */
   const offOf = (side: ViewSide) => (side === 'top' ? -zMin : 0);

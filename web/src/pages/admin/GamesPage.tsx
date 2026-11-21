@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, Gamepad2, Radio, RotateCcw, Save } from 'lucide-react';
 import { toast } from 'sonner';
+import { framePut } from '../../../../shared/editorView.ts';
 import { activeLeds, buildStage, editorPulse, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofHidden, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
 import { Badge, Button, Card, CardHeader, Empty, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
 import { PhoneActionBar } from '../../components/mobile.tsx';
@@ -65,7 +66,7 @@ export function GamesPage() {
     if (!layout || !stage) return null;
     if (!frame.current || frame.current.length !== stage.pixelCount * 3) frame.current = new Uint8Array(stage.pixelCount * 3);
     const out = frame.current;
-    paintGameArea(layout, live.current.area, live.current.focus, editorPulse(Date.now()), (fi, i, rgb) => out.set(rgb, (stage.fixtures[fi].offset + i) * 3));
+    paintGameArea(layout, live.current.area, live.current.focus, editorPulse(Date.now()), framePut(stage, out));
     return out;
   };
 
