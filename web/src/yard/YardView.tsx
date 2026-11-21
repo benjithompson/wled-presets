@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type React from 'react';
-import { AERIAL_OPACITY, buildStage, drawnByPaths, FEET_PER_METER, layoutGround, layoutScale, objectPaths, treeOutline, type Layout, type Point } from '../../../shared/layout.ts';
+import { AERIAL_OPACITY, buildStage, BUSH_TALL, drawnByPaths, FEET_PER_METER, layoutGround, layoutScale, objectPaths, radiusOf, treeOutline, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
 
@@ -361,7 +361,7 @@ export function YardView({
           ctx.strokeStyle = hl ? 'rgba(40,170,255,0.9)' : 'rgba(255,255,255,0.08)';
           ctx.lineWidth = (hl ? 3 : 1.5) * dpr;
           const c = view(f.points[0] ?? { x: 0, y: 0 });
-          const r = f.radius ?? 60;
+          const r = radiusOf(f);
           ctx.beginPath();
           if (drawnByPaths(f)) {
             for (const path of objectPaths(f, layoutScale(layout)))
@@ -381,7 +381,7 @@ export function YardView({
             });
             ctx.closePath();
           } else if (hl) {
-            ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * 0.72 * sy + 6 * dpr, 0, 0, Math.PI * 2);
+            ctx.ellipse(X(c.u), Y(c.v), r * sx + 6 * dpr, r * BUSH_TALL * sy + 6 * dpr, 0, 0, Math.PI * 2);
           }
           ctx.stroke();
         }

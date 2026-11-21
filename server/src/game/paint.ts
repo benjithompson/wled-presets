@@ -1,4 +1,4 @@
-import type { Stage } from '../../../shared/layout.ts';
+import { isLine, type Stage } from '../../../shared/layout.ts';
 import { ERASER, PAINT_BUTTONS, PAINT_COLORS, PAINT_EFFECTS, RAINBOW, type PaintStroke } from '../../../shared/paint.ts';
 import { hsv, mix, WHITE, type Rgb } from './frame.ts';
 import { Yard } from './kit.ts';
@@ -211,7 +211,7 @@ export function paintGame(stage: Stage): Game {
     // Every object gets a color and an effect; lines (the roof, windows) often get stripes.
     const pick = () => SURPRISE_COLORS[Math.floor(Math.random() * SURPRISE_COLORS.length)].k;
     const plan = stage.fixtures.map((f) => {
-      const striped = (f.kind === 'roof' || f.kind === 'line') && Math.random() < 0.6;
+      const striped = isLine(f) && Math.random() < 0.6;
       const a = pick();
       let b = pick();
       while (striped && b === a && SURPRISE_COLORS.length > 1) b = pick();

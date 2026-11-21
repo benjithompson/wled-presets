@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changeKind, fixturePixels, type Fixture } from '../../shared/layout.ts';
+import { changeKind, fixturePixels, heightOf, radiusOf, type Fixture } from '../../shared/layout.ts';
 import { layoutSchema } from '../src/layoutStore.ts';
 import { sampleLayout } from '../../shared/layout.ts';
 
@@ -66,5 +66,25 @@ describe('changing an object into another kind of shape', () => {
     expect(changeKind(bush, 'bush')).toBe(bush);
     const layout = { ...sampleLayout(), fixtures: [...sampleLayout().fixtures.slice(0, 1), changeKind({ ...bush, effect: undefined, lights: undefined }, 'tree'), changeKind({ ...bush, id: 'c', deviceId: null, effect: undefined, lights: undefined }, 'semicircle')] };
     expect(layoutSchema.safeParse(layout).success).toBe(true);
+  });
+});
+
+describe('a shape saved without its size', () => {
+  const tree: Fixture = { id: 't', name: 'Old tree', kind: 'tree', points: [{ x: 500, y: 800 }], pixels: 100, deviceId: null, startPixel: 0, reversed: false };
+
+  it('has the size its lights have, everywhere', () => {
+    // The lights of a tree with no radius spread 80 out from its middle at the base.
+    const px = fixturePixels({ ...tree, pattern: 'strands', strands: 8 });
+    const reach = Math.max(...px.map((p) => Math.hypot(p.x - 500, p.z)));
+    expect(reach).toBeCloseTo(radiusOf(tree), 0);
+    expect(radiusOf(tree)).toBe(80);
+    expect(heightOf(tree)).toBe(240);
+    expect(radiusOf({ kind: 'bush' })).toBe(60);
+    expect(heightOf({ kind: 'semicircle', radius: 50 })).toBe(50);
+  });
+
+  it('keeps that size when it becomes another kind', () => {
+    expect(changeKind(tree, 'bush').radius).toBe(80);
+    expect(changeKind(tree, 'semicircle')).toMatchObject({ radius: 80, height: 240 });
   });
 });
