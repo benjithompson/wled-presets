@@ -7,6 +7,7 @@
 // Unlike the effects built into WLED, these run on a full computer: float color, physics,
 // noise fields and hundreds of particles. Keep this file free of Node and DOM APIs.
 
+import { clamp, clamp01, fract, fromHex, mix, seededRandom, smooth, toBytes, WHITE, type Rgb } from './color.ts';
 import { activeLeds, isLine, segmentLeds, type Fixture, type Layout, type Stage } from './layout.ts';
 
 export type Direction = 'right' | 'left' | 'up' | 'down' | 'toward' | 'away' | 'out' | 'in';
@@ -297,7 +298,7 @@ export function withEffects<F extends Layout['fixtures'][number]>(f: F, effects:
 export function effectsLook(effects: EffectSettings[]): { colors: string[]; energy: number }[] {
   return effects.map((s) => {
     const all = paletteColors(s);
-    const bright = all.filter((c) => luma(hexToRgb(c)) > 0.2);
+    const bright = all.filter((c) => luma(fromHex(c)) > 0.2);
     // A dark color of its own (a deep blue) still shows, when it is all there is.
     const colors = bright.length ? bright : all;
     return { colors: colors.slice(0, 4), energy: Math.min(1, effectInfo(s.effect).energy * (0.6 + 0.8 * s.speed)) };
@@ -306,33 +307,7 @@ export function effectsLook(effects: EffectSettings[]): { colors: string[]; ener
 
 // ---------- Small math ----------
 
-type Rgb = [number, number, number];
-
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
-const smooth = (a: number, b: number, x: number) => {
-  const t = clamp01((x - a) / (b - a));
-  return t * t * (3 - 2 * t);
-};
-const fract = (x: number) => x - Math.floor(x);
 const luma = ([r, g, b]: Rgb) => 0.3 * r + 0.55 * g + 0.15 * b;
-const WHITE: Rgb = [1, 1, 1];
-
-export function hexToRgb(hex: string): Rgb {
-  const n = parseInt(hex.replace('#', '').slice(0, 6), 16) || 0;
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
-
-/** A small, fast random number generator, so every run of an effect can start the same way. */
-export function seededRandom(seed: number): () => number {
-  let a = seed >>> 0 || 1;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 export function hashString(s: string): number {
   let h = 2166136261;
@@ -438,7 +413,7 @@ class Pal {
   readonly stops: Rgb[];
   readonly cyclic: boolean;
   constructor(colors: string[], cyclic: boolean) {
-    this.stops = (colors.length ? colors : ['#ffffff']).map(hexToRgb);
+    this.stops = (colors.length ? colors : ['#ffffff']).map(fromHex);
     this.cyclic = cyclic;
   }
   /** Adds the color at t (0..1 across the palette) times `k` to out[i]. */
@@ -1119,8 +1094,7 @@ const candy: Factory = (n, rand) => {
       const edge = 1 / width;
       const a = colors[((band % m) + m) % m];
       const b = colors[(((band + 1) % m) + m) % m];
-      const mix = clamp01((f - (1 - edge)) / edge);
-      const c: Rgb = [a[0] + (b[0] - a[0]) * mix, a[1] + (b[1] - a[1]) * mix, a[2] + (b[2] - a[2]) * mix];
+      const c = mix(a, b, clamp01((f - (1 - edge)) / edge));
       // A soft sheen passes over the stripes.
       let shine = 0;
       for (let k = -1; k <= Math.ceil(n / spacing); k++) {
@@ -1145,9 +1119,6 @@ const candy: Factory = (n, rand) => {
 /** The k-th color of the palette, round and round. */
 const stopAt = (pal: Pal, k: number): Rgb => pal.stops[((k % pal.stops.length) + pal.stops.length) % pal.stops.length];
 
-function mixRgb(a: Rgb, b: Rgb, f: number): Rgb {
-  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
-}
 
 function fillRgb(out: Float32Array, c: Rgb, k: number) {
   for (let i = 0; i < out.length; i += 3) addRgb(out, i, c, k);
@@ -1196,7 +1167,7 @@ const breathe: Factory = () => (out, { t, intensity, pal }) => {
   // Depth 100: down to dark. 0: only a little dimmer.
   const low = 0.6 - 0.6 * intensity;
   // The next color comes in while the lights are low.
-  const c = mixRgb(stopAt(pal, k - 1), stopAt(pal, k), smooth(0, 0.2, f));
+  const c = mix(stopAt(pal, k - 1), stopAt(pal, k), smooth(0, 0.2, f));
   fillRgb(out, c, low + (1 - low) * b * b);
 };
 
@@ -1243,7 +1214,7 @@ const wipe: Factory = (n) => (out, { t, intensity, size, pal }) => {
   const color = (j: number) => (one ? (((j % 2) + 2) % 2 === 0 ? pal.stops[0] : BLACK) : stopAt(pal, j));
   const from = color(k - 1);
   const to = color(k);
-  for (let i = 0; i < n; i++) addRgb(out, i * 3, mixRgb(from, to, clamp01((head - i) / edge)), 1);
+  for (let i = 0; i < n; i++) addRgb(out, i * 3, mix(from, to, clamp01((head - i) / edge)), 1);
 };
 
 const twinkle: Factory = (n, rand) => {
@@ -1577,7 +1548,6 @@ const fireflies: Factory = (_n, rand, noise) => {
   };
 };
 
-const clamp = (x: number, a: number, b: number) => (x < a ? a : x > b ? b : x);
 
 const starburst: Factory = (_n, rand) => {
   const EMBER: Rgb = [1, 0.4, 0.1];
@@ -1809,7 +1779,7 @@ const hyperspace: Factory = (_n, rand) => {
       const sa = Math.sin(s.a);
       // Nearer stars (further out) are brighter.
       const k = 0.2 + 1.3 * (Math.max(rh, rt) / R);
-      const c = mixRgb(pal.stops[s.c % m], WHITE, 0.45);
+      const c = mix(pal.stops[s.c % m], WHITE, 0.45);
       line3(out, space, rt * ca, rt * sa, 0, rh * ca, rh * sa, 0, w, c, k * 0.12, c, k, true);
     }
     if (flash > 0.002) fillRgb(out, WHITE, flash * 1.4);
@@ -1882,7 +1852,7 @@ const tesla: Factory = (_n, rand, noise) => {
         pts[s * 3 + 2] = ez * u + noise.n2(sd * 3 + u * 4 + 90, jit) * env;
       }
       const flick = 0.7 + 0.3 * noise.n2(sd + 9, t * 22);
-      const c = mixRgb(pal.stops[k % m], WHITE, 0.3);
+      const c = mix(pal.stops[k % m], WHITE, 0.3);
       path3(out, space, pts, S + 1, w, c, 1.4 * flick, flat);
       // A branch now and then, from the middle of the bolt.
       const fb = noise.n2(sd + 17, t * 1.5);
@@ -2207,7 +2177,7 @@ const supernova: Factory = (_n, _rand, noise) => (out, { t, intensity, size, pal
   const BANG = 2.4;
   const fadeOut = 1 - smooth(T - 1.2, T, u);
   const top = pal.stops[pal.stops.length - 1];
-  const core = mixRgb(top, WHITE, 0.5);
+  const core = mix(top, WHITE, 0.5);
   if (u < BANG) {
     // The star shudders, faster and faster, as its shell falls in.
     const q = u / BANG;
@@ -2618,18 +2588,6 @@ export class EffectScene {
       }
     }
   }
-}
-
-/**
- * Linear color (0..1, may go above) to bytes, with a soft shoulder so bright, added-up colors
- * roll off instead of clipping flat. The games use the same curve.
- */
-export function toBytes<T extends Uint8Array>(data: Float32Array, out: T): T {
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i];
-    out[i] = Math.round(255 * (v <= 0 ? 0 : v >= 1.5 ? 1 : v < 0.8 ? v : 0.8 + (v - 0.8) * 0.2857));
-  }
-  return out;
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
 import { COLORS, Flare, heat, Sparks, Yard, type Part } from './kit.ts';
 import { Fx, Round } from './round.ts';
 import { overMood, type Mood } from './show.ts';
@@ -187,7 +188,7 @@ export function overflowGame(stage: Stage): Game {
       // It spills over the top and runs down to the ground on both sides.
       for (let i = 0; i < 18; i++) {
         const side = i % 2 ? 1 : -1;
-        motes.drop(v.part.x + side * (v.part.right - v.part.left) * 0.3, v.part.top, mix([1, 0.3, 0], COLORS.bad, Math.random()), {
+        motes.drop(v.part.x + side * (v.part.right - v.part.left) * 0.3, v.part.top, mix(COLORS.ember, COLORS.bad, Math.random()), {
           vx: side * stage.scale * (0.8 + Math.random() * 1.6),
           vy: -stage.scale * (1 + Math.random() * 2),
           size: 22

@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bounce, COLORS, Flare, heat, Recent, Sparks, Yard, type Part, type Sink } from './kit.ts';
+import { hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { bounce, COLORS, Flare, FOUR_TONES, heat, Recent, Sparks, Yard, type Part, type Sink } from './kit.ts';
 import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
 import { NIGHT_MOOD, overMood, turnHue, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -73,12 +74,7 @@ const ORB_RADIUS = 1.4;
  * The orbs' colors: few, far apart on real LEDs, and none of the colors that mean something
  * else (white: the bomb, gold: points, red: a miss).
  */
-export const ORB_COLORS: Rgb[] = [
-  [0.05, 1, 0.12],
-  [0, 0.72, 1],
-  [0.14, 0.08, 1],
-  [1, 0, 0.7]
-];
+export const ORB_COLORS = FOUR_TONES;
 /** Seconds of fuse: then the bomb goes off where it is. */
 export const FUSE = 12;
 /** A combo (an orb popped by a burst of its own color) makes this much bigger a blast. */

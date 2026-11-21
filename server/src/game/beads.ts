@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, css, heat, Sparks, Yard, type Part } from './kit.ts';
+import { hex, hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { COLORS, heat, Sparks, TONES, Yard, type Part } from './kit.ts';
 import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
 import { overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -58,11 +59,11 @@ const LOSE = 8;
  * (danger) and gold (points), with about half of gold's green, so it reads as its own color.
  */
 export const BEAD_COLORS: { name: string; color: Rgb }[] = [
-  { name: 'orange', color: [1, 0.3, 0] },
-  { name: 'green', color: [0.05, 1, 0.12] },
-  { name: 'cyan', color: [0, 0.72, 1] },
-  { name: 'blue', color: [0.14, 0.08, 1] },
-  { name: 'magenta', color: [1, 0, 0.7] }
+  { name: 'orange', color: COLORS.ember },
+  { name: 'green', color: TONES.green },
+  { name: 'cyan', color: TONES.cyan },
+  { name: 'blue', color: TONES.blue },
+  { name: 'magenta', color: TONES.magenta }
 ];
 /** The colors of each stage (BEAD_COLORS indexes), and the seconds of play between stages. */
 const STAGES: number[][] = [
@@ -320,7 +321,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     shot = null;
     queued = false;
     const k = Math.min(4, chain.length);
-    for (let i = 0; i < k; i++) sparks.burst(front + i * SPACING, [COLORS.bad, [1, 0.3, 0]], 10, n * 0.15);
+    for (let i = 0; i < k; i++) sparks.burst(front + i * SPACING, [COLORS.bad, COLORS.ember], 10, n * 0.15);
     chain.splice(0, k);
     front += k * SPACING;
     recoil = n * 0.2 * RECOIL_DECAY;
@@ -523,9 +524,9 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       // The three buttons, each in the color it stands for: pick left, fire the loaded one, pick right.
       const controls = {
         controls: [
-          { id: 'left', label: '◀', color: css(beadColor(neighbour(-1))), keys: ['ArrowLeft', 'KeyA'] },
-          { id: 'main', label: 'FIRE', color: css(beadColor(loaded)), keys: ['Space', 'Enter', 'ArrowUp', 'KeyW'], big: true },
-          { id: 'right', label: '▶', color: css(beadColor(neighbour(1))), keys: ['ArrowRight', 'KeyD'] }
+          { id: 'left', label: '◀', color: hex(beadColor(neighbour(-1))), keys: ['ArrowLeft', 'KeyA'] },
+          { id: 'main', label: 'FIRE', color: hex(beadColor(loaded)), keys: ['Space', 'Enter', 'ArrowUp', 'KeyW'], big: true },
+          { id: 'right', label: '▶', color: hex(beadColor(neighbour(1))), keys: ['ArrowRight', 'KeyD'] }
         ],
         keysHint: '← → change color, space fires'
       };

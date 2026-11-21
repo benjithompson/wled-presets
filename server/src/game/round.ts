@@ -6,9 +6,10 @@
 // the host and the phones go by are named here: 'ready' before a game (the start screen, with
 // the scoreboard) and 'over' (or 'won') after it.
 
+import { scale } from '../../../shared/color.ts';
 import { GAME_CATALOG, type GameId } from '../../../shared/games.ts';
 import type { Frame } from './frame.ts';
-import { bestScore, COLORS, Flare, Motes, record, scale, Sparks, Waves, type Yard } from './kit.ts';
+import { bestScore, COLORS, Flare, Motes, record, Sparks, Waves, type Yard } from './kit.ts';
 import { Show } from './show.ts';
 import type { GameStatusFields } from './types.ts';
 

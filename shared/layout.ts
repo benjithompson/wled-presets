@@ -2,6 +2,7 @@
 // the house, and where each LED of each object sits. Shared by the server (games) and the
 // web client (editor and simulator), so both agree on every pixel's position.
 
+import { hsvBytes, scale8 } from './color.ts';
 import type { PaintPad } from './paint.ts';
 import type { LineView } from './line.ts';
 import type { EffectSettings } from './effects.ts';
@@ -368,15 +369,6 @@ function bush(id: string, name: string, x: number, y: number, radius: number): F
 
 /** Hues for objects in the editor, in list order. */
 export const FIXTURE_HUES = [0.08, 0.55, 0.33, 0.85, 0.15, 0.7, 0.0, 0.45];
-
-/** RGB bytes for an HSV color. */
-export function hsvBytes(h: number, v = 1): [number, number, number] {
-  const f = (n: number) => {
-    const k = (n + h * 6) % 6;
-    return Math.round(255 * (v - v * Math.max(0, Math.min(k, 4 - k, 1))));
-  };
-  return [f(5), f(3), f(1)];
-}
 
 /** The editor color of the object at this list position. */
 export const fixtureColor = (index: number, v = 1) => hsvBytes(FIXTURE_HUES[index % FIXTURE_HUES.length], v);
@@ -1298,7 +1290,6 @@ export function paintMatch(
   pulse: boolean,
   put: (fixtureIndex: number, led: number, rgb: [number, number, number]) => void
 ) {
-  const scale = (c: [number, number, number], k: number): [number, number, number] => [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k)];
   layout.fixtures.forEach((f, fi) => {
     const n = Math.max(0, Math.floor(f.pixels));
     if (f.id !== selected) {
@@ -1308,7 +1299,7 @@ export function paintMatch(
     const from = probe.point > 0 ? pointOffsets(f)[probe.point - 1] : probe.offset;
     const a = Math.min(from, probe.offset);
     const b = Math.max(from, probe.offset);
-    for (let i = Math.min(0, a); i < Math.max(n, b + 1); i++) put(fi, i, i >= a && i <= b ? scale(SELECTED_RGB, 0.45) : i >= 0 && i < n ? scale(SELECTED_RGB, 0.08) : [0, 0, 0]);
+    for (let i = Math.min(0, a); i < Math.max(n, b + 1); i++) put(fi, i, i >= a && i <= b ? scale8(SELECTED_RGB, 0.45) : i >= 0 && i < n ? scale8(SELECTED_RGB, 0.08) : [0, 0, 0]);
     put(fi, probe.offset, pulse ? LAST_LED_RGB : [0, 0, 0]);
   });
 }
@@ -2033,7 +2024,6 @@ export function paintEditor(
   put: (fixtureIndex: number, led: number, rgb: [number, number, number]) => void
 ) {
   const anySelected = layout.fixtures.some((f) => f.id === selected);
-  const scale = (c: [number, number, number], k: number): [number, number, number] => [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k)];
   layout.fixtures.forEach((f, fi) => {
     const n = Math.max(0, Math.floor(f.pixels));
     if (!n) return;
@@ -2049,19 +2039,19 @@ export function paintEditor(
       const { lo: a, hi: b } = segmentLeds(f, segment);
       // A skipped segment still shows while selected (dimmer), so you can find it.
       const segOn = !f.skip?.includes(segment);
-      for (let i = 0; i < n; i++) put(fi, i, i >= a && i <= b ? (segOn ? SELECTED_RGB : scale(SELECTED_RGB, 0.3)) : on[i] ? scale(SELECTED_RGB, 0.1) : [0, 0, 0]);
-      for (let k = 1; k < f.points.length - 1; k++) if (k !== segment && k !== segment + 1 && on[offs[k]]) put(fi, offs[k], scale(CORNER_RGB, 0.4));
-      put(fi, a, pulse ? FIRST_LED_RGB : scale(FIRST_LED_RGB, 0.35));
-      put(fi, b, pulse ? LAST_LED_RGB : scale(LAST_LED_RGB, 0.35));
+      for (let i = 0; i < n; i++) put(fi, i, i >= a && i <= b ? (segOn ? SELECTED_RGB : scale8(SELECTED_RGB, 0.3)) : on[i] ? scale8(SELECTED_RGB, 0.1) : [0, 0, 0]);
+      for (let k = 1; k < f.points.length - 1; k++) if (k !== segment && k !== segment + 1 && on[offs[k]]) put(fi, offs[k], scale8(CORNER_RGB, 0.4));
+      put(fi, a, pulse ? FIRST_LED_RGB : scale8(FIRST_LED_RGB, 0.35));
+      put(fi, b, pulse ? LAST_LED_RGB : scale8(LAST_LED_RGB, 0.35));
       return;
     }
     for (let i = 0; i < n; i++) put(fi, i, on[i] ? SELECTED_RGB : [0, 0, 0]);
     if (isLine(f)) {
       const offs = pointOffsets(f);
-      for (let k = 1; k < f.points.length - 1; k++) put(fi, offs[k], k === corner && !pulse ? scale(CORNER_RGB, 0.3) : CORNER_RGB);
+      for (let k = 1; k < f.points.length - 1; k++) put(fi, offs[k], k === corner && !pulse ? scale8(CORNER_RGB, 0.3) : CORNER_RGB);
     }
     // Ends never go dark, so you can always see where they are; they pulse to catch the eye.
-    put(fi, 0, pulse ? FIRST_LED_RGB : scale(FIRST_LED_RGB, 0.35));
-    if (n > 1) put(fi, n - 1, pulse ? LAST_LED_RGB : scale(LAST_LED_RGB, 0.35));
+    put(fi, 0, pulse ? FIRST_LED_RGB : scale8(FIRST_LED_RGB, 0.35));
+    if (n > 1) put(fi, n - 1, pulse ? LAST_LED_RGB : scale8(LAST_LED_RGB, 0.35));
   });
 }

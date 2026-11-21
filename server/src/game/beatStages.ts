@@ -1,4 +1,4 @@
-import { hsv, mix, type Rgb } from './frame.ts';
+import { hsv, mix, type Rgb } from '../../../shared/color.ts';
 
 // Beat Drop's stages: every STAGE_BARS bars the whole roofline changes its look, like the skins of
 // a puzzle game that change as the music does. Each stage paints a backdrop along the full roof,

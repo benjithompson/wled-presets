@@ -17,7 +17,8 @@
 // ever off while a game runs.
 
 import { roofTrack, type RoofTrack, type Stage, type StageFixture } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { ease, hsv, mix, scale, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
 
 /** Colors with the same meaning in every game. */
 export const COLORS = {
@@ -28,19 +29,30 @@ export const COLORS = {
   /** "Your turn": a soft blue-white. */
   hint: [0.55, 0.7, 1] as Rgb,
   fire: [1, 0.28, 0.02] as Rgb,
+  /** Embers, a fuse, the orange between red and gold. */
+  ember: [1, 0.3, 0] as Rgb,
   ice: [0.05, 0.55, 1] as Rgb
 };
 
-/** A CSS hex color for the phone. */
-export const css = (c: Rgb) => '#' + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
+/**
+ * The colors a game plays with (orbs, beads, buttons, layers): far apart on real LEDs, and none
+ * of the colors that mean something else (white, gold, red).
+ */
+export const TONES = {
+  green: [0.05, 1, 0.12] as Rgb,
+  cyan: [0, 0.72, 1] as Rgb,
+  blue: [0.14, 0.08, 1] as Rgb,
+  magenta: [1, 0, 0.7] as Rgb
+};
 
-export const scale = (c: Rgb, k: number): Rgb => [c[0] * k, c[1] * k, c[2] * k];
+/** The four tones in wheel order: Cascade's orbs, Beat's buttons, Slice's layers. */
+export const FOUR_TONES: Rgb[] = [TONES.green, TONES.cyan, TONES.blue, TONES.magenta];
 
 /** A temperature scale for meters: dark red, orange, yellow, white hot, at 0..1. */
 export function heat(t: number): Rgb {
   const k = Math.max(0, Math.min(1, t));
-  if (k < 0.33) return mix([0.5, 0.02, 0], [1, 0.3, 0], k / 0.33);
-  if (k < 0.66) return mix([1, 0.3, 0], [1, 0.8, 0.1], (k - 0.33) / 0.33);
+  if (k < 0.33) return mix([0.5, 0.02, 0], COLORS.ember, k / 0.33);
+  if (k < 0.66) return mix(COLORS.ember, [1, 0.8, 0.1], (k - 0.33) / 0.33);
   return mix([1, 0.8, 0.1], WHITE, (k - 0.66) / 0.34);
 }
 
@@ -607,7 +619,7 @@ export class Motes {
         const t = f.t - k * 0.035;
         if (t < 0) break;
         // Ease in and out, so it leaves and lands gently.
-        const e = t * t * (3 - 2 * t);
+        const e = ease(t);
         const u = 1 - e;
         const x = u * u * f.ax + 2 * u * e * f.cx + e * e * f.bx;
         const y = u * u * f.ay + 2 * u * e * f.cy + e * e * f.by;

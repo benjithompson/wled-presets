@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bounce, COLORS, Flare, heat, Recent, Sparks, Trail, Yard, type Part } from './kit.ts';
+import { hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { bounce, COLORS, Flare, FOUR_TONES, heat, Recent, Sparks, Trail, Yard, type Part } from './kit.ts';
 import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
 import { overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -50,14 +51,7 @@ const POP_PERFECT = 0.45;
 const COMET_TAIL: Rgb = [0.45, 0.7, 1];
 const GATE: Rgb = [0.15, 1, 0.45];
 /** Bush colors: none of white (the comet), gold (points) or red (the mistake). */
-const BUSH_COLORS: Rgb[] = [
-  [0.05, 1, 0.12],
-  [0, 0.72, 1],
-  [0.14, 0.08, 1],
-  [1, 0, 0.7],
-  [0.55, 0, 1],
-  [0, 1, 0.6]
-];
+const BUSH_COLORS: Rgb[] = [...FOUR_TONES, [0.55, 0, 1], [0, 1, 0.6]];
 
 /** What the tests can see: the comet and the gate. */
 export interface RicochetPeek {
@@ -245,7 +239,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
 
   function gameOver(at: number) {
     missAt = at;
-    sparks.burst(at, [COLORS.bad, [1, 0.3, 0]], 40, n * 0.3);
+    sparks.burst(at, [COLORS.bad, COLORS.ember], 40, n * 0.3);
     // What was lit falls off the gutter.
     for (let k = 0; k < 14; k++) {
       const p = roof.point(Math.random() * (n - 1));
