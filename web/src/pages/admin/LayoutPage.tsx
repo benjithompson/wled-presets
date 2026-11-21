@@ -104,7 +104,10 @@ import {
   type TreeShape,
   type Units,
   type Zigzag,
-  keepLocked
+  keepLocked,
+  changeKind,
+  isShapeKind,
+  type ShapeKind
 } from '../../../../shared/layout.ts';
 import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { Stage } from '../../../../shared/layout.ts';
@@ -741,6 +744,14 @@ export function LayoutPage() {
   /** Says (one toast at a time) why a locked object did not move. */
   const lockedNote = (names: string[]) =>
     toast.error(`${names.length > 1 ? `${names.length} objects are` : `${names[0]} is`} locked in place. Unlock ${names.length > 1 ? 'them' : 'it'} to move, reshape or delete ${names.length > 1 ? 'them' : 'it'}.`, { id: 'locked' });
+  /** Makes objects another kind of shape (a bush a tree, say), keeping the rest (see changeKind). Locked ones stay as they are. */
+  const setKind = (ids: string[], kind: ShapeKind) => {
+    const fs = layoutRef.current?.fixtures.filter((f) => ids.includes(f.id) && isShapeKind(f.kind) && f.kind !== kind) ?? [];
+    const locked = fs.filter((f) => f.locked);
+    if (locked.length) lockedNote(locked.map((f) => f.name));
+    const go = new Set(fs.filter((f) => !f.locked).map((f) => f.id));
+    if (go.size) edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => (go.has(f.id) ? changeKind(f, kind) : f)) }));
+  };
   const setLocked = (ids: string[], locked: boolean) =>
     edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => (ids.includes(f.id) ? { ...f, locked: locked || undefined } : f)) }));
   const undo = () => {
@@ -1555,6 +1566,9 @@ export function LayoutPage() {
       { label: 'Select', run: () => setSelected(f.id) },
       { label: 'Zoom to this object', keys: 'F', run: () => (setSelected(f.id), frameSelection(f.id)) },
       { label: 'Rename', keys: 'F2', run: () => (setSelected(f.id), setRenaming(f.id)) },
+      ...(isShapeKind(f.kind)
+        ? (['bush', 'tree', 'semicircle'] as const).filter((k) => k !== f.kind).map((k) => ({ label: `Make it a ${KIND_LABELS[k].toLowerCase()}`, run: () => setKind([f.id], k) }))
+        : []),
       { label: f.locked ? 'Unlock' : 'Lock in place', run: () => setLocked([f.id], !f.locked) },
       { label: `Delete ${f.name}`, keys: 'Delete', danger: true, run: () => remove(f.id) }
     ]);
@@ -2915,6 +2929,24 @@ export function LayoutPage() {
                 ]}
                 onChange={(kind) => update(sel.id, { kind })}
               />
+            ) : isShapeKind(sel.kind) ? (
+              <fieldset disabled={!!sel.locked} className="contents">
+                <PropSelect<ShapeKind>
+                  label="Kind"
+                  hint={
+                    sel.locked
+                      ? 'Locked in place: unlock it to change its kind.'
+                      : 'Make it another kind of shape. It keeps its name, LEDs, effect and the part of the yard it covers; the new kind’s shape settings start fresh.'
+                  }
+                  value={sel.kind}
+                  options={[
+                    ['bush', 'Bush'],
+                    ['tree', 'Tree (cone, cylinder or ball)'],
+                    ['semicircle', 'Semicircle']
+                  ]}
+                  onChange={(kind) => setKind([sel.id], kind)}
+                />
+              </fieldset>
             ) : null}
             <PropSelect
               label="WLED device"
@@ -3164,6 +3196,25 @@ export function LayoutPage() {
                   <LockOpen /> Unlock all
                 </PropButton>
               </div>
+            );
+          })()}
+          {(() => {
+            const shapes = layout.fixtures.filter((f) => multiItems.some((it) => it.key === f.id) && isShapeKind(f.kind));
+            if (!shapes.length) return null;
+            const kinds = new Set(shapes.map((f) => f.kind));
+            return (
+              <PropSelect<ShapeKind | ''>
+                label="Make them"
+                hint="Bushes, trees and semicircles in the selection become this kind of shape. Each keeps its name, LEDs, effect and the part of the yard it covers. Locked ones stay as they are."
+                value={kinds.size === 1 ? (shapes[0].kind as ShapeKind) : ''}
+                options={[
+                  ...(kinds.size === 1 ? [] : ([['', 'Mixed kinds']] as [ShapeKind | '', string][])),
+                  ['bush', 'Bushes'],
+                  ['tree', 'Trees'],
+                  ['semicircle', 'Semicircles']
+                ]}
+                onChange={(k) => k && setKind(shapes.map((f) => f.id), k)}
+              />
             );
           })()}
         </PropSection>
