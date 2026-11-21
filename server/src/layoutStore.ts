@@ -115,7 +115,8 @@ export const layoutShape = z.object({
         pointLeds: z.array(z.number().int().min(0).max(MAX_FIXTURE_PIXELS).nullable()).max(64).optional(),
         skip: z.array(z.number().int().min(0).max(64)).max(64).optional(),
         effect: effectSettingsSchema.optional(),
-        segmentEffects: z.record(z.string().regex(/^\d{1,2}$/, 'Segment index'), effectSettingsSchema).optional()
+        segmentEffects: z.record(z.string().regex(/^\d{1,2}$/, 'Segment index'), effectSettingsSchema).optional(),
+        locked: z.boolean().optional()
       })
     )
     .max(64)

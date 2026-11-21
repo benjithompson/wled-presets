@@ -158,6 +158,11 @@ export interface Fixture {
    * to point k + 1). Such a segment plays its own effect; the object's effect fills the rest.
    */
   segmentEffects?: Record<string, EffectSettings>;
+  /**
+   * Locked in place: the editor does not move, reshape or delete it (see keepLocked). Its LEDs,
+   * wiring and effects can still change.
+   */
+  locked?: boolean;
 }
 
 export interface Layout {
@@ -398,6 +403,37 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
 }
 
 const p3 = (p: Point): Point3 => ({ x: p.x, y: p.y, z: pz(p) });
+
+/** The settings that place an object and give it its size: a locked object keeps them. */
+export const PLACE_KEYS = ['points', 'radius', 'height', 'size', 'rotation', 'facing'] as const;
+
+/**
+ * Keeps locked objects in place across an edit from `prev` to `next`: an object locked in both
+ * whose place or size changed goes back as it was (all of it, so its points and their LED pins
+ * stay together), and a locked object that was removed comes back where it was in the list.
+ * Unlocking is an edit like any other, so an object unlocked in `next` can change. `blocked`:
+ * the names of the objects kept.
+ */
+export function keepLocked(prev: Layout, next: Layout): { layout: Layout; blocked: string[] } {
+  const blocked: string[] = [];
+  let fixtures = next.fixtures;
+  prev.fixtures.forEach((f, i) => {
+    if (!f.locked) return;
+    const j = fixtures.findIndex((g) => g.id === f.id);
+    if (j < 0) {
+      blocked.push(f.name);
+      fixtures = [...fixtures.slice(0, i), f, ...fixtures.slice(i)];
+      return;
+    }
+    const g = fixtures[j];
+    if (g === f || !g.locked) return;
+    if (PLACE_KEYS.some((k) => JSON.stringify(g[k]) !== JSON.stringify(f[k]))) {
+      blocked.push(f.name);
+      fixtures = fixtures.map((x, k) => (k === j ? f : x));
+    }
+  });
+  return { layout: fixtures === next.fixtures ? next : { ...next, fixtures }, blocked };
+}
 
 /**
  * A tree's radius at height u (0 at the base, 1 at the top), as a share of its radius: a cone
@@ -1516,7 +1552,7 @@ let hiddenCache: { layout: Layout; area: string; key: string; hidden: Map<string
  * layout (a Stage, its device maps) key on it, as editors send a new layout object each time.
  */
 export function layoutShapeKey(layout: Layout): string {
-  return JSON.stringify([layout.width, layout.height, layout.scale, layout.groundY, layout.fixtures.map(({ effect: _e, segmentEffects: _s, name: _n, ...f }) => f)]);
+  return JSON.stringify([layout.width, layout.height, layout.scale, layout.groundY, layout.fixtures.map(({ effect: _e, segmentEffects: _s, name: _n, locked: _l, ...f }) => f)]);
 }
 
 /**
