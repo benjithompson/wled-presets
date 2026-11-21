@@ -1,7 +1,8 @@
 // The 2D views of the yard: front, top and side, and the boxes they show. A view's coordinates
 // are u to the right and v down, in layout units.
-import { buildStage, type Layout, type Point } from '../../../shared/layout.ts';
+import { buildStage, BUSH_TALL, drawnByPaths, isLine, layoutScale, objectPaths, pointOnSegment, radiusOf, treeOutline, type Fixture, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
+import { closestOnSegment, emptyTargets, type SnapTargets, type UV } from './snap.ts';
 
 /**
  * Which side the yard is seen from. Front: the picture. Top: from above, the street at the
@@ -99,4 +100,111 @@ export function viewPositions(positions3: Float32Array, side: ViewSide, zMin: nu
     out[i * 2 + 1] = side === 'top' ? positions3[i * 3 + 2] - zMin : positions3[i * 3 + 1];
   }
   return out;
+}
+
+/** A point of a line that is left out (it is being dragged), with its two segments. */
+export type PointRef = { id: string; index: number };
+
+/**
+ * A layout as one view shows it: where its objects are in that view, and what is at a spot in
+ * it (for snapping, picking and dragging).
+ */
+export class LayoutInView {
+  readonly layout: Layout | null;
+  readonly side: ViewSide;
+  readonly zMin: number;
+
+  constructor(layout: Layout | null, side: ViewSide, zMin: number) {
+    this.layout = layout;
+    this.side = side;
+    this.zMin = zMin;
+  }
+
+  private get fixtures() {
+    return this.layout?.fixtures ?? [];
+  }
+
+  /** Where a point is in this view. */
+  at(p: Point) {
+    return toView(p, this.side, this.zMin);
+  }
+
+  /** What can be snapped to: the points and segments of lines, and the middles of the other objects (`linesOnly`: not those). */
+  targets(exclude?: PointRef, linesOnly = false): SnapTargets {
+    const t = emptyTargets();
+    for (const f of this.fixtures) {
+      const pts = f.points.map((p) => this.at(p));
+      if (!isLine(f)) {
+        if (!linesOnly) t.centers.push(pts[0]);
+        continue;
+      }
+      pts.forEach((p, i) => !(exclude?.id === f.id && exclude.index === i) && t.points.push(p));
+      for (let k = 0; k < pts.length - 1; k++) if (!(exclude?.id === f.id && (exclude.index === k || exclude.index === k + 1))) t.segments.push([pts[k], pts[k + 1]]);
+    }
+    return t;
+  }
+
+  /** The 3D point of a line that sits at this spot, if any. */
+  pointAt(at: UV, exclude?: PointRef): Point | undefined {
+    for (const f of this.fixtures) {
+      if (!isLine(f)) continue;
+      for (let i = 0; i < f.points.length; i++) {
+        if (exclude?.id === f.id && exclude.index === i) continue;
+        const q = this.at(f.points[i]);
+        if (Math.abs(q.u - at.u) < 1 && Math.abs(q.v - at.v) < 1) return f.points[i];
+      }
+    }
+    return undefined;
+  }
+
+  /** The end of a line within `tol` of this spot (the nearest), for continuing that line. */
+  lineEndAt(at: UV, tol: number): { f: Fixture; at: 'first' | 'last' } | null {
+    let best: { f: Fixture; at: 'first' | 'last' } | null = null;
+    let bestD = tol;
+    for (const f of this.fixtures) {
+      if (!isLine(f)) continue;
+      for (const end of ['first', 'last'] as const) {
+        const q = this.at(f.points[end === 'first' ? 0 : f.points.length - 1]);
+        const d = Math.hypot(q.u - at.u, q.v - at.v);
+        if (d <= bestD) {
+          best = { f, at: end };
+          bestD = d;
+        }
+      }
+    }
+    return best;
+  }
+
+  /** The 3D point on segment k of a line nearest to a spot. */
+  pointOnLine(f: Fixture, k: number, raw: UV): Point {
+    const { at, t } = closestOnSegment(raw, this.at(f.points[k]), this.at(f.points[k + 1]));
+    return fromView({ u: Math.round(at.u), v: Math.round(at.v) }, this.side, this.zMin, pointOnSegment(f, k, t));
+  }
+
+  /** Points moved by (du, dv) in this view; the coordinate the view does not show stays. */
+  moved(points: Point[], du: number, dv: number): Point[] {
+    const side = this.side;
+    return points.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : side === 'top' ? { ...q, x: q.x + du, z: (q.z ?? 0) + dv } : { ...q, z: (q.z ?? 0) + du, y: q.y + dv }));
+  }
+
+  /** The box around an object. */
+  box(f: Fixture): Box {
+    const span = (pts: UV[]): Box => {
+      const us = pts.map((p) => p.u);
+      const vs = pts.map((p) => p.v);
+      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
+    };
+    if (drawnByPaths(f)) {
+      const pts: Point[] = objectPaths(f, this.layout ? layoutScale(this.layout) : undefined).flat();
+      if (!pts.length) pts.push(f.points[0]);
+      return span(pts.map((p) => this.at(p)));
+    }
+    const c = this.at(f.points[0]);
+    const r = radiusOf(f);
+    if (this.side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
+    // A tree: its outline from that side (tilted, as it is), with the whole ball for a cap.
+    if (f.kind === 'tree') return span(treeOutline({ ...f, cover: undefined }, this.side === 'side' ? 'side' : 'front').map((p) => this.at(p)));
+    const h = r * BUSH_TALL;
+    return { x: c.u - r, y: c.v - h, w: 2 * r, h: 2 * h };
+  }
 }
