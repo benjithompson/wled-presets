@@ -125,8 +125,17 @@ export const wled = {
     return { ok: true, status: r.status, data: ins.filter((o) => typeof o?.len === 'number' && typeof o?.type === 'number').map((o) => ({ len: o.len as number, type: o.type as number })) };
   },
 
-  setState(ep: Endpoint, state: Record<string, unknown>) {
-    return requestJson(`${baseUrl(ep)}/json/state`, { method: 'POST', body: state, timeoutMs: 2000 });
+  /** The device's state (only what this app reads of it). */
+  state(ep: Endpoint, timeoutMs = 1500) {
+    return requestJson<{ on?: boolean }>(`${baseUrl(ep)}/json/state`, { timeoutMs });
+  },
+  /** Whether the device shows real-time data now (WLED's info says "live"). */
+  async live(ep: Endpoint, timeoutMs = 1500): Promise<FetchResult<boolean>> {
+    const r = await requestJson<{ live?: boolean }>(`${baseUrl(ep)}/json/info`, { timeoutMs });
+    return r.ok ? { ...r, data: !!r.data?.live } : r;
+  },
+  setState(ep: Endpoint, state: Record<string, unknown>, timeoutMs = 2000) {
+    return requestJson(`${baseUrl(ep)}/json/state`, { method: 'POST', body: state, timeoutMs });
   },
 
   applyPreset(ep: Endpoint, presetId: number) {

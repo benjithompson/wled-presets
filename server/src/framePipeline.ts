@@ -1,6 +1,6 @@
-import { deviceLed, type Layout, type Stage } from '../../shared/layout.ts';
+import { buildStage, deviceLed, type Layout, type Stage } from '../../shared/layout.ts';
 import { FrameLoop } from './frameLoop.ts';
-import type { DeviceTarget, LightSender } from './lightSender.ts';
+import { takesFrames, type DeviceTarget, type LightSender } from './lightSender.ts';
 
 /**
  * The one way frames reach the lights. Everything that draws (games, scenes, the layout and
@@ -49,6 +49,21 @@ export function deviceMaps(layout: Layout, stage: Stage): DeviceMap[] {
     byDevice.set(f.deviceId, m);
   });
   return [...byDevice.values()].map(({ list, ...m }) => ({ ...m, pairs: Int32Array.from(list) }));
+}
+
+const outputs = new WeakMap<Layout, { stage: Stage; maps: DeviceMap[] }>();
+
+/**
+ * A layout as the lights need it: its stage, and where the stage's LEDs go on each device.
+ * Built once for each layout: the game host and the roof view share the yard's.
+ */
+export function layoutOutput(layout: Layout): { stage: Stage; maps: DeviceMap[] } {
+  let out = outputs.get(layout);
+  if (!out) {
+    const stage = buildStage(layout);
+    outputs.set(layout, (out = { stage, maps: deviceMaps(layout, stage) }));
+  }
+  return out;
 }
 
 /** One LED set by device number, outside the stage (the layout wizard's LED past a line's end). */
@@ -219,7 +234,7 @@ export class FramePipeline {
       for (const m of frame.maps) {
         if (frame.devices && !frame.devices.has(m.deviceId)) continue;
         const d = devices.get(m.deviceId);
-        if (!d || !(d.enabled || (frame.wakes && d.switchedOff))) continue;
+        if (!d || !takesFrames(d, frame.wakes)) continue;
         const buf = renderDevice(frame, m, d.info?.leds?.count ?? 0, this.buffers.get(d.id));
         this.buffers.set(d.id, buf);
         this.sender.send(d, buf);

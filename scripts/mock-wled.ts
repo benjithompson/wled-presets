@@ -16,8 +16,11 @@ const PRESETS: { n: string; seg: Record<string, unknown>[] }[] = [
   { n: 'Ocean', seg: [{ col: [[0, 120, 255], [0, 0, 0], [0, 0, 0]], fx: 101, sx: 90, ix: 128, pal: 9 }] }
 ];
 
-/** `dropUdp`: ignore real-time UDP, like a device behind a router that drops UDP. */
-export function startMockWled(port: number, name: string, ledCount = 150, { dropUdp = false } = {}) {
+/**
+ * `dropUdp`: ignore real-time UDP, like a device behind a router that drops UDP. `frameMs`: an
+ * HTTP frame takes this long to show (and to answer), like a busy device on weak Wi-Fi.
+ */
+export function startMockWled(port: number, name: string, ledCount = 150, { dropUdp = false, frameMs = 0 } = {}) {
   const presets: Record<string, unknown> = { '0': {} };
   PRESETS.forEach((p, i) => (presets[String(i + 1)] = { on: true, bri: 160, ...p }));
   const state: { on: boolean; bri: number; ps: number; seg: Record<string, any>[] } = { on: true, bri: 128, ps: -1, seg: [{ id: 0, col: [[255, 160, 80]], fx: 0 }] };
@@ -77,10 +80,13 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         // Individual LEDs ("i": hex colors from LED 0), as the HTTP fallback sends them.
         const hex = body?.seg && !Array.isArray(body.seg) ? body.seg.i : undefined;
         if (Array.isArray(hex)) {
-          hex.forEach((h: string, i: number) => i < ledCount && realtime.leds.set([parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)], i * 3));
-          realtime.httpFrames++;
-          if (typeof body.on === 'boolean') state.on = body.on;
-          return json({ success: true });
+          const show = () => {
+            hex.forEach((h: string, i: number) => i < ledCount && realtime.leds.set([parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)], i * 3));
+            realtime.httpFrames++;
+            if (typeof body.on === 'boolean') state.on = body.on;
+            json({ success: true });
+          };
+          return void (frameMs ? setTimeout(show, frameMs) : show());
         }
         Object.assign(state, body);
         // A preset's segments show (WLED applies the preset).

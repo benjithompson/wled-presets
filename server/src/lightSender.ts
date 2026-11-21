@@ -1,7 +1,7 @@
 import type { Device, DeviceInfo } from '../../shared/types.ts';
 import { MAX_FPS, maxFps } from './ledTiming.ts';
 import { DDP_PORT, RealtimeOut } from './realtime.ts';
-import { baseUrl, requestJson } from './wled.ts';
+import { wled } from './wled.ts';
 
 /** A pixel whose brightest channel is below this is sent as off. */
 export const MIN_PIXEL = 16;
@@ -33,6 +33,13 @@ export type DeviceTarget = Device & {
   /** Switched off by an admin (enabled is then false): only an editor's preview lights it (see LightFrame.wakes). */
   switchedOff?: boolean;
 };
+
+/**
+ * Whether a device shows frames: one that is enabled and on, or, for a frame that `wakes` it
+ * (an editor's preview, which the admin turned on to see it on the lights), one an admin
+ * switched off. The one place that decides it, for the pipeline, the editors and the roof view.
+ */
+export const takesFrames = (d: DeviceTarget, wakes = false) => d.enabled || (wakes && !!d.switchedOff);
 
 /** How frames reach one device. */
 export type LinkMode = 'checking' | 'udp' | 'http';
@@ -69,6 +76,8 @@ interface Link {
   wasOn: boolean | null;
   /** Done once wasOn is known and a device that was off has been told to switch on. */
   woke: Promise<void>;
+  /** Done once the last HTTP frame has reached the device (or failed to). */
+  flight: Promise<void>;
   /** The device as it was at its last frame (an admin may switch it on or off meanwhile). */
   device: DeviceTarget;
   /** Whether an admin had switched the device off when the stream started (see DeviceTarget). */
@@ -124,13 +133,13 @@ export class LightSender {
     const now = Date.now();
     let link = this.links.get(d.id);
     if (!link) {
-      link = { mode: 'checking', startedAt: now, lastFrame: now, probing: false, inflight: false, lastHttp: 0, wasOn: null, woke: Promise.resolve(), device: d, offHere: !!d.switchedOff, idleTimer: null, httpMs: 80, sentAt: 0, note: 'Checking that real-time UDP (DDP) reaches the device.' };
+      link = { mode: 'checking', startedAt: now, lastFrame: now, probing: false, inflight: false, lastHttp: 0, wasOn: null, woke: Promise.resolve(), flight: Promise.resolve(), device: d, offHere: !!d.switchedOff, idleTimer: null, httpMs: 80, sentAt: 0, note: 'Checking that real-time UDP (DDP) reaches the device.' };
       link.woke = this.wake(d, link);
       // We may have told the device to ignore real-time data a moment ago (see end()); a new
       // stream must undo that, or the device would keep ignoring it.
       if (now - (this.overrideAt.get(d.id) ?? 0) < 10_000) {
         this.overrideAt.delete(d.id);
-        void requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body: { lor: 0 }, timeoutMs: 1500 });
+        void wled.setState(d, { lor: 0 }, 1500);
       }
       if ((this.httpUntil.get(d.id) ?? 0) > now) {
         link.mode = 'http';
@@ -197,7 +206,7 @@ export class LightSender {
         const off = link && !this.onAfter(link);
         if (!link || (link.mode !== 'http' && !off)) return null;
         const body = { ...(off ? { on: false } : {}), ...(link.mode === 'http' ? { seg: { id: 0, frz: false } } : {}) };
-        return requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body, timeoutMs: 800 });
+        return Promise.all([link.woke, link.flight]).then(() => wled.setState(d, body, 800));
       })
     );
   }
@@ -210,10 +219,10 @@ export class LightSender {
   /** Asks the device whether it is showing real-time data now. */
   private async probe(d: DeviceTarget, link: Link) {
     link.probing = true;
-    const r = await requestJson<{ live?: boolean; lip?: string }>(`${baseUrl(d)}/json/info`, { timeoutMs: 1500 });
+    const r = await wled.live(d);
     link.probing = false;
     if (this.links.get(d.id) !== link) return;
-    if (r.ok && r.data.live) {
+    if (r.ok && r.data) {
       link.mode = 'udp';
       link.note = 'Real-time UDP (DDP): fast and smooth, whole frames at once.';
       return;
@@ -240,14 +249,15 @@ export class LightSender {
     link.lastHttp = now;
     const hex: string[] = [];
     for (let i = 0; i + 2 < rgb.length; i += 3) hex.push(((rgb[i] << 16) | (rgb[i + 1] << 8) | rgb[i + 2]).toString(16).padStart(6, '0'));
-    void (async () => {
+    link.flight = (async () => {
       await link.woke;
+      // Given back while it waited: the frame would switch the device on again.
+      if (this.links.get(d.id) !== link) return;
       // "i" sets the LEDs of segment 0 from its first LED, and freezes its effect.
       const t0 = Date.now();
-      const r = await requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body: { on: true, seg: { id: 0, i: hex } }, timeoutMs: 1500 });
+      const r = await wled.setState(d, { on: true, seg: { id: 0, i: hex } }, 1500);
       if (r.ok) link.httpMs = link.httpMs * 0.8 + (Date.now() - t0) * 0.2;
-      link.inflight = false;
-    })();
+    })().finally(() => (link.inflight = false));
     return true;
   }
 
@@ -274,10 +284,10 @@ export class LightSender {
     const recent = this.gaveBack.get(d.id);
     if (recent && Date.now() - recent.at < 10_000) link.wasOn = recent.on;
     else {
-      const s = await requestJson<{ on?: boolean }>(`${baseUrl(d)}/json/state`, { timeoutMs: 1500 });
+      const s = await wled.state(d);
       link.wasOn = s.ok ? s.data.on !== false : true;
     }
-    if (!link.wasOn && this.links.get(d.id) === link) await requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body: { on: true }, timeoutMs: 1500 });
+    if (!link.wasOn && this.links.get(d.id) === link) await wled.setState(d, { on: true }, 1500);
   }
 
   /**
@@ -294,19 +304,21 @@ export class LightSender {
    * Puts the device's own state back: on or off as it was before the stream. UDP: "lor: 1"
    * tells WLED to show its own state until the real-time data has ended (it resets by
    * itself). HTTP: unfreeze the effect. `override: false`: the real-time data has ended already.
+   *
+   * It goes after anything the stream still has on its way (switching the device on, an HTTP
+   * frame, which switches it on too), so the device ends as this says: an admin's "off" holds.
    */
   private giveBack(d: DeviceTarget, link: Link, override = true) {
     link.device = d;
     const on = this.onAfter(link);
     this.gaveBack.set(d.id, { on, at: Date.now() });
     const power = on ? {} : { on: false };
-    if (link.mode === 'http') {
-      void requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body: { on, seg: { id: 0, frz: false } }, timeoutMs: 2000 });
-    } else if (override) {
+    let body: Record<string, unknown> | null = null;
+    if (link.mode === 'http') body = { on, seg: { id: 0, frz: false } };
+    else if (override) {
       this.overrideAt.set(d.id, Date.now());
-      void requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body: { lor: 1, ...power }, timeoutMs: 2000 });
-    } else if (!on) {
-      void requestJson(`${baseUrl(d)}/json/state`, { method: 'POST', body: power, timeoutMs: 2000 });
-    }
+      body = { lor: 1, ...power };
+    } else if (!on) body = power;
+    if (body) void Promise.all([link.woke, link.flight]).then(() => wled.setState(d, body));
   }
 }
