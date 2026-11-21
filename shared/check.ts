@@ -13,6 +13,7 @@
 //   - a chase: one light runs along the object's wire from LED 0, so you can follow where the
 //     real string starts and which way it goes.
 
+import { mix8, scale8, type Rgb8 } from './color.ts';
 import { DEFAULT_SCALE, fixturePixels, isLine, layoutGround, wavePasses, type Fixture, type Layout, type Stage } from './layout.ts';
 
 /** x: across (left to right), y: height, z: depth (from the house toward the street). */
@@ -28,29 +29,27 @@ export type LayoutCheck =
   /** A light running along one object's wire. */
   | { kind: 'chase'; id: string };
 
-type RGB = [number, number, number];
-
 /** Half the thickness of the slice, in meters. */
 export const SLICE_HALF_M = 0.15;
 /** How fast the slice sweeps, in meters a second. */
 const SWEEP_MPS = 1.5;
 /** The slice never takes less than this to cross the yard (ms). */
 const SWEEP_MIN_MS = 4000;
-export const SLICE_RGB: RGB = [255, 255, 255];
+export const SLICE_RGB: Rgb8 = [255, 255, 255];
 /** LEDs on the low side of the slice (left of it, above it, behind it) and on the high side. */
-export const SLICE_LOW_RGB: RGB = [0, 45, 110];
-export const SLICE_HIGH_RGB: RGB = [110, 40, 0];
+export const SLICE_LOW_RGB: Rgb8 = [0, 45, 110];
+export const SLICE_HIGH_RGB: Rgb8 = [110, 40, 0];
 /** The ruler's bands, in turn. */
-export const BAND_RGB: RGB[] = [
+export const BAND_RGB: Rgb8[] = [
   [220, 0, 0],
   [0, 190, 0],
   [0, 70, 255],
   [230, 160, 0]
 ];
 /** The color test's four blocks, as seen from the street. */
-export const PICTURE_RGB = { topLeft: [255, 0, 0] as RGB, topRight: [0, 70, 255] as RGB, bottomLeft: [255, 170, 0] as RGB, bottomRight: [0, 210, 0] as RGB };
-const CHASE_BASE: RGB = [0, 10, 26];
-const CHASE_TAIL: RGB = [0, 160, 255];
+export const PICTURE_RGB = { topLeft: [255, 0, 0] as Rgb8, topRight: [0, 70, 255] as Rgb8, bottomLeft: [255, 170, 0] as Rgb8, bottomRight: [0, 210, 0] as Rgb8 };
+const CHASE_BASE: Rgb8 = [0, 10, 26];
+const CHASE_TAIL: Rgb8 = [0, 160, 255];
 
 /** True for checks that move by themselves, so their picture changes on every frame. */
 export const checkMoves = (c: LayoutCheck | null | undefined) => !!c && ((c.kind === 'slice' && c.at == null) || c.kind === 'chase');
@@ -92,8 +91,6 @@ export function bandOf(layout: Pick<Layout, 'groundY' | 'height'>, axis: CheckAx
   return Math.floor(d / Math.max(1e-6, step));
 }
 
-const mix = (a: RGB, b: RGB, t: number): RGB => [Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t)];
-const times = (c: RGB, k: number): RGB => [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k)];
 
 /**
  * Paints the check into `out` (RGB bytes, one triple per stage LED). `nowMs`: the wall clock
@@ -114,7 +111,7 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
       const side = d < 0 ? SLICE_LOW_RGB : SLICE_HIGH_RGB;
       const ad = Math.abs(d);
       // In the slice: white. Just beside it: a glow that fades into the side's color.
-      const c = ad <= half ? SLICE_RGB : ad <= half * 3 ? mix(times(SLICE_RGB, 0.35), side, (ad - half) / (half * 2)) : side;
+      const c = ad <= half ? SLICE_RGB : ad <= half * 3 ? mix8(scale8(SLICE_RGB, 0.35), side, (ad - half) / (half * 2)) : side;
       out.set(c, i * 3);
     }
     return;
@@ -140,7 +137,7 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
     for (let j = 0; j < count; j++) {
       if (!on(j)) continue;
       const d = head - j;
-      out.set(d === 0 ? SLICE_RGB : d > 0 && d <= tail ? times(CHASE_TAIL, 1 - (d - 1) / tail) : CHASE_BASE, (sf.offset + j) * 3);
+      out.set(d === 0 ? SLICE_RGB : d > 0 && d <= tail ? scale8(CHASE_TAIL, 1 - (d - 1) / tail) : CHASE_BASE, (sf.offset + j) * 3);
     }
     return;
   }
@@ -151,7 +148,7 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
     out.set(pictureColor(split, P[i * 3], P[i * 3 + 1]), i * 3);
   }
   // Where the wire starts: blinking white.
-  if (on(0)) out.set(pulse ? SLICE_RGB : times(SLICE_RGB, 0.15), sf.offset * 3);
+  if (on(0)) out.set(pulse ? SLICE_RGB : scale8(SLICE_RGB, 0.15), sf.offset * 3);
 }
 
 /** How the color test cuts an object in blocks: at its middle, across and up, when it is wide (or tall) enough for that. */
@@ -182,7 +179,7 @@ function pictureSplit(stage: Stage, offset: number, count: number): Split {
   return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, across: w >= big * 0.25, up: h >= big * 0.25 };
 }
 
-function pictureColor(s: Split, x: number, y: number): RGB {
+function pictureColor(s: Split, x: number, y: number): Rgb8 {
   const right = s.across && x > s.cx;
   const bottom = s.up && y > s.cy;
   return bottom ? (right ? PICTURE_RGB.bottomRight : PICTURE_RGB.bottomLeft) : right ? PICTURE_RGB.topRight : PICTURE_RGB.topLeft;

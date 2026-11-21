@@ -1,8 +1,8 @@
 import type { ArcadeHud, GameControl, GameSetting, Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { ORB_COLORS } from './cascade.ts';
+import { hex, hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
 import { hash, lookOf, STAGE_BARS, type Scene } from './beatStages.ts';
-import { COLORS, css, Flare, Sparks, Yard, type Part } from './kit.ts';
+import { COLORS, Flare, FOUR_TONES, Sparks, Yard, type Part } from './kit.ts';
 import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
 import { overMood, turnHue, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -83,7 +83,7 @@ export interface BeatNote {
   hold: boolean;
   /** A hold's length in beats. */
   beats: number;
-  /** Which color, and so which button (an index into ORB_COLORS). */
+  /** Which color, and so which button (an index into FOUR_TONES). */
   tone: number;
   state: 'coming' | 'held' | 'done' | 'missed' | 'broken';
   /** Seconds since it was judged, for its fade. */
@@ -153,7 +153,7 @@ const KEYS = [
   ['ArrowUp', 'KeyJ'],
   ['ArrowRight', 'KeyK']
 ];
-const CONTROLS: GameControl[] = ORB_COLORS.map((c, i) => ({ id: BUTTONS[i], label: LABELS[i], color: css(c), keys: KEYS[i] }));
+const CONTROLS: GameControl[] = FOUR_TONES.map((c, i) => ({ id: BUTTONS[i], label: LABELS[i], color: hex(c), keys: KEYS[i] }));
 /** The two-color game: the two outside colors, green (←) and magenta (→), with keys for both hands. */
 const TWO_TONES = [0, 3];
 const TWO_CONTROLS: GameControl[] = [
@@ -197,7 +197,7 @@ const DARK: Rgb = [0, 0, 0];
 /** The one-color game's look: white heads and end caps, cyan tails, blue bodies, a blue-white zone. */
 const TAIL: Rgb = [0, 0.75, 1];
 const BODY_FAR: Rgb = [0.1, 0.1, 1];
-const toneColor = (tone: number): Rgb => ORB_COLORS[tone] ?? ORB_COLORS[0];
+const toneColor = (tone: number): Rgb => FOUR_TONES[tone] ?? FOUR_TONES[0];
 
 /** Patterns of one bar of 4 beats: [beat, hold length in beats (0: a tap)]. Busier ones come later. */
 const PATTERNS: [number, number][][][] = [

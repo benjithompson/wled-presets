@@ -1,6 +1,7 @@
 import type { GameSetting, MoleBoard, MoleHole, Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, css, Flare, scale, Sparks, Yard, type Part } from './kit.ts';
+import { ease, hex, hsv, lerp, mix, scale, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { COLORS, Flare, Sparks, Yard, type Part } from './kit.ts';
 import { Fx, Round } from './round.ts';
 import { attractMood, NIGHT_MOOD, turnHue as turn, type FireworkKind, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -63,7 +64,6 @@ const MULT_AT = [5, 10, 20];
 /** The holes' colors, far apart for neighbours: green, magenta, yellow, blue, orange, cyan, violet. No red. */
 const HOLE_HUES = [0.33, 0.83, 0.14, 0.6, 0.08, 0.5, 0.73];
 const RED: Rgb = [1, 0.03, 0.01];
-const ORANGE: Rgb = [1, 0.3, 0];
 
 type HoleState = 'empty' | 'up' | 'hit' | 'miss';
 
@@ -94,8 +94,6 @@ interface Hole {
   points: number;
 }
 
-const ease = (t: number) => t * t * (3 - 2 * t);
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 /** A steady flicker per light, so a sparkle does not flash the same on every LED. */
 const twinkle = (k: number, t: number) => {
   const v = Math.sin(k * 12.9898 + t * 9.3) * Math.sin(k * 4.1414 + t * 5.7);
@@ -311,7 +309,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     if (round.phase === 'ready') return attractMood(round.clock);
     if (round.phase === 'over') return { a: hsv(round.clock * 0.08), b: COLORS.gold, level: 1, drift: 1.2 };
     if (round.phase === 'countdown') return { ...NIGHT_MOOD, level: 0.8 };
-    if (timeLeftExact() <= HURRY) return { a: ORANGE, b: [0.7, 0.02, 0.2], level: 0.9, throb: 2 };
+    if (timeLeftExact() <= HURRY) return { a: COLORS.ember, b: [0.7, 0.02, 0.2], level: 0.9, throb: 2 };
     const m = mult();
     if (m >= 4) return { a: hsv(round.clock * 0.4), b: hsv(round.clock * 0.4 + 0.5), level: 1.2, drift: 2.5 };
     if (m === 3) return { a: [1, 0.4, 0.02], b: [0.9, 0.05, 0.6], level: 1.1, drift: 1.8 };
@@ -455,7 +453,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       if (d > share + 0.002) continue;
       const bulb = Math.max(0, Math.cos((i / 5 - round.clock * speed * 2) * Math.PI * 2)) ** 6;
       let c = hsv(i / n * 1.5 - round.clock * 0.25);
-      if (hurry) c = mix(ORANGE, COLORS.gold, 0.5 + 0.5 * Math.sin(round.clock * 6));
+      if (hurry) c = mix(COLORS.ember, COLORS.gold, 0.5 + 0.5 * Math.sin(round.clock * 6));
       if (round.phase === 'over') c = mix(hsv(i / n * 2 + round.clock * 0.5), COLORS.gold, 0.3);
       // The band's ends burn brighter, so the shrinking reads from the street.
       const end = Math.exp(-((((share - d) * half) / (stage.scale * 0.25)) ** 2));
@@ -482,7 +480,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       for (let k = 0; k < p.count; k++) {
         const u = p.up[k];
         if (u > share) continue;
-        yard.add(p.offset + k, hurry ? ORANGE : hsv(u * 0.8 + round.clock * 0.2), 0.4);
+        yard.add(p.offset + k, hurry ? COLORS.ember : hsv(u * 0.8 + round.clock * 0.2), 0.4);
       }
     }
   }
@@ -525,7 +523,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       const best = round.best();
       const left = Math.ceil(timeLeftExact() - 1e-6);
       const moles: MoleBoard = {
-        holes: holes.map((h) => ({ id: h.id, color: css(h.color), kind: h.kind, state: h.state === 'up' ? (h.gold ? 'gold' : 'up') : h.state, n: h.n, points: h.points })),
+        holes: holes.map((h) => ({ id: h.id, color: hex(h.color), kind: h.kind, state: h.state === 'up' ? (h.gold ? 'gold' : 'up') : h.state, n: h.n, points: h.points })),
         timeLeft: left,
         duration: ROUND,
         countdown: round.phase === 'countdown' ? String(COUNTDOWN - Math.floor(round.time)) : round.phase === 'running' && round.time < 0.7 ? 'GO!' : null,

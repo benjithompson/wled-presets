@@ -5,7 +5,8 @@ import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
 import { KEY, readLightControls, readSettings, writeLightControls } from './settings.ts';
-import { baseUrl, hexToRgb, lastWrite, wled, type FetchResult, type PowerState } from './wled.ts';
+import { parseHex } from '../../shared/color.ts';
+import { baseUrl, lastWrite, wled, type FetchResult, type PowerState } from './wled.ts';
 import { mergeLooks, type PresetLook } from './presetLook.ts';
 import type { Peek } from './roofView.ts';
 import { WledPeek } from './wledPeek.ts';
@@ -480,7 +481,7 @@ export class Lights {
   }
 
   async applyColor(hex: string, actor?: Actor): Promise<ApplyResult | null> {
-    const rgb = hexToRgb(hex);
+    const rgb = parseHex(hex);
     if (!rgb) return null;
     const color = `#${hex.replace('#', '').toLowerCase()}`;
     this.effectPlayer?.(null);

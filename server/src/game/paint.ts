@@ -1,6 +1,6 @@
 import { isLine, type Stage } from '../../../shared/layout.ts';
 import { ERASER, PAINT_BUTTONS, PAINT_COLORS, PAINT_EFFECTS, RAINBOW, type PaintStroke } from '../../../shared/paint.ts';
-import { hsv, mix, WHITE, type Rgb } from './frame.ts';
+import { hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
 import { Yard } from './kit.ts';
 import type { Game, GameInput } from './types.ts';
 

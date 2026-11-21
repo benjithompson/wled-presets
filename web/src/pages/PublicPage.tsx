@@ -17,6 +17,7 @@ import { useCountdown } from '../lib/useCountdown.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
 import { useEvents } from '../lib/useEvents.ts';
+import { fromHex, hex, mix } from '../../../shared/color.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
 import { Roofline, useRoofStream } from '../components/Roofline.tsx';
 import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../components/LightControls.tsx';
@@ -423,10 +424,4 @@ function currentLook(state: PublicState | undefined): Look {
   return scene ? { colors: scene.palette, energy: scene.energy } : { colors: [], energy: 0.3 };
 }
 
-function mixHex(a: string, b: string, t: number): string {
-  const pa = parseInt(a.slice(1), 16);
-  const pb = parseInt(b.slice(1), 16);
-  const ch = (n: number, s: number) => (n >> s) & 255;
-  const m = [16, 8, 0].map((s) => Math.round(ch(pa, s) * (1 - t) + ch(pb, s) * t));
-  return `#${m.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
-}
+const mixHex = (a: string, b: string, t: number) => hex(mix(fromHex(a), fromHex(b), t));

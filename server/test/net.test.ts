@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { hostsIn, inRanges, parseCidr } from '../src/net.ts';
 import { parsePorts } from '../src/config.ts';
 import { mergeLooks, presetLook } from '../src/presetLook.ts';
-import { baseUrl, hexToRgb, normalizeHost, parsePresets } from '../src/wled.ts';
+import { parseHex } from '../../shared/color.ts';
+import { baseUrl, normalizeHost, parsePresets } from '../src/wled.ts';
 
 describe('net', () => {
   it('parses CIDR and normalises the network address', () => {
@@ -35,8 +36,8 @@ describe('wled helpers', () => {
     ]);
   });
   it('converts hex colors', () => {
-    expect(hexToRgb('#ff8800')).toEqual([255, 136, 0]);
-    expect(hexToRgb('nope')).toBeNull();
+    expect(parseHex('#ff8800')).toEqual([255, 136, 0]);
+    expect(parseHex('nope')).toBeNull();
   });
 });
 

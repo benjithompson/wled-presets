@@ -60,7 +60,6 @@ import {
   deviceLed,
   FEET_PER_METER,
   FIXTURE_HUES,
-  hsvBytes,
   editorPulse,
   fixturePixels,
   isLine,
@@ -116,6 +115,7 @@ import {
   SHAPE_KINDS,
   type ShapeKind
 } from '../../../../shared/layout.ts';
+import { hsvBytes } from '../../../../shared/color.ts';
 import { deviceEffects, EFFECTS, keyDevice, effectKey, effectTarget, LayoutEffects, layoutEffects, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import { framePut, paintEditorView } from '../../../../shared/editorView.ts';
 import type { Scene } from '../../../../shared/types.ts';

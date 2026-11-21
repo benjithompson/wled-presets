@@ -1,5 +1,5 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Rgb } from './frame.ts';
+import { hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
 import { bounce, COLORS, Motes, Recent, Sparks, Trail, Yard, type Part } from './kit.ts';
 import { overMood, Show, type Mood } from './show.ts';
 import { Round } from './round.ts';
@@ -33,7 +33,6 @@ const BUSH_COLORS: Rgb[] = [hsv(0.0), hsv(0.12), hsv(0.33), hsv(0.55), hsv(0.75)
 const COMET: Rgb = [0.55, 0.85, 1];
 const GATE: Rgb = [0.15, 1, 0.45];
 const RED: Rgb = [1, 0.06, 0.02];
-const EMBER: Rgb = [1, 0.3, 0];
 
 export function catcherGame(stage: Stage): Game {
   // "The roof" is every roof object joined in strip order, measured as it looks from the street,
@@ -168,7 +167,7 @@ export function catcherGame(stage: Stage): Game {
     } else {
       lives--;
       missAt = pos;
-      sparks.burst(pos, [RED, EMBER], 18, n * 0.15);
+      sparks.burst(pos, [RED, COLORS.ember], 18, n * 0.15);
       const p = roof.point(pos);
       if (lives > 0) {
         show.explode(p.x, p.y, RED, { size: 1.6 });
