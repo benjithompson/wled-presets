@@ -66,6 +66,13 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     players: '1 player'
   },
   {
+    id: 'whack',
+    name: 'Whack-a-Mole',
+    tagline: 'Whack them before they hide',
+    description: 'Moles pop up in the bushes and trees: tap the glowing hole on your phone to whack each one before it ducks back down. Whacks in a row multiply the points, golden moles are worth five times as much, and the clock on the roof runs out in 45 seconds.',
+    players: '1 player'
+  },
+  {
     id: 'paint',
     name: 'Light Painter',
     tagline: 'Paint the house with your finger',

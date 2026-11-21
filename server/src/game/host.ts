@@ -24,6 +24,7 @@ import { colorgateGame } from './colorgate.ts';
 import { ricochetGame } from './ricochet.ts';
 import { sliceGame } from './slice.ts';
 import { paintGame } from './paint.ts';
+import { whackGame } from './whack.ts';
 import { cleanStroke, type PaintStroke } from '../../../shared/paint.ts';
 import type { Game, GameFactory } from './types.ts';
 
@@ -37,6 +38,7 @@ const CREATE: Record<string, GameFactory> = {
   ricochet: ricochetGame,
   beads: beadsGame,
   beat: beatGame,
+  whack: whackGame,
   paint: paintGame
 };
 
