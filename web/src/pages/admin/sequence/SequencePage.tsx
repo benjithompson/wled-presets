@@ -48,6 +48,8 @@ import { useMedia } from '../../../lib/useMedia.ts';
 import { api } from '../../../lib/api.ts';
 import { cn, errorText } from '../../../lib/utils.ts';
 import { useInFront } from '../../../lib/useInFront.ts';
+import { useStopOnLeave } from '../../../lib/useLightsPreview.ts';
+import { PREVIEW_KEEPALIVE_MS } from '../../../../../shared/editorView.ts';
 import { YardView } from '../../../yard/YardView.tsx';
 import { OVERVIEW } from '../AdminLayout.tsx';
 import { PaletteSwatch } from '../effectProps.tsx';
@@ -418,7 +420,7 @@ export function SequencePage() {
     if (!previewing || !s) return;
     const { updatedAt: _u, ...sequence } = s;
     void api
-      .previewSequence(JSON.stringify({ active: true, inFront: true, sequence, time: clock.time(), playing: clock.playing }))
+      .previewSequence({ sequence, time: clock.time(), playing: clock.playing })
       .then((r) => setLightDevices(r.devices))
       .catch(() => setLightDevices([]));
   };
@@ -437,18 +439,15 @@ export function SequencePage() {
         sendLights.current();
       }, 60);
     });
-    const keep = setInterval(() => sendLights.current(), 3000);
-    const stop = () => void api.stopSequencePreview().catch(() => {});
-    window.addEventListener('pagehide', stop);
+    const keep = setInterval(() => sendLights.current(), PREVIEW_KEEPALIVE_MS);
     return () => {
       off();
       if (pending) clearTimeout(pending);
       clearInterval(keep);
-      window.removeEventListener('pagehide', stop);
-      stop();
       setLightDevices([]);
     };
   }, [previewing, clock]);
+  useStopOnLeave(previewing, api.stopSequencePreview);
 
   // ---------- Editing commands ----------
 

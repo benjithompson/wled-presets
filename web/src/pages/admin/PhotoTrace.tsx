@@ -35,6 +35,8 @@ import type { WalkResult, WalkStatus } from '../../../../shared/scanWalk.ts';
 import { Button, Dialog, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { useInFront } from '../../lib/useInFront.ts';
+import { useLightsPreview } from '../../lib/useLightsPreview.ts';
+import type { PreviewRequest } from '../../../../shared/editorView.ts';
 import { cn } from '../../lib/utils.ts';
 import { useOverview } from './AdminLayout.tsx';
 import { arAvailable, startAr } from './arWalk.ts';
@@ -137,31 +139,15 @@ export function PhotoTrace({
   const lighting = open && lightUp && !!deviceId && count <= MAX_FIXTURE_PIXELS && (inFront || !!walking);
   /** While scanning: the frame the lights show (see codeDigit). */
   const [scanCode, setScanCode] = useState<number | null>(null);
-  // While walking, the walk's own loop keeps the lights on its code.
-  const lightBody = lighting && !walking ? JSON.stringify({ active: true, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code: scanCode } }) : null;
+  /** The LEDs from `from` to `to` lit for the photo, or each in a digit of its number for frame `code` of a scan. */
+  const photoRequest = (code: number | null): PreviewRequest => ({ layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code } });
   useEffect(() => {
     onLights(lighting);
     return () => onLights(false);
   }, [lighting]);
-  useEffect(() => {
-    if (!lightBody) return;
-    // After the layout editor has stopped its own preview.
-    const t = setTimeout(() => void api.previewLayout(lightBody).catch(() => {}), 150);
-    const keep = setInterval(() => void api.previewLayout(lightBody).catch(() => {}), 3000);
-    return () => {
-      clearTimeout(t);
-      clearInterval(keep);
-    };
-  }, [lightBody]);
-  useEffect(() => {
-    if (!lighting) return;
-    const stop = () => void api.stopLayoutPreview().catch(() => {});
-    window.addEventListener('pagehide', stop);
-    return () => {
-      window.removeEventListener('pagehide', stop);
-      stop();
-    };
-  }, [lighting]);
+  // While walking, the walk's own loop keeps the lights on its code. The delay: after the layout
+  // editor has stopped its own preview.
+  useLightsPreview(lighting && !walking ? photoRequest(scanCode) : null, { active: lighting, delayMs: 150 });
 
   // ----- The photo and the dots in it -----
   const [photo, setPhoto] = useState<Photo | null>(null);
@@ -377,7 +363,6 @@ export function PhotoTrace({
   const runScan = async () => {
     if (!video.current?.videoWidth) return;
     const n = count;
-    const body = (code: number) => ({ active: true as const, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code } });
     cancelScan.current = false;
     setProblem(null);
     const shots: { canvas: HTMLCanvasElement; pixels: ImageData }[] = [];
@@ -385,7 +370,7 @@ export function PhotoTrace({
       for (let f = 0; f < frames; f++) {
         setScanning({ frame: f + 1, of: frames });
         setScanCode(f);
-        await api.previewLayout(JSON.stringify(body(f)));
+        await api.previewLayout(photoRequest(f));
         if (f === 0) {
           // The camera settles on the lights, then keeps that exposure for the rest.
           await settle(900, 2500);
@@ -529,12 +514,11 @@ export function PhotoTrace({
       return;
     }
     // The code on the lights, over and over: each frame held long enough to be seen settled.
-    const body = (code: number) => ({ active: true as const, layout, selected: null, corner: null, photo: { deviceId, from, to, rgb: color.rgb, start: color.start, code } });
     let f = 0;
     while (!run.stop) {
       shown = null;
       const t0 = performance.now();
-      await api.previewLayout(JSON.stringify(body(f))).catch(() => {});
+      await api.previewLayout(photoRequest(f)).catch(() => {});
       await new Promise((r) => setTimeout(r, 250));
       if (run.stop) break;
       shown = { code: f, cycle };

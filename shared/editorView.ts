@@ -2,6 +2,7 @@
 // places, at the same moment (see editorPulse).
 import { paintCheck, type LayoutCheck } from './check.ts';
 import { paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from './layout.ts';
+import type { Sequence } from './sequence.ts';
 
 type Rgb = [number, number, number];
 
@@ -41,4 +42,50 @@ export function framePut(stage: Stage, bytes: Uint8Array, outside?: PutLed): Put
     if (i >= 0 && i < sf.count) bytes.set(rgb, (sf.offset + i) * 3);
     else outside?.(fi, i, rgb);
   };
+}
+
+/** The preview on the lights stops when the editor has not sent it again for this long (ms). */
+export const PREVIEW_EXPIRE_MS = 8_000;
+/** How often an editor sends its preview again (ms): a lost request or two does not let it stop. */
+export const PREVIEW_KEEPALIVE_MS = 3_000;
+
+/** What an editor shows on the lights (see editorFrame on the server). */
+export interface PreviewRequest {
+  layout: Layout;
+  selected: string | null;
+  corner: number | null;
+  /** Roof only: the selected segment (between point k and point k + 1). */
+  segment?: number | null;
+  /** Show the objects' effects (layout fixture "effect") instead of the editor's colors. */
+  play?: boolean;
+  /** The Games page: show the game area (see paintGameArea), with `selected` and `segment` in focus. */
+  area?: GameArea | null;
+  /** The editor's "match to the lights" wizard: one LED of the selected line blinks red (see paintMatch). */
+  probe?: MatchProbe | null;
+  /** The object designer's photo: these LEDs light up in one color (the first in another), all else dark. */
+  photo?: PhotoLights | null;
+  /** A check of the drawing against the yard: a slice, a ruler, or one object's color test or chase (see shared/check.ts). */
+  check?: LayoutCheck | null;
+}
+
+/**
+ * LEDs to light for a photo of a custom object (see shared/photoTrace.ts): device LEDs `from`
+ * to `to` (either way round) in `rgb`, LED `from` (where the wire starts) in `start`; or, for a
+ * camera scan, each in the color of one digit of its number.
+ */
+export interface PhotoLights {
+  deviceId: string;
+  from: number;
+  to: number;
+  rgb: [number, number, number];
+  start: [number, number, number];
+  /** A frame of a camera scan instead (see codeColor): every LED shows a digit of its number. */
+  code?: number | null;
+}
+
+/** The sequence editor's preview: a sequence, the time the editor shows, and whether it plays. */
+export interface SequencePreviewRequest {
+  sequence: Sequence;
+  time: number;
+  playing: boolean;
 }

@@ -1,53 +1,12 @@
 import { LayoutEffects, toBytes } from '../../shared/effects.ts';
-import { framePut, paintEditorView } from '../../shared/editorView.ts';
-import { buildStage, deviceLed, editorPulse, layoutShapeKey, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
-import { checkMoves, validCheck, type LayoutCheck } from '../../shared/check.ts';
+import { framePut, paintEditorView, PREVIEW_EXPIRE_MS, type PreviewRequest, type SequencePreviewRequest } from '../../shared/editorView.ts';
+import { buildStage, deviceLed, editorPulse, layoutShapeKey, type Layout, type Stage } from '../../shared/layout.ts';
+import { checkMoves, validCheck } from '../../shared/check.ts';
 import { codeColor } from '../../shared/photoTrace.ts';
-import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
+import { SequencePlayer } from '../../shared/sequence.ts';
 import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
 
-/** The preview stops when the editor has not refreshed it for this long. */
-const EXPIRE_MS = 8_000;
-
-export interface PreviewRequest {
-  layout: Layout;
-  selected: string | null;
-  corner: number | null;
-  /** Roof only: the selected segment (between point k and point k + 1). */
-  segment?: number | null;
-  /** Show the objects' effects (layout fixture "effect") instead of the editor's colors. */
-  play?: boolean;
-  /** The Games page: show the game area (see paintGameArea), with `selected` and `segment` in focus. */
-  area?: GameArea | null;
-  /** The editor's "match to the lights" wizard: one LED of the selected line blinks red (see paintMatch). */
-  probe?: MatchProbe | null;
-  /** The object designer's photo: these LEDs light up in one color (the first in another), all else dark. */
-  photo?: PhotoLights | null;
-  /** A check of the drawing against the yard: a slice, a ruler, or one object's color test or chase (see shared/check.ts). */
-  check?: LayoutCheck | null;
-}
-
-/**
- * LEDs to light for a photo of a custom object (see shared/photoTrace.ts): device LEDs `from`
- * to `to` (either way round) in `rgb`, LED `from` (where the wire starts) in `start`; or, for a
- * camera scan, each in the color of one digit of its number.
- */
-export interface PhotoLights {
-  deviceId: string;
-  from: number;
-  to: number;
-  rgb: [number, number, number];
-  start: [number, number, number];
-  /** A frame of a camera scan instead (see codeColor): every LED shows a digit of its number. */
-  code?: number | null;
-}
-
-/** The sequence editor's preview: a sequence, the time the editor shows, and whether it plays. */
-export interface SequencePreviewRequest {
-  sequence: Sequence;
-  time: number;
-  playing: boolean;
-}
+export type { PhotoLights, PreviewRequest, SequencePreviewRequest } from '../../shared/editorView.ts';
 
 /** A layout as the lights need it: its stage, and where the stage's LEDs go on each device. */
 interface View {
@@ -209,7 +168,7 @@ export class LayoutPreview implements FrameSource {
   private start(req: PreviewRequest): string[] {
     const started = !this.req;
     this.req = req;
-    this.until = Date.now() + EXPIRE_MS;
+    this.until = Date.now() + PREVIEW_EXPIRE_MS;
     this.pipeline.wake();
     const ids = new Set([...req.layout.fixtures.map((f) => f.deviceId), req.photo?.deviceId].filter(Boolean));
     const names = this.pipeline

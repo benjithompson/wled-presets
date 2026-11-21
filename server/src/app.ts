@@ -28,7 +28,7 @@ import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
 import { readAudio, removeAudio, sequenceInput, writeAudio } from './sequenceStore.ts';
-import { summarize, type Sequence } from '../../shared/sequence.ts';
+import { summarize } from '../../shared/sequence.ts';
 import { deviceKey, keyDevice } from '../../shared/effects.ts';
 import { MAX_FIXTURE_PIXELS } from '../../shared/layout.ts';
 

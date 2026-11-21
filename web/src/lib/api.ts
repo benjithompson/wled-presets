@@ -1,3 +1,4 @@
+import type { PreviewRequest, SequencePreviewRequest } from '../../../shared/editorView.ts';
 import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type { LineAdmin, LineSettings } from '../../../shared/line.ts';
@@ -97,7 +98,7 @@ export interface LayoutFile {
 export const api = {
   layout: () => request<Layout>('/api/layout'),
   saveLayout: (layout: Layout) => request<Layout>('/api/admin/layout', { method: 'PUT', body: layout }),
-  previewLayout: (body: string) => request<{ devices: string[] }>('/api/admin/layout/preview', { method: 'POST', body: JSON.parse(body) }),
+  previewLayout: (req: PreviewRequest) => request<{ devices: string[] }>('/api/admin/layout/preview', { method: 'POST', body: { active: true, ...req } }),
   // keepalive: the request still goes out when the page is closing.
   stopLayoutPreview: () => fetch('/api/admin/layout/preview', { method: 'DELETE', credentials: 'same-origin', keepalive: true }),
   gameArea: () => request<{ area: GameArea | null }>('/api/admin/games/area'),
@@ -182,7 +183,8 @@ export const api = {
   createSequence: (s: Omit<Sequence, 'id' | 'updatedAt'>) => request<Sequence>('/api/admin/sequences', { body: s }),
   saveSequence: ({ id, updatedAt: _u, ...s }: Sequence) => request<Sequence>(`/api/admin/sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: s }),
   deleteSequence: (id: string) => request(`/api/admin/sequences/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  previewSequence: (body: string) => request<{ devices: string[] }>('/api/admin/sequence-preview', { method: 'POST', body: JSON.parse(body) }),
+  // inFront: sent only by an editor window in front (see useInFront).
+  previewSequence: (req: SequencePreviewRequest) => request<{ devices: string[] }>('/api/admin/sequence-preview', { method: 'POST', body: { active: true, inFront: true, ...req } }),
   stopSequencePreview: () => fetch('/api/admin/sequence-preview', { method: 'DELETE', credentials: 'same-origin', keepalive: true }),
   audioFiles: () => request<{ files: AudioFile[] }>('/api/admin/audio'),
   audioUrl: (id: string) => `/api/admin/audio/${encodeURIComponent(id)}`,
