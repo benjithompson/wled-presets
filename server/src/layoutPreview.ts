@@ -1,6 +1,7 @@
-import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
-import { buildStage, deviceLed, editorPulse, layoutShapeKey, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
-import { checkMoves, paintCheck, validCheck, type LayoutCheck } from '../../shared/check.ts';
+import { LayoutEffects, toBytes } from '../../shared/effects.ts';
+import { framePut, paintEditorView } from '../../shared/editorView.ts';
+import { buildStage, deviceLed, editorPulse, layoutShapeKey, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
+import { checkMoves, validCheck, type LayoutCheck } from '../../shared/check.ts';
 import { codeColor } from '../../shared/photoTrace.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
@@ -68,12 +69,11 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
   const { stage } = view;
   const bytes = new Uint8Array(stage.pixelCount * 3);
   const extra: ExtraLed[] = [];
-  const put = (fi: number, i: number, rgb: [number, number, number]) => {
-    const sf = stage.fixtures[fi];
-    if (i >= 0 && i < sf.count) return bytes.set(rgb, (sf.offset + i) * 3);
+  // LEDs past an object's end (the wizard's) are set by their device number.
+  const put = framePut(stage, bytes, (fi, i, rgb) => {
     const f = req.layout.fixtures[fi];
     if (f.deviceId) extra.push({ deviceId: f.deviceId, led: deviceLed(f, i), rgb });
-  };
+  });
   if (req.photo) {
     const p = req.photo;
     req.layout.fixtures.forEach((_, fi) => {
@@ -89,11 +89,7 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
     const maps = view.maps.some((m) => m.deviceId === p.deviceId) ? view.maps : [...view.maps, emptyMap(p.deviceId)];
     return { maps, bytes, extra, wakes: true };
   }
-  const check = req.probe ? null : validCheck(req.check, req.layout);
-  if (req.probe && req.selected) paintMatch(req.layout, req.selected, req.probe, pulse, put);
-  else if (check) paintCheck(req.layout, stage, check, nowMs, pulse, bytes);
-  else if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
-  else paintEditor(req.layout, req.selected, req.corner, req.segment ?? null, pulse, put);
+  paintEditorView(req.layout, stage, { ...req, check: req.probe ? null : validCheck(req.check, req.layout) }, nowMs, pulse, put, bytes);
   return { maps: view.maps, bytes, extra, wakes: true };
 }
 
@@ -121,7 +117,7 @@ export class LayoutPreview implements FrameSource {
   /** The layout being shown, as the lights need it. Rebuilt only when its shape changes. */
   private view: View | null = null;
   /** While the effects play: the running effects, and their frame. */
-  private fx: { stage: Stage; scene: EffectScene; data: Float32Array; bytes: Uint8Array } | null = null;
+  private fx: LayoutEffects | null = null;
   /** The sequence editor's preview: the player, and whether it plays or shows one moment. */
   private seq: { stage: Stage; player: SequencePlayer; data: Float32Array; bytes: Uint8Array; playing: boolean } | null = null;
   /** The editor's colors change only with a request or a blink: painted once for each. */
@@ -137,8 +133,9 @@ export class LayoutPreview implements FrameSource {
   show(req: PreviewRequest): string[] {
     this.seq = null;
     const view = this.viewFor(req.layout);
-    if (req.play) this.syncEffects(req.layout, view.stage);
-    else this.fx = null;
+    if (!req.play) this.fx = null;
+    else if (this.fx) this.fx.sync(view.stage, req.layout);
+    else this.fx = new LayoutEffects(view.stage, req.layout);
     return this.start(req);
   }
 
@@ -201,12 +198,7 @@ export class LayoutPreview implements FrameSource {
       toBytes(sq.data, sq.bytes);
       return { maps: this.view.maps, bytes: sq.bytes, wakes: true };
     }
-    const fx = this.fx;
-    if (fx) {
-      fx.scene.update(dt, fx.data);
-      toBytes(fx.data, fx.bytes);
-      return { maps: this.view.maps, bytes: fx.bytes, wakes: true };
-    }
+    if (this.fx) return { maps: this.view.maps, bytes: this.fx.frame(dt), wakes: true };
     // Drawn for when it shows, so the lights blink (and a check moves) in step with the editor.
     const pulse = editorPulse(showAt);
     if (checkMoves(req.check) && !req.probe) return editorFrame(req, this.view, pulse, showAt);
@@ -232,14 +224,5 @@ export class LayoutPreview implements FrameSource {
     const key = layoutShapeKey(layout);
     if (this.view?.key !== key) this.view = viewOf(layout, key);
     return this.view;
-  }
-
-  /** Keeps the effects running across edits: a changed yard moves them to its new stage. */
-  private syncEffects(layout: Layout, stage: Stage) {
-    const effects = layoutEffects(layout);
-    if (!this.fx) this.fx = { stage, scene: new EffectScene(stage, layout, effects), data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
-    else if (this.fx.stage !== stage) this.fx = { ...this.fx, stage, data: new Float32Array(stage.pixelCount * 3), bytes: new Uint8Array(stage.pixelCount * 3) };
-    this.fx.scene.setStage(stage, layout);
-    this.fx.scene.setEffects(effects);
   }
 }

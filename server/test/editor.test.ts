@@ -194,3 +194,34 @@ describe('drawing a new shape', () => {
     expect(semi).toMatchObject({ kind: 'semicircle', radius: Math.max(15, Math.round(0.6 * s)), strands: 8, zigzag: 'down', pixels: 100, points: [{ x: 200, y: Math.round(ground), z: 20 }] });
   });
 });
+
+describe('the editor picture', () => {
+  it('is the same in the editor page and on the lights', async () => {
+    const { editorFrame } = await import('../src/layoutPreview.ts');
+    const { deviceMaps } = await import('../src/framePipeline.ts');
+    const { framePut, paintEditorView } = await import('../../shared/editorView.ts');
+    const layout = sampleLayout();
+    const stage = buildStage(layout);
+    const selected = layout.fixtures[0].id;
+    for (const view of [{ selected, corner: 1 }, { selected: null, corner: null }, { selected, corner: null, area: null }, { selected, corner: null, check: { kind: 'slice', axis: 'x', at: 400 } as const }]) {
+      for (const pulse of [false, true]) {
+        const lights = editorFrame({ layout, ...view }, { stage, maps: deviceMaps(layout, stage) }, pulse, 1000).bytes;
+        const page = new Uint8Array(stage.pixelCount * 3);
+        paintEditorView(layout, stage, view, 1000, pulse, framePut(stage, page), page);
+        expect(page).toEqual(lights);
+      }
+    }
+  });
+
+  it('plays the effects into a frame, and follows a change of stage', async () => {
+    const { LayoutEffects } = await import('../../shared/effects.ts');
+    const layout: Layout = { ...sampleLayout(), effect: { effect: 'rainbow', palette: 'rainbow', speed: 0.5, intensity: 0.5, size: 0.5, brightness: 0.8 } as never };
+    const stage = buildStage(layout);
+    const fx = new LayoutEffects(stage, layout);
+    expect(fx.frame(0.1).some((v) => v > 0)).toBe(true);
+    const smaller = { ...layout, fixtures: layout.fixtures.slice(0, 2) };
+    const stage2 = buildStage(smaller);
+    fx.sync(stage2, smaller);
+    expect(fx.frame(0.1)).toHaveLength(stage2.pixelCount * 3);
+  });
+});
