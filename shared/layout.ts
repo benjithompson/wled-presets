@@ -1395,6 +1395,103 @@ export function insertPoint(f: Fixture, k: number, p: Point): Pick<Fixture, 'poi
   return { points, pointLeds: pins, skip: skipAfterInsert(f.skip, k), segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterInsert(k)) };
 }
 
+const nonEmpty = <T>(a: T[] | undefined) => (a?.length ? a : undefined);
+
+/** A line's pins by point (see Fixture.pointLeds), null where a point is not pinned. */
+const pinsOf = (f: Fixture) => f.points.map((_, i) => f.pointLeds?.[i] ?? null);
+
+/**
+ * A pin list as a line keeps it: the ends are never pinned (their LEDs are the line's first and
+ * last), bad numbers go, and a list with no pins left is no list.
+ */
+export function tidyPins(pins: (number | null)[] | undefined): (number | null)[] | undefined {
+  const out = pins?.map((p, i) => (i === 0 || i === pins.length - 1 || p == null || p < 0 ? null : p));
+  return out?.some((p) => p != null) ? out : undefined;
+}
+
+/** Pins point `index` of a line to device LED `led`: every other point keeps its LED number. */
+export const pinPoint = (f: Fixture, index: number, led: number) => setPointLed(f, index, led, f.points.map((_, i) => i));
+
+/** Takes the pin off point `index` of a line. */
+export function unpinPoint(f: Fixture, index: number): Pick<Fixture, 'pointLeds'> {
+  const pins = pinsOf(f);
+  pins[index] = null;
+  return { pointLeds: tidyPins(pins) };
+}
+
+/** Turns segment k of a line off (skipped: no LEDs, see Fixture.skip) or back on. */
+export function setSkipped(f: Fixture, k: number, skipped: boolean): Pick<Fixture, 'skip'> {
+  const rest = f.skip?.filter((x) => x !== k) ?? [];
+  return { skip: nonEmpty(skipped ? [...rest, k].sort((a, b) => a - b) : rest) };
+}
+
+/**
+ * A line cut in two at corner k. The first part keeps the line's id; the second gets `id` and
+ * starts at the next LED. Pins, skipped segments and segment effects go with their part.
+ * Null: a part would have no LED.
+ */
+export function splitLine(f: Fixture, k: number, id: string): [Fixture, Fixture] | null {
+  const off = pointOffsets(f)[k];
+  if (off < 1 || off >= f.pixels - 1) return null;
+  const pins = pinsOf(f);
+  const a: Fixture = {
+    ...f,
+    points: f.points.slice(0, k + 1),
+    ...fromLedRange(deviceLed(f, 0), deviceLed(f, off)),
+    pointLeds: tidyPins(pins.slice(0, k + 1)),
+    skip: nonEmpty(f.skip?.filter((x) => x < k)),
+    segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x < k ? [x] : []))
+  };
+  const b: Fixture = {
+    ...f,
+    id,
+    name: `${f.name} (part 2)`,
+    points: f.points.slice(k),
+    ...fromLedRange(deviceLed(f, off + 1), deviceLed(f, f.pixels - 1)),
+    pointLeds: tidyPins(pins.slice(k).map((p) => (p == null ? null : p - off - 1))),
+    skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k)),
+    segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x >= k ? [x - k] : []))
+  };
+  return [a, b];
+}
+
+/**
+ * A line without point i. The first or the last point takes its segment's LEDs with it (the
+ * line then starts or ends at the next point's LED); a point inside joins its two segments.
+ * Null: a line keeps at least two points.
+ */
+export function removePoint(f: Fixture, i: number): Partial<Fixture> | null {
+  if (f.points.length <= 2) return null;
+  const last = f.points.length - 1;
+  const offs = pointOffsets(f);
+  const pins = pinsOf(f);
+  if (i === 0) {
+    const off = offs[1];
+    return {
+      points: f.points.slice(1),
+      ...fromLedRange(deviceLed(f, off), deviceLed(f, f.pixels - 1)),
+      pointLeds: tidyPins(pins.slice(1).map((p) => (p == null ? null : p - off))),
+      skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1)),
+      segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k > 0 ? [k - 1] : []))
+    };
+  }
+  if (i === last) {
+    return {
+      points: f.points.slice(0, last),
+      ...fromLedRange(deviceLed(f, 0), deviceLed(f, offs[last - 1])),
+      pointLeds: tidyPins(pins.slice(0, last)),
+      skip: nonEmpty(f.skip?.filter((k) => k < last - 1)),
+      segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k < last - 1 ? [k] : []))
+    };
+  }
+  return {
+    points: f.points.filter((_, j) => j !== i),
+    pointLeds: tidyPins(pins.filter((_, j) => j !== i)),
+    skip: skipAfterRemove(f.skip, i),
+    segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterRemove(i))
+  };
+}
+
 export interface DeviceRun {
   fixtureId: string;
   /** Lowest and highest device LED numbers the object uses. */

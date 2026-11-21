@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { Heart, Star } from 'lucide-react';
 import type { GameStatus, Layout } from '../../../shared/layout.ts';
-import { YardView, coverBox, ledBox } from '../yard/YardView.tsx';
+import { YardView } from '../yard/YardView.tsx';
+import { coverBox, ledBox } from '../yard/views.ts';
 import { cn } from '../lib/utils.ts';
 
 // The game window on the Play page: the yard as the screen of an arcade cabinet, with the game's
