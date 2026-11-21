@@ -38,6 +38,7 @@ import {
   Ruler,
   Save,
   Scan,
+  ScanLine,
   Scissors,
   Shapes,
   Spline,
@@ -108,6 +109,8 @@ import type { Scene } from '../../../../shared/types.ts';
 import { Badge, Button, ConfirmDialog, Dialog, Field, Input, Spinner, Switch } from '../../components/ui.tsx';
 import { EffectProps } from './effectProps.tsx';
 import { DesignEditor } from './DesignEditor.tsx';
+import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
+import { paintCheck, pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
@@ -421,6 +424,11 @@ export function LayoutPage() {
    * `offset` is that LED for `point`; another selected point starts from its own LED.
    */
   const [match, setMatch] = useState<{ id: string; point: number; offset: number } | null>(null);
+  /**
+   * A check of the drawing against the yard, on the lights and in the views (see shared/check.ts):
+   * a slice or a ruler over the whole yard, or the selected object's color test or chase.
+   */
+  const [check, setCheck] = useState<EditorCheck | null>(null);
   /** Set when a click selects an object and one of its segments at once. */
   const keepPart = useRef(false);
   const [tool, setTool] = useState<Tool>('select');
@@ -533,6 +541,12 @@ export function LayoutPage() {
   useEffect(() => {
     if (match && !probe) setMatch(null);
   }, [match, probe]);
+  // An object's check ends when no object is selected; another selected object takes it over.
+  useEffect(() => {
+    if (!selected && (check?.kind === 'picture' || check?.kind === 'chase')) setCheck(null);
+  }, [selected, check]);
+  /** The check to show now: the wizard's blinking LED wins over it. */
+  const layoutCheck = layout && !probe ? validCheck(toLayoutCheck(check, selected), layout) : null;
   const runs = useMemo(() => (layout ? deviceRuns(layout) : new Map()), [layout]);
   const overlapCount = [...runs.values()].reduce((n, r) => n + r.overlaps.length, 0);
 
@@ -1169,7 +1183,7 @@ export function LayoutPage() {
   /** The object designer lights an object for its photo: this preview waits meanwhile. */
   const [photoLights, setPhotoLights] = useState(false);
   const previewing = showOnLights && mapped && inFront && !photoLights;
-  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 && !probe, probe }) : null;
+  const previewBody = previewing && layout ? JSON.stringify({ active: true, layout, selected, corner, segment, play: playing && fxCount > 0 && !probe && !layoutCheck, probe, check: layoutCheck }) : null;
   useEffect(() => {
     if (!previewBody) return;
     let alive = true;
@@ -1215,6 +1229,13 @@ export function LayoutPage() {
         const sf = stage.fixtures[fi];
         if (i >= 0 && i < sf.count) out.set(rgb, (sf.offset + i) * 3);
       });
+      return out;
+    }
+    if (layoutCheck) {
+      // A check: the same picture as on the house, at the same moment.
+      const out = new Uint8Array(stage.pixelCount * 3);
+      const now = Date.now();
+      paintCheck(layout, stage, layoutCheck, now, editorPulse(now), out);
       return out;
     }
     if (playing && fx && fx.stage === stage) {
@@ -2110,7 +2131,7 @@ export function LayoutPage() {
       <circle key={key} cx={at.u} cy={at.v} r={9 * k} className={cn('stroke-stone-950', className)} strokeWidth={3 * k} onPointerDown={onDown} onDoubleClick={onDouble} />
     );
     return (
-      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing || probe ? null : selected} fill viewBox={vb} grid={drafting.grid} gridStep={gridOf(drafting, layout).step} gridMajor={drafting.gridMajor}>
+      <YardView layout={layout} side={side} zRange={zRange} getFrame={getFrame} highlight={segment != null || playing || probe || layoutCheck ? null : selected} fill viewBox={vb} grid={drafting.grid} gridStep={gridOf(drafting, layout).step} gridMajor={drafting.gridMajor}>
         <svg
           ref={(el) => void (svgs.current[side] = el)}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -2516,6 +2537,25 @@ export function LayoutPage() {
               })}
             </g>
           ) : null}
+
+          {/* A check's slice (drag it) or the ruler's band edges. */}
+          {layoutCheck && stage ? (
+            <CheckOverlay
+              check={layoutCheck}
+              stage={stage}
+              layout={layout}
+              side={side}
+              zMin={zMin}
+              vb={vb}
+              k={k}
+              m={m}
+              toWorld={(e, axis) => {
+                const p = viewPoint(e, side);
+                return axis === 'x' ? p.u : side === 'top' ? p.v + zMin : p.v;
+              }}
+              onMove={(at) => setCheck((c) => (c?.kind === 'slice' ? { ...c, at } : c))}
+            />
+          ) : null}
         </svg>
       </YardView>
     );
@@ -2638,6 +2678,14 @@ export function LayoutPage() {
         ? 'lg:grid-cols-1 lg:grid-rows-2'
         : 'lg:grid-cols-[3fr_2fr] lg:grid-rows-2';
 
+  /** Why a check shows in the drawing only, if it does. */
+  const checkLights = !mapped
+    ? 'No object has a WLED device yet: the check shows in the drawing only.'
+    : !showOnLights
+      ? 'Lights are off: turn them on in the toolbar to see the check on the house.'
+      : !inFront
+        ? 'Paused while this window is not in front.'
+        : null;
   const lightsLabel = !showOnLights ? 'Lights: off' : !mapped ? 'Lights: no device' : !inFront ? 'Lights: paused' : previewDevices.length ? `Lights: ${previewDevices.join(', ')}` : 'Lights: on';
   const lightsTitle = !showOnLights
     ? 'Show the layout on the real lights while you edit'
@@ -2824,6 +2872,16 @@ export function LayoutPage() {
           <PropSection key="leds" id="leds" title="LEDs">
             <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} />
           </PropSection>
+
+          <ObjectCheckProps
+            f={sel}
+            check={check}
+            onChange={setCheck}
+            onPatch={(patch) => update(sel.id, patch)}
+            blocks={stage ? pictureBlocks(stage, sel.id) : null}
+            lights={checkLights}
+            scale={scale}
+          />
 
           <PropSection
             key="effect"
@@ -3104,6 +3162,7 @@ export function LayoutPage() {
           <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
         </PropSection>
         <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+        <YardCheckProps check={check} onChange={setCheck} layout={layout} stage={stage} m={m} lights={checkLights} />
         {layout.aerial ? (
           <AerialProps
             aerial={layout.aerial}
@@ -3496,6 +3555,19 @@ export function LayoutPage() {
               </button>
               {toolSep}
               {toolButton('measure', Ruler)}
+              <button
+                type="button"
+                onClick={() => setCheck((c) => (c?.kind === 'slice' || c?.kind === 'bands' ? null : { kind: 'slice', axis: 'x', at: null }))}
+                aria-pressed={check?.kind === 'slice' || check?.kind === 'bands'}
+                title="Check alignment: a slice of white light sweeps across the yard, on the house and in the drawing. Settings: Check alignment, with nothing selected."
+                aria-label="Check alignment"
+                className={cn(
+                  'relative grid size-9 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-[18px]',
+                  (check?.kind === 'slice' || check?.kind === 'bands') && 'bg-sky-600 text-white hover:bg-sky-600 hover:text-white dark:text-white dark:hover:bg-sky-600'
+                )}
+              >
+                <ScanLine />
+              </button>
               {toolSep}
               <button
                 type="button"
@@ -3513,6 +3585,7 @@ export function LayoutPage() {
 
         {/* Viewports */}
         <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col', phone && sheet === 'full' && 'hidden')}>
+          {check && layoutCheck ? <CheckBar check={check} objectName={sel?.name ?? null} layout={layout} m={m} onChange={setCheck} /> : null}
           <div className={cn('grid min-h-0 flex-1 gap-px bg-stone-300 dark:bg-stone-800', phone ? 'grid-cols-1 grid-rows-1' : gridClass)}>
             {shown.map((v, i) => (
               <div key={v} className={cn('flex min-h-0 min-w-0 flex-col bg-[#05070f]', viewport.mode === 'three' && !single && i === 0 && 'lg:row-span-2')}>
@@ -3530,7 +3603,7 @@ export function LayoutPage() {
                         fill
                         layout={layout}
                         getFrame={getFrame}
-                        selected={playing || probe ? null : selected}
+                        selected={playing || probe || layoutCheck ? null : selected}
                         onSelect={(id, add) => {
                           setTool('select');
                           if (add) return void (id && toggleTarget(id));

@@ -1,5 +1,6 @@
 import { EffectScene, layoutEffects, toBytes } from '../../shared/effects.ts';
 import { buildStage, deviceLed, editorPulse, layoutShapeKey, paintEditor, paintGameArea, paintMatch, type GameArea, type Layout, type MatchProbe, type Stage } from '../../shared/layout.ts';
+import { checkMoves, paintCheck, validCheck, type LayoutCheck } from '../../shared/check.ts';
 import { codeColor } from '../../shared/photoTrace.ts';
 import { SequencePlayer, type Sequence } from '../../shared/sequence.ts';
 import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
@@ -21,6 +22,8 @@ export interface PreviewRequest {
   probe?: MatchProbe | null;
   /** The object designer's photo: these LEDs light up in one color (the first in another), all else dark. */
   photo?: PhotoLights | null;
+  /** A check of the drawing against the yard: a slice, a ruler, or one object's color test or chase (see shared/check.ts). */
+  check?: LayoutCheck | null;
 }
 
 /**
@@ -61,7 +64,7 @@ const viewOf = (layout: Layout, key = layoutShapeKey(layout)): View => {
  * The editor's view of the layout as a frame for the lights (see paintEditor, paintGameArea
  * and paintMatch). LEDs past the end of a line (the wizard's) are set by device number.
  */
-export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'maps'>, pulse: boolean): LightFrame {
+export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'maps'>, pulse: boolean, nowMs = Date.now()): LightFrame {
   const { stage } = view;
   const bytes = new Uint8Array(stage.pixelCount * 3);
   const extra: ExtraLed[] = [];
@@ -86,16 +89,18 @@ export function editorFrame(req: PreviewRequest, view: Pick<View, 'stage' | 'map
     const maps = view.maps.some((m) => m.deviceId === p.deviceId) ? view.maps : [...view.maps, emptyMap(p.deviceId)];
     return { maps, bytes, extra, wakes: true };
   }
+  const check = req.probe ? null : validCheck(req.check, req.layout);
   if (req.probe && req.selected) paintMatch(req.layout, req.selected, req.probe, pulse, put);
+  else if (check) paintCheck(req.layout, stage, check, nowMs, pulse, bytes);
   else if (req.area !== undefined) paintGameArea(req.layout, req.area, req.selected ? { id: req.selected, segment: req.segment ?? null } : null, pulse, put);
   else paintEditor(req.layout, req.selected, req.corner, req.segment ?? null, pulse, put);
   return { maps: view.maps, bytes, extra, wakes: true };
 }
 
 /** One device's colors for the editor's view (see editorFrame). */
-export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: number, pulse: boolean): Uint8Array {
+export function previewFrame(req: PreviewRequest, deviceId: string, ledCount: number, pulse: boolean, nowMs = Date.now()): Uint8Array {
   const view = viewOf(req.layout);
-  const frame = editorFrame(req, view, pulse);
+  const frame = editorFrame(req, view, pulse, nowMs);
   return renderDevice(frame, frame.maps.find((x) => x.deviceId === deviceId) ?? emptyMap(deviceId), ledCount);
 }
 
@@ -202,9 +207,10 @@ export class LayoutPreview implements FrameSource {
       toBytes(fx.data, fx.bytes);
       return { maps: this.view.maps, bytes: fx.bytes, wakes: true };
     }
-    // Drawn for when it shows, so the lights blink in step with the editor.
+    // Drawn for when it shows, so the lights blink (and a check moves) in step with the editor.
     const pulse = editorPulse(showAt);
-    if (this.painted?.req !== req || this.painted.pulse !== pulse) this.painted = { req, pulse, frame: editorFrame(req, this.view, pulse) };
+    if (checkMoves(req.check) && !req.probe) return editorFrame(req, this.view, pulse, showAt);
+    if (this.painted?.req !== req || this.painted.pulse !== pulse) this.painted = { req, pulse, frame: editorFrame(req, this.view, pulse, showAt) };
     return this.painted.frame;
   }
 
