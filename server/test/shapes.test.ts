@@ -137,14 +137,16 @@ describe('tree shapes, spin and facing', () => {
     const ball = fixturePixels(tree({ shape: 'sphere', turns: 10, pixels: 400 }));
     const gaps = ball.slice(1).map((p, i) => Math.hypot(p.x - ball[i].x, p.y - ball[i].y, p.z - ball[i].z));
     const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-    for (const g of gaps) expect(Math.abs(g - mean) / mean).toBeLessThan(0.1);
+    // Even along the wire; at the very ends, where the spiral leaves the pole in a tight curve,
+    // the straight line between two LEDs is a little shorter than the wire.
+    for (const g of gaps.slice(2, -2)) expect(Math.abs(g - mean) / mean).toBeLessThan(0.1);
   });
 
   it('outlines each shape from the front', () => {
     expect(treeOutline(tree())).toEqual([
-      { x: 700, y: 900 },
-      { x: 800, y: 500 },
-      { x: 900, y: 900 }
+      { x: 700, y: 900, z: 300 },
+      { x: 800, y: 500, z: 300 },
+      { x: 900, y: 900, z: 300 }
     ]);
     expect(treeOutline(tree({ shape: 'cylinder' }))).toHaveLength(4);
     const ball = treeOutline(tree({ shape: 'sphere' }));

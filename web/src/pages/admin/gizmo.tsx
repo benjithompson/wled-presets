@@ -85,7 +85,8 @@ export function Gizmo({
     [box.x + box.w, box.y + box.h]
   ];
   const R = Math.max(len + head + 22 * k, ...corners.map(([u, v]) => Math.hypot(u - anchor.u, v - anchor.v) + 16 * k));
-  const ringColor = front ? AXIS_RGB.z : AXIS_RGB.y;
+  // The ring turns about the axis that points out of the view.
+  const ringColor = front ? AXIS_RGB.z : side === 'top' ? AXIS_RGB.y : AXIS_RGB.x;
   const knob = turn == null ? null : { u: anchor.u + Math.cos((turn * Math.PI) / 180) * R, v: anchor.v + Math.sin((turn * Math.PI) / 180) * R };
   const square = (key: string, at: UV, cursor: string, part: GizmoPart, title: string) => (
     <g key={key} className={cursor} onPointerDown={down(part)}>
@@ -111,7 +112,13 @@ export function Gizmo({
       ) : null}
       {turn != null && knob ? (
         <g className="cursor-grab" onPointerDown={down({ kind: 'rotate' })}>
-          <title>{front ? 'Turn it, as seen from the front (Shift: 15° steps)' : 'Turn which way it faces, as seen from above (Shift: 15° steps)'}</title>
+          <title>
+            {front
+              ? 'Turn or tilt it left and right, as seen from the front (Shift: 15° steps)'
+              : side === 'top'
+                ? 'Turn which way it faces, as seen from above (Shift: 15° steps)'
+                : 'Tilt it toward the street or the house, as seen from the side (Shift: 15° steps)'}
+          </title>
           <circle cx={anchor.u} cy={anchor.v} r={R} fill="none" stroke="transparent" strokeWidth={14 * k} />
           <circle cx={anchor.u} cy={anchor.v} r={R} fill="none" stroke={ringColor} strokeOpacity={active?.part === 'rotate' ? 0.95 : 0.6} strokeWidth={(active?.part === 'rotate' ? 3 : 2) * k} />
           <line x1={anchor.u} y1={anchor.v} x2={knob.u} y2={knob.v} stroke={ringColor} strokeOpacity={0.35} strokeWidth={1.5 * k} strokeDasharray={`${4 * k} ${4 * k}`} pointerEvents="none" />
@@ -126,10 +133,12 @@ export function Gizmo({
           />
         </g>
       ) : null}
-      {arrow('x', { u: 1, v: 0 }, AXIS_RGB.x, 'X', 'Move across (X). Drag the square to move it freely.', 'u')}
-      {front
-        ? arrow('y', { u: 0, v: -1 }, AXIS_RGB.y, 'Y', 'Move up and down (Y)', 'v')
-        : arrow('z', { u: 0, v: 1 }, AXIS_RGB.z, 'Z', 'Move toward the street or the house (Z)', 'v')}
+      {side === 'side'
+        ? arrow('z', { u: 1, v: 0 }, AXIS_RGB.z, 'Z', 'Move toward the street or the house (Z). Drag the square to move it freely.', 'u')
+        : arrow('x', { u: 1, v: 0 }, AXIS_RGB.x, 'X', 'Move across (X). Drag the square to move it freely.', 'u')}
+      {side === 'top'
+        ? arrow('z', { u: 0, v: 1 }, AXIS_RGB.z, 'Z', 'Move toward the street or the house (Z)', 'v')
+        : arrow('y', { u: 0, v: -1 }, AXIS_RGB.y, 'Y', 'Move up and down (Y)', 'v')}
       <g className="cursor-move" onPointerDown={down({ kind: 'move', axis: null })}>
         <title>Move it freely</title>
         <rect x={anchor.u - 12 * k} y={anchor.v - 12 * k} width={24 * k} height={24 * k} fill="transparent" />

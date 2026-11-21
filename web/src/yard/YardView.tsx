@@ -4,13 +4,19 @@ import { AERIAL_OPACITY, buildStage, drawnByPaths, FEET_PER_METER, layoutGround,
 import type { Box } from './camera.ts';
 import { cn } from '../lib/utils.ts';
 
-/** Which side the yard is seen from. Front: the picture. Top: from above, the street at the bottom. */
-export type ViewSide = 'front' | 'top';
+/**
+ * Which side the yard is seen from. Front: the picture. Top: from above, the street at the
+ * bottom. Side: from the left, the street on the right (u is the depth, v the height as in front).
+ */
+export type ViewSide = 'front' | 'top' | 'side';
 
-/** The size of a view, in layout units. The top view shows depths zMin (back) to zMax (street). */
+/** The size of a view, in layout units. The top view shows depths zMin (back) to zMax (street); the side view shows them across. */
 export function viewSize(layout: Layout, side: ViewSide, zRange: [number, number]) {
-  return side === 'front' ? { w: layout.width, h: layout.height } : { w: layout.width, h: zRange[1] - zRange[0] };
+  return side === 'front' ? { w: layout.width, h: layout.height } : side === 'top' ? { w: layout.width, h: zRange[1] - zRange[0] } : { w: zRange[1] - zRange[0], h: layout.height };
 }
+
+/** Where a view's yard starts across (u): the left edge, or in the side view the back (zMin). */
+const viewLeft = (side: ViewSide, zRange: [number, number]) => (side === 'side' ? zRange[0] : 0);
 
 /**
  * What a view shows when nothing else is asked for: the yard, grown to take in every LED (a
@@ -18,14 +24,15 @@ export function viewSize(layout: Layout, side: ViewSide, zRange: [number, number
  */
 export function fitBox(layout: Layout, side: ViewSide, zRange: [number, number]): Box {
   const size = viewSize(layout, side, zRange);
+  const left = viewLeft(side, zRange);
   const b = ledBounds(layout, side, zRange);
-  if (!b) return { x: 0, y: 0, w: size.w, h: size.h };
+  if (!b) return { x: left, y: 0, w: size.w, h: size.h };
   const { x0, y0, x1, y1 } = b;
   // Room for the glow of the outermost bulbs.
   const pad = 0.025 * Math.max(size.w, size.h);
-  const bx0 = Math.min(0, x0 - pad);
+  const bx0 = Math.min(left, x0 - pad);
   const by0 = Math.min(0, y0 - pad);
-  const bx1 = Math.max(size.w, x1 + pad);
+  const bx1 = Math.max(left + size.w, x1 + pad);
   const by1 = Math.max(size.h, y1 + pad);
   return { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 };
 }
@@ -63,8 +70,8 @@ function ledBounds(layout: Layout, side: ViewSide, zRange: [number, number]) {
   let x1 = -Infinity;
   let y1 = -Infinity;
   for (let i = 0; i < p.length; i += 3) {
-    const u = p[i];
-    const v = side === 'front' ? p[i + 1] : p[i + 2] - zRange[0];
+    const u = side === 'side' ? p[i + 2] : p[i];
+    const v = side === 'top' ? p[i + 2] - zRange[0] : p[i + 1];
     if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
     x0 = Math.min(x0, u);
     x1 = Math.max(x1, u);
@@ -83,7 +90,7 @@ function sameBytes(a: Uint8Array, b: Uint8Array, n: number) {
 
 /** A point in view coordinates (u to the right, v down). */
 export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: number } {
-  return side === 'front' ? { u: p.x, v: p.y } : { u: p.x, v: (p.z ?? 0) - zMin };
+  return side === 'front' ? { u: p.x, v: p.y } : side === 'top' ? { u: p.x, v: (p.z ?? 0) - zMin } : { u: p.z ?? 0, v: p.y };
 }
 
 /**
@@ -175,11 +182,12 @@ export function YardView({
     if (!ctx) return;
     const stage = buildStage(layout);
     const top = side === 'top';
+    const sideView = side === 'side';
     // LED positions in view coordinates.
     const n0 = stage.pixelCount;
     const pos = new Float32Array(n0 * 2);
     for (let i = 0; i < n0; i++) {
-      pos[i * 2] = stage.positions3[i * 3];
+      pos[i * 2] = sideView ? stage.positions3[i * 3 + 2] : stage.positions3[i * 3];
       pos[i * 2 + 1] = top ? stage.positions3[i * 3 + 2] - zMin : stage.positions3[i * 3 + 1];
     }
     const view = (p: Point) => toView(p, side, zMin);
@@ -270,7 +278,7 @@ export function YardView({
         sky.addColorStop(1, '#0d0b10');
         ctx.fillStyle = sky;
         ctx.fillRect(0, 0, w, h);
-        if (!top && bg?.complete && bg.naturalWidth) {
+        if (side === 'front' && bg?.complete && bg.naturalWidth) {
           ctx.globalAlpha = 0.42;
           ctx.drawImage(bg, X(0), Y(0), size.w * sx, size.h * sy);
           ctx.globalAlpha = 1;
@@ -286,7 +294,7 @@ export function YardView({
           ctx.drawImage(aerialImg, -aw / 2, -ah / 2, aw, ah);
           ctx.restore();
         }
-        if (fill && edge && !top) {
+        if (fill && edge && side === 'front') {
           // The edge of the picture.
           ctx.strokeStyle = 'rgba(255,255,255,0.12)';
           ctx.lineWidth = dpr;
@@ -296,6 +304,11 @@ export function YardView({
           // The house behind the front wall (depth 0).
           ctx.fillStyle = 'rgba(255,255,255,0.025)';
           ctx.fillRect(0, 0, w, Math.max(0, Y(-zMin)));
+        }
+        if (sideView) {
+          // The house, left of its front wall (depth 0), above the ground.
+          ctx.fillStyle = 'rgba(255,255,255,0.025)';
+          ctx.fillRect(0, 0, Math.max(0, X(0)), Math.max(0, Y(layoutGround(layout))));
         }
         if (gridRef.current) {
           // Grid lines; every `gridMajor`th line is brighter. Lines closer than 6 pixels are left out.
@@ -325,6 +338,20 @@ export function YardView({
           ctx.lineTo(w, Y(-zMin));
           ctx.stroke();
         }
+        if (sideView) {
+          // The front wall of the house (depth 0) and the ground.
+          ctx.strokeStyle = 'rgba(251,191,36,0.35)';
+          ctx.lineWidth = 2 * dpr;
+          ctx.beginPath();
+          ctx.moveTo(X(0), 0);
+          ctx.lineTo(X(0), Y(layoutGround(layout)));
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(52,211,153,0.35)';
+          ctx.beginPath();
+          ctx.moveTo(0, Y(layoutGround(layout)));
+          ctx.lineTo(w, Y(layoutGround(layout)));
+          ctx.stroke();
+        }
 
         // Guides: the wire of each object, so its shape shows even when its LEDs are off.
         ctx.lineCap = 'round';
@@ -347,7 +374,7 @@ export function YardView({
             // From above, bushes and trees are circles.
             ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
           } else if (f.kind === 'tree') {
-            treeOutline(f).forEach((p, i) => {
+            treeOutline(f, sideView ? 'side' : 'front').forEach((p, i) => {
               const q = view(p);
               if (i) ctx.lineTo(X(q.u), Y(q.v));
               else ctx.moveTo(X(q.u), Y(q.v));

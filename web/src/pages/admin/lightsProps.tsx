@@ -345,17 +345,29 @@ export function CustomProps({ layout, f, lenText, onChange, onEditDesign }: { la
       </PropRow>
       <PropNumber label="Scale" unit="%" value={Math.round((f.size ?? 1) * 100)} min={5} max={1000} steppers step={5} onChange={(n) => onChange({ size: n === 100 ? undefined : n / 100 })} hint="100%: as designed. The LEDs stay the same; they spread over the new size." />
       <PropNumber label="Turn" unit="°" decimal value={f.rotation ?? 0} min={-360} max={360} step={5} steppers onChange={(n) => onChange({ rotation: n || undefined })} hint="Clockwise, as seen from the front" />
-      <PropSelect<string>
+      <PropNumber
         label="Faces"
-        value={String(f.facing ?? 0)}
-        options={[
-          ['0', 'The street'],
-          ['90', 'Right (as seen from the street)'],
-          ['-90', 'Left (as seen from the street)'],
-          ['45', 'Half right'],
-          ['-45', 'Half left']
-        ]}
-        onChange={(v) => onChange({ facing: Number(v) || undefined })}
+        unit="°"
+        decimal
+        value={f.facing ?? 0}
+        min={-360}
+        max={360}
+        step={15}
+        steppers
+        onChange={(n) => onChange({ facing: n || undefined })}
+        hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left"
+      />
+      <PropNumber
+        label="Tilt"
+        unit="°"
+        decimal
+        value={f.tilt ?? 0}
+        min={-180}
+        max={180}
+        step={5}
+        steppers
+        onChange={(n) => onChange({ tilt: n || undefined })}
+        hint="Tilted toward the street (more) or the house (less), as seen from the side view"
       />
       {d && (d.pixels !== f.pixels || JSON.stringify(d.strokes) !== JSON.stringify(f.design)) ? <PropNote tone="red">The design changed since this object was placed.</PropNote> : null}
     </>

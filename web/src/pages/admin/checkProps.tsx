@@ -146,7 +146,7 @@ export function YardCheckProps({ check, onChange, layout, stage, m, lights }: { 
               <PropNote>
                 A thin plane of white light crosses the whole yard. Where the drawing puts an LED in it, that LED lights white on the house too, so on every object the white should line up {LINE_UP[axis]}, where it
                 does in the drawing. An object that lights white too early or too late is drawn too far {axis === 'x' ? 'left or right' : axis === 'y' ? 'up or down' : 'forward or back'}, or is the wrong size.{' '}
-                {axis === 'z' ? 'Drag the line in the top view to move it.' : axis === 'y' ? 'Drag the line in the front view to move it.' : 'Drag the line in the front or top view to move it.'}
+                {axis === 'z' ? 'Drag the line in the top or side view to move it.' : axis === 'y' ? 'Drag the line in the front or side view to move it.' : 'Drag the line in the front or top view to move it.'}
               </PropNote>
             </>
           ) : (
@@ -299,9 +299,10 @@ export function CheckOverlay({
 }) {
   if (check.kind !== 'slice' && check.kind !== 'bands') return null;
   const axis = check.axis;
-  // The front view shows across and height; the top view across and depth.
-  if ((side === 'front' && axis === 'z') || (side === 'top' && axis === 'y')) return null;
-  const across = axis === 'x';
+  // The front view shows across and height; the top view across and depth; the side view depth (across the screen) and height.
+  if ((side === 'front' && axis === 'z') || (side === 'top' && axis === 'y') || (side === 'side' && axis === 'x')) return null;
+  /** True when the axis runs across the screen (the slice is an upright line). */
+  const across = axis === 'x' || (side === 'side' && axis === 'z');
   /** From the axis's layout units to the view's u (across) or v (up and down). */
   const toView = (w: number) => (across ? w : side === 'top' ? w - zMin : w);
   if (check.kind === 'bands') {

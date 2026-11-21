@@ -102,6 +102,12 @@ export interface Fixture {
   /** Tree with a spiral: how many times the LEDs go around from the base to the top. */
   turns?: number;
   /**
+   * Tree with a spiral: where its loops sit closer together, from -1 (toward the base, or the
+   * outside edge of a ball's cap) through 0 (evenly apart, measured over its surface) to 1
+   * (toward the top, the middle of a ball's cap). Not set: evenly.
+   */
+  bias?: number;
+  /**
    * Tree with strands: the number of strands. They zigzag: up the first, down the second, and so on.
    * Semicircle: the number of rows (or columns) of its zigzag.
    */
@@ -141,8 +147,17 @@ export interface Fixture {
   designId?: string;
   /** Custom: size as a factor of the design (1: as designed). */
   size?: number;
-  /** Custom and semicircle: turned clockwise, in degrees, as seen from the front. */
+  /**
+   * Custom and semicircle: turned clockwise, in degrees, as seen from the front. Tree: tilted
+   * that way about its base (to the left or right).
+   */
   rotation?: number;
+  /**
+   * Tree, semicircle and custom: tilted about its point, clockwise as seen from the side view
+   * (from the left, the street on the right), in degrees: more leans its top toward the street,
+   * less toward the house. Not set: upright.
+   */
+  tilt?: number;
   /**
    * Custom, semicircle and tree: turned about the upright axis, as seen from above, in degrees.
    * Which way its front faces: 0 the street, 90 right (as seen from the street), -90 left, 180
@@ -368,11 +383,12 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
   const n = Math.max(0, Math.floor(f.pixels));
   if (n === 0) return [];
-  if (f.kind === 'tree') return treePixels(f, n);
-  if (f.kind === 'semicircle') return semicirclePixels(f, n);
+  if (f.kind === 'tree') return treePixels(f, n).map(tiltOf(f));
+  if (f.kind === 'semicircle') return semicirclePixels(f, n).map(tiltOf(f));
   if (f.kind === 'custom') {
     const at = designTransform(f, scale);
-    return designLeds(f.design ?? [], n).map(at);
+    const tilt = tiltOf(f);
+    return designLeds(f.design ?? [], n).map((p) => tilt(at(p)));
   }
   if (f.kind === 'bush') {
     const c = f.points[0] ?? { x: 0, y: 0 };
@@ -423,8 +439,35 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
 
 const p3 = (p: Point): Point3 => ({ x: p.x, y: p.y, z: pz(p) });
 
+/**
+ * Tilts a point of an object about the object's point: first as seen from the side view (`tilt`,
+ * clockwise with the street on the right), then, for a tree, as seen from the front (`rotation`,
+ * clockwise). Semicircles and custom objects take their `rotation` in their own design instead.
+ */
+export function tiltOf(f: Pick<Fixture, 'kind' | 'points' | 'rotation' | 'tilt'>): (p: Point3) => Point3 {
+  const t = ((f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom' ? (f.tilt ?? 0) : 0) * Math.PI) / 180;
+  const r = ((f.kind === 'tree' ? (f.rotation ?? 0) : 0) * Math.PI) / 180;
+  if (!t && !r) return (p) => p;
+  const c = f.points[0] ?? { x: 0, y: 0 };
+  const cz = pz(c);
+  const ct = Math.cos(t);
+  const st = Math.sin(t);
+  const cr = Math.cos(r);
+  const sr = Math.sin(r);
+  return (p) => {
+    // In the side view (u: z, v: y down), clockwise on the screen.
+    let dz = p.z - cz;
+    let dy = p.y - c.y;
+    let dx = p.x - c.x;
+    [dz, dy] = [dz * ct - dy * st, dz * st + dy * ct];
+    // In the front view (u: x, v: y down), clockwise on the screen.
+    [dx, dy] = [dx * cr - dy * sr, dx * sr + dy * cr];
+    return { x: c.x + dx, y: c.y + dy, z: cz + dz };
+  };
+}
+
 /** The settings that place an object and give it its size: a locked object keeps them. */
-export const PLACE_KEYS = ['points', 'radius', 'height', 'size', 'rotation', 'facing'] as const;
+export const PLACE_KEYS = ['points', 'radius', 'height', 'size', 'rotation', 'facing', 'tilt'] as const;
 
 /**
  * Keeps locked objects in place across an edit from `prev` to `next`: an object locked in both
@@ -480,11 +523,13 @@ export function changeKind(f: Fixture, kind: ShapeKind): Fixture {
   const { id, name, pixels, lights, deviceId, startPixel, reversed, effect, locked } = f;
   const keep: Fixture = { id, name, kind, points: [], radius: r, pixels, lights, deviceId, startPixel, reversed, effect, locked };
   const at = (y: number): Point[] => [{ ...p, y: Math.round(y) }];
+  // A tree and a semicircle keep which way they face, and how they are tilted.
   const facing = f.kind === 'bush' ? undefined : f.facing;
+  const turned = kind === 'bush' || f.kind === 'bush' ? {} : { rotation: f.rotation, tilt: f.tilt };
   let out: Fixture;
   if (kind === 'bush') out = { ...keep, points: at(bottom - height / 2), pattern: 'fill' };
-  else if (kind === 'tree') out = { ...keep, points: at(bottom), height: Math.round(height), pattern: 'spiral', shape: f.kind === 'bush' ? 'sphere' : undefined, facing };
-  else out = { ...keep, points: at(bottom), height: Math.round(height), facing };
+  else if (kind === 'tree') out = { ...keep, points: at(bottom), height: Math.round(height), pattern: 'spiral', shape: f.kind === 'bush' ? 'sphere' : undefined, facing, ...turned };
+  else out = { ...keep, points: at(bottom), height: Math.round(height), facing, ...turned };
   // Not set stays not set (as a saved layout has it).
   for (const k of Object.keys(out) as (keyof Fixture)[]) if (out[k] === undefined) delete out[k];
   return out;
@@ -508,20 +553,26 @@ export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 's
  * The outline of a tree from the front, at its base: a triangle, a rectangle or an ellipse (for
  * a ball with LEDs on its top part only, that cap of it).
  */
-export function treeOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'shape' | 'cover'>): Point[] {
+export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' = 'front'): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
+  const bz = pz(b);
   const r = f.radius ?? 80;
   const h = f.height ?? 240;
+  // Across: x in the front view, z (the depth) in the side view.
+  const pt = (d: number, y: number): Point3 => (plane === 'side' ? { x: b.x, y, z: bz + d } : { x: b.x + d, y, z: bz });
+  let flat: Point3[];
   if (f.shape === 'sphere') {
     // Round from the top: the cap's edge, over the top, to its other edge.
     const c = f.cover != null && f.cover < 180 ? (Math.max(1, f.cover) * Math.PI) / 180 : Math.PI;
-    return Array.from({ length: 37 }, (_, i) => {
+    flat = Array.from({ length: 37 }, (_, i) => {
       const a = -c + (2 * c * i) / 36;
-      return { x: b.x + Math.sin(a) * r, y: b.y - h / 2 - (Math.cos(a) * h) / 2 };
+      return pt(Math.sin(a) * r, b.y - h / 2 - (Math.cos(a) * h) / 2);
     });
+  } else {
+    const top = f.shape === 'cylinder' ? [-r, r] : [0];
+    flat = [pt(-r, b.y), ...top.map((d) => pt(d, b.y - h)), pt(r, b.y)];
   }
-  const top = f.shape === 'cylinder' ? [-r, r] : [0];
-  return [{ x: b.x - r, y: b.y }, ...top.map((dx) => ({ x: b.x + dx, y: b.y - h })), { x: b.x + r, y: b.y }];
+  return flat.map(tiltOf({ ...f, kind: 'tree' }));
 }
 
 /**
@@ -564,13 +615,111 @@ function treePixels(f: Fixture, n: number): Point3[] {
   if (f.pattern === 'wave') return wavePixels(f, n, (u, a) => at(u, sign * a), widthAt, h * span);
   const turns = f.turns ?? 8;
   const fromTop = f.start === 'top';
-  const heightAt = spiralHeights(f.shape, r, h * span, turns, u0 > 0 ? widthAt : undefined);
+  // The loops sit evenly apart over the surface (up the side of a cone, over the curve of a
+  // ball), or closer toward one end (bias): t (0 at the base, 1 at the top) is how far along the
+  // loops, m how far up the surface, u the height.
+  const up = surfaceToHeight(widthAt, r, h * span);
+  const bend = biasCurve(f.bias ?? 0);
+  // s: how far along the wire from LED 0. The angle grows along the wire from the front, so a
+  // spiral from the top starts at the front too, and winds the way it is set as it comes down.
+  const point = (s: number) => at(up(bend(fromTop ? 1 - s : s)), s * turns * Math.PI * 2);
+  // A plain cone or cylinder: the wire's length is about proportional to its width there, and
+  // these LEDs stay exactly where they always were.
+  const plain = !u0 && !f.bias && (!f.shape || f.shape === 'cone' || f.shape === 'cylinder');
+  if (plain) {
+    const H = f.shape === 'cylinder' ? (x: number) => x : (x: number) => 1 - Math.sqrt(1 - x);
+    return Array.from({ length: n }, (_, i) => {
+      const s = n > 1 ? i / (n - 1) : 0;
+      return point(fromTop ? 1 - H(1 - s) : H(s));
+    });
+  }
+  return spreadAlong(point, n, Math.max(1024, Math.ceil(turns * 256)));
+}
+
+/** n points spread evenly by length along a curve point(s), s from 0 to 1, measured in K steps. */
+function spreadAlong(point: (s: number) => Point3, n: number, K: number): Point3[] {
+  const len = new Float64Array(K + 1);
+  let prev = point(0);
+  for (let k = 1; k <= K; k++) {
+    const q = point(k / K);
+    len[k] = len[k - 1] + Math.hypot(q.x - prev.x, q.y - prev.y, q.z - prev.z);
+    prev = q;
+  }
+  const total = len[K];
+  const out: Point3[] = [];
+  let k = 0;
   for (let i = 0; i < n; i++) {
-    // s: how far along the wire from LED 0. The angle grows along the wire from the front, so
-    // a spiral from the top starts at the front too, and winds the way it is set as it comes down.
-    const s = n > 1 ? i / (n - 1) : 0;
-    const u = heightAt(fromTop ? 1 - s : s);
-    out.push(at(u, (fromTop ? 1 - u : u) * turns * Math.PI * 2));
+    const want = n > 1 ? (i / (n - 1)) * total : 0;
+    while (k < K - 1 && len[k + 1] < want) k++;
+    const span = len[k + 1] - len[k];
+    out.push(point((k + (span > 0 ? Math.max(0, Math.min(1, (want - len[k]) / span)) : 0)) / K));
+  }
+  return out;
+}
+
+/** Bends 0..1 so steps bunch toward 1 (bias 1), toward 0 (bias -1), or stay even (0). */
+function biasCurve(bias: number): (t: number) => number {
+  const b = Math.max(-1, Math.min(1, bias));
+  const q = 1 + 2 * Math.abs(b);
+  if (Math.abs(b) < 1e-3) return (t) => t;
+  return b > 0 ? (t) => 1 - Math.pow(1 - t, q) : (t) => Math.pow(t, q);
+}
+
+/**
+ * For a tree's side (`widthAt`: its radius at height u as a share of `r`; `h`: its height): the
+ * height u (0..1) at the share m (0..1) of the way up its surface, from the base to the top.
+ */
+function surfaceToHeight(widthAt: (u: number) => number, r: number, h: number): (m: number) => number {
+  const K = 256;
+  const len = new Float64Array(K + 1);
+  for (let k = 1; k <= K; k++) len[k] = len[k - 1] + Math.hypot(r * (widthAt(k / K) - widthAt((k - 1) / K)), h / K);
+  const total = len[K];
+  return (m) => {
+    if (!(total > 0)) return m;
+    const want = Math.max(0, Math.min(1, m)) * total;
+    let lo = 0;
+    let hi = K;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (len[mid] < want) lo = mid;
+      else hi = mid;
+    }
+    const span = len[hi] - len[lo];
+    return (lo + (span > 0 ? (want - len[lo]) / span : 0)) / K;
+  };
+}
+
+/** How far it is up a tree's side, over its surface from the base to the top (the LEDs' part of a ball), in layout units. */
+export function treeSurfaceLength(f: Pick<Fixture, 'radius' | 'height' | 'shape' | 'cover'>): number {
+  const r = f.radius ?? 80;
+  const h = f.height ?? 240;
+  const u0 = capFloor(f);
+  const span = 1 - u0;
+  const K = 256;
+  let len = 0;
+  for (let k = 1; k <= K; k++) len += Math.hypot(r * (treeWidthAt(f.shape, u0 + (span * k) / K) - treeWidthAt(f.shape, u0 + (span * (k - 1)) / K)), (h * span) / K);
+  return len;
+}
+
+/** n points spread evenly by length along a path given as many close points. */
+function spreadEvenly(pts: Point3[], n: number): Point3[] {
+  const len = new Float64Array(pts.length);
+  for (let k = 1; k < pts.length; k++) len[k] = len[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y, pts[k].z - pts[k - 1].z);
+  const total = len[pts.length - 1] ?? 0;
+  const out: Point3[] = [];
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    if (pts.length < 2) {
+      out.push({ ...(pts[0] ?? { x: 0, y: 0, z: 0 }) });
+      continue;
+    }
+    const want = n > 1 ? (i / (n - 1)) * total : 0;
+    while (k < pts.length - 2 && len[k + 1] < want) k++;
+    const span = len[k + 1] - len[k];
+    const t = span > 0 ? Math.max(0, Math.min(1, (want - len[k]) / span)) : 0;
+    const p = pts[k];
+    const q = pts[k + 1];
+    out.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t, z: p.z + (q.z - p.z) * t });
   }
   return out;
 }
@@ -634,65 +783,9 @@ function wavePixels(f: Fixture, n: number, at: (u: number, a: number) => Point3,
   }
   const fromTop = f.start === 'top';
   const pts = (fromTop ? [...path].reverse() : path).map(([a, u]) => at(u, a));
-  // Spread the LEDs evenly by length along the path.
-  const len = new Float64Array(pts.length);
-  for (let k = 1; k < pts.length; k++) len[k] = len[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y, pts[k].z - pts[k - 1].z);
-  const total = len[pts.length - 1];
-  const out: Point3[] = [];
-  let k = 0;
-  for (let i = 0; i < n; i++) {
-    const want = n > 1 ? (i / (n - 1)) * total : 0;
-    while (k < pts.length - 2 && len[k + 1] < want) k++;
-    const span = len[k + 1] - len[k];
-    const t = span > 0 ? Math.max(0, Math.min(1, (want - len[k]) / span)) : 0;
-    const p = pts[k];
-    const q = pts[k + 1];
-    out.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t, z: p.z + (q.z - p.z) * t });
-  }
-  return out;
+  return spreadEvenly(pts, n);
 }
 
-/**
- * For a spiral from the base up: the height u (0..1) at the share s (0..1) of the wire's
- * length, so the LEDs spread evenly along the wire (closer in height where the shape is wide).
- */
-function spiralHeights(shape: TreeShape | undefined, r: number, h: number, turns: number, widthAt?: (u: number) => number): (s: number) => number {
-  // A cone: the wire's length is about proportional to the width there (as it always was).
-  if (!widthAt && (!shape || shape === 'cone')) return (s) => 1 - Math.sqrt(1 - s);
-  if (!widthAt && shape === 'cylinder') return (s) => s;
-  // Otherwise: measure the wire in small steps, and look the share up.
-  const K = 256;
-  const len = new Float64Array(K + 1);
-  let px = 0;
-  let py = 0;
-  let pzz = 0;
-  for (let k = 0; k <= K; k++) {
-    const u = k / K;
-    const rad = r * (widthAt ? widthAt(u) : treeWidthAt(shape, u));
-    const a = u * turns * Math.PI * 2;
-    const x = Math.sin(a) * rad;
-    const y = u * h;
-    const z = Math.cos(a) * rad;
-    if (k) len[k] = len[k - 1] + Math.hypot(x - px, y - py, z - pzz);
-    px = x;
-    py = y;
-    pzz = z;
-  }
-  const total = len[K];
-  return (s) => {
-    if (!(total > 0)) return s;
-    const want = Math.max(0, Math.min(1, s)) * total;
-    let lo = 0;
-    let hi = K;
-    while (hi - lo > 1) {
-      const mid = (lo + hi) >> 1;
-      if (len[mid] < want) lo = mid;
-      else hi = mid;
-    }
-    const span = len[hi] - len[lo];
-    return (lo + (span > 0 ? Math.max(0, Math.min(1, (want - len[lo]) / span)) : 0)) / K;
-  };
-}
 
 // ---------- Semicircles ----------
 
@@ -733,11 +826,12 @@ function semicirclePixels(f: Fixture, n: number): Point3[] {
 }
 
 /** The outline of a semicircle in the yard: over the round side, then back along the straight edge. */
-export function semicircleOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'rotation' | 'facing'>): Point3[] {
+export function semicircleOutline(f: Pick<Fixture, 'points' | 'radius' | 'height' | 'rotation' | 'facing' | 'tilt'>): Point3[] {
   const r = f.radius ?? 60;
   const h = f.height ?? r;
   const at = semicircleTransform(f);
-  const arc = Array.from({ length: 33 }, (_, i) => (i / 32) * Math.PI).map((a) => at({ x: -Math.cos(a) * r, y: Math.sin(a) * h }));
+  const tilt = tiltOf({ ...f, kind: 'semicircle' });
+  const arc = Array.from({ length: 33 }, (_, i) => (i / 32) * Math.PI).map((a) => tilt(at({ x: -Math.cos(a) * r, y: Math.sin(a) * h })));
   return [...arc, arc[0]];
 }
 
@@ -846,7 +940,8 @@ export function designTransform(f: Pick<Fixture, 'points' | 'size' | 'rotation' 
 /** The wire of a custom object in the yard, one path per stroke, for drawing its shape. */
 export function designPaths(f: Fixture, scale = DEFAULT_SCALE): Point3[][] {
   const at = designTransform(f, scale);
-  return (f.design ?? []).filter((s) => s.points.length).map((s) => strokePath(s).map(at));
+  const tilt = tiltOf(f);
+  return (f.design ?? []).filter((s) => s.points.length).map((s) => strokePath(s).map((p) => tilt(at(p))));
 }
 
 /** How far the design reaches from its anchor, in layout units. */

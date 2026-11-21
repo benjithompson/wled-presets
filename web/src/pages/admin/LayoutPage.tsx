@@ -108,6 +108,7 @@ import {
   wavePasses,
   WAVE_SWEEP,
   capFloor,
+  treeSurfaceLength,
   keepLocked,
   changeKind,
   isShapeKind,
@@ -165,11 +166,11 @@ type Drag =
   /** `axis`: only across (u) or only up and down / toward the street (v), from the arrows. */
   | { kind: 'move'; side: ViewSide; id: string; from: UV; original: Point[]; axis?: 'u' | 'v' | null }
   /** Turning with the ring: `prop` is the front view's rotation or the top view's facing. */
-  | { kind: 'rotate'; side: ViewSide; id: string; prop: 'rotation' | 'facing'; center: UV; start: number; original: number }
+  | { kind: 'rotate'; side: ViewSide; id: string; prop: 'rotation' | 'facing' | 'tilt'; center: UV; start: number; original: number }
   /** Resizing width and height together, about the anchor. */
   | { kind: 'scale'; side: ViewSide; id: string; center: UV; start: number; original: Pick<Fixture, 'radius' | 'height' | 'size'> }
   | { kind: 'radius'; side: ViewSide; id: string }
-  | { kind: 'treeHeight'; id: string }
+  | { kind: 'treeHeight'; side: ViewSide; id: string }
   /** A press on a locked object: it stays put; moving the pointer says why. */
   | { kind: 'locked'; id: string; from: UV; warned: boolean }
   | { kind: 'ground' }
@@ -218,8 +219,15 @@ const VIEWPORT_KEY = 'layout.viewport';
 /** The one view a phone shows. */
 const PHONE_VIEW_KEY = 'layout.phoneView';
 const DRAFTING_KEY = 'layout.drafting';
-const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', '3d': '3D' };
-const VIEW_NOTES: Record<ViewName, string> = { front: 'as seen from the street', top: 'from above, the street at the bottom', '3d': 'drag to turn, right-drag to pan' };
+const VIEW_LABELS: Record<ViewName, string> = { front: 'Front', top: 'Top', side: 'Side', '3d': '3D' };
+const VIEW_NOTES: Record<ViewName, string> = {
+  front: 'as seen from the street',
+  top: 'from above, the street at the bottom',
+  side: 'from the left, the street on the right',
+  '3d': 'drag to turn, right-drag to pan'
+};
+/** The 2D views. */
+const SIDES: ViewSide[] = ['front', 'top', 'side'];
 const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', measure: 'Measure', align: 'Align picture' };
 const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, semicircle: Rainbow, custom: Shapes };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
@@ -237,16 +245,18 @@ function readShowOnLights() {
 function readViewport(): { mode: VpMode; panes: ViewName[] } {
   try {
     const v = JSON.parse(localStorage.getItem(VIEWPORT_KEY) ?? '') as { mode: VpMode; panes: ViewName[] };
-    const all: ViewName[] = ['front', 'top', '3d'];
-    if (v.mode in VP_COUNT && v.panes.length === 3 && all.every((x) => v.panes.includes(x))) return v;
+    const all: ViewName[] = ['front', 'top', 'side', '3d'];
+    // Saved before the side view: it comes last.
+    if (v.panes.length === 3 && !v.panes.includes('side')) v.panes = [...v.panes, 'side'];
+    if (v.mode in VP_COUNT && v.panes.length === 4 && all.every((x) => v.panes.includes(x))) return v;
   } catch {}
-  return { mode: 'three', panes: ['front', 'top', '3d'] };
+  return { mode: 'three', panes: ['front', 'top', '3d', 'side'] };
 }
 
 function readPhoneView(): ViewName {
   try {
     const v = localStorage.getItem(PHONE_VIEW_KEY);
-    if (v === 'front' || v === 'top' || v === '3d') return v;
+    if (v === 'front' || v === 'top' || v === 'side' || v === '3d') return v;
   } catch {}
   return 'front';
 }
@@ -300,6 +310,11 @@ function LockedNote({ onUnlock }: { onUnlock: () => void }) {
       </PropButton>
     </div>
   );
+}
+
+/** An angle an object leans by (0: upright). */
+function TiltProp({ label, value, hint, onChange }: { label: string; value: number | undefined; hint: string; onChange: (deg: number | undefined) => void }) {
+  return <PropNumber label={label} unit="°" decimal value={value ?? 0} min={-180} max={180} step={5} steppers onChange={(n) => onChange(n || undefined)} hint={hint} />;
 }
 
 /** The shape of a bush, a tree or a semicircle, and how its LEDs run over it. */
@@ -377,6 +392,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           />
         )}
         {place(<FacingProp f={f} onChange={onChange} hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left" />)}
+        {place(<TiltProp label="Tilt" value={f.tilt} onChange={(tilt) => onChange({ tilt })} hint="Tilted toward the street (more) or the house (less), as seen from the side view" />)}
         <PropNote>The point is the middle of the straight edge.</PropNote>
       </>
     );
@@ -454,7 +470,28 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
       {spiral || wave ? (
         <>
           {spiral ? (
-            <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
+            <>
+              <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
+              <PropDistance
+                label="Loops apart"
+                hint={`How far one loop is from the next, measured over the ${ball ? 'ball' : 'tree'} from the ${ball ? 'edge to the middle' : 'base to the top'} (on average, when they bunch). Sets the turns.`}
+                value={treeSurfaceLength(f) / (f.turns ?? 8)}
+                m={m}
+                min={0.01}
+                onChange={(lu) => onChange({ turns: Math.max(0.5, Math.min(100, Math.round((treeSurfaceLength(f) / Math.max(1, lu)) * 10) / 10)) })}
+              />
+              <PropNumber
+                label="Loops bunch"
+                unit="%"
+                hint={`0: evenly apart. More: closer together toward the ${ball ? 'middle (top)' : 'top'}. Less: closer together toward the ${ball ? 'outside edge' : 'base'}.`}
+                value={Math.round((f.bias ?? 0) * 100)}
+                min={-100}
+                max={100}
+                step={10}
+                steppers
+                onChange={(n) => onChange({ bias: Math.round(n) ? Math.max(-1, Math.min(1, n / 100)) : undefined })}
+              />
+            </>
           ) : null}
           <PropSelect<'base' | 'top'>
             label="Starts"
@@ -542,6 +579,8 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           hint={`Turned as seen from above: ${wave ? 'the middle of the passes' : `where ${spiral ? 'the spiral' : 'the first strand'} starts`}. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`}
         />
       )}
+      {place(<TiltProp label="Leans right" value={f.rotation} onChange={(rotation) => onChange({ rotation })} hint="Tilted about its base, as seen from the front: more leans it to the right, less to the left" />)}
+      {place(<TiltProp label="Leans to street" value={f.tilt} onChange={(tilt) => onChange({ tilt })} hint="Tilted about its base, as seen from the side view: more leans it toward the street, less toward the house" />)}
       <PropNote>{ball ? 'The point is the bottom of the ball, under the middle (below the LEDs when they cover only its top).' : 'The point is the middle of the base.'}</PropNote>
     </>
   );
@@ -1122,7 +1161,8 @@ export function LayoutPage() {
   };
 
   /** A point from a position in one view. The coordinate that the view does not show comes from `base`. */
-  const fromView = (side: ViewSide, p: UV, base: Point): Point => (side === 'front' ? { ...base, x: p.u, y: p.v } : { ...base, x: p.u, z: Math.round(p.v + zMin) });
+  const fromView = (side: ViewSide, p: UV, base: Point): Point =>
+    side === 'front' ? { ...base, x: p.u, y: p.v } : side === 'top' ? { ...base, x: p.u, z: Math.round(p.v + zMin) } : { ...base, z: Math.round(p.u), y: p.v };
 
   /** The 3D point of a line that sits at this spot in a view, if any. */
   const pointAtView = (side: ViewSide, at: UV, exclude?: { id: string; index: number }): Point | undefined => {
@@ -1435,10 +1475,10 @@ export function LayoutPage() {
   /** Everything a view shows when it is zoomed to fit, in view units. */
   const contentBox = (side: ViewSide): Box => {
     // The picture (or the depth range), and every object, as "zoom extents" does in CAD programs.
-    let x0 = 0;
+    let x0 = side === 'side' ? zRange[0] : 0;
     let y0 = 0;
-    let x1 = layout?.width ?? LAYOUT_WIDTH;
-    let y1 = side === 'front' ? (layout?.height ?? 900) : zRange[1] - zRange[0];
+    let x1 = side === 'side' ? zRange[1] : (layout?.width ?? LAYOUT_WIDTH);
+    let y1 = side === 'top' ? zRange[1] - zRange[0] : (layout?.height ?? 900);
     for (const f of layout?.fixtures ?? []) {
       const b = boxOf(f, side);
       x0 = Math.min(x0, b.x);
@@ -1467,8 +1507,15 @@ export function LayoutPage() {
     const c = V(f.points[0]);
     const r = f.radius ?? 60;
     if (side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
-    const h = f.kind === 'tree' ? (f.height ?? 240) : r * 0.72;
-    return { x: c.u - r, y: c.v - h, w: 2 * r, h: f.kind === 'tree' ? h : 2 * h };
+    if (f.kind === 'tree') {
+      // Its outline from that side (tilted, as it is), with the whole ball for a cap.
+      const pts = [...treeOutline({ ...f, cover: undefined }, side === 'side' ? 'side' : 'front').map(V)];
+      const us = pts.map((p) => p.u);
+      const vs = pts.map((p) => p.v);
+      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
+    }
+    const h = r * 0.72;
+    return { x: c.u - r, y: c.v - h, w: 2 * r, h: 2 * h };
   };
   /** F: zoom every 2D view to the selected object, or to the whole yard when nothing is selected. */
   function frameSelection(id = selected) {
@@ -1476,7 +1523,7 @@ export function LayoutPage() {
     if (!f || !layout) return setCams({});
     const pad = layoutScale(layout) * 0.75;
     const next: Partial<Record<ViewSide, Cam>> = {};
-    for (const side of ['front', 'top'] as ViewSide[]) {
+    for (const side of SIDES) {
       const b = boxOf(f, side);
       next[side] = fitCam({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad }, sizeOf(side), offOf(side), 1);
     }
@@ -1484,7 +1531,7 @@ export function LayoutPage() {
   }
   /** + and −: zoom the view under the pointer (or every 2D view) about its middle. */
   function zoomViews(factor: number) {
-    const sides = cursor ? [cursor.side] : (['front', 'top'] as ViewSide[]);
+    const sides = cursor ? [cursor.side] : SIDES;
     setCams((c) => {
       const next = { ...c };
       for (const side of sides) next[side] = zoomAt(c[side] ?? camFor(side), sizeOf(side), { x: sizeOf(side).w / 2, y: sizeOf(side).h / 2 }, factor);
@@ -1587,7 +1634,7 @@ export function LayoutPage() {
 
   /** The snapping grid of a view, when Grid snap is on (Alt: off for now). It counts from the left edge, and from the ground (front) or the front wall (top), as drawn. */
   const gridFor = (side: ViewSide, e: { altKey: boolean }): SnapGrid | null =>
-    layout && drafting.gridSnap && !e.altKey ? { step: gridOf(drafting, layout).step, origin: { u: 0, v: side === 'front' ? layoutGround(layout) : -zMin } } : null;
+    layout && drafting.gridSnap && !e.altKey ? { step: gridOf(drafting, layout).step, origin: { u: 0, v: side === 'top' ? -zMin : layoutGround(layout) } } : null;
 
   /**
    * The pointer position, snapped. Shift: 45° steps from `from`; Ortho: 90° steps (`angle`
@@ -1710,6 +1757,9 @@ export function LayoutPage() {
       return;
     }
     if (e.button !== 0) return;
+    if (side === 'side' && (isLineTool(tool) || tool === 'bush' || tool === 'tree' || tool === 'semicircle')) {
+      return void toast('Draw new objects in the front or top view. The side view moves, turns and tilts them.', { id: 'side-draw' });
+    }
     if (isLineTool(tool)) {
       const drawingHere = draft.side === side && draft.pts.length > 0;
       // The first click on the end of a line continues that line (Alt: start a new line there).
@@ -1831,7 +1881,9 @@ export function LayoutPage() {
         if (axis !== 'u') dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
       update(drag.id, {
-        points: drag.original.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : { ...q, x: q.x + du, z: (q.z ?? 0) + dv }))
+        points: drag.original.map((q) =>
+          side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : side === 'top' ? { ...q, x: q.x + du, z: (q.z ?? 0) + dv } : { ...q, z: (q.z ?? 0) + du, y: q.y + dv }
+        )
       });
     } else if (drag.kind === 'rotate' && f) {
       // The front view's rotation turns clockwise on the screen; facing, seen from above, the other way.
@@ -1848,7 +1900,7 @@ export function LayoutPage() {
         ...(o.size != null ? { size: Math.max(0.01, Math.round(o.size * t * 100) / 100) } : {})
       });
     } else if (drag.kind === 'radius' && f) {
-      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - f.points[0].x))) });
+      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - toView(f.points[0], side, zMin).u))) });
     } else if (drag.kind === 'treeHeight' && f) {
       update(drag.id, { height: Math.max(20, Math.round(f.points[0].y - p.v)) });
     } else if (drag.kind === 'ground') {
@@ -2307,7 +2359,12 @@ export function LayoutPage() {
 
   const tapeLength = tape?.b ? Math.hypot(tape.b.u - tape.a.u, tape.b.v - tape.a.v) : null;
   const coords: [string, string][] | null = cursor
-    ? cursor.side === 'front'
+    ? cursor.side === 'side'
+      ? [
+          ['Depth', m.text(cursor.u)],
+          ['Height', m.text(ground - cursor.v)]
+        ]
+      : cursor.side === 'front'
       ? [
           ['X', m.text(cursor.u)],
           ['Height', m.text(ground - cursor.v)]
@@ -2329,16 +2386,20 @@ export function LayoutPage() {
     const front = side === 'front';
     const box = boxOf(f, side);
     const anchor = isLine(f) ? { u: box.x + box.w / 2, v: box.y + box.h / 2 } : V(f.points[0]);
-    // A semicircle that is not turned: handles for its width and height.
-    const upright = f.kind === 'semicircle' && !f.rotation && !f.facing;
-    const turnable = front ? f.kind === 'semicircle' || f.kind === 'custom' : f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
-    // The knob: the top of the ring at no turn (front), or where it faces (top: the street is down).
-    const turn = !turnable ? null : front ? (f.rotation ?? 0) - 90 : 90 - (f.facing ?? 0);
-    const width = f.kind === 'bush' || f.kind === 'tree' || upright;
-    const height = front && (f.kind === 'tree' || upright);
+    const shaped = f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
+    // What the ring turns in this view: left and right from the front, which way it faces from
+    // above, toward the street or the house from the side.
+    const prop: 'rotation' | 'facing' | 'tilt' = front ? 'rotation' : side === 'top' ? 'facing' : 'tilt';
+    // The knob: the top of the ring at no turn (front and side), or where it faces (top: the street is down).
+    const turn = !shaped ? null : prop === 'facing' ? 90 - (f.facing ?? 0) : (f[prop] ?? 0) - 90;
+    // Width and height handles only while it stands straight (a semicircle: not turned either).
+    const straight = !f.tilt && !(f.kind === 'tree' && f.rotation);
+    const upright = f.kind === 'semicircle' && !f.rotation && !f.facing && straight;
+    const width = f.kind === 'bush' || (f.kind === 'tree' && straight) || (upright && side !== 'side');
+    const height = side !== 'top' && ((f.kind === 'tree' && straight) || upright);
     const scalable = f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
     // The part being dragged, in the view it is dragged in (the height handle is the front view's).
-    const d = drag && 'id' in drag && drag.id === f.id && ('side' in drag ? drag.side === side : front) ? drag : null;
+    const d = drag && 'id' in drag && drag.id === f.id && 'side' in drag && drag.side === side ? drag : null;
     const part: GizmoPart['kind'] | null = !d ? null : d.kind === 'radius' ? 'width' : d.kind === 'treeHeight' ? 'height' : d.kind === 'rotate' || d.kind === 'scale' || d.kind === 'move' ? d.kind : null;
     const label =
       part === 'rotate' && d?.kind === 'rotate'
@@ -2358,7 +2419,7 @@ export function LayoutPage() {
         g.kind === 'move'
           ? { kind: 'move', side, id: f.id, from: at, original: f.points, axis: g.axis }
           : g.kind === 'rotate'
-            ? { kind: 'rotate', side, id: f.id, prop: front ? 'rotation' : 'facing', center: anchor, start: screenAngle(anchor, at), original: (front ? f.rotation : f.facing) ?? 0 }
+            ? { kind: 'rotate', side, id: f.id, prop, center: anchor, start: screenAngle(anchor, at), original: f[prop] ?? 0 }
             : g.kind === 'scale'
               ? {
                   kind: 'scale',
@@ -2370,7 +2431,7 @@ export function LayoutPage() {
                 }
               : g.kind === 'width'
                 ? { kind: 'radius', side, id: f.id }
-                : { kind: 'treeHeight', id: f.id };
+                : { kind: 'treeHeight', side, id: f.id };
       startDrag(e, d, f.id, side);
     };
     return <Gizmo side={side} anchor={anchor} box={box} k={k} turn={turn} width={width} height={height} scale={scalable} active={part ? { part, label } : null} onStart={start} />;
@@ -2404,7 +2465,17 @@ export function LayoutPage() {
           onMouseDown={(e) => e.button === 1 && e.preventDefault()}
           onDoubleClick={() => isLineTool(tool) && draft.side === side && finishLine(tool)}
         >
-          {!front ? (
+          {side === 'side' ? (
+            <>
+              <text x={-10 * k} y={vb.y + 20 * k} textAnchor="end" fontSize={14 * k} fill="rgba(251,191,36,0.7)" pointerEvents="none">
+                House · front wall
+              </text>
+              <text x={vb.x + vb.w - 12 * k} y={vb.y + vb.h - 12 * k} textAnchor="end" fontSize={14 * k} fill="rgba(255,255,255,0.4)" pointerEvents="none">
+                Street →
+              </text>
+            </>
+          ) : null}
+          {side === 'top' ? (
             <>
               <text x={vb.x + 12 * k} y={-zMin - 10 * k} fontSize={14 * k} fill="rgba(251,191,36,0.7)" pointerEvents="none">
                 Front wall of the house
@@ -2628,19 +2699,20 @@ export function LayoutPage() {
                 </g>
               );
             }
-            const outline = f.kind === 'tree' && front ? treeOutline(f).map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
+            const upright = side !== 'top';
+            const outline = f.kind === 'tree' && upright ? treeOutline(f, side === 'side' ? 'side' : 'front').map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
             return (
               <g key={f.id}>
-                {f.kind === 'tree' && front ? (
+                {f.kind === 'tree' && upright ? (
                   <polygon points={outline} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 ) : (
-                  <ellipse cx={c.u} cy={c.v} rx={r} ry={front ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                  <ellipse cx={c.u} cy={c.v} rx={r} ry={upright ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 )}
                 {multi.includes(f.id) ? (
-                  f.kind === 'tree' && front ? (
+                  f.kind === 'tree' && upright ? (
                     <polygon points={outline} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   ) : (
-                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(front ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(upright ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   )
                 ) : null}
                 {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
@@ -2805,7 +2877,7 @@ export function LayoutPage() {
               m={m}
               toWorld={(e, axis) => {
                 const p = viewPoint(e, side);
-                return axis === 'x' ? p.u : side === 'top' ? p.v + zMin : p.v;
+                return side === 'side' ? (axis === 'z' ? p.u : p.v) : axis === 'x' ? p.u : side === 'top' ? p.v + zMin : p.v;
               }}
               onMove={(at) => setCheck((c) => (c?.kind === 'slice' ? { ...c, at } : c))}
             />
@@ -2825,7 +2897,7 @@ export function LayoutPage() {
       return (
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/10 bg-stone-900 px-1.5 text-xs text-white/55 select-none">
           <div role="group" aria-label="View" className="inline-flex rounded-lg bg-white/10 p-0.5">
-            {(['front', 'top', '3d'] as ViewName[]).map((x) => (
+            {(['front', 'top', 'side', '3d'] as ViewName[]).map((x) => (
               <button
                 key={x}
                 type="button"
@@ -2877,7 +2949,7 @@ export function LayoutPage() {
             backgroundSize: '12px'
           }}
         >
-          {(['front', 'top', '3d'] as ViewName[]).map((x) => (
+          {(['front', 'top', 'side', '3d'] as ViewName[]).map((x) => (
             <option key={x} value={x}>
               {VIEW_LABELS[x]}
             </option>
