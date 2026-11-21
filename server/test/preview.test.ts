@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { buildStage, fromLedRange, matchPoint, matchRange, pointOffsets, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
-import { deviceMaps, FramePipeline, PRIORITY, type LightFrame } from '../src/framePipeline.ts';
+import { deviceMaps, FramePipeline, layoutOutput, PRIORITY, type LightFrame } from '../src/framePipeline.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
 import { codeColor } from '../../shared/photoTrace.ts';
-import { LightSender } from '../src/lightSender.ts';
+import { LightSender, takesFrames } from '../src/lightSender.ts';
 import { RealtimeOut } from '../src/realtime.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
@@ -154,6 +154,13 @@ describe('matching a drawn line to the real lights', () => {
 });
 
 describe('the frame pipeline', () => {
+  it('builds a layout’s stage and device maps once, for everyone who shows it', () => {
+    const l = sampleLayout();
+    expect(layoutOutput(l)).toBe(layoutOutput(l));
+    expect(layoutOutput(l).maps).toEqual(deviceMaps(l, buildStage(l)));
+    expect(layoutOutput(sampleLayout())).not.toBe(layoutOutput(l));
+  });
+
   /** A source that shows one color on every LED, while it runs. */
   const solid = (stage: ReturnType<typeof buildStage>, value: number, k?: number) => {
     const maps = deviceMaps(layout, stage);
@@ -224,6 +231,13 @@ describe('the frame pipeline', () => {
 });
 
 describe('a device an admin switched off', () => {
+  it('takes only frames that wake it; a disabled device takes none', () => {
+    const d = { id: 'd', name: 'Roof', host: 'x', port: 80, info: null };
+    expect([takesFrames({ ...d, enabled: true }), takesFrames({ ...d, enabled: true }, true)]).toEqual([true, true]);
+    expect([takesFrames({ ...d, enabled: false, switchedOff: true }), takesFrames({ ...d, enabled: false, switchedOff: true }, true)]).toEqual([false, true]);
+    expect(takesFrames({ ...d, enabled: false }, true)).toBe(false);
+  });
+
   it('gets an editor’s frames (they wake it), and no others', async () => {
     const mock = await startMockWled(0, 'Roof', 600);
     const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: false, switchedOff: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
@@ -299,6 +313,37 @@ describe('sending to devices', () => {
       await mock.close();
     }
   });
+
+  it('switches a device an admin switched off off for good, after the HTTP frame still on its way', async () => {
+    // Each HTTP frame takes 300 ms to show (and so to answer).
+    const mock = await startMockWled(0, 'Roof', 600, { dropUdp: true, frameMs: 300 });
+    const sender = new LightSender();
+    const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const frame = new Uint8Array(600 * 3).fill(90);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    try {
+      const until = Date.now() + 3000;
+      while (Date.now() < until && !mock.realtime.httpFrames) {
+        sender.send(device, frame);
+        await wait(33);
+      }
+      expect(sender.status('d')?.mode).toBe('http');
+      // The last frame has shown: the next one goes out at once, and is on its way when the
+      // admin's switch ends the stream.
+      await wait(400);
+      const frames = mock.realtime.httpFrames;
+      sender.send(device, frame.fill(91));
+      await wait(30);
+      sender.end({ ...device, enabled: false, switchedOff: true });
+      await wait(900);
+      expect(mock.realtime.httpFrames).toBe(frames + 1);
+      expect(mock.state.on).toBe(false);
+      expect(mock.requests.at(-1)?.body).toMatchObject({ on: false, seg: { id: 0, frz: false } });
+    } finally {
+      sender.close();
+      await mock.close();
+    }
+  }, 10_000);
 
   it('keeps UDP when the device confirms it shows real-time data', async () => {
     const { LightSender } = await import('../src/lightSender.ts');

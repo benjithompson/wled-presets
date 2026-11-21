@@ -1,7 +1,7 @@
-import { buildStage, type Layout } from '../../shared/layout.ts';
+import type { Layout } from '../../shared/layout.ts';
 import type { RoofGeometry } from '../../shared/types.ts';
-import { deviceMaps } from './framePipeline.ts';
-import type { DeviceTarget } from './lightSender.ts';
+import { layoutOutput } from './framePipeline.ts';
+import { takesFrames, type DeviceTarget } from './lightSender.ts';
 import { WledPeek } from './wledPeek.ts';
 
 /** Frames a second to the home page. Enough for a strip along the edge of the window. */
@@ -97,14 +97,16 @@ export class RoofView {
     const devices = new Map(this.src.devices().map((d) => [d.id, d]));
     const now = Date.now();
     // Keep a connection to each roof device that plays by itself; quiet ones that get frames.
+    const lit = new Set<string>();
     for (const id of this.roofDevices) {
       const d = devices.get(id);
       let peek = this.peeks.get(id);
-      if (!d?.enabled) {
+      if (!d || !takesFrames(d)) {
         peek?.close();
         this.peeks.delete(id);
         continue;
       }
+      lit.add(id);
       if (!peek) this.peeks.set(id, (peek = this.makePeek(d)));
       peek.setLive(!this.src.deviceFrame(id));
     }
@@ -123,7 +125,7 @@ export class RoofView {
         if (id == null) {
           src = sim;
           at = i * 3;
-        } else if (devices.get(id)?.enabled) {
+        } else if (lit.has(id)) {
           const led = this.ledOf[i];
           const sent = this.src.deviceFrame(id);
           const peek = this.peeks.get(id);
@@ -177,10 +179,10 @@ export class RoofView {
     const layout = this.src.layout();
     if (layout === this.layout) return false;
     this.layout = layout;
-    const stage = buildStage(layout);
+    const { stage, maps } = layoutOutput(layout);
     this.deviceOf = new Array(stage.pixelCount).fill(null);
     this.ledOf = new Int32Array(stage.pixelCount).fill(-1);
-    for (const m of deviceMaps(layout, stage)) {
+    for (const m of maps) {
       for (let p = 0; p < m.pairs.length; p += 2) {
         this.deviceOf[m.pairs[p]] = m.deviceId;
         this.ledOf[m.pairs[p]] = m.pairs[p + 1];

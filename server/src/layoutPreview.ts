@@ -1,10 +1,11 @@
 import { LayoutEffects, toBytes } from '../../shared/effects.ts';
 import { framePut, paintEditorView, PREVIEW_EXPIRE_MS, type PreviewRequest, type SequencePreviewRequest } from '../../shared/editorView.ts';
-import { buildStage, deviceLed, editorPulse, layoutShapeKey, type Layout, type Stage } from '../../shared/layout.ts';
+import { deviceLed, editorPulse, layoutShapeKey, type Layout, type Stage } from '../../shared/layout.ts';
 import { checkMoves, validCheck } from '../../shared/check.ts';
 import { codeColor } from '../../shared/photoTrace.ts';
 import { SequencePlayer } from '../../shared/sequence.ts';
-import { deviceMaps, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
+import { takesFrames } from './lightSender.ts';
+import { layoutOutput, PRIORITY, renderDevice, type DeviceMap, type ExtraLed, type FramePipeline, type FrameSource, type LightFrame } from './framePipeline.ts';
 
 export type { PhotoLights, PreviewRequest, SequencePreviewRequest } from '../../shared/editorView.ts';
 
@@ -15,10 +16,7 @@ interface View {
   maps: DeviceMap[];
 }
 
-const viewOf = (layout: Layout, key = layoutShapeKey(layout)): View => {
-  const stage = buildStage(layout);
-  return { key, stage, maps: deviceMaps(layout, stage) };
-};
+const viewOf = (layout: Layout, key = layoutShapeKey(layout)): View => ({ key, ...layoutOutput(layout) });
 
 /**
  * The editor's view of the layout as a frame for the lights (see paintEditor, paintGameArea
@@ -173,7 +171,7 @@ export class LayoutPreview implements FrameSource {
     const ids = new Set([...req.layout.fixtures.map((f) => f.deviceId), req.photo?.deviceId].filter(Boolean));
     const names = this.pipeline
       .deviceList()
-      .filter((d) => (d.enabled || d.switchedOff) && ids.has(d.id))
+      .filter((d) => takesFrames(d, true) && ids.has(d.id))
       .map((d) => d.name);
     if (started && names.length) this.log(`Editor preview on the lights started (${names.join(', ')})`);
     return names;

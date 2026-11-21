@@ -11,7 +11,7 @@ import { Line, type Visitor } from '../line.ts';
 import { cascadeGame } from './cascade.ts';
 import { catcherGame } from './catcher.ts';
 import { duelGame } from './duel.ts';
-import { deviceMaps, FramePipeline, type DeviceMap, type FrameSource, type LightFrame } from '../framePipeline.ts';
+import { FramePipeline, layoutOutput, type DeviceMap, type FrameSource, type LightFrame } from '../framePipeline.ts';
 import { LightSender } from '../lightSender.ts';
 import { Frame } from './frame.ts';
 import { idleGame } from './idle.ts';
@@ -164,9 +164,8 @@ export class GameHost implements FrameSource {
     this.output = new GameOutput(this.pipeline, this, () => this.maps, () => this.layout.fixtures.filter((f) => !f.deviceId).map((f) => f.name));
     this.area = null;
     this.layout = layout;
-    this.stage = buildStage(layout);
+    ({ stage: this.stage, maps: this.maps } = layoutOutput(layout));
     this.gameStage = this.buildGameStage();
-    this.maps = deviceMaps(layout, this.stage);
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     this.game = idleGame(this.gameStage);
@@ -232,9 +231,8 @@ export class GameHost implements FrameSource {
 
   setLayout(layout: Layout) {
     this.layout = layout;
-    this.stage = buildStage(layout);
+    ({ stage: this.stage, maps: this.maps } = layoutOutput(layout));
     this.gameStage = this.buildGameStage();
-    this.maps = deviceMaps(layout, this.stage);
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     // A game cannot continue on a changed yard.

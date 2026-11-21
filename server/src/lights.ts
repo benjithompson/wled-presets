@@ -184,7 +184,7 @@ export class Lights {
   }
 
   private async checkDevices(): Promise<void> {
-    const devices = this.db.listDevices().filter((d) => d.enabled);
+    const devices = this.enabledDevices();
     this.syncWatchers(devices);
     // A device busy with real-time frames over Wi-Fi can answer slowly; allow 3 s.
     const results = await Promise.all(devices.map((d) => this.readInfo(d)));
@@ -375,7 +375,7 @@ export class Lights {
 
   publicState(): PublicState {
     const settings = readSettings(this.db);
-    const enabled = this.db.listDevices().filter((d) => d.enabled);
+    const enabled = this.enabledDevices();
     const isOnline = (id: string) => this.status.get(id)?.online === true;
     const enabledIds = new Set(enabled.map((d) => d.id));
     const presets = this.db.listDevicePresets();
@@ -435,7 +435,7 @@ export class Lights {
   async applyScene(sceneId: string, actor?: Actor, reason: 'user' | 'revert' = 'user'): Promise<ApplyResult | null> {
     const scene = this.db.getScene(sceneId);
     if (!scene) return null;
-    const devices = this.db.listDevices().filter((d) => d.enabled && !this.isOff(d.id));
+    const devices = this.onDevices();
     // Effects first: a device with an object that plays an effect gets the effect, not a preset.
     const played = this.effectPlayer?.(this.showOf(scene)) ?? { devices: [], objects: 0 };
     const streamed = new Set(played.devices.filter((id) => !this.isOff(id)));
@@ -484,7 +484,7 @@ export class Lights {
     if (!rgb) return null;
     const color = `#${hex.replace('#', '').toLowerCase()}`;
     this.effectPlayer?.(null);
-    const devices = this.db.listDevices().filter((d) => d.enabled && !this.isOff(d.id));
+    const devices = this.onDevices();
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb, this.levelOf(device.id)) })));
     if (result.applied.length > 0) {
       this.db.setSetting(KEY.currentScene, '');
@@ -520,8 +520,18 @@ export class Lights {
 
   /** True when there are lights and an admin switched every one of them off. */
   allOff(): boolean {
-    const enabled = this.db.listDevices().filter((d) => d.enabled);
+    const enabled = this.enabledDevices();
     return enabled.length > 0 && enabled.every((d) => this.isOff(d.id));
+  }
+
+  /** The devices in use (an admin can disable one in the device list). */
+  private enabledDevices(): Device[] {
+    return this.db.listDevices().filter((d) => d.enabled);
+  }
+
+  /** The devices in use that an admin has not switched off: the ones scenes and colors go to. */
+  private onDevices(): Device[] {
+    return this.enabledDevices().filter((d) => !this.isOff(d.id));
   }
 
   /** A device's brightness from the admin's switches, as WLED counts it (1 to 255), or null: the scene's. */
@@ -545,10 +555,9 @@ export class Lights {
     if (!on && this.allOff()) this.cancelRevert();
     const devices = target.filter((d) => d.enabled);
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.power(device, on, this.levelOf(device.id)) })));
+    // A device that was getting frames is given back on the next frame, switched off (after any
+    // frame still on its way: see LightSender.giveBack).
     this.noteMissed(result);
-    // A device that was getting frames is given back on the next frame, and over HTTP that
-    // switches it on again: say off once more after that.
-    if (!on) setTimeout(() => void Promise.all(devices.filter((d) => this.isOff(d.id)).map((d) => wled.power(d, false))), 600).unref?.();
     const what = deviceId ? `"${target[0]?.name ?? deviceId}"` : 'All lights';
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}`, result, actor);
     this.bus.emit('devices');
@@ -568,7 +577,7 @@ export class Lights {
       else devicesLevels[deviceId] = pct;
     }
     this.saveControls({ ...c, brightness: deviceId ? { ...c.brightness, devices: devicesLevels } : { all: pct, devices: devicesLevels } });
-    const devices = this.db.listDevices().filter((d) => d.enabled && !this.isOff(d.id) && (!deviceId || d.id === deviceId));
+    const devices = this.onDevices().filter((d) => !deviceId || d.id === deviceId);
     const work = devices.flatMap((device) => {
       const bri = this.levelOf(device.id);
       return bri == null ? [] : [{ device, run: () => wled.brightness(device, bri) }];
