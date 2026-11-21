@@ -2,7 +2,7 @@
 // custom objects and their library.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
-import { designLength, isLine, layoutScale, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
+import { designLength, isLine, layoutScale, MAX_FIXTURE_PIXELS, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
 import {
   BUILT_IN_LIGHTS,
   isBuiltInLight,
@@ -73,7 +73,7 @@ export function LightsProps({
   // A semicircle's zigzag is drawn for you: its length is known, so the LEDs that fit it are too.
   const zigzag = f.kind === 'semicircle';
   const drawn = isLine(f) ? lineLengths(f).reduce((a, b) => a + b, 0) : custom ? designLength(f.design ?? []) * scale * (f.size ?? 1) : zigzag ? designLength([{ points: zigzagPath(f) }]) : 0;
-  const fit = lt && (isLine(f) || zigzag) ? Math.min(2000, ledsForLength(drawn / scale, lt.spacing)) : null;
+  const fit = lt && (isLine(f) || zigzag) ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(drawn / scale, lt.spacing)) : null;
   const pins = f.pointLeds?.filter((p) => p != null).length ?? 0;
   return (
     <>
@@ -221,7 +221,7 @@ export function LightTypeDialog({
               placeholder="cut to length"
               onChange={(e) => {
                 const n = parseInt(e.target.value.replace(/\D/g, ''), 10);
-                set({ perStrand: Number.isFinite(n) && n > 0 ? Math.min(2000, n) : null });
+                set({ perStrand: Number.isFinite(n) && n > 0 ? Math.min(MAX_FIXTURE_PIXELS, n) : null });
               }}
             />
           )}

@@ -53,6 +53,10 @@ import {
 import { toast } from 'sonner';
 import {
   buildStage,
+  BUSH_TALL,
+  radiusOf,
+  semicircleSize,
+  treeSize,
   deviceLed,
   FEET_PER_METER,
   FIXTURE_HUES,
@@ -112,6 +116,7 @@ import {
   keepLocked,
   changeKind,
   isShapeKind,
+  SHAPE_KINDS,
   type ShapeKind
 } from '../../../../shared/layout.ts';
 import { deviceEffects, EFFECTS, keyDevice, EffectScene, effectKey, effectTarget, layoutEffects, toBytes, withEffects, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
@@ -130,6 +135,7 @@ import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Ca
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
+import { KIND_ICONS, KIND_LABELS } from '../../lib/kinds.ts';
 import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useMedia } from '../../lib/useMedia.ts';
@@ -229,10 +235,8 @@ const VIEW_NOTES: Record<ViewName, string> = {
 /** The 2D views. */
 const SIDES: ViewSide[] = ['front', 'top', 'side'];
 const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', measure: 'Measure', align: 'Align picture' };
-const KIND_ICONS: Record<FixtureKind, typeof House> = { roof: House, line: Spline, bush: Circle, tree: TreePine, semicircle: Rainbow, custom: Shapes };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
 const BASE_K = 1.6;
-const KIND_LABELS: Record<FixtureKind, string> = { roof: 'Roofline', line: 'Line of lights', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', custom: 'Custom object' };
 
 function readShowOnLights() {
   try {
@@ -318,6 +322,9 @@ function TiltProp({ label, value, hint, onChange }: { label: string; value: numb
 }
 
 /** The shape of a bush, a tree or a semicircle, and how its LEDs run over it. */
+/** The height a shape's size handles show: a tree's, or a semicircle's (its radius unless set). */
+const sizeHeight = (f: Fixture) => (f.kind === 'tree' ? treeSize(f).h : semicircleSize(f).h);
+
 function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked: boolean; onChange: (patch: Partial<Fixture>) => void }) {
   /** Its size and turn: a locked object keeps them (its pattern and wiring can still change). */
   const place = (el: ReactNode) => (
@@ -325,7 +332,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
       {el}
     </fieldset>
   );
-  const width = place(<PropDistance label="Width" value={(f.radius ?? 60) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
+  const width = place(<PropDistance label="Width" value={radiusOf(f) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
   if (f.kind === 'bush') {
     return (
       <>
@@ -354,7 +361,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           <PropDistance
             label="Height"
             hint="From the straight edge to the top of the round. Half the width: a true half circle."
-            value={f.height ?? f.radius ?? 60}
+            value={semicircleSize(f).h}
             m={m}
             min={0.1}
             onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })}
@@ -404,7 +411,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
   const passes = wave ? wavePasses(f) : null;
   const ball = f.shape === 'sphere';
   /** The height its LEDs climb: a ball's cap, when only its top has LEDs. */
-  const climb = (f.height ?? 240) * (1 - capFloor(f));
+  const climb = treeSize(f).h * (1 - capFloor(f));
   return (
     <>
       <PropSelect<TreeShape>
@@ -419,7 +426,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
         onChange={(shape) => onChange({ shape: shape === 'cone' ? undefined : shape })}
       />
       {width}
-      {place(<PropDistance label="Height" value={f.height ?? 240} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
+      {place(<PropDistance label="Height" value={treeSize(f).h} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
       {ball ? (
         <>
           {place(
@@ -427,12 +434,12 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
               label="Roundness"
               unit="%"
               hint="Its height as a share of its width: 100 is a round ball, less is flatter (a squashed ball, a low dome), more is taller."
-              value={Math.round(((f.height ?? 240) / (2 * (f.radius ?? 80))) * 100)}
+              value={Math.round((treeSize(f).h / (2 * treeSize(f).r)) * 100)}
               min={5}
               max={400}
               step={5}
               steppers
-              onChange={(n) => onChange({ height: Math.max(5, Math.round((2 * (f.radius ?? 80) * n) / 100)) })}
+              onChange={(n) => onChange({ height: Math.max(5, Math.round((2 * treeSize(f).r * n) / 100)) })}
             />
           )}
           <PropNumber
@@ -779,7 +786,7 @@ export function LayoutPage() {
     }
     for (const f of layout.fixtures)
       for (const p of f.points) {
-        const r = isLine(f) ? 0 : f.kind === 'custom' ? designReach(f, s) : (f.radius ?? 60);
+        const r = isLine(f) ? 0 : f.kind === 'custom' ? designReach(f, s) : radiusOf(f);
         lo = Math.min(lo, (p.z ?? 0) - r - 1.5 * s);
         hi = Math.max(hi, (p.z ?? 0) + r + 1.5 * s);
       }
@@ -1505,7 +1512,7 @@ export function LayoutPage() {
       return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
     }
     const c = V(f.points[0]);
-    const r = f.radius ?? 60;
+    const r = radiusOf(f);
     if (side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
     if (f.kind === 'tree') {
       // Its outline from that side (tilted, as it is), with the whole ball for a cap.
@@ -1514,7 +1521,7 @@ export function LayoutPage() {
       const vs = pts.map((p) => p.v);
       return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
     }
-    const h = r * 0.72;
+    const h = r * BUSH_TALL;
     return { x: c.u - r, y: c.v - h, w: 2 * r, h: 2 * h };
   };
   /** F: zoom every 2D view to the selected object, or to the whole yard when nothing is selected. */
@@ -1727,7 +1734,7 @@ export function LayoutPage() {
       { label: 'Zoom to this object', keys: 'F', run: () => (setSelected(f.id), frameSelection(f.id)) },
       { label: 'Rename', keys: 'F2', run: () => (setSelected(f.id), setRenaming(f.id)) },
       ...(isShapeKind(f.kind)
-        ? (['bush', 'tree', 'semicircle'] as const).filter((k) => k !== f.kind).map((k) => ({ label: `Make it a ${KIND_LABELS[k].toLowerCase()}`, run: () => setKind([f.id], k) }))
+        ? SHAPE_KINDS.filter((k) => k !== f.kind).map((k) => ({ label: `Make it a ${KIND_LABELS[k].toLowerCase()}`, run: () => setKind([f.id], k) }))
         : []),
       { label: f.locked ? 'Unlock' : 'Lock in place', run: () => setLocked([f.id], !f.locked) },
       { label: `Delete ${f.name}`, keys: 'Delete', danger: true, run: () => remove(f.id) }
@@ -1906,7 +1913,7 @@ export function LayoutPage() {
     } else if (drag.kind === 'ground') {
       updateLayout({ groundY: Math.max(0, Math.min(layout.height, p.v)) });
     } else if (drag.kind === 'newBush') {
-      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.center.u, (p.v - drag.center.v) / (side === 'front' ? 0.72 : 1))) });
+      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.center.u, (p.v - drag.center.v) / (side === 'front' ? BUSH_TALL : 1))) });
     } else if (drag.kind === 'newTree') {
       setDrag({ ...drag, size: Math.round(side === 'front' ? Math.max(0, drag.base.v - p.v) : Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
     } else if (drag.kind === 'newSemicircle') {
@@ -1946,7 +1953,7 @@ export function LayoutPage() {
         const r = Math.max(30, drag.radius || 70);
         const c = drag.center;
         // From the front: the bush touches the front wall. From above: it sits on the ground.
-        const center: Point = drag.side === 'front' ? { x: c.u, y: c.v, z: r } : { x: c.u, y: Math.round(ground - r * 0.72), z: Math.round(c.v + zMin) };
+        const center: Point = drag.side === 'front' ? { x: c.u, y: c.v, z: r } : { x: c.u, y: Math.round(ground - r * BUSH_TALL), z: Math.round(c.v + zMin) };
         const lt = lightsOf(layout, layout.lights);
         // One strand of lights per bush, when the strands are known.
         addFixture({ id: uid(), name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: lt?.perStrand ?? 60, ...(lt ? { lights: lt.id } : {}), deviceId: null, startPixel: 0, reversed: false });
@@ -2405,13 +2412,13 @@ export function LayoutPage() {
       part === 'rotate' && d?.kind === 'rotate'
         ? `${f[d.prop] ?? 0}°`
         : part === 'width'
-          ? m.text((f.radius ?? 60) * 2)
+          ? m.text(radiusOf(f) * 2)
           : part === 'height'
-            ? m.text(f.height ?? f.radius ?? 60)
+            ? m.text(sizeHeight(f))
             : part === 'scale'
               ? f.kind === 'custom'
                 ? `× ${f.size ?? 1}`
-                : `${m.text((f.radius ?? 60) * 2)} × ${m.text(f.height ?? f.radius ?? 60)}`
+                : `${m.text(radiusOf(f) * 2)} × ${m.text(sizeHeight(f))}`
               : null;
     const start = (e: RPointerEvent, g: GizmoPart) => {
       const at = viewPoint(e, side);
@@ -2427,7 +2434,7 @@ export function LayoutPage() {
                   id: f.id,
                   center: anchor,
                   start: Math.hypot(at.u - anchor.u, at.v - anchor.v),
-                  original: f.kind === 'custom' ? { size: f.size ?? 1 } : { radius: f.radius ?? 60, height: f.height ?? (f.kind === 'tree' ? 240 : (f.radius ?? 60)) }
+                  original: f.kind === 'custom' ? { size: f.size ?? 1 } : { radius: radiusOf(f), height: sizeHeight(f) }
                 }
               : g.kind === 'width'
                 ? { kind: 'radius', side, id: f.id }
@@ -2668,8 +2675,7 @@ export function LayoutPage() {
             }
             // Bush, tree, custom object or semicircle.
             const c = V(f.points[0]);
-            const r = f.radius ?? 60;
-            const h = f.kind === 'tree' ? (f.height ?? 240) : 0;
+            const r = radiusOf(f);
             const move = (e: RPointerEvent) => {
               if (tool === 'select' && !panMode && e.button === 0 && (e.ctrlKey || e.metaKey)) {
                 e.stopPropagation();
@@ -2706,13 +2712,13 @@ export function LayoutPage() {
                 {f.kind === 'tree' && upright ? (
                   <polygon points={outline} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 ) : (
-                  <ellipse cx={c.u} cy={c.v} rx={r} ry={upright ? r * 0.72 : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
+                  <ellipse cx={c.u} cy={c.v} rx={r} ry={upright ? r * BUSH_TALL : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                 )}
                 {multi.includes(f.id) ? (
                   f.kind === 'tree' && upright ? (
                     <polygon points={outline} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   ) : (
-                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(upright ? r * 0.72 : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
+                    <ellipse cx={c.u} cy={c.v} rx={r + 6 * k} ry={(upright ? r * BUSH_TALL : r) + 6 * k} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
                   )
                 ) : null}
                 {isSel ? <LedLabels f={f} corner={null} segment={null} V={V} side={side} k={k} scale={scale} /> : null}
@@ -2773,7 +2779,7 @@ export function LayoutPage() {
               cx={drag.center.u}
               cy={drag.center.v}
               rx={drag.radius}
-              ry={drag.radius * (front ? 0.72 : 1)}
+              ry={drag.radius * (front ? BUSH_TALL : 1)}
               fill="rgba(52,211,153,0.15)"
               stroke="#34d399"
               strokeWidth={2.5 * k}
@@ -4780,9 +4786,9 @@ function LedLabels({ f, corner, segment, V, side, k, scale }: { f: Fixture; corn
   }
   if (!isLine(f)) {
     const c = V(f.points[0]);
-    const r = f.radius ?? 60;
+    const r = radiusOf(f);
     const { first, last } = ledRange(f);
-    const above = side === 'top' ? r : f.kind === 'tree' ? (f.height ?? 240) : r * 0.72;
+    const above = side === 'top' ? r : f.kind === 'tree' ? treeSize(f).h : r * BUSH_TALL;
     return label(c.u, c.v - above, `LEDs ${first}–${last}`, true, 'b');
   }
   const offs = pointOffsets(f);

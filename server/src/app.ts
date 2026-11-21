@@ -732,7 +732,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   admin.post('/sequences', async (c) => {
     const input = await body(c, sequenceInput);
-    const seq = db.saveSequence({ ...input, id: crypto.randomUUID() } as Sequence);
+    const seq = db.saveSequence({ ...input, id: crypto.randomUUID() });
     lights.log('info', 'config', `Sequence "${seq.name}" created`, null, actor(c));
     return c.json(seq, 201);
   });
@@ -741,7 +741,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const prev = db.getSequence(c.req.param('id'));
     if (!prev) throw new HttpError(404, 'Unknown sequence');
     const input = await body(c, sequenceInput);
-    const seq = db.saveSequence({ ...input, id: prev.id } as Sequence);
+    const seq = db.saveSequence({ ...input, id: prev.id });
     lights.log('info', 'config', `Sequence "${seq.name}" saved`, null, actor(c));
     // A scene that plays it now plays the new version.
     lights.sequenceChanged(prev.id);
