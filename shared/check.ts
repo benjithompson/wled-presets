@@ -13,7 +13,7 @@
 //   - a chase: one light runs along the object's wire from LED 0, so you can follow where the
 //     real string starts and which way it goes.
 
-import { DEFAULT_SCALE, fixturePixels, layoutGround, type Fixture, type Layout, type Stage } from './layout.ts';
+import { DEFAULT_SCALE, fixturePixels, layoutGround, wavePasses, type Fixture, type Layout, type Stage } from './layout.ts';
 
 /** x: across (left to right), y: height, z: depth (from the house toward the street). */
 export type CheckAxis = 'x' | 'y' | 'z';
@@ -248,6 +248,20 @@ function guessesFor(f: Fixture): WiringGuess[] {
       { label: `Round counterclockwise${e.text}`, patch: { spin: undefined, reversed: e.reversed } },
       { label: `Round clockwise${e.text}`, patch: { spin: 'cw' as const, reversed: e.reversed } }
     ]);
+  }
+  if (f.kind === 'tree' && f.pattern === 'wave') {
+    // The same passes: the end side flips with the start side.
+    const { startSide, endSide } = wavePasses(f);
+    const flip = (x: 'left' | 'right') => (x === 'left' ? 'right' : 'left');
+    return (['base', 'top'] as const).flatMap((start) =>
+      [false, true].map((other) => {
+        const from = other ? flip(startSide) : startSide;
+        return {
+          label: `${start === 'base' ? 'Base up' : 'Top down'}, from the ${from}`,
+          patch: { start: start === 'base' ? undefined : start, startSide: from === 'left' ? undefined : from, endSide: other ? flip(endSide) : endSide }
+        };
+      })
+    );
   }
   if (f.kind === 'tree') {
     return [
