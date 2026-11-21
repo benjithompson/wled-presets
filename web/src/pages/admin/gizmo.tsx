@@ -3,7 +3,7 @@
 // move it freely, a ring to turn it, and handles on its box to resize it. Axis colors are the
 // usual ones: X red, Y green, Z blue; a ring has the color of the axis it turns about.
 import type { PointerEvent as RPointerEvent } from 'react';
-import type { ViewSide } from '../../yard/YardView.tsx';
+import type { ViewSide } from '../../yard/views.ts';
 
 type UV = { u: number; v: number };
 

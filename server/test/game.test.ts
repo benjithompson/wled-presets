@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import http from 'node:http';
 import { WebSocket } from 'ws';
+import { fitBox } from '../../web/src/yard/views.ts';
 import {
   activeLeds,
   clampPointLed,
@@ -560,8 +561,7 @@ describe('line editing', () => {
     expect(snapPoint({ u: 140, v: 205 }, none, 8, { from: start, angle: 90, grid }).at.v).toBe(200.5);
   });
 
-  it('fits the whole roof in the yard view, even a peak above the picture', async () => {
-    const { fitBox } = await import('../../web/src/yard/YardView.tsx');
+  it('fits the whole roof in the yard view, even a peak above the picture', () => {
     const layout = sampleLayout();
     const inside = fitBox(layout, 'front', [-480, 480]);
     expect(inside.x).toBeLessThanOrEqual(0);
