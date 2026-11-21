@@ -68,11 +68,12 @@ import {
   layoutScale,
   paintEditor,
   clampPointLed,
+  pinPoint,
+  removePoint,
+  setSkipped,
+  splitLine,
+  unpinPoint,
   segmentLeds,
-  setPointLed,
-  skipAfterRemove,
-  mapSegmentEffects,
-  segmentsAfterRemove,
   deviceRuns,
   extendLine,
   insertPoint,
@@ -130,12 +131,14 @@ import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps
 import { paintCheck, pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
-import { toView, YardView, type ViewSide } from '../../yard/YardView.tsx';
+import { YardView } from '../../yard/YardView.tsx';
+import { fromView, toView, type ViewSide } from '../../yard/views.ts';
 import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { KIND_ICONS, KIND_LABELS } from '../../lib/kinds.ts';
+import { EditHistory } from './editHistory.ts';
 import { cn, downloadJson, errorText } from '../../lib/utils.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useMedia } from '../../lib/useMedia.ts';
@@ -161,10 +164,6 @@ const below = (e: RMouseEvent<HTMLElement>): Anchor => {
   const r = e.currentTarget.getBoundingClientRect();
   return { x: r.left, y: r.bottom + 4 };
 };
-/** How far back Undo goes. */
-const UNDO_STEPS = 100;
-/** Changes closer together than this are one step for Undo (for example, one drag). */
-const UNDO_GROUP_MS = 600;
 /** A position in one view, in layout units: u to the right, v down. */
 type UV = { u: number; v: number };
 type Drag =
@@ -633,9 +632,7 @@ export function LayoutPage() {
   // Undo and redo: whole layouts. Changes in quick succession (a drag) are one step.
   const layoutRef = useRef<Layout | null>(null);
   layoutRef.current = layout;
-  const past = useRef<Layout[]>([]);
-  const future = useRef<Layout[]>([]);
-  const lastEdit = useRef(0);
+  const [history] = useState(() => new EditHistory<Layout>());
   const [, setHistoryTick] = useState(0);
   const [cursor, setCursor] = useState<(UV & { side: ViewSide }) | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -884,13 +881,7 @@ export function LayoutPage() {
   const edit = (fn: (l: Layout) => Layout, force = false) => {
     const cur = layoutRef.current;
     if (!cur) return;
-    const now = Date.now();
-    if (now - lastEdit.current > UNDO_GROUP_MS) {
-      past.current = [...past.current.slice(1 - UNDO_STEPS), cur];
-      future.current = [];
-      setHistoryTick((n) => n + 1);
-    }
-    lastEdit.current = now;
+    if (history.record(cur)) setHistoryTick((n) => n + 1);
     setLayout((l) => {
       if (!l) return l;
       const next = fn(l);
@@ -914,18 +905,14 @@ export function LayoutPage() {
   const setLocked = (ids: string[], locked: boolean) =>
     edit((l) => ({ ...l, fixtures: l.fixtures.map((f) => (ids.includes(f.id) ? { ...f, locked: locked || undefined } : f)) }));
   const undo = () => {
-    const prev = past.current.pop();
-    if (!prev || !layoutRef.current) return;
-    future.current.push(layoutRef.current);
-    lastEdit.current = 0;
+    const prev = layoutRef.current && history.undo(layoutRef.current);
+    if (!prev) return;
     setLayout(prev);
     setHistoryTick((n) => n + 1);
   };
   const redo = () => {
-    const next = future.current.pop();
-    if (!next || !layoutRef.current) return;
-    past.current.push(layoutRef.current);
-    lastEdit.current = 0;
+    const next = layoutRef.current && history.redo(layoutRef.current);
+    if (!next) return;
     setLayout(next);
     setHistoryTick((n) => n + 1);
   };
@@ -938,7 +925,7 @@ export function LayoutPage() {
     const cur = ledRange(f);
     if (isLine(f) && f.points.length > 2 && (first === cur.first) !== (last === cur.last)) {
       const lastPoint = f.points.length - 1;
-      update(f.id, first !== cur.first ? setPointLed(f, 0, clampPointLed(f, 0, first), allPoints(f)) : setPointLed(f, lastPoint, clampPointLed(f, lastPoint, last), allPoints(f)));
+      update(f.id, first !== cur.first ? pinPoint(f, 0, clampPointLed(f, 0, first)) : pinPoint(f, lastPoint, clampPointLed(f, lastPoint, last)));
       return;
     }
     const next = fromLedRange(first, last);
@@ -952,12 +939,10 @@ export function LayoutPage() {
   const pinCorner = (f: Fixture, index: number, led: number | null) => {
     if (led != null) {
       // Only this corner moves: every other corner keeps its LED number.
-      update(f.id, setPointLed(f, index, clampPointLed(f, index, led), allPoints(f)));
+      update(f.id, pinPoint(f, index, clampPointLed(f, index, led)));
       return;
     }
-    const pins = f.points.map((_, i) => f.pointLeds?.[i] ?? null);
-    pins[index] = null;
-    update(f.id, { pointLeds: tidyPins(pins) });
+    update(f.id, unpinPoint(f, index));
   };
 
   /** Starts the wizard on a line at one of its points (default: the start). */
@@ -1007,30 +992,12 @@ export function LayoutPage() {
 
   /** Cuts a line in two at a corner. The second part starts at the next LED; raise its first LED to leave a gap. */
   const splitAt = (f: Fixture, k: number) => {
-    const off = pointOffsets(f)[k];
-    if (off < 1 || off >= f.pixels - 1) {
+    const parts = splitLine(f, k, uid());
+    if (!parts) {
       toast.error('Each part needs at least one LED. Move the corner or add LEDs first.');
       return;
     }
-    const pins = f.points.map((_, i) => f.pointLeds?.[i] ?? null);
-    const a: Fixture = {
-      ...f,
-      points: f.points.slice(0, k + 1),
-      ...fromLedRange(deviceLed(f, 0), deviceLed(f, off)),
-      pointLeds: tidyPins(pins.slice(0, k + 1)),
-      skip: nonEmpty(f.skip?.filter((x) => x < k)),
-      segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x < k ? [x] : []))
-    };
-    const b: Fixture = {
-      ...f,
-      id: uid(),
-      name: `${f.name} (part 2)`,
-      points: f.points.slice(k),
-      ...fromLedRange(deviceLed(f, off + 1), deviceLed(f, f.pixels - 1)),
-      pointLeds: tidyPins(pins.slice(k).map((p) => (p == null ? null : p - off - 1))),
-      skip: nonEmpty(f.skip?.filter((x) => x >= k).map((x) => x - k)),
-      segmentEffects: mapSegmentEffects(f.segmentEffects, (x) => (x >= k ? [x - k] : []))
-    };
+    const [a, b] = parts;
     edit((l) => ({ ...l, fixtures: l.fixtures.flatMap((x) => (x.id === f.id ? [a, b] : [x])) }));
     setSelected(b.id);
     toast.success(`Split into ${a.name} and ${b.name}. Set the first LED of ${b.name} to leave a gap.`);
@@ -1050,40 +1017,12 @@ export function LayoutPage() {
   };
   /** Removes one point of a line (a line keeps at least two). */
   const deletePoint = (f: Fixture, i: number) => {
-    if (f.points.length <= 2) {
+    const patch = removePoint(f, i);
+    if (!patch) {
       toast.error('A line needs at least two points. Delete the whole line instead.');
       return;
     }
-    const last = f.points.length - 1;
-    const offs = pointOffsets(f);
-    const pins = f.points.map((_, j) => f.pointLeds?.[j] ?? null);
-    if (i === 0) {
-      // The first segment goes, with its LEDs: the line now starts at the LED of point 1.
-      const off = offs[1];
-      update(f.id, {
-        points: f.points.slice(1),
-        ...fromLedRange(deviceLed(f, off), deviceLed(f, f.pixels - 1)),
-        pointLeds: tidyPins(pins.slice(1).map((p) => (p == null ? null : p - off))),
-        skip: nonEmpty(f.skip?.filter((k) => k > 0).map((k) => k - 1)),
-        segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k > 0 ? [k - 1] : []))
-      });
-    } else if (i === last) {
-      // The last segment goes, with its LEDs: the line now ends at the LED of the point before.
-      update(f.id, {
-        points: f.points.slice(0, last),
-        ...fromLedRange(deviceLed(f, 0), deviceLed(f, offs[last - 1])),
-        pointLeds: tidyPins(pins.slice(0, last)),
-        skip: nonEmpty(f.skip?.filter((k) => k < last - 1)),
-        segmentEffects: mapSegmentEffects(f.segmentEffects, (k) => (k < last - 1 ? [k] : []))
-      });
-    } else {
-      update(f.id, {
-        points: f.points.filter((_, j) => j !== i),
-        pointLeds: tidyPins(pins.filter((_, j) => j !== i)),
-        skip: skipAfterRemove(f.skip, i),
-        segmentEffects: mapSegmentEffects(f.segmentEffects, segmentsAfterRemove(i))
-      });
-    }
+    update(f.id, patch);
     setSegment(null);
     setCorner(null);
   };
@@ -1167,10 +1106,6 @@ export function LayoutPage() {
     setLightEdit(null);
   };
 
-  /** A point from a position in one view. The coordinate that the view does not show comes from `base`. */
-  const fromView = (side: ViewSide, p: UV, base: Point): Point =>
-    side === 'front' ? { ...base, x: p.u, y: p.v } : side === 'top' ? { ...base, x: p.u, z: Math.round(p.v + zMin) } : { ...base, z: Math.round(p.u), y: p.v };
-
   /** The 3D point of a line that sits at this spot in a view, if any. */
   const pointAtView = (side: ViewSide, at: UV, exclude?: { id: string; index: number }): Point | undefined => {
     for (const f of layout?.fixtures ?? []) {
@@ -1197,7 +1132,7 @@ export function LayoutPage() {
       let prev = start;
       return uv.map((p) => {
         const hit = pointAtView(d.side, p);
-        prev = hit ? { ...hit } : fromView(d.side, p, prev);
+        prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev);
         return prev;
       });
     };
@@ -1573,7 +1508,7 @@ export function LayoutPage() {
   } | null>(null);
   const pinchCam = useRef<Cam | null>(null);
   const onTouchFirst = () => {
-    touchStart.current = { at: performance.now(), layout: layoutRef.current, past: past.current.length, draft, tape, alignPts, selected, corner, segment, multi, tool };
+    touchStart.current = { at: performance.now(), layout: layoutRef.current, past: history.mark(), draft, tape, alignPts, selected, corner, segment, multi, tool };
   };
   const onPinchStart = (side: ViewSide) => {
     const s = touchStart.current;
@@ -1582,8 +1517,7 @@ export function LayoutPage() {
     setCursor(null);
     if (s && performance.now() - s.at < 600) {
       if (s.layout && layoutRef.current !== s.layout) {
-        past.current = past.current.slice(0, s.past);
-        lastEdit.current = 0;
+        history.rollback(s.past);
         setLayout(s.layout);
         setHistoryTick((n) => n + 1);
       }
@@ -1683,7 +1617,7 @@ export function LayoutPage() {
   const pointOnLine = (f: Fixture, k: number, raw: UV, side: ViewSide): Point => {
     const V = (q: Point) => toView(q, side, zMin);
     const { at, t } = closestOnSegment(raw, V(f.points[k]), V(f.points[k + 1]));
-    return fromView(side, { u: Math.round(at.u), v: Math.round(at.v) }, pointOnSegment(f, k, t));
+    return fromView({ u: Math.round(at.u), v: Math.round(at.v) }, side, zMin, pointOnSegment(f, k, t));
   };
 
   /** Adds a point on segment k and selects it; with `drag`, the pointer then moves it. */
@@ -1749,7 +1683,7 @@ export function LayoutPage() {
       { label: 'Edit this segment', run: () => selectSegment(f.id, k) },
       {
         label: off ? 'Turn this segment on' : 'Turn this segment off (skip)',
-        run: () => update(f.id, { skip: nonEmpty(off ? f.skip?.filter((x) => x !== k) : [...(f.skip ?? []), k].sort((a, b) => a - b)) })
+        run: () => update(f.id, setSkipped(f, k, !off))
       },
       { label: `Delete ${f.name}`, danger: true, run: () => remove(f.id) }
     ]);
@@ -1816,7 +1750,7 @@ export function LayoutPage() {
     if (target && layout?.fixtures.find((f) => f.id === target)?.locked) d = { kind: 'locked', id: target, from: viewPoint(e, side), warned: false };
     svgs.current[side]?.setPointerCapture(e.pointerId);
     // A new drag is a new step for Undo.
-    lastEdit.current = 0;
+    history.newStep();
     setDrag(d);
   }
 
@@ -1871,7 +1805,7 @@ export function LayoutPage() {
       setSnapHint({ ...s, side });
       // On another point: take that point's position in 3D, so the two points join.
       const hit = s.kind === 'point' ? pointAtView(side, s.at, { id: f.id, index: i }) : undefined;
-      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(side, s.at, q)) : q)) });
+      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q)) : q)) });
     } else if (drag.kind === 'move') {
       let du = p.u - drag.from.u;
       let dv = p.v - drag.from.v;
@@ -2212,8 +2146,7 @@ export function LayoutPage() {
       qc.setQueryData(LAYOUT_KEY, out.layout);
       void qc.invalidateQueries({ queryKey: ['admin', 'game-area'] });
       // A new layout: start over, with nothing selected, no undo history, and the views zoomed to fit.
-      past.current = [];
-      future.current = [];
+      history.clear();
       setHistoryTick((n) => n + 1);
       setLayout(out.layout);
       setSelected(null);
@@ -2587,7 +2520,7 @@ export function LayoutPage() {
                             startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
                             selectSegment(f.id, s);
                           } else if (tool === 'edit') {
-                            lastEdit.current = 0;
+                            history.newStep();
                             addPointOn(f, s, snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side), side, e);
                           } else if (tool === 'split') {
                             e.stopPropagation();
@@ -3123,12 +3056,8 @@ export function LayoutPage() {
               <SegmentProps
                 f={sel}
                 index={segment}
-                onPoint={(point, led) => update(sel.id, setPointLed(sel, point, led, allPoints(sel)))}
-                onToggle={(on) =>
-                  update(sel.id, {
-                    skip: nonEmpty(on ? sel.skip?.filter((x) => x !== segment) : [...(sel.skip ?? []), segment].sort((a, b) => a - b))
-                  })
-                }
+                onPoint={(point, led) => update(sel.id, pinPoint(sel, point, led))}
+                onToggle={(on) => update(sel.id, setSkipped(sel, segment, !on))}
                 onClose={() => setSegment(null)}
                 lights={lightsOf(layout, sel.lights)}
                 length={lineLengths(sel)[segment] ?? 0}
@@ -3650,10 +3579,10 @@ export function LayoutPage() {
   /** The phone's command bar: one row, the menus under ⋯. */
   const phoneBar = (
     <div className="flex shrink-0 items-center gap-0.5 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
-      <button type="button" onClick={undo} disabled={!past.current.length} aria-label="Undo" className={iconButton}>
+      <button type="button" onClick={undo} disabled={!history.canUndo} aria-label="Undo" className={iconButton}>
         <Undo2 />
       </button>
-      <button type="button" onClick={redo} disabled={!future.current.length} aria-label="Redo" className={iconButton}>
+      <button type="button" onClick={redo} disabled={!history.canRedo} aria-label="Redo" className={iconButton}>
         <Redo2 />
       </button>
       {barSep}
@@ -3841,10 +3770,10 @@ export function LayoutPage() {
             <h1 className="px-1.5 text-sm font-semibold tracking-tight">Yard layout</h1>
             {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
             {barSep}
-            <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
+            <Button size="sm" variant="ghost" onClick={undo} disabled={!history.canUndo} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
               <Undo2 />
             </Button>
-            <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
+            <Button size="sm" variant="ghost" onClick={redo} disabled={!history.canRedo} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
               <Redo2 />
             </Button>
             {barSep}
@@ -4427,17 +4356,6 @@ function PositionProps({ f, point, m, ground, onChange }: { f: Fixture; point: n
   return xyz(0, f.kind === 'tree' || f.kind === 'semicircle' ? 'Base height' : 'Height');
 }
 
-/** Every point of a line, so an edit to one point leaves all the others where they are. */
-const allPoints = (f: Fixture) => f.points.map((_, i) => i);
-
-const nonEmpty = <T,>(a: T[] | undefined) => (a?.length ? a : undefined);
-
-/** Drops a pin list that has no pins left. */
-function tidyPins(pins: (number | null)[] | undefined) {
-  // The ends are never pinned (their LEDs are the object's first and last); drop bad numbers too.
-  const out = pins?.map((p, i) => (i === 0 || i === pins.length - 1 || p == null || p < 0 ? null : p));
-  return out?.some((p) => p != null) ? out : undefined;
-}
 
 /**
  * The LED numbers of an object on its device. A line is matched to the real lights with the

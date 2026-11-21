@@ -19,7 +19,7 @@ import {
 } from '../../../../shared/check.ts';
 import { isLine, layoutGround, type Fixture, type Layout, type Stage, type Units } from '../../../../shared/layout.ts';
 import { cn } from '../../lib/utils.ts';
-import type { ViewSide } from '../../yard/YardView.tsx';
+import type { ViewSide } from '../../yard/views.ts';
 import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.tsx';
 
 /** The check the editor runs. An object's check is of the selected object. */
