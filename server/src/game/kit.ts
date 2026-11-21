@@ -12,6 +12,9 @@
 //     They catch the color of every explosion, like windows lit by fireworks, and glow warmer
 //     with a combo.
 // Any of them can be missing; a game still plays on a roof alone.
+//
+// Around the pieces, the whole yard puts on a show in the game's mood (see show.ts): nothing is
+// ever off while a game runs.
 
 import { roofTrack, type RoofTrack, type Stage, type StageFixture } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';

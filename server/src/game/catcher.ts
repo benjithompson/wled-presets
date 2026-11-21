@@ -1,12 +1,19 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Rgb } from './frame.ts';
-import { bounce, Motes, Recent, Sparks, Trail, Yard } from './kit.ts';
+import { bounce, COLORS, Motes, Recent, Sparks, Trail, Yard, type Part } from './kit.ts';
+import { overMood, Show, type Mood } from './show.ts';
 import type { Game, GameInput } from './types.ts';
 
 // Comet Catcher: a comet races along the roofline. Tap to stop it inside the glowing gate, which
 // slowly closes in while you wait.
 // Each catch sends a streak of light down into the next bush, which fills with color; light
 // every bush to win a yard-wide finale.
+//
+// The whole yard is a light show around the game (see Show): a cool blue mood that warms up
+// with every catch, a firework for each catch and a burst of color in its bush when the streak
+// lands, red explosions for a miss, a red throbbing yard on the last life, and a firework finale
+// for a full yard. The trees fill from the base up in gold as the catches add up. While the comet
+// runs, the show stays off the roof, so the comet is the only white there.
 
 type Phase = 'ready' | 'running' | 'hit' | 'miss' | 'won' | 'over';
 
@@ -23,9 +30,6 @@ const SMALLEST = 0.4;
 
 const BUSH_COLORS: Rgb[] = [hsv(0.0), hsv(0.12), hsv(0.33), hsv(0.55), hsv(0.75), hsv(0.9)];
 const COMET: Rgb = [0.55, 0.85, 1];
-/** The roof's faint glow under everything. */
-const ROOF_GLOW: Rgb = [0.06, 0.035, 0.02];
-const BUSH_DARK: Rgb = [0.02, 0.05, 0.02];
 const GATE: Rgb = [0.15, 1, 0.45];
 const RED: Rgb = [1, 0.06, 0.02];
 const EMBER: Rgb = [1, 0.3, 0];
@@ -43,6 +47,13 @@ export function catcherGame(stage: Stage): Game {
   const trail = new Trail(n);
   /** Where the comet was lately: a press is judged by what the player saw. */
   const seen = new Recent<number>(0.3);
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  show.roofLevel = 0.5;
+  /** The mood now (set every frame), for the roof's own backdrop. */
+  let mood: Mood = { a: [0, 0, 0], b: [0, 0, 0] };
+  /** The trees' gold, following the score. */
+  let treeLevel = 0;
 
   let phase: Phase = 'ready';
   let phaseTime = 0;
@@ -76,6 +87,22 @@ export function catcherGame(stage: Stage): Game {
     placeGate();
   }
 
+  /**
+   * The yard's mood: a slow rainbow while it waits; cool blue at the start of a game, warming
+   * through violet and magenta to gold with every catch; red and throbbing on the last life;
+   * dark red after the end; a fast rainbow for a full yard.
+   */
+  function moodNow(): Mood {
+    if (phase === 'ready') return { a: hsv(clock * 0.04), b: hsv(clock * 0.04 + 0.3), level: 0.9, drift: 1.4 };
+    if (phase === 'won') return { a: hsv(clock * 0.3), b: hsv(clock * 0.3 + 0.5), level: 1.4, drift: 2.5 };
+    if (phase === 'over') return overMood(phaseTime);
+    const t = Math.max(0, Math.min(1, score / Math.max(1, goal - 1)));
+    const a = t < 0.5 ? mix([0.05, 0.3, 0.9], [0.55, 0.1, 0.9], t * 2) : mix([0.55, 0.1, 0.9], [1, 0.55, 0.05], t * 2 - 1);
+    const b = t < 0.5 ? mix([0.25, 0.1, 0.8], [1, 0.1, 0.6], t * 2) : mix([1, 0.1, 0.6], [1, 0.25, 0.1], t * 2 - 1);
+    if (lives === 1) return { a: RED, b: mix(a, RED, 0.6), level: 1.1, throb: 1.5 };
+    return { a, b, level: 0.9 + 0.4 * t, drift: 1 + t };
+  }
+
   function placeGate() {
     halfWidth = startHalf;
     const margin = startHalf + 4;
@@ -100,13 +127,25 @@ export function catcherGame(stage: Stage): Game {
   function start() {
     reset();
     setPhase('running');
+    show.clear();
+    treeLevel = 0;
+    show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
   }
 
   /** The catch flies from the gate into the next bush, which then fills. */
   function lightBush(index: number) {
     const bush = bushes[index];
     const color = BUSH_COLORS[index % BUSH_COLORS.length];
-    motes.fly(roof.point(gate), yard.topOf(bush), mix(color, WHITE, 0.4), STREAK, { arc: 40, size: 28, arrive: () => (litTarget[index] = 1) });
+    motes.fly(roof.point(gate), yard.topOf(bush), mix(color, WHITE, 0.4), STREAK, {
+      arc: 40,
+      size: 28,
+      arrive: () => {
+        litTarget[index] = 1;
+        // The bush bursts into its color, and the color sweeps up the house.
+        show.explode(bush.x, bush.top, color, { size: 0.8 });
+        show.sweep(color, { dir: 'up', amount: 0.5 });
+      }
+    });
   }
 
   function press() {
@@ -118,7 +157,17 @@ export function catcherGame(stage: Stage): Game {
       score++;
       sparks.burst(gate, [hsv(Math.random()), WHITE, GATE], 46, n * 0.5);
       if (bushes.length) lightBush(score - 1);
-      if (score >= goal) return setPhase('won');
+      const color = BUSH_COLORS[(score - 1) % BUSH_COLORS.length];
+      show.pulse(COLORS.gold, 0.12);
+      const p = roof.point(gate);
+      show.ripple(p.x, p.y, COLORS.gold, { amount: 0.5 });
+      show.rocket([color, COLORS.gold], { size: 0.9 });
+      if (score >= goal) {
+        // A full yard: a volley of fireworks across the house, and a rainbow sweep.
+        show.finale(8);
+        show.sweep(COLORS.gold, { dir: 'up', amount: 0.8, duration: 1 });
+        return setPhase('won');
+      }
       speed = Math.min(n / 0.9, speed / 0.9);
       startHalf = Math.max(3, Math.round(startHalf * 0.88));
       setPhase('hit');
@@ -126,6 +175,15 @@ export function catcherGame(stage: Stage): Game {
       lives--;
       missAt = pos;
       sparks.burst(pos, [RED, EMBER], 18, n * 0.15);
+      const p = roof.point(pos);
+      if (lives > 0) {
+        show.explode(p.x, p.y, RED, { size: 1.6 });
+        show.sweep(RED, { dir: 'down', amount: 0.6, duration: 0.7 });
+        show.pulse(RED, 0.25);
+      } else {
+        // Out of lives: the house blows, and the yard goes dark red.
+        show.gameOver(p.x, p.y, { color: RED });
+      }
       setPhase(lives > 0 ? 'miss' : 'over');
     }
   }
@@ -152,13 +210,26 @@ export function catcherGame(stage: Stage): Game {
     }
     sparks.update(dt);
     motes.update(dt);
+    show.update(dt);
+    mood = moodNow();
+    if (phase !== 'over' || phaseTime > 1.5) show.followMood(mood, 2, dt);
+    // While the comet runs (or waits after a catch or a miss), the show keeps off the roof.
+    const busy = phase === 'running' || phase === 'hit' || phase === 'miss';
+    show.roofShare = busy ? 0 : Math.min(1, show.roofShare + dt * 2);
+    // Now and then a firework while waiting, to draw a crowd; a steady volley for a full yard.
+    if (phase === 'ready' && Math.random() < dt * 0.35) show.rocket([hsv(Math.random()), hsv(Math.random())], { size: 0.8 });
+    if (phase === 'won' && phaseTime < 7 && Math.random() < dt * 3) show.rocket([hsv(Math.random()), hsv(Math.random()), COLORS.gold], { size: 1.1 });
+    treeLevel += (score / goal - treeLevel) * Math.min(1, dt * 3);
     trail.fade(dt, phase === 'running' ? 9 : 3);
     if (phase === 'running' || phase === 'hit') trail.mark(pos);
     lit.forEach((v, i) => (lit[i] = v + (litTarget[i] - v) * Math.min(1, dt * 2.5)));
   }
 
   function drawRoof() {
-    for (let i = 0; i < n; i++) yard.roofAt(i, ROOF_GLOW);
+    // The roof's faint backdrop in the mood's colors, drifting along it (too dim to look white or
+    // green), and not under the comet's tail. Waiting or after the end, the show lights the roof.
+    const k = phase === 'running' || phase === 'hit' || phase === 'miss' ? 0.05 * (mood.level ?? 1) : 0;
+    if (k) for (let i = 0; i < n; i++) yard.roofAt(i, mix(mood.a, mood.b, 0.5 + 0.5 * Math.sin(i * 0.06 - clock * 0.8)), k * Math.max(0, 1 - trail.level[i] * 10));
     // The gate: a dim fill between bright posts that breathe; red after a miss.
     if (phase !== 'won') {
       const flashRed = (phase === 'miss' || phase === 'over') && Math.floor(phaseTime * 6) % 2 === 0;
@@ -183,10 +254,17 @@ export function catcherGame(stage: Stage): Game {
       for (let i = 0; i < b.count; i++) {
         const sparkle = 0.75 + 0.25 * Math.sin(clock * 7 + i * 2.3);
         if (i < filled) yard.add(b.offset + i, color, 0.65 * sparkle);
-        else yard.add(b.offset + i, BUSH_DARK);
       }
     });
     motes.draw();
+  }
+
+  /** The trees: the catches so far, gold from the base up, the top LED of the fill twinkling. */
+  function drawTree(part: Part) {
+    for (let i = 0; i < part.count; i++) {
+      const u = part.up[i];
+      if (u <= treeLevel) yard.add(part.offset + i, COLORS.gold, 0.55 + (u > treeLevel - 0.05 ? 0.3 * Math.sin(clock * 10) : 0));
+    }
   }
 
   function drawFinale(dt: number) {
@@ -214,7 +292,9 @@ export function catcherGame(stage: Stage): Game {
       step(dt);
       drawRoof();
       drawBushes();
+      if (phase !== 'won') for (const t of yard.trees) drawTree(t);
       if (phase === 'won') drawFinale(dt);
+      show.draw(frame);
     },
 
     status() {

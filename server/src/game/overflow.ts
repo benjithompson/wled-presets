@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 import { bestScore, COLORS, Flare, heat, Motes, record, Sparks, Waves, Yard, type Part } from './kit.ts';
+import { overMood, Show, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Overflow: hold the button and light pours from the gutter into a bush (or up a tree), filling
@@ -13,6 +14,11 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // from the bush up to the roof, where it bursts; dead center (PERFECT) bursts in every color
 // and sends a shockwave over the house. Filled bushes and trees stay lit with what they won.
 // Windows and doors glow warmer with every success in a row.
+//
+// The whole yard plays along (see show.ts): while you pour, the whole house glows in the pour's
+// hot-and-cold color, so the yard tells you how close you are; over the ring it throbs red. A
+// stop in the ring sends a firework up from the bush (every color for a PERFECT), a bigger streak
+// multiplier sweeps gold up the house, a spill blows up red, and a level done ends in a finale.
 
 type Phase = 'ready' | 'aim' | 'pour' | 'settle' | 'good' | 'perfect' | 'short' | 'spill' | 'clear' | 'over';
 
@@ -28,7 +34,6 @@ interface Vessel {
 const LIVES = 3;
 const COLUMNS = 12;
 const DEEP: Rgb = [0.02, 0.1, 1];
-const NIGHT: Rgb = [0, 0.015, 0.035];
 
 /** The color of the light for how far it is from the ring (in ring half-widths): cold far below, gold inside, red over. */
 function closeness(d: number): Rgb {
@@ -48,6 +53,9 @@ export function overflowGame(stage: Stage): Game {
   const decorFlare = new Flare(2.5);
   const vessels: Vessel[] = [...yard.bushes, ...yard.trees].sort((a, b) => a.x - b.x).map((part) => ({ part, spout: roof.n ? roof.above(part.x) : -1, result: null, kept: 0 }));
   const playable = vessels.length > 0;
+  const show = new Show(yard);
+  /** The vessel whose backdrop is turned down (the one being filled: its ring must read clearly). */
+  let dimmed = -1;
 
   let phase: Phase = 'ready';
   let phaseTime = 0;
@@ -109,6 +117,8 @@ export function overflowGame(stage: Stage): Game {
     sparks.clear();
     motes.clear();
     waves.clear();
+    show.clear();
+    show.sweep(COLORS.hint, { dir: 'up', amount: 0.5 });
     newRing();
     setPhase('aim');
   }
@@ -143,6 +153,11 @@ export function overflowGame(stage: Stage): Game {
       const mult = Math.min(4, 1 + Math.floor((streak - 1) / 3));
       lastPoints = (perfect ? 3 : 1) * mult;
       score += lastPoints;
+      // A bigger multiplier: gold sweeps up the house, with a volley.
+      if (mult > 1 && (streak - 1) % 3 === 0) {
+        show.sweep(COLORS.gold, { dir: 'up', amount: 0.7 });
+        show.finale(1 + mult, { colors: [[COLORS.gold, WHITE]] });
+      }
       v.result = perfect ? 'perfect' : 'good';
       v.kept = fill;
       launch(v, perfect);
@@ -156,6 +171,8 @@ export function overflowGame(stage: Stage): Game {
     const from = { x: v.part.x, y: surfaceY(v, fill) };
     const to = spoutPoint(v);
     const color = perfect ? WHITE : COLORS.gold;
+    show.pulse(COLORS.gold, perfect ? 0.2 : 0.1);
+    if (show.rocketsUp < 3) show.firework({ x: v.part.x, colors: perfect ? [hsv(Math.random()), hsv(Math.random()), COLORS.gold] : [COLORS.gold, [1, 0.45, 0.05]], size: perfect ? 1.4 : 0.9, kind: perfect ? 'peony' : 'willow' });
     motes.fly(from, to, color, 0.55, {
       size: 30,
       arrive: () => {
@@ -164,6 +181,8 @@ export function overflowGame(stage: Stage): Game {
           sparks.burst(v.spout, colors, perfect ? 90 : 45, roof.n * (perfect ? 0.55 : 0.35), perfect ? 1.6 : 1.1);
         }
         if (perfect) waves.add(to.x, to.y, WHITE, { amount: 1 });
+        show.burst(to.x, to.y, perfect ? [hsv(Math.random()), hsv(Math.random()), COLORS.gold] : [COLORS.gold, [1, 0.45, 0.05]], { size: perfect ? 1.1 : 0.6, kind: perfect ? 'crackle' : 'peony' });
+        if (perfect) show.ripple(to.x, to.y, WHITE, { amount: 0.5 });
         decorFlare.add(perfect ? WHITE : COLORS.gold, perfect ? 1 : 0.5);
       }
     });
@@ -185,9 +204,18 @@ export function overflowGame(stage: Stage): Game {
         });
       }
       waves.add(v.part.x, v.part.top, COLORS.bad, { amount: 0.5 });
+      if (lives > 0) show.explode(v.part.x, v.part.top, COLORS.bad, { size: 1.1 });
+    } else {
+      // Too low: it drains away, and a dull ripple runs out from the vessel.
+      show.ripple(v.part.x, v.part.bottom, [0.5, 0.05, 0.15], { amount: 0.6 });
+      show.pulse(COLORS.bad, 0.12);
     }
     decorFlare.add(COLORS.bad, 0.5);
-    if (lives <= 0) newBest = record('overflow', score).isNew;
+    if (lives <= 0) {
+      newBest = record('overflow', score).isNew;
+      // The house blows, and the yard goes dark red (gold fireworks for a new best).
+      show.gameOver(v.part.x, v.part.top, { newBest });
+    } else show.sweep(COLORS.bad, { dir: 'down', amount: 0.5, duration: 0.7 });
     setPhase(kind);
   }
 
@@ -197,6 +225,8 @@ export function overflowGame(stage: Stage): Game {
       setPhase('clear');
       newBest = record('overflow', score).isNew || newBest;
       for (const v of vessels) waves.add(v.part.x, v.part.top, COLORS.gold, { amount: 0.7 });
+      show.finale(Math.max(5, vessels.length + 2), { colors: [[COLORS.gold, WHITE], [hsv(0.55), COLORS.gold], [hsv(0.85), hsv(0.15)]] });
+      show.sweep(COLORS.gold, { dir: 'out', amount: 0.8, duration: 1 });
       return;
     }
     newRing();
@@ -256,8 +286,8 @@ export function overflowGame(stage: Stage): Game {
           if (u <= v.kept) {
             const c = v.result === 'perfect' ? mix(COLORS.gold, WHITE, 0.4 + 0.3 * Math.sin(clock * 5 + i * 1.9)) : COLORS.gold;
             yard.add(at, c, phase === 'clear' ? 0.6 + 0.6 * Math.max(0, Math.sin(clock * 8 + i)) : 0.5);
-          } else yard.add(at, NIGHT, 1.5);
-        } else yard.add(at, NIGHT, 1.5);
+          }
+        }
         continue;
       }
       const col = Math.max(0, Math.min(COLUMNS - 1, Math.floor(((p.across[i] + 1) / 2) * COLUMNS)));
@@ -276,7 +306,6 @@ export function overflowGame(stage: Stage): Game {
         // The ring under the light: it glows hot where the light fills it.
         if (Math.abs(u - r) <= ringHalf && !failing) yard.add(at, COLORS.gold, 0.35);
       } else {
-        yard.add(at, NIGHT, 1.5);
         if (phase !== 'good' && phase !== 'perfect' && !failing && Math.abs(u - r) <= ringHalf) {
           // The ring: soft inside, bright edges, breathing while it waits for you.
           const edge = Math.abs(Math.abs(u - r) - ringHalf) < ringHalf * 0.35 ? 1 : 0.45;
@@ -292,7 +321,6 @@ export function overflowGame(stage: Stage): Game {
   }
 
   function drawRoof() {
-    for (let i = 0; i < roof.n; i++) yard.roofAt(i, NIGHT, 1.6 + 0.5 * Math.sin(clock * 0.8 + i * 0.07));
     const v = vessel();
     if (v && v.spout >= 0 && (phase === 'aim' || phase === 'pour' || phase === 'settle')) {
       // The spout above the vessel: it glows while you aim, and runs with light while you pour.
@@ -303,13 +331,41 @@ export function overflowGame(stage: Stage): Game {
     sparks.draw(yard);
   }
 
+  /** The house: the show's canvas, with the flare of every result. */
   function drawDecor(p: Part) {
-    // The house warms up with every success in a row.
+    for (let i = 0; i < p.count; i++) yard.add(p.offset + i, decorFlare.color, 0.5);
+  }
+
+
+  /** The yard's mood from the game's state: the pour's hot-and-cold color while pouring. */
+  function moodNow(): Mood {
     const warm = Math.min(1, streak / 9);
-    for (let i = 0; i < p.count; i++) {
-      yard.add(p.offset + i, NIGHT, 1.5);
-      if (streak) yard.add(p.offset + i, streak >= 9 ? hsv((clock * 0.3 + i * 0.04) % 1) : heat(warm * 0.9), 0.1 + warm * 0.25);
-      yard.add(p.offset + i, decorFlare.color, 0.7);
+    switch (phase) {
+      case 'ready': {
+        // Waiting: the pour's colors, cold to hot, round and round.
+        const t = (clock * 0.08) % 1;
+        return { a: closeness(-5 + t * 6), b: closeness(-5 + ((t + 0.4) % 1) * 6), level: 1, drift: 1.3 };
+      }
+      case 'aim':
+        if (lives === 1) return { a: mix(DEEP, COLORS.bad, 0.5), b: [0.15, 0.02, 0.3], level: 0.9, throb: 0.8 };
+        return { a: mix(DEEP, heat(0.4), warm * 0.6), b: [0.1, 0.5, 0.6], level: 0.8 + 0.4 * warm };
+      case 'pour':
+      case 'settle': {
+        // The whole yard is the pour's color: cold far below the ring, gold inside it, red over it.
+        const d = (fill - ring()) / ringHalf;
+        if (d > 1) return { a: COLORS.bad, b: [1, 0.25, 0], level: 1.2, throb: 4 };
+        return { a: closeness(d), b: mix(closeness(d), DEEP, 0.5), level: 0.9 + 0.3 * Math.max(0, 1 - Math.abs(d) / 5), drift: 1.5 };
+      }
+      case 'good':
+      case 'perfect':
+        return { a: COLORS.gold, b: phase === 'perfect' ? hsv(clock * 0.5) : [1, 0.45, 0.05], level: 1.3, drift: 1.8 };
+      case 'short':
+      case 'spill':
+        return lives <= 0 ? overMood(phaseTime) : { a: [0.6, 0.03, 0.02], b: [0.35, 0.05, 0.3], level: 0.8, drift: 0.5 };
+      case 'clear':
+        return { a: hsv(clock * 0.2), b: COLORS.gold, level: 1.4, drift: 2 };
+      case 'over':
+        return overMood(phaseTime + 2);
     }
   }
 
@@ -344,6 +400,15 @@ export function overflowGame(stage: Stage): Game {
       motes.update(dt);
       waves.update(dt);
       decorFlare.update(dt);
+      show.update(dt);
+      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), phase === 'pour' || phase === 'settle' ? 6 : 2.5, dt);
+      // The vessel being filled gets only a faint backdrop: its ring and its light must read clearly.
+      const active = phase === 'aim' || phase === 'pour' || phase === 'settle' || phase === 'good' || phase === 'perfect' || phase === 'short' || phase === 'spill' ? current : -1;
+      if (active !== dimmed) {
+        for (const x of vessels) show.dim(x.part, x.part.fixture.kind === 'tree' ? 0.5 : 0.7);
+        if (active >= 0 && vessels[active]) show.dim(vessels[active].part, 0.15);
+        dimmed = active;
+      }
 
       const v = vessel();
       if (phase === 'pour' && v) {
@@ -374,6 +439,7 @@ export function overflowGame(stage: Stage): Game {
       }
       if (phase === 'clear') {
         if (Math.random() < dt * 4) sparks.burst(Math.random() * roof.n, [hsv(Math.random()), COLORS.gold, WHITE], 30, roof.n * 0.35);
+        if (Math.random() < dt * 1.5 && show.rocketsUp < 3) show.firework({ colors: [hsv(Math.random()), COLORS.gold] });
         if (phaseTime > 5) nextLevel();
       }
       if (phase === 'over' && phaseTime > 12) {
@@ -395,6 +461,7 @@ export function overflowGame(stage: Stage): Game {
       for (const d of yard.decor) drawDecor(d);
       motes.draw();
       waves.draw();
+      show.draw(frame);
     },
 
     status(): GameStatusFields {

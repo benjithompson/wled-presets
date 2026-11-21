@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
 import { COLORS, css, Flare, heat, Motes, Recent, Sparks, Trail, Waves, Yard } from './kit.ts';
+import { Show, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Roof Duel: Fire (the left end of the roof) against Ice (the right end). A ball of light flies
@@ -47,6 +48,17 @@ export function duelGame(stage: Stage): Game {
   const gravity = n * 0.25;
   /** The ball's trail, tagged with the side that hit it last (for its color). */
   const trail = new Trail(n);
+  // The whole yard plays along: its backdrop is Fire's on the left and Ice's on the right, the leader's taking more,
+  // heats up with a long rally, and every point sweeps the yard in the scorer's color.
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  // The ball is the only white on the roof: the show stays faint there.
+  show.roofShare = 0.25;
+  // Fireworks burst below the eaves (where there is something there), so they stay off the roof.
+  show.belowRoof();
+  show.roofLevel = 0.5;
+  /** Rally lengths that set off a sweep through the yard. */
+  let rallyMark = 0;
 
   // Each bush LED belongs to the side of the house it is on; they fill bottom up.
   const sideLeds: number[][] = [[], []];
@@ -105,6 +117,11 @@ export function duelGame(stage: Stage): Game {
     sparks.clear();
     motes.clear();
     waves.clear();
+    show.clear();
+    rallyMark = 0;
+    // Both colors run in from their own ends and meet in the middle.
+    show.sweep(TEAMS[0].color, { dir: 'right', amount: 0.6, duration: 1 });
+    show.sweep(TEAMS[1].color, { dir: 'left', amount: 0.6, duration: 1 });
     setPhase('countdown');
   }
 
@@ -126,6 +143,7 @@ export function duelGame(stage: Stage): Game {
     sparks.burst(pos, [TEAMS[server].color, WHITE], 20, n * 0.2, 0.7);
     flare[server].add(TEAMS[server].color, 0.6);
     waves.add(p.x, p.y, TEAMS[server].color, { amount: 0.35 });
+    show.pulse(TEAMS[server].color, 0.08);
     setPhase('rally');
   }
 
@@ -144,15 +162,37 @@ export function duelGame(stage: Stage): Game {
     const c = TEAMS[side].color;
     sparks.burst(pos, smash ? [WHITE, c, mix(c, WHITE, 0.5)] : [c, mix(c, WHITE, 0.4)], smash ? 50 : 24, n * (smash ? 0.4 : 0.25), smash ? 1.2 : 0.8);
     flare[side].add(smash ? WHITE : c, smash ? 1.2 : 0.6);
+    show.pulse(c, smash ? 0.16 : 0.06);
     if (smash) {
       const p = roof.point(pos);
       waves.add(p.x, p.y, mix(c, WHITE, 0.3), { amount: 0.8 });
+      rocket(side, [c, mix(c, COLORS.gold, 0.5)], 1, 'crackle');
+    } else if (d > 0.5) rocket(side, [c], 0.6);
+    // Every five in a rally, the rally's heat sweeps out through the yard.
+    if (rally >= rallyMark + 5) {
+      rallyMark = rally;
+      show.sweep(heat(Math.min(1, rally / 15) * 0.8 + 0.2), { dir: 'out', amount: 0.55, duration: 0.7 });
     }
+  }
+
+  /** The middle of a side of the yard, as seen from the street: Fire left, Ice right. */
+  function sideX(side: number, spread = 0.3) {
+    const box = show.box;
+    return box.x + box.w * (side === 0 ? 0.08 + Math.random() * spread : 0.92 - Math.random() * spread);
+  }
+
+  /** A firework on one team's side of the yard (no more than a few in the air). */
+  function rocket(side: number, colors: Rgb[], size: number, kind?: 'peony' | 'ring' | 'willow' | 'crackle') {
+    if (show.rocketsUp >= 3) return;
+    show.firework({ x: sideX(side), colors, size, kind });
   }
 
   function whiff(side: number) {
     lockout[side] = clock + 0.4;
     sparks.burst(endOf(side) - toward(side) * zone * 0.3, [[0.3, 0.3, 0.35]], 6, n * 0.05, 0.4);
+    // A swing at nothing: a dull red shudder on that side of the house.
+    const p = roof.point(endOf(side));
+    show.ripple(p.x, p.y, COLORS.bad, { amount: 0.25, speed: stage.scale * 10 });
   }
 
   function pointTo(scorer: number) {
@@ -165,6 +205,17 @@ export function duelGame(stage: Stage): Game {
     sparks.burst(end, [c, WHITE, COLORS.bad], 60, n * 0.4, 1.3);
     waves.add(p.x, p.y, c, { amount: 0.9 });
     flare[loser].add(COLORS.bad, 0.8);
+    // The loser's end blows up; the scorer's color sweeps over the yard from their end, and
+    // fireworks go up on their side.
+    show.explode(p.x, p.y, mix(c, COLORS.bad, 0.4), { size: 1.4 });
+    show.sweep(c, { dir: scorer === 0 ? 'right' : 'left', amount: 0.8, duration: 0.9 });
+    const won = score[scorer] >= WIN;
+    if (!won) for (let k = 0; k < 2; k++) show.firework({ x: sideX(scorer), colors: [c, mix(c, COLORS.gold, 0.5)], delay: k * 0.25 });
+    else {
+      // The match: a flash over everything, and the winner's finale.
+      show.explode(p.x, p.y, c, { size: 2.5, over: true });
+      show.finale(7, { colors: [[c, COLORS.gold], [c], [mix(c, WHITE, 0.3), c]] });
+    }
     // The point flies from the roof into the scorer's bushes.
     const leds = sideLeds[scorer];
     const target = leds.length ? leds.reduce((a, i) => ({ x: a.x + stage.positions[i * 2] / leds.length, y: a.y + stage.positions[i * 2 + 1] / leds.length }), { x: 0, y: 0 }) : roof.point(endOf(scorer));
@@ -218,6 +269,8 @@ export function duelGame(stage: Stage): Game {
       const p = roof.point(endOf(free));
       waves.add(p.x, p.y, TEAMS[free].color, { amount: 0.7 });
       sparks.burst(endOf(free), [TEAMS[free].color, WHITE], 30, n * 0.25);
+      show.sweep(TEAMS[free].color, { dir: free === 0 ? 'right' : 'left', amount: 0.7 });
+      show.firework({ x: sideX(free), colors: [TEAMS[free].color] });
       if (slots.every((s) => s.id)) startMatch();
       return;
     }
@@ -335,7 +388,6 @@ export function duelGame(stage: Stage): Game {
       for (let i = 0; i < tree.count; i++) {
         const u = tree.up[i];
         if (rally && u <= t) yard.add(tree.offset + i, t >= 1 ? hsv((clock * 0.5 + u) % 1) : heat(u), 0.55);
-        else yard.add(tree.offset + i, [0.03, 0.02, 0.03]);
       }
     }
     // Windows and doors: each side of the house glows in its team's color and flashes with its hits.
@@ -344,7 +396,8 @@ export function duelGame(stage: Stage): Game {
       for (let i = 0; i < d.count; i++) {
         const at = d.offset + i;
         const side = stage.positions[at * 2] < yard.middle ? 0 : 1;
-        yard.add(at, TEAMS[side].color, 0.06);
+        // A faint tint of its side's team over the show's backdrop, and the flash of every hit.
+        yard.add(at, TEAMS[side].color, 0.03);
         yard.add(at, flare[side].color, 0.7);
         if (matchPoint) yard.add(at, Math.sin(clock * 5) > 0 ? COLORS.bad : WHITE, 0.12);
       }
@@ -361,6 +414,34 @@ export function duelGame(stage: Stage): Game {
       waves.add(p.x, p.y, mix(c, WHITE, 0.3), { amount: 0.7 });
     }
     if (Math.random() < 0.15) sparks.burst(Math.random() * n, [c, WHITE, mix(c, hsv(Math.random()), 0.3)], 24, n * 0.3);
+    // Fireworks in the winner's colors keep going up.
+    if (phaseTime > 1.5 && show.rocketsUp < 2 && Math.random() < 0.03) show.firework({ colors: [c, Math.random() < 0.5 ? COLORS.gold : mix(c, WHITE, 0.3)] });
+  }
+
+  /**
+   * The yard's mood: Fire and Ice drifting across the house, the leader's color taking more of
+   * it; brighter and quicker as a rally goes on; throbbing at match point; the winner's color
+   * once the match is won. The lobby cycles gently between the two.
+   */
+  function moodNow(): Mood {
+    const [fire, ice] = [TEAMS[0].color, TEAMS[1].color];
+    if (phase === 'won') {
+      const c = TEAMS[score[0] >= WIN ? 0 : 1].color;
+      return { a: c, b: mix(c, COLORS.gold, 0.35), level: 1.2, drift: 1.6 };
+    }
+    // Fire's half of the yard on the left (side 0), Ice's on the right; the leader's color takes more of it.
+    if (phase === 'lobby') return { a: fire, b: ice, level: 0.9, drift: 0.7, split: 0.5 };
+    const lead = (score[0] - score[1]) / WIN;
+    const heatK = Math.min(1, rally / 12);
+    const matchPoint = score[0] === WIN - 1 || score[1] === WIN - 1;
+    return {
+      a: mix(fire, heat(0.5), heatK * 0.35),
+      b: mix(ice, heat(0.5), heatK * 0.35),
+      level: 0.85 + heatK * 0.5,
+      drift: 1 + heatK * 1.5,
+      throb: matchPoint && phase === 'rally' ? 1.5 : 0,
+      split: 0.5 + lead * 0.35
+    };
   }
 
   return {
@@ -393,6 +474,18 @@ export function duelGame(stage: Stage): Game {
       motes.update(dt);
       waves.update(dt);
       for (const f of flare) f.update(dt);
+      show.update(dt);
+      show.followMood(moodNow(), 2, dt);
+      // The countdown: the yard pumps once a second in both colors.
+      if (phase === 'countdown' && Math.floor(phaseTime) !== Math.floor(phaseTime - dt)) {
+        show.pulse(TEAMS[0].color, 0.08);
+        show.pulse(TEAMS[1].color, 0.08);
+      }
+      // The lobby: now and then a firework on a side that waits for a player.
+      if (phase === 'lobby' && show.rocketsUp === 0 && Math.random() < dt / 3) {
+        const side = Math.random() < 0.5 ? 0 : 1;
+        show.firework({ x: sideX(side), colors: [TEAMS[side].color], size: 0.7 });
+      }
 
       drawRoof(dt);
       drawBushes();
@@ -407,6 +500,7 @@ export function duelGame(stage: Stage): Game {
       }
       motes.draw();
       waves.draw();
+      show.draw(frame);
     },
 
     status(): GameStatusFields {

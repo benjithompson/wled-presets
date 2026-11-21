@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, css, Flare, heat, Motes, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
+import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { bestScore, COLORS, css, heat, Motes, record, scale, Sparks, Waves, Yard, type Part } from './kit.ts';
+import { overMood, Show, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Bead Rush: a chain of colored beads creeps along the roofline toward the launcher at the start
@@ -28,8 +29,12 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // the loaded color, the one left of it the color the left button would pick, the one right of it
 // the color the right button would pick (dimmer); other bushes sparkle gold with the combo. With one
 // or two, they all glow the loaded color. The trees are a danger meter: they fill from the base up
-// as the chain nears the launcher and blink red when it is close. Windows and doors flash the color
-// of every pop. On a roof alone, the loaded bead sits at the launcher.
+// as the chain nears the launcher and blink red when it is close. Everything else is the light
+// show (see show.ts): the whole yard glows in a mood that drifts with the stage, warms toward
+// gold with the combo and turns red and throbs, faster and faster, as the chain closes in. Every
+// pop kicks the yard in its color and sends up a firework; a big combo a volley and a sweep; a gold
+// bead blows up across the yard; a new color wipes across the house with fireworks in it. On a
+// roof alone, the loaded bead sits at the launcher.
 
 type Phase = 'ready' | 'play' | 'breach' | 'over';
 
@@ -81,8 +86,6 @@ const GOLD_AFTER = 45;
 const GOLD_CHANCE = 0.04;
 /** A gold bead takes this many beads with it (itself too). */
 const BOMB = 6;
-const NIGHT: Rgb = [0.02, 0.012, 0.04];
-const DARK: Rgb = [0.02, 0.02, 0.035];
 
 const beadColor = (tone: number): Rgb => (tone >= 0 ? BEAD_COLORS[tone].color : COLORS.gold);
 
@@ -107,7 +110,11 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
   const sparks = new Sparks(roof, n * 0.1, 1.8);
   const motes = new Motes(yard);
   const waves = new Waves(yard);
-  const decorFlare = new Flare(3);
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  // The roof is the playfield, a chain of colored beads with white only for the shot: the show stays faint on it.
+  show.roofShare = 0.3;
+  show.roofLevel = 0.5;
   /** The bushes, left to right; the middle one shows the loaded bead (see drawBushes). */
   const bushes = yard.bushes;
   const middle = bushes.length >= 3 ? Math.floor(bushes.length / 2) : -1;
@@ -207,7 +214,9 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     sparks.clear();
     motes.clear();
     waves.clear();
+    show.clear();
     setPhase('play');
+    show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
     spawnChain();
     loaded = chain[0]?.tone >= 0 ? chain[0].tone : palette()[0];
   }
@@ -244,8 +253,11 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     const color = beadColor(added);
     const p = roof.point(n / 2);
     waves.add(p.x, p.y, color, { amount: 0.9 });
-    decorFlare.add(color, 1);
     sparks.burst(LAUNCH, [color], 20, n * 0.15, 0.8);
+    // The new color wipes across the yard, and goes up in fireworks.
+    show.setMood(moodNow(), { wipe: roof.startsLeft ? 'left' : 'right' });
+    show.sweep(color, { dir: roof.startsLeft ? 'left' : 'right', amount: 0.8 });
+    show.finale(5, { colors: [[color], [color, WHITE]] });
   }
 
   function kick(beads: number) {
@@ -263,11 +275,16 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     kick(len);
     const colors = combo >= 2 ? [color, mix(color, WHITE, 0.4), COLORS.gold] : [color, mix(color, WHITE, 0.4)];
     sparks.burst(at, colors, 18 + len * 6 + combo * 4, n * (0.2 + Math.min(0.2, combo * 0.03)), 1 + Math.min(0.6, combo * 0.1));
-    decorFlare.add(color, 0.5 + Math.min(0.8, combo * 0.15));
+    show.pulse(color, 0.1 + 0.03 * Math.min(6, combo));
     if (combo >= 3) {
       const p = roof.point(at);
       waves.add(p.x, p.y, color, { amount: Math.min(1, 0.5 + combo * 0.08) });
     }
+    // Every few in a row: a volley and a sweep in the color; otherwise one firework, bigger with the combo.
+    if (combo >= 3 && combo % 2 === 1) {
+      show.finale(Math.min(6, combo), { colors: [[color, COLORS.gold], [color]] });
+      show.sweep(color, { dir: 'up', amount: 0.6 });
+    } else show.rocket([color, mix(color, WHITE, 0.4)], { size: 0.6 + 0.12 * Math.min(5, combo) });
   }
 
   /** A shot that hits a gold bead at the front: it blows up the beads behind it. */
@@ -281,9 +298,12 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     front += k * SPACING;
     kick(k);
     sparks.burst(at, [COLORS.gold, mix(COLORS.gold, WHITE, 0.5), WHITE], 60, n * 0.45, 1.5);
-    decorFlare.add(COLORS.gold, 1.2);
     const p = roof.point(at);
     waves.add(p.x, p.y, COLORS.gold, { amount: 1 });
+    // A gold bead blows up the whole yard.
+    show.explode(p.x, p.y, COLORS.gold, { size: 1.8 });
+    show.sweep(COLORS.gold, { dir: 'out', amount: 0.7 });
+    show.finale(4, { colors: [[COLORS.gold, WHITE]] });
   }
 
   function land() {
@@ -314,8 +334,16 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
     chain.splice(0, k);
     front += k * SPACING;
     recoil = n * 0.2 * RECOIL_DECAY;
-    if (lives > 0) return setPhase('breach');
+    const p = roof.point(LAUNCH);
+    if (lives > 0) {
+      // The front blows up at the launcher, and red runs away across the yard.
+      show.explode(p.x, p.y, COLORS.bad, { size: 1.3 });
+      show.sweep(COLORS.bad, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.6, duration: 0.7 });
+      return setPhase('breach');
+    }
     newBest = record('beads', score).isNew;
+    // The house blows, and the yard goes dark red (gold fireworks for a new best).
+    show.gameOver(p.x, p.y, { newBest });
     // What is left falls off the gutter.
     for (let i = 0; i < chain.length; i++) {
       const pos = front + i * SPACING;
@@ -340,8 +368,31 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
 
   // ---------- Drawing ----------
 
+  /** After the game: dark red, fading. */
+
+  /** Each stage's calm: violet and teal, then deeper blue, then purple. */
+  const STAGE_MOODS: [Rgb, Rgb][] = [
+    [[0.3, 0.08, 0.75], [0, 0.35, 0.55]],
+    [[0.05, 0.25, 0.8], [0.45, 0.05, 0.6]],
+    [[0.55, 0.05, 0.65], [0.1, 0.15, 0.8]]
+  ];
+
+  /**
+   * The yard's mood from the game: the beads' colors going round in the attract loop; the stage's
+   * calm while playing, warming toward gold with the combo; red, throbbing faster as the chain
+   * closes in (or on the last life after a breach); dark red after.
+   */
+  function moodNow(): Mood {
+    if (phase === 'ready') return { a: hsv(clock * 0.05), b: hsv(clock * 0.05 + 0.4), level: 1.1, drift: 1.4 };
+    if (phase === 'over') return overMood(phaseTime);
+    const d = danger();
+    if (d > 0.65 || (phase === 'breach' && lives === 1)) return { a: COLORS.bad, b: [0.5, 0, 0.2], level: 1 + d * 0.4, throb: 1 + d * 2 };
+    const [a0, b0] = STAGE_MOODS[Math.min(stageIndex, STAGE_MOODS.length - 1)];
+    const warm = Math.min(1, combo / 6);
+    return { a: mix(a0, COLORS.gold, warm * 0.7), b: mix(b0, COLORS.fire, warm * 0.5), level: 1.1 + 0.4 * warm, drift: 1 + warm };
+  }
+
   function drawRoof() {
-    for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT, 1 + 0.3 * Math.sin(clock * 0.8 + i * 0.07));
     const playing = phase === 'play' || phase === 'breach';
     // Danger: the roof between the launcher and the chain pulses red when it is close.
     const d = playing ? danger() : 0;
@@ -394,11 +445,10 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
           yard.add(at, tone, 0.35 + 0.1 * Math.sin(clock * 3 + i));
         } else if (phase === 'over') yard.add(at, COLORS.bad, 0.06 + 0.05 * Math.sin(phaseTime * 3));
         else if (role === 0) yard.add(at, beadColor(loaded), 0.65 + 0.1 * Math.sin(clock * 4 + i * 0.7) + flare * 0.3);
-        else if (role !== null) yard.add(at, beadColor(neighbour(role)), 0.22);
+        else if (role !== null) yard.add(at, beadColor(neighbour(role)), 0.3);
         else {
           const glow = Math.min(1, combo / 6);
           if (glow > 0) yard.add(at, mix(COLORS.gold, WHITE, Math.max(0, Math.sin(clock * 9 + i * 2.3)) * 0.3), glow * (0.4 + 0.3 * Math.sin(clock * 7 + i * 1.9)));
-          else yard.add(at, DARK);
         }
       }
     });
@@ -411,14 +461,7 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       if (phase !== 'ready' && u <= meter) {
         const c = urgent && Math.sin(clock * 14) > 0 ? COLORS.bad : heat(u * 0.9);
         yard.add(part.offset + i, c, 0.6);
-      } else yard.add(part.offset + i, DARK);
-    }
-  }
-
-  function drawDecor(part: Part) {
-    for (let i = 0; i < part.count; i++) {
-      yard.add(part.offset + i, NIGHT, 1.2);
-      yard.add(part.offset + i, decorFlare.color, 1.1);
+      }
     }
   }
 
@@ -470,18 +513,19 @@ export function beadsGame(stage: Stage): Game & { peek(): BeadsPeek } {
       sparks.update(dt);
       motes.update(dt);
       waves.update(dt);
-      decorFlare.update(dt);
+      show.update(dt);
+      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
       const target = phase === 'play' || phase === 'breach' ? danger() : 0;
       meter += (target - meter) * Math.min(1, dt * 6);
 
       drawRoof();
       drawBushes();
       for (const t of yard.trees) drawTree(t);
-      for (const d of yard.decor) drawDecor(d);
-      if (phase === 'breach' && phaseTime < 0.6) yard.wash(COLORS.bad, 0.2 * (1 - phaseTime / 0.6));
       if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
       motes.draw();
       waves.draw();
+      // The windows, doors and the rest are the show's.
+      show.draw(frame);
     },
 
     status(): GameStatusFields {

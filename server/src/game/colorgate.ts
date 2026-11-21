@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, Flare, heat, Motes, Recent, record, scale, Waves, Yard, type Part } from './kit.ts';
+import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { bestScore, COLORS, heat, Motes, Recent, record, scale, Waves, Yard, type Part } from './kit.ts';
+import { overMood, Show, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Color Gate: your light sits near the start of the roof. Walls of colored light stream toward
@@ -16,8 +17,11 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 //
 // The yard: the bushes all glow your color, big and steady, so you can read it from the street
 // (they pulse when you switch, flash gold on a pass). The trees fill from the base up toward the
-// next multiplier. Windows and doors catch the color of every wall you pass and glow warmer with
-// the streak.
+// next multiplier. Everything else is the light show (see show.ts): the whole yard glows in a
+// mood that drifts between your color and the streak's heat (cool indigo at first, fire as the
+// streak grows, red and throbbing on your last life), kicks in your color on every switch and in
+// the wall's color on every pass. Passes send up fireworks, a new multiplier a volley and a gold
+// sweep; a wrong color blows up at your light and sends red across the yard.
 
 type Phase = 'ready' | 'run' | 'miss' | 'over';
 
@@ -42,7 +46,6 @@ export const LAG = 0.1;
 /** Walls in a row for each step of the multiplier. */
 const PER_MULT = 8;
 const MAX_MULT = 4;
-const NIGHT: Rgb = [0.02, 0.012, 0.035];
 /** Your colors and the walls': far apart on real LEDs, and none of white, gold or red. */
 export const GATE_COLORS: Rgb[] = [
   [0.05, 1, 0.12],
@@ -65,7 +68,11 @@ export function colorgateGame(stage: Stage): Game {
   const playable = n >= 30;
   const motes = new Motes(yard);
   const waves = new Waves(yard);
-  const decorFlare = new Flare(2.2);
+  const show = new Show(yard);
+  for (const t of yard.trees) show.dim(t, 0.45);
+  // The roof is the playfield, and white there means the next wall: the show stays faint on it.
+  show.roofShare = 0.3;
+  show.roofLevel = 0.6;
 
   // Your light: near the start of the roof, where it can be seen from the street.
   let home = Math.max(3, Math.round(n * 0.06));
@@ -162,11 +169,13 @@ export function colorgateGame(stage: Stage): Game {
     seen.push(clock, you);
     motes.clear();
     waves.clear();
+    show.clear();
   }
 
   function newGame() {
     reset();
     setPhase('run');
+    show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
     spawn();
   }
 
@@ -190,9 +199,12 @@ export function colorgateGame(stage: Stage): Game {
   function pass(w: Wall, demo: boolean) {
     const color = GATE_COLORS[w.tone];
     burst(home, [COLORS.gold, color, mix(color, COLORS.gold, 0.5)], 20, n * 0.25);
-    decorFlare.add(color, 0.7);
     passFlash = 1;
-    if (demo) return;
+    show.pulse(color, 0.12 + 0.03 * mult());
+    if (demo) {
+      show.rocket([color, COLORS.gold], { size: 0.6 });
+      return;
+    }
     const before = mult();
     streak++;
     longest = Math.max(longest, streak);
@@ -202,7 +214,14 @@ export function colorgateGame(stage: Stage): Game {
       const p = roof.point(home);
       waves.add(p.x, p.y, COLORS.gold, { amount: 1 });
       for (const b of yard.bushes) waves.add(b.x, b.top, color, { amount: 0.6 });
-    }
+      // A new multiplier: a volley, one firework more at every step, and gold up the yard.
+      show.sweep(COLORS.gold, { dir: 'up', amount: 0.7 });
+      show.finale(1 + mult(), { colors: [[COLORS.gold, color], [color, WHITE]] });
+    } else if (streak % PER_MULT === 0) {
+      // Every eighth wall in a row at ×4: the wall's color sweeps across the house.
+      show.sweep(color, { dir: streak % (PER_MULT * 2) ? 'right' : 'left', amount: 0.6 });
+      show.finale(3, { colors: [[COLORS.gold, color]] });
+    } else show.rocket([color, COLORS.gold], { size: 0.6 + 0.15 * mult() });
   }
 
   function miss(w: Wall) {
@@ -220,16 +239,26 @@ export function colorgateGame(stage: Stage): Game {
     }
     walls = [];
     queue = [];
+    const p = roof.point(home);
     if (lives <= 0) {
       newBest = record('colorgate', score).isNew;
+      // The house blows, and the yard goes dark red (gold fireworks for a new best).
+      show.gameOver(p.x, p.y, { newBest });
       setPhase('over');
-    } else setPhase('miss');
+    } else {
+      // A wrong color blows up at your light, and red runs away across the yard.
+      show.explode(p.x, p.y, COLORS.bad, { size: 1.3 });
+      show.sweep(COLORS.bad, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.6, duration: 0.7 });
+      setPhase('miss');
+    }
   }
 
   function switchColor() {
     you = (you + 1) % GATE_COLORS.length;
     seen.push(clock, you);
     switchPulse = 1;
+    // The whole yard flicks to your new color.
+    show.pulse(GATE_COLORS[you], 0.07);
   }
 
   function input(e: GameInput) {
@@ -280,8 +309,24 @@ export function colorgateGame(stage: Stage): Game {
 
   // ---------- Drawing ----------
 
+  /** After the game: dark red, fading. */
+
+  /**
+   * The yard's mood from the game: in the attract loop, a slow rainbow; while playing, the
+   * streak's heat (indigo to fire) drifting with your color, brighter and faster with the
+   * multiplier; red and throbbing on the last life; dark red after.
+   */
+  function moodNow(): Mood {
+    if (phase === 'ready') return { a: hsv(clock * 0.04), b: hsv(clock * 0.04 + 0.33), level: 1.1, drift: 1.4 };
+    if (phase === 'over') return overMood(phaseTime);
+    const m = mult();
+    if (lives === 1) return { a: COLORS.bad, b: mix(GATE_COLORS[you], COLORS.bad, 0.6), level: 1.1, throb: 1.6 };
+    const warm = Math.min(1, streak / (PER_MULT * MAX_MULT));
+    const a = mix([0.25, 0.1, 0.8], COLORS.fire, warm);
+    return { a, b: mix(a, GATE_COLORS[you], 0.6), level: 1.2 + 0.25 * (m - 1), drift: 1 + 0.3 * (m - 1) };
+  }
+
   function drawRoof() {
-    for (let i = 0; i < n; i++) yard.roofAt(i, NIGHT, 1 + 0.3 * Math.sin(clock * 0.8 - i * 0.04));
     const next = phase === 'over' ? undefined : nextWall();
     for (const w of walls) {
       const c = GATE_COLORS[w.tone];
@@ -332,16 +377,7 @@ export function colorgateGame(stage: Stage): Game {
       if (u <= meter) {
         const c = top ? mix(COLORS.gold, WHITE, Math.max(0, Math.sin(clock * 8 + i * 1.7)) * 0.4) : heat(u * 0.85);
         yard.add(part.offset + i, c, top ? 0.85 : 0.6);
-      } else yard.add(part.offset + i, [0.02, 0.015, 0.04]);
-    }
-  }
-
-  function drawDecor(part: Part) {
-    const warm = Math.min(1, streak / (PER_MULT * 3));
-    for (let i = 0; i < part.count; i++) {
-      yard.add(part.offset + i, NIGHT, 1.2);
-      yard.add(part.offset + i, decorFlare.color, 1);
-      if (warm > 0) yard.add(part.offset + i, COLORS.fire, warm * (0.15 + 0.05 * Math.sin(clock * 2 + i * 0.4)));
+      }
     }
   }
 
@@ -371,7 +407,8 @@ export function colorgateGame(stage: Stage): Game {
       stepShards(dt);
       motes.update(dt);
       waves.update(dt);
-      decorFlare.update(dt);
+      show.update(dt);
+      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
       switchPulse = Math.max(0, switchPulse - dt * 5);
       passFlash = Math.max(0, passFlash - dt * 4);
       missFlash = Math.max(0, missFlash - dt * 2);
@@ -381,11 +418,11 @@ export function colorgateGame(stage: Stage): Game {
       drawRoof();
       drawBushes();
       for (const t of yard.trees) drawTree(t);
-      for (const d of yard.decor) drawDecor(d);
-      if (phase === 'miss' && phaseTime < 0.6) yard.wash(COLORS.bad, 0.18 * (1 - phaseTime / 0.6));
       if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
       motes.draw();
       waves.draw();
+      // The windows, doors and the rest are the show's.
+      show.draw(frame);
     },
 
     status(): GameStatusFields {
