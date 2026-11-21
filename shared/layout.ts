@@ -435,6 +435,42 @@ export function keepLocked(prev: Layout, next: Layout): { layout: Layout; blocke
   return { layout: fixtures === next.fixtures ? next : { ...next, fixtures }, blocked };
 }
 
+/** Kinds that are one shape on a point (see changeKind): their kind can change. */
+export const SHAPE_KINDS = ['bush', 'tree', 'semicircle'] as const;
+export type ShapeKind = (typeof SHAPE_KINDS)[number];
+export const isShapeKind = (k: FixtureKind): k is ShapeKind => (SHAPE_KINDS as readonly string[]).includes(k);
+
+/** How tall a bush looks from the front, as a share of its radius (its LEDs spread 0.72 r up and down). */
+const BUSH_TALL = 0.72;
+
+/**
+ * The object made into another kind of shape (a bush into a tree, say), keeping what it is
+ * besides its shape: its name, LEDs (count, device, numbers, direction), light string, effect,
+ * lock, and where it stands and how big it is. It covers the same part of the front view: the
+ * same width, the same ground line and the same height. Settings of the old kind that the new
+ * one does not have go; the new kind's own start at their defaults (a bush becomes a ball of
+ * lights, the tree shape closest to a bush). A tree and a semicircle keep which way they face.
+ */
+export function changeKind(f: Fixture, kind: ShapeKind): Fixture {
+  if (f.kind === kind || !isShapeKind(f.kind)) return f;
+  const p = f.points[0] ?? { x: 0, y: 0 };
+  const r = f.radius ?? 60;
+  // The front view's bottom and height of the old shape.
+  const height = f.kind === 'bush' ? 2 * BUSH_TALL * r : f.kind === 'tree' ? (f.height ?? 240) : (f.height ?? r);
+  const bottom = f.kind === 'bush' ? p.y + BUSH_TALL * r : p.y;
+  const { id, name, pixels, lights, deviceId, startPixel, reversed, effect, locked } = f;
+  const keep: Fixture = { id, name, kind, points: [], radius: r, pixels, lights, deviceId, startPixel, reversed, effect, locked };
+  const at = (y: number): Point[] => [{ ...p, y: Math.round(y) }];
+  const facing = f.kind === 'bush' ? undefined : f.facing;
+  let out: Fixture;
+  if (kind === 'bush') out = { ...keep, points: at(bottom - height / 2), pattern: 'fill' };
+  else if (kind === 'tree') out = { ...keep, points: at(bottom), height: Math.round(height), pattern: 'spiral', shape: f.kind === 'bush' ? 'sphere' : undefined, facing };
+  else out = { ...keep, points: at(bottom), height: Math.round(height), facing };
+  // Not set stays not set (as a saved layout has it).
+  for (const k of Object.keys(out) as (keyof Fixture)[]) if (out[k] === undefined) delete out[k];
+  return out;
+}
+
 /**
  * A tree's radius at height u (0 at the base, 1 at the top), as a share of its radius: a cone
  * narrows to a point (almost: the LEDs at the top sit just off the axis), a cylinder keeps its
