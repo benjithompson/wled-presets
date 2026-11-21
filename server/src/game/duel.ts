@@ -1,7 +1,8 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, css, Flare, heat, Motes, Recent, Sparks, Trail, Waves, Yard } from './kit.ts';
-import { Show, type Mood } from './show.ts';
+import { COLORS, css, Flare, heat, Recent, Sparks, Trail, Yard } from './kit.ts';
+import { Fx, MIN_ROOF, Round } from './round.ts';
+import type { Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Roof Duel: Fire (the left end of the roof) against Ice (the right end). A ball of light flies
@@ -37,10 +38,10 @@ export function duelGame(stage: Stage): Game {
   const yard = new Yard(stage);
   const roof = yard.roof;
   const n = roof.n;
-  const playable = n >= 30;
+  const playable = n >= MIN_ROOF;
   const sparks = new Sparks(roof, n * 0.12, 1.6);
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
+  const fx = new Fx(yard, { sparks });
+  const { motes, waves, show } = fx;
   const flare = [new Flare(4), new Flare(4)];
   const zone = Math.max(8, Math.round(n * 0.16));
   const baseSpeed = n / 2.6;
@@ -50,7 +51,6 @@ export function duelGame(stage: Stage): Game {
   const trail = new Trail(n);
   // The whole yard plays along: its backdrop is Fire's on the left and Ice's on the right, the leader's taking more,
   // heats up with a long rally, and every point sweeps the yard in the scorer's color.
-  const show = new Show(yard);
   for (const t of yard.trees) show.dim(t, 0.45);
   // The ball is the only white on the roof: the show stays faint there.
   show.roofShare = 0.25;
@@ -74,9 +74,7 @@ export function duelGame(stage: Stage): Game {
     { id: null, house: false },
     { id: null, house: false }
   ];
-  let phase: Phase = 'lobby';
-  let phaseTime = 0;
-  let clock = 0;
+  const round = new Round<Phase>('duel', 'lobby');
   const score = [0, 0];
   /** Points that have landed in the bushes (they fly there first). */
   const shown = [0, 0];
@@ -106,23 +104,15 @@ export function duelGame(stage: Stage): Game {
   const human = (side: number) => !!slots[side].id;
   const sideOf = (id: string) => slots.findIndex((s) => s.id === id);
 
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
-
   function startMatch() {
     score[0] = score[1] = 0;
     shown[0] = shown[1] = 0;
-    sparks.clear();
-    motes.clear();
-    waves.clear();
-    show.clear();
+    fx.clear();
     rallyMark = 0;
     // Both colors run in from their own ends and meet in the middle.
     show.sweep(TEAMS[0].color, { dir: 'right', amount: 0.6, duration: 1 });
     show.sweep(TEAMS[1].color, { dir: 'left', amount: 0.6, duration: 1 });
-    setPhase('countdown');
+    round.to('countdown');
   }
 
   function serve() {
@@ -134,7 +124,7 @@ export function duelGame(stage: Stage): Game {
     trail.clear();
     seen.clear();
     housePlan = null;
-    setPhase('serve');
+    round.to('serve');
   }
 
   function launch() {
@@ -144,7 +134,7 @@ export function duelGame(stage: Stage): Game {
     flare[server].add(TEAMS[server].color, 0.6);
     waves.add(p.x, p.y, TEAMS[server].color, { amount: 0.35 });
     show.pulse(TEAMS[server].color, 0.08);
-    setPhase('rally');
+    round.to('rally');
   }
 
   function hit(side: number, depth: number) {
@@ -188,7 +178,7 @@ export function duelGame(stage: Stage): Game {
   }
 
   function whiff(side: number) {
-    lockout[side] = clock + 0.4;
+    lockout[side] = round.clock + 0.4;
     sparks.burst(endOf(side) - toward(side) * zone * 0.3, [[0.3, 0.3, 0.35]], 6, n * 0.05, 0.4);
     // A swing at nothing: a dull red shudder on that side of the house.
     const p = roof.point(endOf(side));
@@ -229,7 +219,7 @@ export function duelGame(stage: Stage): Game {
     });
     trail.clear();
     server = loser;
-    setPhase('point');
+    round.to('point');
   }
 
   // ---------- Input ----------
@@ -239,12 +229,12 @@ export function duelGame(stage: Stage): Game {
   }
 
   function swing(side: number) {
-    if (clock < lockout[side]) return;
-    if (phase === 'serve' && side === server && phaseTime > 0.3) return launch();
-    if (phase !== 'rally') return;
+    if (round.clock < lockout[side]) return;
+    if (round.phase === 'serve' && side === server && round.time > 0.3) return launch();
+    if (round.phase !== 'rally') return;
     // Where the ball was when the player saw it; past the end counts as the deepest hit.
-    const then = seen.since(clock - LAG)[0] ?? seen.latest;
-    const recent = seen.since(clock - GRACE).filter((h) => inZone(side, h));
+    const then = seen.since(round.clock - LAG)[0] ?? seen.latest;
+    const recent = seen.since(round.clock - GRACE).filter((h) => inZone(side, h));
     const h = then && inZone(side, then) ? then : recent.at(-1);
     if (!h) return whiff(side);
     hit(side, 1 - fromEnd(side, Math.max(0, Math.min(n - 1, h.pos))) / zone);
@@ -253,7 +243,7 @@ export function duelGame(stage: Stage): Game {
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
     const side = sideOf(e.playerId);
-    if (phase === 'lobby') {
+    if (round.phase === 'lobby') {
       if (side >= 0) {
         // A second tap with nobody else here: play the house.
         const other = 1 - side;
@@ -275,7 +265,7 @@ export function duelGame(stage: Stage): Game {
       return;
     }
     if (side < 0) return;
-    if (phase === 'won' && phaseTime > 2.5) return startMatch();
+    if (round.phase === 'won' && round.time > 2.5) return startMatch();
     swing(side);
   }
 
@@ -283,18 +273,18 @@ export function duelGame(stage: Stage): Game {
     const side = sideOf(id);
     if (side < 0) return;
     // In a match the house takes over; in the lobby the place is free again.
-    slots[side] = phase === 'lobby' ? { id: null, house: false } : { id: null, house: true };
+    slots[side] = round.phase === 'lobby' ? { id: null, house: false } : { id: null, house: true };
     if (!slots[0].id && !slots[1].id) {
       slots[0] = { id: null, house: false };
       slots[1] = { id: null, house: false };
-      setPhase('lobby');
+      round.to('lobby');
     }
   }
 
   // ---------- Physics ----------
 
   function stepBall(dt: number) {
-    if (phase !== 'rally') return;
+    if (round.phase !== 'rally') return;
     const dir = Math.sign(vel) || 1;
     // Gravity along the roof; the ball never stalls on a climb.
     vel -= gravity * roof.slopeAt(pos) * dt;
@@ -302,7 +292,7 @@ export function duelGame(stage: Stage): Game {
     if (Math.sign(vel) !== dir || Math.abs(vel) < minSpeed) vel = dir * minSpeed;
     vel = Math.max(-topSpeed * 1.2, Math.min(topSpeed * 1.2, vel));
     pos += vel * dt;
-    seen.push(clock, { pos, vel });
+    seen.push(round.clock, { pos, vel });
 
     const target = heading();
     // The house plays its side.
@@ -328,37 +318,37 @@ export function duelGame(stage: Stage): Game {
       const q = fromEnd(0, i) / Math.max(1, n - 1);
       const side = q < front ? 0 : 1;
       const edge = Math.abs(q - front) * n < 1.5;
-      yard.roofAt(i, TEAMS[side].color, 0.05 + 0.015 * Math.sin(clock * 2 + i * 0.2));
-      if (edge) yard.roofAt(i, WHITE, 0.25 + 0.2 * Math.sin(clock * 9));
+      yard.roofAt(i, TEAMS[side].color, 0.05 + 0.015 * Math.sin(round.clock * 2 + i * 0.2));
+      if (edge) yard.roofAt(i, WHITE, 0.25 + 0.2 * Math.sin(round.clock * 9));
     }
     // End zones: brighter as the ball comes at them, with a white-hot tip for a smash.
     for (let side = 0; side < 2; side++) {
       const c = TEAMS[side].color;
-      const coming = phase === 'rally' && heading() === side ? Math.max(0, 1 - Math.max(0, fromEnd(side, pos) - zone) / (n * 0.5)) : 0;
-      const locked = clock < lockout[side];
+      const coming = round.phase === 'rally' && heading() === side ? Math.max(0, 1 - Math.max(0, fromEnd(side, pos) - zone) / (n * 0.5)) : 0;
+      const locked = round.clock < lockout[side];
       for (let k = 0; k < zone; k++) {
         const i = endOf(side) - toward(side) * k;
         const depth = 1 - k / zone;
-        const tip = depth > 0.8 ? 0.15 + 0.1 * Math.sin(clock * 10) : 0;
+        const tip = depth > 0.8 ? 0.15 + 0.1 * Math.sin(round.clock * 10) : 0;
         yard.roofAt(i, locked ? [0.3, 0.3, 0.3] : c, 0.1 + coming * 0.3 + depth * 0.06);
         if (tip && !locked) yard.roofAt(i, WHITE, tip * (0.5 + coming));
       }
     }
     // The ball and its trail, in the color of whoever hit it last.
     trail.fade(dt, 4 + (Math.abs(vel) / n) * 4);
-    if (phase === 'rally' || phase === 'serve') {
+    if (round.phase === 'rally' || round.phase === 'serve') {
       const p = Math.max(0, Math.min(n - 1, pos));
       trail.mark(p, owner);
       const hot = Math.min(1, Math.abs(vel) / topSpeed);
       const c = mix(TEAMS[owner].color, WHITE, 0.25 + hot * 0.6);
-      const pulse = phase === 'serve' ? 0.6 + 0.4 * Math.sin(clock * 8) : 1;
+      const pulse = round.phase === 'serve' ? 0.6 + 0.4 * Math.sin(round.clock * 8) : 1;
       yard.roofSplat(p, c, 1.4, pulse);
       if (hot > 0.6 && Math.random() < hot * 0.5) sparks.burst(p, [TEAMS[owner].color], 1, n * 0.08, 0.4);
     }
     trail.draw(yard, (_, side) => TEAMS[side].color, 0.8, 0.02);
-    if (phase === 'countdown') {
+    if (round.phase === 'countdown') {
       // Three beats run out from the middle of the roof to both ends.
-      const beat = phaseTime % 1;
+      const beat = round.time % 1;
       const mid = (n - 1) / 2;
       for (let i = 0; i < n; i++) {
         const d = Math.abs(i - mid) / mid;
@@ -373,9 +363,9 @@ export function duelGame(stage: Stage): Game {
       const leds = sideLeds[side];
       const c = TEAMS[side].color;
       const lit = Math.round((Math.min(WIN, shown[side]) / WIN) * leds.length);
-      const winning = phase === 'won' && score[side] >= WIN;
+      const winning = round.phase === 'won' && score[side] >= WIN;
       leds.forEach((at, k) => {
-        if (k < lit || winning) yard.add(at, winning ? mix(c, WHITE, Math.max(0, Math.sin(clock * 10 + k * 1.3)) * 0.5) : c, 0.55 + 0.1 * Math.sin(clock * 3 + k));
+        if (k < lit || winning) yard.add(at, winning ? mix(c, WHITE, Math.max(0, Math.sin(round.clock * 10 + k * 1.3)) * 0.5) : c, 0.55 + 0.1 * Math.sin(round.clock * 3 + k));
         else yard.add(at, c, 0.035);
       });
     }
@@ -387,11 +377,11 @@ export function duelGame(stage: Stage): Game {
     for (const tree of yard.trees) {
       for (let i = 0; i < tree.count; i++) {
         const u = tree.up[i];
-        if (rally && u <= t) yard.add(tree.offset + i, t >= 1 ? hsv((clock * 0.5 + u) % 1) : heat(u), 0.55);
+        if (rally && u <= t) yard.add(tree.offset + i, t >= 1 ? hsv((round.clock * 0.5 + u) % 1) : heat(u), 0.55);
       }
     }
     // Windows and doors: each side of the house glows in its team's color and flashes with its hits.
-    const matchPoint = phase !== 'won' && (score[0] === WIN - 1 || score[1] === WIN - 1);
+    const matchPoint = round.phase !== 'won' && (score[0] === WIN - 1 || score[1] === WIN - 1);
     for (const d of yard.decor) {
       for (let i = 0; i < d.count; i++) {
         const at = d.offset + i;
@@ -399,7 +389,7 @@ export function duelGame(stage: Stage): Game {
         // A faint tint of its side's team over the show's backdrop, and the flash of every hit.
         yard.add(at, TEAMS[side].color, 0.03);
         yard.add(at, flare[side].color, 0.7);
-        if (matchPoint) yard.add(at, Math.sin(clock * 5) > 0 ? COLORS.bad : WHITE, 0.12);
+        if (matchPoint) yard.add(at, Math.sin(round.clock * 5) > 0 ? COLORS.bad : WHITE, 0.12);
       }
     }
   }
@@ -408,14 +398,14 @@ export function duelGame(stage: Stage): Game {
     const w = score[0] >= WIN ? 0 : 1;
     const c = TEAMS[w].color;
     // The winner's color takes the whole yard, in waves from their end of the roof.
-    yard.wash(c, 0.12 + 0.06 * Math.sin(clock * 4));
+    yard.wash(c, 0.12 + 0.06 * Math.sin(round.clock * 4));
     if (Math.random() < 0.04) {
       const p = roof.point(endOf(w));
       waves.add(p.x, p.y, mix(c, WHITE, 0.3), { amount: 0.7 });
     }
     if (Math.random() < 0.15) sparks.burst(Math.random() * n, [c, WHITE, mix(c, hsv(Math.random()), 0.3)], 24, n * 0.3);
     // Fireworks in the winner's colors keep going up.
-    if (phaseTime > 1.5 && show.rocketsUp < 2 && Math.random() < 0.03) show.firework({ colors: [c, Math.random() < 0.5 ? COLORS.gold : mix(c, WHITE, 0.3)] });
+    if (round.time > 1.5 && show.rocketsUp < 2 && Math.random() < 0.03) show.firework({ colors: [c, Math.random() < 0.5 ? COLORS.gold : mix(c, WHITE, 0.3)] });
   }
 
   /**
@@ -425,12 +415,12 @@ export function duelGame(stage: Stage): Game {
    */
   function moodNow(): Mood {
     const [fire, ice] = [TEAMS[0].color, TEAMS[1].color];
-    if (phase === 'won') {
+    if (round.phase === 'won') {
       const c = TEAMS[score[0] >= WIN ? 0 : 1].color;
       return { a: c, b: mix(c, COLORS.gold, 0.35), level: 1.2, drift: 1.6 };
     }
     // Fire's half of the yard on the left (side 0), Ice's on the right; the leader's color takes more of it.
-    if (phase === 'lobby') return { a: fire, b: ice, level: 0.9, drift: 0.7, split: 0.5 };
+    if (round.phase === 'lobby') return { a: fire, b: ice, level: 0.9, drift: 0.7, split: 0.5 };
     const lead = (score[0] - score[1]) / WIN;
     const heatK = Math.min(1, rally / 12);
     const matchPoint = score[0] === WIN - 1 || score[1] === WIN - 1;
@@ -439,7 +429,7 @@ export function duelGame(stage: Stage): Game {
       b: mix(ice, heat(0.5), heatK * 0.35),
       level: 0.85 + heatK * 0.5,
       drift: 1 + heatK * 1.5,
-      throb: matchPoint && phase === 'rally' ? 1.5 : 0,
+      throb: matchPoint && round.phase === 'rally' ? 1.5 : 0,
       split: 0.5 + lead * 0.35
     };
   }
@@ -451,23 +441,22 @@ export function duelGame(stage: Stage): Game {
     leave,
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       yard.begin(frame);
       if (!playable) return;
 
-      if (phase === 'countdown' && phaseTime >= 3) serve();
-      if (phase === 'serve' && !human(server) && phaseTime > 1.2) launch();
-      if (phase === 'serve' && human(server) && phaseTime > 5) launch();
-      if (phase === 'point' && phaseTime > 2.2) {
-        if (score[lastScorer] >= WIN) setPhase('won');
+      if (round.phase === 'countdown' && round.time >= 3) serve();
+      if (round.phase === 'serve' && !human(server) && round.time > 1.2) launch();
+      if (round.phase === 'serve' && human(server) && round.time > 5) launch();
+      if (round.phase === 'point' && round.time > 2.2) {
+        if (score[lastScorer] >= WIN) round.to('won');
         else serve();
       }
-      if (phase === 'won' && phaseTime > 30) {
+      if (round.phase === 'won' && round.time > 30) {
         // Nobody asked for a rematch: open the lobby again.
         slots[0] = { id: null, house: false };
         slots[1] = { id: null, house: false };
-        setPhase('lobby');
+        round.to('lobby');
       }
       stepBall(dt);
       sparks.update(dt);
@@ -477,12 +466,12 @@ export function duelGame(stage: Stage): Game {
       show.update(dt);
       show.followMood(moodNow(), 2, dt);
       // The countdown: the yard pumps once a second in both colors.
-      if (phase === 'countdown' && Math.floor(phaseTime) !== Math.floor(phaseTime - dt)) {
+      if (round.phase === 'countdown' && Math.floor(round.time) !== Math.floor(round.time - dt)) {
         show.pulse(TEAMS[0].color, 0.08);
         show.pulse(TEAMS[1].color, 0.08);
       }
       // The lobby: now and then a firework on a side that waits for a player.
-      if (phase === 'lobby' && show.rocketsUp === 0 && Math.random() < dt / 3) {
+      if (round.phase === 'lobby' && show.rocketsUp === 0 && Math.random() < dt / 3) {
         const side = Math.random() < 0.5 ? 0 : 1;
         show.firework({ x: sideX(side), colors: [TEAMS[side].color], size: 0.7 });
       }
@@ -490,23 +479,21 @@ export function duelGame(stage: Stage): Game {
       drawRoof(dt);
       drawBushes();
       drawTreesAndDecor();
-      if (phase === 'won') drawWin();
-      if (phase === 'lobby') {
+      if (round.phase === 'won') drawWin();
+      if (round.phase === 'lobby') {
         // Each free end calls for a player.
         for (let side = 0; side < 2; side++) {
           if (slots[side].id) continue;
-          yard.roofSplat(endOf(side) - toward(side) * zone * 0.5, TEAMS[side].color, zone * 0.3, 0.25 + 0.2 * Math.sin(clock * 3 + side * Math.PI));
+          yard.roofSplat(endOf(side) - toward(side) * zone * 0.5, TEAMS[side].color, zone * 0.3, 0.25 + 0.2 * Math.sin(round.clock * 3 + side * Math.PI));
         }
       }
-      motes.draw();
-      waves.draw();
-      show.draw(frame);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup();
       const scores = TEAMS.map((t, i) => ({ name: slots[i].house ? `${t.name} (house)` : t.name, color: css(t.color), value: score[i] }));
-      const base = { score: 0, lives: null, goal: null, scores, stats: rally > 1 && phase === 'rally' ? [{ label: 'Rally', value: rally }] : [] };
+      const base = { score: 0, lives: null, goal: null, scores, stats: rally > 1 && round.phase === 'rally' ? [{ label: 'Rally', value: rally }] : [] };
       const w = score[0] >= WIN ? 0 : 1;
       const messages: Record<Phase, string> = {
         lobby: 'Tap to join! Fire plays the left end, Ice the right.',
@@ -516,26 +503,26 @@ export function duelGame(stage: Stage): Game {
         point: `${TEAMS[lastScorer].name} scores! ${score[0]}–${score[1]}`,
         won: `${TEAMS[w].name} wins ${score[w]}–${score[1 - w]}!`
       };
-      return { ...base, phase, message: messages[phase], button: phase === 'lobby' ? 'JOIN' : '…', tone: phase === 'lobby' ? 'go' : 'wait' };
+      return { ...base, phase: round.phase, message: messages[round.phase], button: round.phase === 'lobby' ? 'JOIN' : '…', tone: round.phase === 'lobby' ? 'go' : 'wait' };
     },
 
     playerStatus(id: string): Partial<GameStatusFields> {
       const side = sideOf(id);
       if (side < 0) {
         const full = slots.every((s) => s.id);
-        if (phase === 'lobby' && !full) return { you: null };
-        return { you: null, button: '👀', tone: 'wait', message: phase === 'lobby' ? 'Two players are on. Watch the roof!' : `Watching: ${TEAMS[0].name} ${score[0]}–${score[1]} ${TEAMS[1].name}` };
+        if (round.phase === 'lobby' && !full) return { you: null };
+        return { you: null, button: '👀', tone: 'wait', message: round.phase === 'lobby' ? 'Two players are on. Watch the roof!' : `Watching: ${TEAMS[0].name} ${score[0]}–${score[1]} ${TEAMS[1].name}` };
       }
       const team = TEAMS[side];
       const you = { name: team.name, color: css(team.color) };
       const end = side === 0 ? 'left' : 'right';
-      if (phase === 'lobby') {
+      if (round.phase === 'lobby') {
         return { you, button: 'VS HOUSE', tone: 'go', message: `You're ${team.name}: the ${end} end of the roof. Waiting for a friend to tap on their phone… or tap again to play the house.` };
       }
-      if (phase === 'countdown') return { you, button: '…', tone: 'wait', message: `You're ${team.name} (${end} end). Get ready…` };
-      if (phase === 'serve') return side === server ? { you, button: 'SERVE', tone: 'go', message: 'Your serve! Tap to launch.' } : { you, button: 'HIT!', tone: 'go' };
-      if (phase === 'rally') return { you, button: 'HIT!', tone: 'go' };
-      if (phase === 'won') return { you, button: phaseTime > 2.5 ? 'REMATCH' : '…', tone: score[side] >= WIN ? 'good' : 'bad', message: score[side] >= WIN ? `You win ${score[side]}–${score[1 - side]}!` : `${TEAMS[1 - side].name} wins this time. Rematch?` };
+      if (round.phase === 'countdown') return { you, button: '…', tone: 'wait', message: `You're ${team.name} (${end} end). Get ready…` };
+      if (round.phase === 'serve') return side === server ? { you, button: 'SERVE', tone: 'go', message: 'Your serve! Tap to launch.' } : { you, button: 'HIT!', tone: 'go' };
+      if (round.phase === 'rally') return { you, button: 'HIT!', tone: 'go' };
+      if (round.phase === 'won') return { you, button: round.time > 2.5 ? 'REMATCH' : '…', tone: score[side] >= WIN ? 'good' : 'bad', message: score[side] >= WIN ? `You win ${score[side]}–${score[1 - side]}!` : `${TEAMS[1 - side].name} wins this time. Rematch?` };
       return { you, button: '…', tone: 'wait' };
     }
   };

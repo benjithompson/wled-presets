@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildStage, sampleLayout } from '../../shared/layout.ts';
 import { Frame } from '../src/game/frame.ts';
 import { ricochetGame } from '../src/game/ricochet.ts';
+import { press } from './harness.ts';
 
-const press = (g: { input: (e: { playerId: string; action: 'press' | 'release' }) => void }) => g.input({ playerId: 'p', action: 'press' });
 
 afterEach(() => {
   vi.restoreAllMocks();

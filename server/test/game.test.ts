@@ -24,6 +24,7 @@ import { catcherGame } from '../src/game/catcher.ts';
 import { Frame } from '../src/game/frame.ts';
 import { GameHost } from '../src/game/host.ts';
 import { defaultSettings } from '../../shared/effects.ts';
+import { press, run } from './harness.ts';
 
 describe('layout geometry', () => {
   it('spreads roof LEDs evenly from the first point to the last', () => {
@@ -295,7 +296,7 @@ function playUntilCatch(game: ReturnType<typeof catcherGame>, frame: Frame, stag
       if (g > 0.4 && g > b * 1.6) green.push(p);
     }
     if (green.length && comet >= Math.min(...green) + 1 && comet <= Math.max(...green) - 1) {
-      game.input({ playerId: 'p', action: 'press' });
+      press(game);
       return true;
     }
   }
@@ -308,11 +309,11 @@ describe('Comet Catcher', () => {
     const game = catcherGame(stage);
     const frame = new Frame(stage.pixelCount);
     expect(game.status().phase).toBe('ready');
-    game.input({ playerId: 'p', action: 'press' });
+    press(game);
     expect(game.status().phase).toBe('running');
     expect(playUntilCatch(game, frame, stage)).toBe(true);
     expect(game.status().score).toBe(1);
-    for (let i = 0; i < 120; i++) game.update(1 / 60, frame);
+    run(game, frame, 2);
     const bush = stage.fixtures[1];
     const lit = Array.from({ length: bush.count }, (_, i) => frame.data[(bush.offset + i) * 3]).filter((v) => v > 0.3).length;
     expect(lit).toBeGreaterThan(bush.count * 0.5);
@@ -322,10 +323,10 @@ describe('Comet Catcher', () => {
     const stage = buildStage(sampleLayout());
     const game = catcherGame(stage);
     const frame = new Frame(stage.pixelCount);
-    game.input({ playerId: 'p', action: 'press' });
+    press(game);
     game.update(1 / 60, frame);
     // The comet starts at the left end; the gate is never right there.
-    game.input({ playerId: 'p', action: 'press' });
+    press(game);
     expect(game.status()).toMatchObject({ phase: 'miss', lives: 2 });
   });
 
@@ -354,10 +355,10 @@ describe('Comet Catcher', () => {
       }
       return w;
     };
-    game.input({ playerId: 'p', action: 'press' });
+    press(game);
     game.update(1 / 60, frame);
     const before = gateWidth();
-    for (let i = 0; i < 8 * 60; i++) game.update(1 / 60, frame);
+    run(game, frame, 8);
     const after = widest();
     expect(after).toBeLessThan(before * 0.75);
     expect(after).toBeGreaterThan(before * 0.3);

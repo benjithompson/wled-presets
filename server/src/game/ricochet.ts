@@ -1,7 +1,8 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Trail, Waves, Yard, type Part } from './kit.ts';
-import { overMood, Show, type Mood } from './show.ts';
+import { bounce, COLORS, Flare, heat, Recent, Sparks, Trail, Yard, type Part } from './kit.ts';
+import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
+import { overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Ricochet: a white comet races along the roofline toward a green gate. Tap while it is in the
@@ -72,13 +73,12 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   const yard = new Yard(stage);
   const { roof, bushes } = yard;
   const n = roof.n;
-  const playable = n >= 30;
+  const playable = n >= MIN_ROOF;
   const sparks = new Sparks(roof, n * 0.1, 2);
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
   const flare = new Flare(3);
   // The yard around the roof: a mood that heats up with the speed, and fireworks for catches.
-  const show = new Show(yard);
+  const fx = new Fx(yard, { sparks, flare });
+  const { motes, waves, show } = fx;
   for (const t of yard.trees) show.dim(t, 0.45);
   // The roof is the playfield: while the comet runs, the show stays off it (fireworks bursting
   // over the roof would add up to white, and white is only the comet) and the game draws a faint
@@ -95,9 +95,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   const startHalf = Math.max(5, Math.round(n * 0.04));
   const minHalf = Math.max(3, n * 0.012);
 
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  const round = new Round<Phase>('ricochet', 'ready');
   let score = 0;
   let catches = 0;
   let perfects = 0;
@@ -124,11 +122,6 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   let flashAll = 0;
 
   const bushColor = (i: number) => BUSH_COLORS[(i + set * 2) % BUSH_COLORS.length];
-
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
 
   /**
    * A new gate ahead of the comet, a random distance along its path (it may bounce off an end
@@ -187,7 +180,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
 
   function start() {
     reset();
-    setPhase('running');
+    round.to('running');
     show.clear();
     show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
   }
@@ -259,11 +252,11 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       motes.drop(p.x, p.y, mix(COMET_TAIL, COLORS.bad, 0.7), { vx: (Math.random() - 0.5) * 60, size: 20 });
     }
     litTarget.fill(0);
-    newBest = record('ricochet', score).isNew;
+    newBest = round.record(score);
     // The house blows, and the yard goes dark red (gold fireworks for a new best).
     const p = roof.point(at);
     show.gameOver(p.x, p.y, { newBest });
-    setPhase('over');
+    round.to('over');
   }
 
   /**
@@ -271,8 +264,8 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
    * heating up through magenta to fire as the comet speeds up; dark red after the end.
    */
   function moodNow(): Mood {
-    if (phase === 'ready') return { a: hsv(clock * 0.04), b: hsv(clock * 0.04 + 0.3), level: 0.9, drift: 1.4 };
-    if (phase === 'over') return overMood(phaseTime);
+    if (round.phase === 'ready') return { a: hsv(round.clock * 0.04), b: hsv(round.clock * 0.04 + 0.3), level: 0.9, drift: 1.4 };
+    if (round.phase === 'over') return overMood(round.time);
     const t = Math.max(0, Math.min(1, (speed - startSpeed) / (maxSpeed - startSpeed)));
     const a = t < 0.5 ? mix([0.1, 0.15, 0.75], [0.7, 0.05, 0.75], t * 2) : mix([0.7, 0.05, 0.75], [1, 0.3, 0.02], t * 2 - 1);
     const b = t < 0.5 ? mix([0.4, 0.05, 0.7], [1, 0.05, 0.4], t * 2) : mix([1, 0.05, 0.4], [1, 0.05, 0.05], t * 2 - 1);
@@ -281,10 +274,10 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
 
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
-    if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return start();
-    if (phase !== 'running') return;
+    if (round.canStart) return start();
+    if (round.phase !== 'running') return;
     // Judged by what the player saw: where the comet was over the grace window.
-    const recent = [...seen.since(clock - GRACE), toGo];
+    const recent = [...seen.since(round.clock - GRACE), toGo];
     const closest = Math.min(...recent.map((t) => Math.abs(t)));
     if (closest <= halfWidth) caught(closest);
     else gameOver(pos);
@@ -293,7 +286,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   // ---------- Drawing ----------
 
   function drawGate(color: Rgb) {
-    const breathe = 0.6 + 0.4 * Math.sin(clock * 6);
+    const breathe = 0.6 + 0.4 * Math.sin(round.clock * 6);
     for (let i = Math.ceil(gate - halfWidth); i <= Math.floor(gate + halfWidth); i++) yard.roofAt(i, color, 0.12 + 0.08 * breathe);
     yard.roofSplat(gate - halfWidth, color, 1, 0.9 * breathe + 0.3);
     yard.roofSplat(gate + halfWidth, color, 1, 0.9 * breathe + 0.3);
@@ -323,16 +316,16 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
 
   function drawRoof() {
     // The roof's faint backdrop in the mood's colors, drifting along it (far too dim to look white or green).
-    if (phase === 'running') {
+    if (round.phase === 'running') {
       const k = 0.05 * (mood.level ?? 1);
       // Not under the comet's tail: it would push the tail toward white.
-      for (let i = 0; i < n; i++) yard.roofAt(i, mix(mood.a, mood.b, 0.5 + 0.5 * Math.sin(i * 0.06 - clock * 0.8)), k * Math.max(0, 1 - trail.level[i] * 10));
+      for (let i = 0; i < n; i++) yard.roofAt(i, mix(mood.a, mood.b, 0.5 + 0.5 * Math.sin(i * 0.06 - round.clock * 0.8)), k * Math.max(0, 1 - trail.level[i] * 10));
     }
     drawPops();
-    if (phase !== 'over') drawGate(GATE);
+    if (round.phase !== 'over') drawGate(GATE);
     trail.draw(yard, (v) => mix(COMET_TAIL, WHITE, v * v * 0.7), 0.9);
-    if (phase !== 'over') yard.roofSplat(pos, WHITE, 1.1, 1);
-    else yard.roofSplat(missAt, COLORS.bad, 2 + phaseTime * 10, Math.max(0, 1 - phaseTime));
+    if (round.phase !== 'over') yard.roofSplat(pos, WHITE, 1.1, 1);
+    else yard.roofSplat(missAt, COLORS.bad, 2 + round.time * 10, Math.max(0, 1 - round.time));
     sparks.draw(yard);
   }
 
@@ -345,22 +338,22 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       for (let k = 0; k < b.count; k++) {
         const i = b.bottomUp[k];
         const u = k / Math.max(1, b.count - 1);
-        const sparkle = 0.75 + 0.25 * Math.sin(clock * 7 + i * 2.3);
+        const sparkle = 0.75 + 0.25 * Math.sin(round.clock * 7 + i * 2.3);
         // Every catch flashes the bushes gold (a perfect one brighter and longer).
         const glint = sincePerfect < 0.5 ? 1 - sincePerfect / 0.5 : sinceCatch < 0.25 ? 0.5 * (1 - sinceCatch / 0.25) : 0;
         if (glint > 0) yard.add(b.offset + i, COLORS.gold, glint * 0.6);
         if (flashAll > 0) {
-          const f = Math.max(0, Math.sin(clock * 14 + i));
+          const f = Math.max(0, Math.sin(round.clock * 14 + i));
           yard.add(b.offset + i, mix(color, COLORS.gold, f * 0.7), 0.5 + f * 0.5);
         } else if (u < filled) yard.add(b.offset + i, color, 0.65 * sparkle);
-        else if (phase === 'running' && bi === next && litTarget[bi] < 1 && u < partial) yard.add(b.offset + i, color, 0.18);
+        else if (round.phase === 'running' && bi === next && litTarget[bi] < 1 && u < partial) yard.add(b.offset + i, color, 0.18);
       }
     });
   }
 
   function drawTree(part: Part) {
     // A speedometer: from the base up, hotter as the comet speeds up.
-    const t = phase === 'running' ? (speed - startSpeed) / (maxSpeed - startSpeed) : 0;
+    const t = round.phase === 'running' ? (speed - startSpeed) / (maxSpeed - startSpeed) : 0;
     const level = Math.max(0.04, Math.min(1, 0.04 + t * 0.96));
     for (let i = 0; i < part.count; i++) {
       const u = part.up[i];
@@ -379,14 +372,14 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   }
 
   function step(dt: number) {
-    if (phase === 'running') {
+    if (round.phase === 'running') {
       const move = speed * dt;
       ({ pos, dir } = bounce(pos, dir, move, n));
       toGo -= move;
-      seen.push(clock, toGo);
+      seen.push(round.clock, toGo);
       // All the way through the gate, and past the grace for a late press: the run is over.
       if (toGo < -halfWidth - speed * GRACE - 0.5) gameOver(pos);
-    } else if (phase === 'ready') {
+    } else if (round.phase === 'ready') {
       // The attract loop: the comet runs slowly through a gate in the middle.
       gate = n / 2;
       halfWidth = startHalf;
@@ -394,18 +387,14 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       // Now and then a firework, to draw a crowd.
       if (Math.random() < dt * 0.35) show.rocket([hsv(Math.random()), hsv(Math.random())], { size: 0.8 });
     }
-    if (phase === 'over' && phaseTime > 10) {
+    if (round.timedOut) {
       reset();
-      setPhase('ready');
+      round.to('ready');
     }
-    sparks.update(dt);
-    motes.update(dt);
-    waves.update(dt);
-    flare.update(dt);
-    show.update(dt);
+    fx.update(dt);
     mood = moodNow();
-    if (phase !== 'over' || phaseTime > 1.5) show.followMood(mood, 2, dt);
-    show.roofShare = phase === 'running' ? 0 : Math.min(1, show.roofShare + dt * 2);
+    if (round.settled) show.followMood(mood, 2, dt);
+    show.roofShare = round.phase === 'running' ? 0 : Math.min(1, show.roofShare + dt * 2);
     sincePerfect += dt;
     sinceCatch += dt;
     for (const p of pops) p.t += dt;
@@ -420,7 +409,7 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       }
     }
     trail.fade(dt, 7);
-    if (phase !== 'over') trail.mark(pos);
+    if (round.phase !== 'over') trail.mark(pos);
     lit.forEach((v, i) => (lit[i] = v + (litTarget[i] - v) * Math.min(1, dt * 2.5)));
   }
 
@@ -429,13 +418,12 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
   return {
     id: 'ricochet',
 
-    scoreBoard: () => ({ key: 'ricochet', title: 'Ricochet' }),
+    scoreBoard: () => round.scoreBoard(),
 
     input,
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       yard.begin(frame);
       if (!playable) return;
       step(dt);
@@ -443,26 +431,21 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
       drawBushes();
       for (const t of yard.trees) drawTree(t);
       for (const d of yard.decor) drawDecor(d);
-      if (phase === 'over') {
-        if (phaseTime < 0.6) yard.wash(COLORS.bad, 0.2 * (1 - phaseTime / 0.6));
-        yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.04);
-      }
-      motes.draw();
-      waves.draw();
-      show.draw(frame);
+      if (round.phase === 'over') endGlow(yard, round.time, 0.04, 0.2);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      const best = bestScore('ricochet');
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup();
+      const best = round.best();
       const common = { score, lives: null, goal: null };
-      switch (phase) {
+      switch (round.phase) {
         case 'ready':
-          return { ...common, phase, message: 'Tap to start! Catch the comet in the green gate. It turns around every time.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
+          return { ...common, phase: round.phase, message: 'Tap to start! Catch the comet in the green gate. It turns around every time.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
         case 'running':
           return {
             ...common,
-            phase,
+            phase: round.phase,
             message: sincePerfect < 0.8 ? 'PERFECT! Double points!' : catches ? `${catches} in a row! Catch it in the gate.` : 'Catch it in the gate. It turns around every time!',
             button: 'CATCH',
             tone: 'go',
@@ -475,10 +458,10 @@ export function ricochetGame(stage: Stage): Game & { peek(): RicochetPeek } {
         case 'over':
           return {
             ...common,
-            phase,
+            phase: round.phase,
             message: newBest ? `New best: ${score}!` : `Game over: ${score} points, ${catches} catches${perfects ? `, ${perfects} perfect` : ''}.`,
-            button: phaseTime > 1.5 ? 'GO!' : '…',
-            tone: phaseTime > 1.5 ? 'go' : 'bad',
+            button: round.canStart ? 'GO!' : '…',
+            tone: round.canStart ? 'go' : 'bad',
             stats: [
               { label: 'Score', value: score },
               { label: 'Best', value: best }

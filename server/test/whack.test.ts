@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildStage, CONTROL_ID, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
+import { CONTROL_ID, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { Frame } from '../src/game/frame.ts';
 import { bestScore, memoryScores, scoreboard, useScoreStore, Yard } from '../src/game/kit.ts';
 import { ROUND, whackGame } from '../src/game/whack.ts';
+import { press as pressButton, setup as play } from './harness.ts';
 
 beforeEach(() => useScoreStore(memoryScores()));
 afterEach(() => {
@@ -19,16 +20,14 @@ function yardWithTrees(): Layout {
 }
 
 function setup(layout = yardWithTrees()) {
-  const stage = buildStage(layout);
-  const game = whackGame(stage);
-  const frame = new Frame(stage.pixelCount);
+  const { stage, game, frame } = play(whackGame, layout);
   const run = (seconds: number, each?: () => void) => {
     for (let i = 0; i < Math.round(seconds * 60); i++) {
       game.update(1 / 60, frame);
       each?.();
     }
   };
-  const press = (button?: string) => game.input({ playerId: 'p', action: 'press', ...(button ? { button } : {}) });
+  const press = (button?: string) => pressButton(game, button);
   /** Runs until a mole is up (and has been for `after` seconds), and returns its hole. */
   const nextMole = (after = 0.2) => {
     for (let i = 0; i < 600; i++) {

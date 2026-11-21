@@ -1,7 +1,8 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, bounce, COLORS, Flare, heat, Motes, Recent, record, scale, Sparks, Waves, Yard, type Part, type Sink } from './kit.ts';
-import { NIGHT_MOOD, overMood, Show, turnHue, type Mood } from './show.ts';
+import { bounce, COLORS, Flare, heat, Recent, Sparks, Yard, type Part, type Sink } from './kit.ts';
+import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
+import { NIGHT_MOOD, overMood, turnHue, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Cascade: glowing orbs in four colors roll along the roofline under real gravity: they speed up
@@ -122,22 +123,19 @@ export function cascadeGame(stage: Stage): Game {
   };
   const roof = yard.roof;
   const n = roof.n;
-  const playable = n >= 30;
+  const playable = n >= MIN_ROOF;
   const sparks = new Sparks(roof, n * 0.12, 1.6);
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
   const decorFlare = new Flare(3.5);
+  const fx = new Fx(yard, { sparks, flare: decorFlare });
+  const { motes, waves, show } = fx;
   const bushPaint: (Paint | null)[][] = yard.bushes.map((b) => Array.from({ length: b.count }, () => null));
   const bushNext = yard.bushes.map(() => 0);
-  const show = new Show(yard);
   for (const t of yard.trees) show.dim(t, 0.45);
   for (const b of yard.bushes) show.dim(b, 0.6);
   /** The colors popped in this chain (for the yard's mood). */
   let chainColors: Rgb[] = [];
 
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  const round = new Round<Phase>('cascade', 'ready');
   let level = 1;
   let lives = LIVES;
   let score = 0;
@@ -170,11 +168,6 @@ export function cascadeGame(stage: Stage): Game {
   const sweepSpeed = (lv: number) => n / Math.max(1.6, 2.9 - lv * 0.12);
   const gravity = n * 0.18;
   const maxSpeed = n * 0.33;
-
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
 
   function spawn(lv: number, demo = false) {
     const count = demo ? Math.min(orbCount(3), 14) : orbCount(lv);
@@ -227,13 +220,10 @@ export function cascadeGame(stage: Stage): Game {
     score = 0;
     longest = 0;
     newBest = false;
-    sparks.clear();
-    motes.clear();
-    waves.clear();
-    show.clear();
+    fx.clear();
     show.sweep(COLORS.hint, { dir: 'up', amount: 0.5 });
     spawn(level);
-    setPhase('aim');
+    round.to('aim');
   }
 
   const cursorAt = (t: number) => seen.at(t) ?? cursor;
@@ -299,21 +289,21 @@ export function cascadeGame(stage: Stage): Game {
   /** The bomb goes off where it was (a tap: where the player saw it). */
   function fire(pos: number) {
     detonate(pos, WHITE, true, blastRadius(level));
-    setPhase('chain');
+    round.to('chain');
   }
 
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
-    if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return newGame();
-    if (phase === 'aim') return fire(cursorAt(clock - LAG));
-    if ((phase === 'clear' || phase === 'fail') && phaseTime > 1.2) next();
+    if (round.canStart) return newGame();
+    if (round.phase === 'aim') return fire(cursorAt(round.clock - LAG));
+    if ((round.phase === 'clear' || round.phase === 'fail') && round.time > 1.2) next();
   }
 
   function next() {
-    if (phase === 'clear') level++;
+    if (round.phase === 'clear') level++;
     sparks.clear();
     spawn(level);
-    setPhase('aim');
+    round.to('aim');
   }
 
   function judge() {
@@ -327,15 +317,15 @@ export function cascadeGame(stage: Stage): Game {
         lifeBack = lives < LIVES;
         lives = Math.min(LIVES, lives + 1);
       }
-      setPhase('clear');
+      round.to('clear');
       // The bushes erupt, the roof answers with fireworks.
       for (const b of yard.bushes) waves.add(b.x, b.top, COLORS.gold, { amount: 0.9 });
-      newBest = record('cascade', score).isNew || newBest;
+      newBest = round.record(score) || newBest;
       // A finale in the colors of the chain; a clean sweep gets a bigger one and a rainbow sweep.
       const popped = chainColors.length ? chainColors : ORB_COLORS;
       show.finale(swept ? 8 : 5, { colors: Array.from({ length: 4 }, (_, k) => [popped[(k * 3) % popped.length], k % 2 ? COLORS.gold : popped[(k * 3 + 1) % popped.length]]) });
       show.sweep(COLORS.gold, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.7 });
-      if (swept) show.sweep(hsv(clock * 0.2), { dir: 'out', amount: 0.8, duration: 1.2 });
+      if (swept) show.sweep(hsv(round.clock * 0.2), { dir: 'out', amount: 0.8, duration: 1.2 });
     } else {
       lives--;
       // What is left fizzles and falls off the gutter.
@@ -346,14 +336,14 @@ export function cascadeGame(stage: Stage): Game {
       orbs = [];
       const mid = roof.point(n / 2);
       if (lives <= 0) {
-        newBest = record('cascade', score).isNew;
+        newBest = round.record(score);
         // The house blows, and the yard goes dark red (gold fireworks for a new best).
         show.gameOver(mid.x, mid.y, { newBest });
-        setPhase('over');
+        round.to('over');
       } else {
         show.explode(mid.x, mid.y, COLORS.bad, { size: 1.2 });
         show.sweep(COLORS.bad, { dir: 'down', amount: 0.6, duration: 0.7 });
-        setPhase('fail');
+        round.to('fail');
       }
     }
   }
@@ -430,21 +420,21 @@ export function cascadeGame(stage: Stage): Game {
         if (d > r + 1.5) continue;
         // A glowing body with bright rims where it is still growing, and a white flash at first.
         const rim = Math.exp(-(((d - r) / 1.2) ** 2));
-        const inside = d <= r ? 0.4 + 0.2 * Math.sin(clock * 20 + i * 1.7) : 0;
+        const inside = d <= r ? 0.4 + 0.2 * Math.sin(round.clock * 20 + i * 1.7) : 0;
         yard.roofAt(i, b.color, (inside + rim) * life);
         // A white-hot edge while it grows.
         if (b.t < GROW * 2) yard.roofAt(i, WHITE, rim * 0.6);
         if (core) yard.roofAt(i, WHITE, core * Math.exp(-((d / 3) ** 2)));
       }
     }
-    const aiming = phase === 'aim' || phase === 'ready';
+    const aiming = round.phase === 'aim' || round.phase === 'ready';
     const reach = blastRadius(level);
     for (const o of orbs) {
       if (o.age < 0) continue;
       const arrive = o.age < 0.2 ? 1 - o.age / 0.2 : 0;
       // Orbs the bomb would catch now glow brighter, with a wider halo.
       const aimed = aiming && Math.abs(o.pos - cursor) <= reach + ORB_RADIUS;
-      const shimmer = (aimed ? 1.2 : 0.85) + 0.15 * Math.sin(clock * 9 + o.hue * 20);
+      const shimmer = (aimed ? 1.2 : 0.85) + 0.15 * Math.sin(round.clock * 9 + o.hue * 20);
       const cracked = o.armor && o.hits.size > 0;
       // A new orb arrives with a flash in its own color (not white: white is the bomb).
       yard.roof.splat(addOne, o.pos, o.color, ORB_RADIUS, (cracked ? shimmer * (Math.random() < 0.5 ? 1 : 0.35) : shimmer) + arrive);
@@ -468,9 +458,9 @@ export function cascadeGame(stage: Stage): Game {
    * seconds of the fuse it blinks fast.
    */
   function drawBomb(reach: number) {
-    const left = phase === 'aim' ? Math.max(0, fuse / FUSE) : 1;
-    const urgent = phase === 'aim' && fuse < 3;
-    const blink = urgent ? (Math.sin(clock * 28) > 0 ? 1 : 0.2) : 0.85 + 0.15 * Math.sin(clock * 12);
+    const left = round.phase === 'aim' ? Math.max(0, fuse / FUSE) : 1;
+    const urgent = round.phase === 'aim' && fuse < 3;
+    const blink = urgent ? (Math.sin(round.clock * 28) > 0 ? 1 : 0.2) : 0.85 + 0.15 * Math.sin(round.clock * 12);
     for (let i = Math.ceil(cursor - reach); i <= Math.floor(cursor + reach); i++) if (i >= 0 && i < n) yard.roofAt(i, COLORS.hint, 0.05);
     yard.roofSplat(cursor - reach, COLORS.hint, 0.7, 0.45 * blink);
     yard.roofSplat(cursor + reach, COLORS.hint, 0.7, 0.45 * blink);
@@ -492,7 +482,7 @@ export function cascadeGame(stage: Stage): Game {
         const p = bushPaint[bi][i];
         if (!p) continue;
         const fresh = p.age < 0.25 ? 1 - p.age / 0.25 : 0;
-        const twinkle = phase === 'clear' ? 0.6 + 0.7 * Math.max(0, Math.sin(clock * 9 + i * 2.7)) : 0.55 + 0.1 * Math.sin(clock * 3 + i);
+        const twinkle = round.phase === 'clear' ? 0.6 + 0.7 * Math.max(0, Math.sin(round.clock * 9 + i * 2.7)) : 0.55 + 0.1 * Math.sin(round.clock * 3 + i);
         yard.add(b.offset + i, mix(p.color, WHITE, fresh), twinkle + fresh);
       }
     });
@@ -505,7 +495,7 @@ export function cascadeGame(stage: Stage): Game {
       const u = part.up[i];
       if (u <= Math.min(1, t)) {
         const done = t >= 1;
-        const c = done ? mix(COLORS.gold, WHITE, Math.max(0, Math.sin(clock * 8 + i * 1.7)) * 0.6) : heat(u * 0.85);
+        const c = done ? mix(COLORS.gold, WHITE, Math.max(0, Math.sin(round.clock * 8 + i * 1.7)) * 0.6) : heat(u * 0.85);
         yard.add(part.offset + i, c, done ? 0.9 : 0.6);
       }
     }
@@ -520,10 +510,10 @@ export function cascadeGame(stage: Stage): Game {
   /** The yard's mood from the game's state. */
   function moodNow(): Mood {
     const t = target ? Math.min(1.5, chain / target) : 0;
-    switch (phase) {
+    switch (round.phase) {
       case 'ready':
         // Waiting: the orbs' colors drift round the house.
-        return { a: ORB_COLORS[Math.floor(clock / 3) % ORB_COLORS.length], b: ORB_COLORS[(Math.floor(clock / 3) + 2) % ORB_COLORS.length], level: 1, drift: 1.4 };
+        return { a: ORB_COLORS[Math.floor(round.clock / 3) % ORB_COLORS.length], b: ORB_COLORS[(Math.floor(round.clock / 3) + 2) % ORB_COLORS.length], level: 1, drift: 1.4 };
       case 'aim': {
         // The fuse burning down, or the last life: red, throbbing faster as the fuse runs out.
         if (fuse < 3) return { a: COLORS.bad, b: [0.5, 0, 0.2], level: 1.1, throb: 3 };
@@ -540,7 +530,7 @@ export function cascadeGame(stage: Stage): Game {
       case 'fail':
         return { a: [0.6, 0.03, 0.02], b: [0.35, 0.05, 0.3], level: 0.8, drift: 0.5 };
       case 'over':
-        return overMood(phaseTime);
+        return overMood(round.time);
     }
   }
 
@@ -549,44 +539,39 @@ export function cascadeGame(stage: Stage): Game {
   return {
     id: 'cascade',
 
-    scoreBoard: () => ({ key: 'cascade', title: 'Cascade' }),
+    scoreBoard: () => round.scoreBoard(),
 
     input,
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       yard.begin(frame);
       if (!playable) return;
 
-      const sweeping = phase === 'aim' || phase === 'ready';
+      const sweeping = round.phase === 'aim' || round.phase === 'ready';
       if (sweeping) {
         ({ pos: cursor, dir: cursorDir } = bounce(cursor, cursorDir, sweepSpeed(level) * dt, n));
-        seen.push(clock, cursor);
+        seen.push(round.clock, cursor);
       }
       // The fuse burns while you aim; at the end the bomb goes off by itself.
-      if (phase === 'aim') {
+      if (round.phase === 'aim') {
         fuse -= dt;
         if (fuse <= 0) fire(cursor);
       }
-      if (phase !== 'over') stepOrbs(dt);
+      if (round.phase !== 'over') stepOrbs(dt);
       stepBlasts(dt);
-      sparks.update(dt);
-      motes.update(dt);
-      waves.update(dt);
-      decorFlare.update(dt);
-      show.update(dt);
-      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2.5, dt);
+      fx.update(dt);
+      if (round.settled) show.followMood(moodNow(), 2.5, dt);
       // The roof is the playfield: the backdrop stays dim there while you aim, so the orbs and the bomb stand out.
-      show.roofLevel = phase === 'aim' ? 0.4 : 0.7;
+      show.roofLevel = round.phase === 'aim' ? 0.4 : 0.7;
       meter += (chain - meter) * Math.min(1, dt * 6);
       for (const p of bushPaint) for (const x of p) if (x) x.age += dt;
 
-      if (phase === 'chain') {
+      if (round.phase === 'chain') {
         quietFor = blasts.length ? 0 : quietFor + dt;
         if (quietFor > 0.35) judge();
       }
-      if (phase === 'clear') {
+      if (round.phase === 'clear') {
         // Fireworks over the roof in the colors that were popped.
         if (Math.random() < dt * (swept ? 10 : 5)) {
           const colors = bushPaint.flat().filter((x): x is Paint => !!x).map((x) => x.color);
@@ -596,28 +581,26 @@ export function cascadeGame(stage: Stage): Game {
           const popped = chainColors.length ? chainColors : ORB_COLORS;
           show.rocket([popped[Math.floor(Math.random() * popped.length)], COLORS.gold], { size: 0.8 + Math.random() * 0.5 });
         }
-        if (phaseTime > 4) next();
+        if (round.time > 4) next();
       }
-      if (phase === 'fail' && phaseTime > 5) next();
-      if (phase === 'over' && phaseTime > 10) {
+      if (round.phase === 'fail' && round.time > 5) next();
+      if (round.timedOut) {
         spawn(3, true);
-        setPhase('ready');
+        round.to('ready');
       }
 
       drawRoof();
       drawBushes();
       for (const t of yard.trees) drawTrees(t);
       for (const d of yard.decor) drawDecor(d);
-      if (phase === 'fail' && phaseTime < 0.6) yard.wash(COLORS.bad, 0.18 * (1 - phaseTime / 0.6));
-      if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
-      motes.draw();
-      waves.draw();
-      show.draw(frame);
+      if (round.phase === 'fail' && round.time < 0.6) yard.wash(COLORS.bad, 0.18 * (1 - round.time / 0.6));
+      if (round.phase === 'over') endGlow(yard, round.time, 0.05);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      const best = bestScore('cascade');
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup();
+      const best = round.best();
       const stats = [
         { label: 'Level', value: level },
         { label: 'Score', value: score },
@@ -625,25 +608,25 @@ export function cascadeGame(stage: Stage): Game {
       ];
       const progress = { value: Math.min(chain, target), max: target };
       const common = { score, lives, goal: null, stats };
-      switch (phase) {
+      switch (round.phase) {
         case 'ready':
-          return { ...common, phase, lives: null, message: 'Tap to start! One tap sets off a blast: catch the orbs in a chain.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
+          return { ...common, phase: round.phase, lives: null, message: 'Tap to start! One tap sets off a blast: catch the orbs in a chain.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
         case 'aim':
           return {
             ...common,
             stats: [...stats, { label: 'Fuse', value: `${Math.max(0, Math.ceil(fuse))}s` }],
-            phase,
+            phase: round.phase,
             progress,
             message: `Level ${level}: pop ${target} of ${orbs.length} orbs. Tap when the bright ones bunch up. Same color hits same color: double!`,
             button: 'BOOM!',
             tone: 'go'
           };
         case 'chain':
-          return { ...common, phase, progress, message: chain ? `Chain ×${chain}!${combos ? ` ${combos} color combo${combos > 1 ? 's' : ''}!` : ''}` : 'Boom…', button: '…', tone: 'wait' };
+          return { ...common, phase: round.phase, progress, message: chain ? `Chain ×${chain}!${combos ? ` ${combos} color combo${combos > 1 ? 's' : ''}!` : ''}` : 'Boom…', button: '…', tone: 'wait' };
         case 'clear':
           return {
             ...common,
-            phase,
+            phase: round.phase,
             progress,
             message: swept
               ? `Clean sweep! Every orb popped: +${sweepBonus}${lifeBack ? ' and a life back' : ''}.`
@@ -652,9 +635,9 @@ export function cascadeGame(stage: Stage): Game {
             tone: 'good'
           };
         case 'fail':
-          return { ...common, phase, progress, message: lives === 1 ? `${chain} of ${target}. Last try!` : `${chain} of ${target}. So close! Try again.`, button: 'AGAIN', tone: 'bad' };
+          return { ...common, phase: round.phase, progress, message: lives === 1 ? `${chain} of ${target}. Last try!` : `${chain} of ${target}. So close! Try again.`, button: 'AGAIN', tone: 'bad' };
         case 'over':
-          return { ...common, phase, message: newBest ? `New best: ${score}!` : `Game over: ${score} points. Longest chain ${longest}.`, button: 'GO!', tone: 'go' };
+          return { ...common, phase: round.phase, message: newBest ? `New best: ${score}!` : `Game over: ${score} points. Longest chain ${longest}.`, button: 'GO!', tone: 'go' };
       }
     }
   };

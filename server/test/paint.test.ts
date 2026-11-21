@@ -8,15 +8,13 @@ import { GameHost } from '../src/game/host.ts';
 import { Yard } from '../src/game/kit.ts';
 import { paintGame } from '../src/game/paint.ts';
 import type { Game } from '../src/game/types.ts';
+import { run } from './harness.ts';
 
 const stage = buildStage(sampleLayout());
 const yard = new Yard(stage);
 const [left, middle, right] = yard.bushes;
 const roof = stage.fixtures.find((f) => f.kind === 'roof')!;
 
-const run = (g: Game, frame: Frame, seconds: number) => {
-  for (let i = 0; i < Math.round(seconds * 60); i++) g.update(1 / 60, frame);
-};
 const stroke = (points: number[], more: Partial<PaintStroke> = {}): PaintStroke & { playerId: string } => ({
   playerId: 'p',
   finger: 0,

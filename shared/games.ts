@@ -1,7 +1,8 @@
 // The games on the play page: what the server runs and what the public page and play page show.
 import type { GameInfo } from './layout.ts';
+import type { PaintStroke } from './paint.ts';
 
-export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
+export const GAME_CATALOG = [
   {
     id: 'catcher',
     name: 'Comet Catcher',
@@ -79,4 +80,19 @@ export const GAME_CATALOG: (GameInfo & { tagline: string })[] = [
     description: 'For little artists: pick a color and a sparkle, then paint the lights with your finger. Fill a whole bush in one touch, or tap Surprise!',
     players: '1 player'
   }
-];
+] as const satisfies readonly (GameInfo & { tagline: string })[];
+
+/** A game's id: one of the catalog's. */
+export type GameId = (typeof GAME_CATALOG)[number]['id'];
+
+/** What a phone sends the game host. */
+export type PlayMessage =
+  | { type: 'start'; game: string }
+  | { type: 'accept' }
+  | { type: 'leaveLine' }
+  | { type: 'stop' }
+  | { type: 'leave' }
+  | { type: 'input'; action: 'press' | 'release'; button?: string }
+  | { type: 'setting'; id: string; value: string }
+  | { type: 'initials'; id: number; initials: string }
+  | ({ type: 'paint' } & PaintStroke);

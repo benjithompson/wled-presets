@@ -1,7 +1,8 @@
 import type { Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, heat, Motes, Recent, record, scale, Waves, Yard, type Part } from './kit.ts';
-import { overMood, Show, type Mood } from './show.ts';
+import { COLORS, heat, Recent, scale, Yard, type Part } from './kit.ts';
+import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
+import { overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Color Gate: your light sits near the start of the roof. Walls of colored light stream toward
@@ -65,10 +66,9 @@ export function colorgateGame(stage: Stage): Game {
   const yard = new Yard(stage);
   const roof = yard.roof;
   const n = roof.n;
-  const playable = n >= 30;
-  const motes = new Motes(yard);
-  const waves = new Waves(yard);
-  const show = new Show(yard);
+  const playable = n >= MIN_ROOF;
+  const fx = new Fx(yard);
+  const { motes, waves, show } = fx;
   for (const t of yard.trees) show.dim(t, 0.45);
   // The roof is the playfield, and white there means the next wall: the show stays faint on it.
   show.roofShare = 0.3;
@@ -80,9 +80,7 @@ export function colorgateGame(stage: Stage): Game {
   const start = n - 1;
   const travel = Math.max(1, start - home);
 
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  const round = new Round<Phase>('colorgate', 'ready');
   let lives = LIVES;
   let score = 0;
   let streak = 0;
@@ -116,11 +114,6 @@ export function colorgateGame(stage: Stage): Game {
 
   /** The least distance between two walls for this many taps, at top speed: it is enough at any speed. */
   const minDist = (taps: number) => speedMax * MIN_GAP[taps];
-
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
 
   /** Picks the next walls: one at a time, or (later) a quick run of three or four. */
   function plan() {
@@ -166,15 +159,13 @@ export function colorgateGame(stage: Stage): Game {
     speed = speedFor(1);
     meter = 0;
     seen.clear();
-    seen.push(clock, you);
-    motes.clear();
-    waves.clear();
-    show.clear();
+    seen.push(round.clock, you);
+    fx.clear();
   }
 
   function newGame() {
     reset();
-    setPhase('run');
+    round.to('run');
     show.setMood(moodNow(), { wipe: roof.startsLeft ? 'right' : 'left' });
     spawn();
   }
@@ -187,11 +178,11 @@ export function colorgateGame(stage: Stage): Game {
   }
 
   /** The next wall to reach you: the one in white brackets. */
-  const nextWall = () => walls.find((w) => w.arrived === null || clock - w.arrived < LAG);
+  const nextWall = () => walls.find((w) => w.arrived === null || round.clock - w.arrived < LAG);
 
   /** Was this color showing at any moment while the wall was at your light (late taps count)? */
   function matched(w: Wall) {
-    const at = w.arrived ?? clock;
+    const at = w.arrived ?? round.clock;
     const shown = [seen.at(at), ...seen.since(at)];
     return shown.some((c) => c === w.tone);
   }
@@ -241,21 +232,21 @@ export function colorgateGame(stage: Stage): Game {
     queue = [];
     const p = roof.point(home);
     if (lives <= 0) {
-      newBest = record('colorgate', score).isNew;
+      newBest = round.record(score);
       // The house blows, and the yard goes dark red (gold fireworks for a new best).
       show.gameOver(p.x, p.y, { newBest });
-      setPhase('over');
+      round.to('over');
     } else {
       // A wrong color blows up at your light, and red runs away across the yard.
       show.explode(p.x, p.y, COLORS.bad, { size: 1.3 });
       show.sweep(COLORS.bad, { dir: roof.startsLeft ? 'right' : 'left', amount: 0.6, duration: 0.7 });
-      setPhase('miss');
+      round.to('miss');
     }
   }
 
   function switchColor() {
     you = (you + 1) % GATE_COLORS.length;
-    seen.push(clock, you);
+    seen.push(round.clock, you);
     switchPulse = 1;
     // The whole yard flicks to your new color.
     show.pulse(GATE_COLORS[you], 0.07);
@@ -263,8 +254,8 @@ export function colorgateGame(stage: Stage): Game {
 
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
-    if (phase === 'ready' || (phase === 'over' && phaseTime > 1.5)) return newGame();
-    if (phase === 'run' || phase === 'miss') switchColor();
+    if (round.canStart) return newGame();
+    if (round.phase === 'run' || round.phase === 'miss') switchColor();
   }
 
   function stepWalls(dt: number, demo: boolean) {
@@ -275,7 +266,7 @@ export function colorgateGame(stage: Stage): Game {
       w.pos -= speed * dt;
       if (w.pos <= home) {
         // When it got there, between frames.
-        w.arrived = clock - (home - w.pos) / Math.max(1e-6, speed);
+        w.arrived = round.clock - (home - w.pos) / Math.max(1e-6, speed);
         w.pos = home;
       }
     }
@@ -284,12 +275,12 @@ export function colorgateGame(stage: Stage): Game {
       const w = nextWall();
       if (w && w.pos - home < travel * 0.25 && you !== w.tone) {
         you = w.tone;
-        seen.push(clock, you);
+        seen.push(round.clock, you);
         switchPulse = 1;
       }
     }
     for (const w of [...walls]) {
-      if (w.arrived === null || clock - w.arrived < LAG) continue;
+      if (w.arrived === null || round.clock - w.arrived < LAG) continue;
       if (demo || matched(w)) {
         walls = walls.filter((x) => x !== w);
         pass(w, demo);
@@ -309,16 +300,14 @@ export function colorgateGame(stage: Stage): Game {
 
   // ---------- Drawing ----------
 
-  /** After the game: dark red, fading. */
-
   /**
    * The yard's mood from the game: in the attract loop, a slow rainbow; while playing, the
    * streak's heat (indigo to fire) drifting with your color, brighter and faster with the
    * multiplier; red and throbbing on the last life; dark red after.
    */
   function moodNow(): Mood {
-    if (phase === 'ready') return { a: hsv(clock * 0.04), b: hsv(clock * 0.04 + 0.33), level: 1.1, drift: 1.4 };
-    if (phase === 'over') return overMood(phaseTime);
+    if (round.phase === 'ready') return { a: hsv(round.clock * 0.04), b: hsv(round.clock * 0.04 + 0.33), level: 1.1, drift: 1.4 };
+    if (round.phase === 'over') return overMood(round.time);
     const m = mult();
     if (lives === 1) return { a: COLORS.bad, b: mix(GATE_COLORS[you], COLORS.bad, 0.6), level: 1.1, throb: 1.6 };
     const warm = Math.min(1, streak / (PER_MULT * MAX_MULT));
@@ -327,7 +316,7 @@ export function colorgateGame(stage: Stage): Game {
   }
 
   function drawRoof() {
-    const next = phase === 'over' ? undefined : nextWall();
+    const next = round.phase === 'over' ? undefined : nextWall();
     for (const w of walls) {
       const c = GATE_COLORS[w.tone];
       // Walls come on softly at the far end.
@@ -337,19 +326,19 @@ export function colorgateGame(stage: Stage): Game {
       if (w === next) {
         // The brackets: the only white on the roof.
         // One LED on each side, a step clear of the wall, so it stays crisp at a distance.
-        const blink = 0.85 + 0.15 * Math.sin(clock * 14);
+        const blink = 0.85 + 0.15 * Math.sin(round.clock * 14);
         yard.roofAt(Math.round(w.pos - WALL_HALF - 1.5), WHITE, 0.95 * blink * fadeIn);
         yard.roofAt(Math.round(w.pos + WALL_HALF + 1.5), WHITE, 0.95 * blink * fadeIn);
       }
     }
     // Your light: a big soft dot in your color, brighter for a moment when you switch.
-    if (phase !== 'over') {
+    if (round.phase !== 'over') {
       const c = GATE_COLORS[you];
-      const ready = phase === 'ready' ? 0.75 + 0.25 * Math.sin(clock * 3) : 1;
+      const ready = round.phase === 'ready' ? 0.75 + 0.25 * Math.sin(round.clock * 3) : 1;
       yard.roofSplat(home, c, 2.2, (0.9 + switchPulse * 0.5) * ready);
       yard.roofSplat(home, c, 5, 0.18 + switchPulse * 0.2);
     }
-    if ((phase === 'miss' || phase === 'over') && phaseTime < 1) yard.roofSplat(home, COLORS.bad, 2 + phaseTime * 12, 1 - phaseTime);
+    if ((round.phase === 'miss' || round.phase === 'over') && round.time < 1) yard.roofSplat(home, COLORS.bad, 2 + round.time * 12, 1 - round.time);
     for (const s of shards) {
       const age = 1 - s.life / s.max;
       const flicker = age > 0.6 ? 0.6 + 0.4 * Math.random() : 1;
@@ -359,12 +348,12 @@ export function colorgateGame(stage: Stage): Game {
 
   function drawBushes() {
     // Every bush is your color: you can read it from across the street.
-    const base = phase === 'over' ? scale(COLORS.bad, 0.25) : GATE_COLORS[you];
+    const base = round.phase === 'over' ? scale(COLORS.bad, 0.25) : GATE_COLORS[you];
     const c = mix(mix(base, COLORS.gold, passFlash * 0.6), COLORS.bad, missFlash * 0.8);
     for (const b of yard.bushes) {
       for (let i = 0; i < b.count; i++) {
-        const shimmer = 0.06 * Math.sin(clock * 3 + i * 1.3);
-        yard.add(b.offset + i, c, (phase === 'over' ? 0.4 : 0.65) + shimmer + switchPulse * 0.45 + passFlash * 0.25);
+        const shimmer = 0.06 * Math.sin(round.clock * 3 + i * 1.3);
+        yard.add(b.offset + i, c, (round.phase === 'over' ? 0.4 : 0.65) + shimmer + switchPulse * 0.45 + passFlash * 0.25);
       }
     }
   }
@@ -375,7 +364,7 @@ export function colorgateGame(stage: Stage): Game {
     for (let i = 0; i < part.count; i++) {
       const u = part.up[i];
       if (u <= meter) {
-        const c = top ? mix(COLORS.gold, WHITE, Math.max(0, Math.sin(clock * 8 + i * 1.7)) * 0.4) : heat(u * 0.85);
+        const c = top ? mix(COLORS.gold, WHITE, Math.max(0, Math.sin(round.clock * 8 + i * 1.7)) * 0.4) : heat(u * 0.85);
         yard.add(part.offset + i, c, top ? 0.85 : 0.6);
       }
     }
@@ -386,48 +375,43 @@ export function colorgateGame(stage: Stage): Game {
   return {
     id: 'colorgate',
 
-    scoreBoard: () => ({ key: 'colorgate', title: 'Color Gate' }),
+    scoreBoard: () => round.scoreBoard(),
 
     input,
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       yard.begin(frame);
       if (!playable) return;
 
-      if (phase === 'ready') stepWalls(dt, true);
-      else if (phase === 'run') stepWalls(dt, false);
-      else if (phase === 'miss' && phaseTime > 1.4) setPhase('run');
-      if (phase === 'over' && phaseTime > 10) {
+      if (round.phase === 'ready') stepWalls(dt, true);
+      else if (round.phase === 'run') stepWalls(dt, false);
+      else if (round.phase === 'miss' && round.time > 1.4) round.to('run');
+      if (round.timedOut) {
         reset();
-        setPhase('ready');
+        round.to('ready');
       }
-      seen.push(clock, you);
+      seen.push(round.clock, you);
       stepShards(dt);
-      motes.update(dt);
-      waves.update(dt);
-      show.update(dt);
-      if (phase !== 'over' || phaseTime > 1.5) show.followMood(moodNow(), 2, dt);
+      fx.update(dt);
+      if (round.settled) show.followMood(moodNow(), 2, dt);
       switchPulse = Math.max(0, switchPulse - dt * 5);
       passFlash = Math.max(0, passFlash - dt * 4);
       missFlash = Math.max(0, missFlash - dt * 2);
-      const want = phase === 'ready' ? 0 : mult() >= MAX_MULT ? 1 : (streak % PER_MULT) / PER_MULT;
+      const want = round.phase === 'ready' ? 0 : mult() >= MAX_MULT ? 1 : (streak % PER_MULT) / PER_MULT;
       meter += (want - meter) * Math.min(1, dt * 6);
 
       drawRoof();
       drawBushes();
       for (const t of yard.trees) drawTree(t);
-      if (phase === 'over') yard.wash(scale(COLORS.bad, 0.5 + 0.5 * Math.sin(phaseTime * 3)), 0.05);
-      motes.draw();
-      waves.draw();
+      if (round.phase === 'over') endGlow(yard, round.time, 0.05);
       // The windows, doors and the rest are the show's.
-      show.draw(frame);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      if (!playable) return { phase: 'setup', message: 'Draw a roofline in Layout first.', score: 0, lives: null, goal: null };
-      const best = Math.max(bestScore('colorgate'), score);
+      if (!playable) return round.setup();
+      const best = Math.max(round.best(), score);
       const stats = [
         { label: 'Score', value: score },
         { label: 'You', value: NAMES[you] },
@@ -435,25 +419,25 @@ export function colorgateGame(stage: Stage): Game {
         { label: 'Best', value: best }
       ];
       const common = { score, lives, goal: null, stats };
-      switch (phase) {
+      switch (round.phase) {
         case 'ready':
-          return { ...common, phase, lives: null, message: 'Tap to start! Each tap changes your color. Match every wall as it reaches you.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
+          return { ...common, phase: round.phase, lives: null, message: 'Tap to start! Each tap changes your color. Match every wall as it reaches you.', button: 'GO!', tone: 'go', stats: [{ label: 'Best', value: best }] };
         case 'run': {
           const w = nextWall();
           const m = mult();
           return {
             ...common,
             stats: m > 1 ? [...stats, { label: 'Combo', value: `×${m}` }] : stats,
-            phase,
+            phase: round.phase,
             message: w ? `Next: ${NAMES[w.tone]}. Tap to match the wall in the white brackets!` : 'Get ready…',
             button: 'SWITCH',
             tone: 'go'
           };
         }
         case 'miss':
-          return { ...common, phase, message: lives === 1 ? `Wrong color! Last life!` : `Wrong color! ${lives} lives left.`, button: 'SWITCH', tone: 'bad' };
+          return { ...common, phase: round.phase, message: lives === 1 ? `Wrong color! Last life!` : `Wrong color! ${lives} lives left.`, button: 'SWITCH', tone: 'bad' };
         case 'over':
-          return { ...common, phase, message: newBest ? `New best: ${score}!` : `Game over: ${score} points. Longest streak ${longest}.`, button: 'GO!', tone: 'go' };
+          return { ...common, phase: round.phase, message: newBest ? `New best: ${score}!` : `Game over: ${score} points. Longest streak ${longest}.`, button: 'GO!', tone: 'go' };
       }
     }
   };

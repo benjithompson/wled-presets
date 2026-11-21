@@ -1,7 +1,8 @@
 import type { GameSetting, MoleBoard, MoleHole, Stage } from '../../../shared/layout.ts';
 import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { bestScore, COLORS, css, Flare, record, scale, Sparks, Yard, type Part } from './kit.ts';
-import { attractMood, Show, turnHue as turn, type FireworkKind, type Mood } from './show.ts';
+import { COLORS, css, Flare, scale, Sparks, Yard, type Part } from './kit.ts';
+import { Fx, Round } from './round.ts';
+import { attractMood, NIGHT_MOOD, turnHue as turn, type FireworkKind, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
 
 // Whack-a-Mole, the arcade game, played on the whole yard. Every bush and tree is a hole: a mole
@@ -113,9 +114,10 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   const yard = new Yard(stage);
   const { roof } = yard;
   const n = roof.n;
-  const show = new Show(yard);
   const sparks = new Sparks(roof, 40, 2);
   const flare = new Flare(3);
+  const fx = new Fx(yard, { sparks, flare });
+  const { show } = fx;
 
   // The holes: every bush and tree, or stretches of the roof on a yard with fewer than three.
   const objects = [...yard.bushes, ...yard.trees].sort((p, q) => q.count - p.count).slice(0, MAX_HOLES).sort((p, q) => p.x - q.x);
@@ -165,9 +167,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   }
 
   let level: Level = 'normal';
-  let phase: Phase = 'ready';
-  let phaseTime = 0;
-  let clock = 0;
+  // A board for each speed.
+  const round = new Round<Phase>('whack', 'ready', { restartAfter: OVER_LOCK, resetAfter: 12, board: () => `whack-${level}`, title: (name) => `${name}: ${LEVEL_NAMES[level]}` });
   let score = 0;
   let streak = 0;
   let hits = 0;
@@ -181,16 +182,10 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   let sinceWhack = 9;
   let lastCount = -1;
 
-  const boardKey = () => `whack-${level}`;
-  const elapsed = () => (phase === 'running' ? Math.min(ROUND, phaseTime) : 0);
-  const timeLeftExact = () => (phase === 'running' ? Math.max(0, ROUND - phaseTime) : phase === 'over' ? 0 : ROUND);
+  const elapsed = () => (round.phase === 'running' ? Math.min(ROUND, round.time) : 0);
+  const timeLeftExact = () => (round.phase === 'running' ? Math.max(0, ROUND - round.time) : round.phase === 'over' ? 0 : ROUND);
   const mult = () => 1 + MULT_AT.filter((m) => streak >= m).length;
   const upCount = () => holes.filter((h) => h.state === 'up').length;
-
-  function setPhase(p: Phase) {
-    phase = p;
-    phaseTime = 0;
-  }
 
   function clearHoles() {
     for (const h of holes) {
@@ -205,9 +200,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     newBest = false;
     lastCount = -1;
     clearHoles();
-    show.clear();
-    sparks.clear();
-    setPhase('countdown');
+    fx.clear();
+    round.to('countdown');
   }
 
   /** A mole pops up in an empty hole (not the last one, when there is a choice). */
@@ -288,8 +282,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
 
   function endRound() {
     clearHoles();
-    newBest = record(boardKey(), score).isNew;
-    setPhase('over');
+    newBest = round.record(score);
+    round.to('over');
     // Time's up: a finale over the whole house, bigger for more whacks, gold for a new best.
     show.sweep(COLORS.gold, { dir: 'out', amount: 0.8, duration: 0.9 });
     show.finale(Math.min(10, 4 + Math.floor(hits / 6)));
@@ -302,8 +296,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   function input(e: GameInput) {
     if (e.action !== 'press' || !playable) return;
     const h = e.button ? holes.find((x) => x.id === e.button) : undefined;
-    if (phase === 'ready' || (phase === 'over' && phaseTime > OVER_LOCK)) return start();
-    if (phase !== 'running' || !h) return;
+    if (round.canStart) return start();
+    if (round.phase !== 'running' || !h) return;
     if (h.state === 'up') whack(h);
     else bonk(h);
   }
@@ -314,12 +308,12 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
    * orange-red and throbbing in the last ten seconds; a slow gold and rainbow after the round.
    */
   function moodNow(): Mood {
-    if (phase === 'ready') return attractMood(clock);
-    if (phase === 'over') return { a: hsv(clock * 0.08), b: COLORS.gold, level: 1, drift: 1.2 };
-    if (phase === 'countdown') return { a: [0.1, 0.12, 0.55], b: [0.4, 0.06, 0.6], level: 0.8 };
+    if (round.phase === 'ready') return attractMood(round.clock);
+    if (round.phase === 'over') return { a: hsv(round.clock * 0.08), b: COLORS.gold, level: 1, drift: 1.2 };
+    if (round.phase === 'countdown') return { ...NIGHT_MOOD, level: 0.8 };
     if (timeLeftExact() <= HURRY) return { a: ORANGE, b: [0.7, 0.02, 0.2], level: 0.9, throb: 2 };
     const m = mult();
-    if (m >= 4) return { a: hsv(clock * 0.4), b: hsv(clock * 0.4 + 0.5), level: 1.2, drift: 2.5 };
+    if (m >= 4) return { a: hsv(round.clock * 0.4), b: hsv(round.clock * 0.4 + 0.5), level: 1.2, drift: 2.5 };
     if (m === 3) return { a: [1, 0.4, 0.02], b: [0.9, 0.05, 0.6], level: 1.1, drift: 1.8 };
     if (m === 2) return { a: [0.8, 0.05, 0.8], b: [0.05, 0.6, 0.9], level: 1, drift: 1.4 };
     return { a: [0.08, 0.15, 0.7], b: [0.4, 0.06, 0.7], level: 0.9, drift: 1 };
@@ -330,7 +324,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     for (const h of holes) {
       h.t += dt;
       if (h.state === 'up' && h.t >= h.stay + SINK) {
-        if (phase === 'running') getAway(h);
+        if (round.phase === 'running') getAway(h);
         else {
           h.state = 'empty';
           h.t = 0;
@@ -343,8 +337,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
         h.t = 0;
       }
     }
-    if (phase === 'countdown') {
-      const count = Math.floor(phaseTime);
+    if (round.phase === 'countdown') {
+      const count = Math.floor(round.time);
       if (count !== lastCount && count < COUNTDOWN) {
         // 3, 2, 1: the house kicks in a new color each second.
         lastCount = count;
@@ -352,13 +346,13 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
         show.sweep(c, { dir: 'up', amount: 0.55, duration: 0.6 });
         show.pulse(c, 0.15);
       }
-      if (phaseTime >= COUNTDOWN) {
-        setPhase('running');
+      if (round.time >= COUNTDOWN) {
+        round.to('running');
         nextMole = 0.2;
         show.finale(4);
         show.pulse(COLORS.gold, 0.2);
       }
-    } else if (phase === 'running') {
+    } else if (round.phase === 'running') {
       const pace = PACE[level];
       const p = elapsed() / ROUND;
       const most = Math.max(1, Math.min(holes.length - 1, Math.round(lerp(pace.up[0], pace.up[1], p))));
@@ -366,22 +360,20 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       // Never a dull moment: with no mole up, the next one comes sooner.
       if (upCount() === 0) nextMole = Math.min(nextMole, 0.25);
       if (nextMole <= 0 && upCount() < most && popMole()) nextMole = lerp(pace.gap[0], pace.gap[1], p) * (0.7 + Math.random() * 0.6);
-      if (phaseTime >= ROUND) endRound();
-    } else if (phase === 'ready') {
+      if (round.time >= ROUND) endRound();
+    } else if (round.phase === 'ready') {
       // A demo: moles pop up slowly in the yard to draw a crowd.
       nextMole -= dt;
       if (nextMole <= 0 && upCount() < 1 && popMole(true)) nextMole = 1.2 + Math.random();
       if (Math.random() < dt * 0.3) show.rocket([hsv(Math.random()), hsv(Math.random())], { size: 0.8 });
-    } else if (phase === 'over') {
-      if (phaseTime < 6 && Math.random() < dt * (newBest ? 3 : 1.5)) show.rocket([hsv(Math.random()), hsv(Math.random()), COLORS.gold], { size: 1 });
-      if (phaseTime > 12) setPhase('ready');
+    } else if (round.phase === 'over') {
+      if (round.time < 6 && Math.random() < dt * (newBest ? 3 : 1.5)) show.rocket([hsv(Math.random()), hsv(Math.random()), COLORS.gold], { size: 1 });
+      if (round.timedOut) round.to('ready');
     }
-    sparks.update(dt);
-    flare.update(dt);
-    show.update(dt);
+    fx.update(dt);
     show.followMood(moodNow(), 2.5, dt);
     // In a round the roof is the clock: the show's backdrop steps back from it (fireworks still reach it).
-    if (!onRoof) show.roofShare = phase === 'running' || phase === 'countdown' ? 0.35 : 1;
+    if (!onRoof) show.roofShare = round.phase === 'running' || round.phase === 'countdown' ? 0.35 : 1;
   }
 
   /** One hole: a mole popping up, standing, sinking; an explosion of color; three red flashes. */
@@ -389,7 +381,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     const m = h.u.length;
     if (h.state === 'empty') {
       // The hole's rim: its lowest lights glow faintly in its color, so kids can see where moles come from.
-      for (let k = 0; k < m; k++) if (h.u[k] < 0.22) h.put(k, h.color, 0.05 + 0.03 * Math.sin(clock * 2 + h.x * 0.01));
+      for (let k = 0; k < m; k++) if (h.u[k] < 0.22) h.put(k, h.color, 0.05 + 0.03 * Math.sin(round.clock * 2 + h.x * 0.01));
       return;
     }
     if (h.state === 'up') {
@@ -398,19 +390,19 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       const r = h.t > h.stay ? Math.max(0, 1 - (h.t - h.stay) / SINK) : rise;
       // Near the end of its time it twitches faster: hurry!
       const late = Math.max(0, (h.t - h.stay * 0.7) / (h.stay * 0.3));
-      const beat = 0.85 + 0.15 * Math.sin(clock * (8 + late * 14));
+      const beat = 0.85 + 0.15 * Math.sin(round.clock * (8 + late * 14));
       for (let k = 0; k < m; k++) {
         const u = h.u[k];
         if (u > r) continue;
         const head = r - u < 0.2;
         if (h.gold) {
           // A golden mole: rainbow bands running up through it, under a sparkling gold head.
-          const body = hsv(u * 1.4 - clock * 1.6 + h.a[k] * 0.2);
-          const c = head ? mix(COLORS.gold, WHITE, 0.35 + 0.4 * twinkle(k, clock * 2)) : mix(body, COLORS.gold, 0.25);
+          const body = hsv(u * 1.4 - round.clock * 1.6 + h.a[k] * 0.2);
+          const c = head ? mix(COLORS.gold, WHITE, 0.35 + 0.4 * twinkle(k, round.clock * 2)) : mix(body, COLORS.gold, 0.25);
           h.put(k, c, (head ? 1 : 0.7) * beat);
         } else {
           // The hole's color, brighter toward the head, and the head white-hot and twinkling.
-          const c = head ? mix(h.color, WHITE, 0.45 + 0.35 * twinkle(k, clock)) : h.color;
+          const c = head ? mix(h.color, WHITE, 0.45 + 0.35 * twinkle(k, round.clock)) : h.color;
           h.put(k, c, (head ? 1 : 0.45 + 0.35 * u) * beat);
         }
       }
@@ -427,9 +419,9 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
           h.put(k, mix(h.color, WHITE, 0.3), 1.1);
           continue;
         }
-        const hue = u * 1.6 - h.t * 2.5 + h.a[k] * 0.35 + (h.gold ? clock : 0);
+        const hue = u * 1.6 - h.t * 2.5 + h.a[k] * 0.35 + (h.gold ? round.clock : 0);
         const ring = Math.exp(-(((u - t * 1.6) / 0.25) ** 2));
-        const sparkle = twinkle(k, clock * 1.7);
+        const sparkle = twinkle(k, round.clock * 1.7);
         h.put(k, sparkle > 0.3 ? mix(hsv(hue), WHITE, 0.3) : hsv(hue), fade * (0.55 + 0.5 * ring + 0.6 * sparkle));
       }
       return;
@@ -446,35 +438,35 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
    */
   function drawRoof() {
     if (!n || onRoof) {
-      if (onRoof && phase === 'ready') for (let i = 0; i < n; i++) yard.roofAt(i, hsv(i / n + clock * 0.1), 0.05);
+      if (onRoof && round.phase === 'ready') for (let i = 0; i < n; i++) yard.roofAt(i, hsv(i / n + round.clock * 0.1), 0.05);
       sparks.draw(yard);
       return;
     }
     const mid = (roofLeft + roofRight) / 2;
     const half = Math.max(1, (roofRight - roofLeft) / 2);
     const left = timeLeftExact();
-    const share = phase === 'countdown' ? ease(Math.min(1, phaseTime / COUNTDOWN)) : phase === 'running' ? left / ROUND : 1;
-    const hurry = phase === 'running' && left <= HURRY;
+    const share = round.phase === 'countdown' ? ease(Math.min(1, round.time / COUNTDOWN)) : round.phase === 'running' ? left / ROUND : 1;
+    const hurry = round.phase === 'running' && left <= HURRY;
     // In the last seconds, a tick on every second.
     const tick = hurry ? Math.exp(-(1 - (left % 1)) * 6) : 0;
-    const speed = phase === 'running' ? 1.5 + mult() * 0.6 : 1;
+    const speed = round.phase === 'running' ? 1.5 + mult() * 0.6 : 1;
     for (let i = 0; i < n; i++) {
       const d = Math.abs(roof.x[i] - mid) / half;
       if (d > share + 0.002) continue;
-      const bulb = Math.max(0, Math.cos((i / 5 - clock * speed * 2) * Math.PI * 2)) ** 6;
-      let c = hsv(i / n * 1.5 - clock * 0.25);
-      if (hurry) c = mix(ORANGE, COLORS.gold, 0.5 + 0.5 * Math.sin(clock * 6));
-      if (phase === 'over') c = mix(hsv(i / n * 2 + clock * 0.5), COLORS.gold, 0.3);
+      const bulb = Math.max(0, Math.cos((i / 5 - round.clock * speed * 2) * Math.PI * 2)) ** 6;
+      let c = hsv(i / n * 1.5 - round.clock * 0.25);
+      if (hurry) c = mix(ORANGE, COLORS.gold, 0.5 + 0.5 * Math.sin(round.clock * 6));
+      if (round.phase === 'over') c = mix(hsv(i / n * 2 + round.clock * 0.5), COLORS.gold, 0.3);
       // The band's ends burn brighter, so the shrinking reads from the street.
       const end = Math.exp(-((((share - d) * half) / (stage.scale * 0.25)) ** 2));
-      yard.roofAt(i, c, (phase === 'ready' ? 0.08 + 0.4 * bulb : 0.3 + 0.4 * bulb + 0.35 * tick) + 0.6 * end * (phase === 'running' || phase === 'countdown' ? 1 : 0));
+      yard.roofAt(i, c, (round.phase === 'ready' ? 0.08 + 0.4 * bulb : 0.3 + 0.4 * bulb + 0.35 * tick) + 0.6 * end * (round.phase === 'running' || round.phase === 'countdown' ? 1 : 0));
     }
     // Gold glitter along the band for a multiplier.
-    if (phase === 'running' && mult() > 1) {
+    if (round.phase === 'running' && mult() > 1) {
       for (let i = 0; i < n; i += 3) {
         const d = Math.abs(roof.x[i] - mid) / half;
         if (d <= share) {
-          const s = twinkle(i, clock * 1.3);
+          const s = twinkle(i, round.clock * 1.3);
           if (s > 0.4) yard.roofAt(i, COLORS.gold, 0.35 * s * (mult() - 1) * 0.5);
         }
       }
@@ -484,20 +476,20 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
 
   /** Bushes and trees that are not holes (a yard playing on its roof): the time left, from the base up. */
   function drawClocks() {
-    const share = phase === 'running' ? timeLeftExact() / ROUND : phase === 'countdown' ? Math.min(1, phaseTime / COUNTDOWN) : 1;
-    const hurry = phase === 'running' && timeLeftExact() <= HURRY;
+    const share = round.phase === 'running' ? timeLeftExact() / ROUND : round.phase === 'countdown' ? Math.min(1, round.time / COUNTDOWN) : 1;
+    const hurry = round.phase === 'running' && timeLeftExact() <= HURRY;
     for (const p of clocks) {
       for (let k = 0; k < p.count; k++) {
         const u = p.up[k];
         if (u > share) continue;
-        yard.add(p.offset + k, hurry ? ORANGE : hsv(u * 0.8 + clock * 0.2), 0.4);
+        yard.add(p.offset + k, hurry ? ORANGE : hsv(u * 0.8 + round.clock * 0.2), 0.4);
       }
     }
   }
 
   function drawDecor() {
     const glow = flare.color;
-    const warm = phase === 'running' ? (mult() - 1) * 0.04 : 0;
+    const warm = round.phase === 'running' ? (mult() - 1) * 0.04 : 0;
     for (const d of yard.decor) {
       if (glow[0] + glow[1] + glow[2] > 0.02) yard.fill(d, glow, 0.6);
       if (warm) yard.fill(d, COLORS.gold, warm);
@@ -507,18 +499,17 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   return {
     id: 'whack',
 
-    scoreBoard: () => ({ key: boardKey(), title: `Whack-a-Mole: ${LEVEL_NAMES[level]}` }),
+    scoreBoard: () => round.scoreBoard(),
 
     input,
 
     setting(id: string, value: string) {
-      if (phase === 'running' || phase === 'countdown') return;
+      if (round.phase === 'running' || round.phase === 'countdown') return;
       if (id === 'level' && (LEVELS as string[]).includes(value)) level = value as Level;
     },
 
     update(dt: number, frame: Frame) {
-      clock += dt;
-      phaseTime += dt;
+      round.tick(dt);
       yard.begin(frame);
       if (!playable) return;
       step(dt);
@@ -526,49 +517,49 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       for (const h of holes) drawHole(h);
       drawClocks();
       drawDecor();
-      show.draw(frame);
+      fx.draw(frame);
     },
 
     status(): GameStatusFields {
-      const best = bestScore(boardKey());
-      if (!playable) return { phase: 'setup', message: 'Add bushes or trees (or a roofline) in Layout first.', score: 0, lives: null, goal: null };
+      if (!playable) return round.setup('Add bushes or trees (or a roofline) in Layout first.');
+      const best = round.best();
       const left = Math.ceil(timeLeftExact() - 1e-6);
       const moles: MoleBoard = {
         holes: holes.map((h) => ({ id: h.id, color: css(h.color), kind: h.kind, state: h.state === 'up' ? (h.gold ? 'gold' : 'up') : h.state, n: h.n, points: h.points })),
         timeLeft: left,
         duration: ROUND,
-        countdown: phase === 'countdown' ? String(COUNTDOWN - Math.floor(phaseTime)) : phase === 'running' && phaseTime < 0.7 ? 'GO!' : null,
-        mult: phase === 'running' ? mult() : 1,
-        streak: phase === 'running' ? streak : 0,
+        countdown: round.phase === 'countdown' ? String(COUNTDOWN - Math.floor(round.time)) : round.phase === 'running' && round.time < 0.7 ? 'GO!' : null,
+        mult: round.phase === 'running' ? mult() : 1,
+        streak: round.phase === 'running' ? streak : 0,
         best,
         hits,
         missed
       };
       const settings: GameSetting[] = [{ id: 'level', label: 'Speed', value: level, choices: LEVELS.map((l) => ({ value: l, label: LEVEL_NAMES[l] })) }];
       const common = { score, lives: null, goal: null, moles, keysHint: `${holes.length > 9 ? 'Keys 1–9 and 0' : `Keys 1–${holes.length}`} whack the holes, space to start` };
-      switch (phase) {
+      switch (round.phase) {
         case 'ready':
-          return { ...common, phase, message: 'Whack every mole that pops up! Tap GO to start.', button: 'GO!', tone: 'go', settings };
+          return { ...common, phase: round.phase, message: 'Whack every mole that pops up! Tap GO to start.', button: 'GO!', tone: 'go', settings };
         case 'countdown':
-          return { ...common, phase, message: 'Get ready…', button: '…', tone: 'wait' };
+          return { ...common, phase: round.phase, message: 'Get ready…', button: '…', tone: 'wait' };
         case 'running': {
           const m = mult();
           const message =
             timeLeftExact() <= HURRY ? 'Hurry! The clock is running out!' : m >= 4 ? `MOLE MANIA! ×4 points!` : m > 1 ? `${streak} in a row! ×${m} points!` : hits ? 'Whack! Keep going!' : 'Whack the moles that pop up!';
-          return { ...common, phase, message, button: 'WHACK', tone: 'go' };
+          return { ...common, phase: round.phase, message, button: 'WHACK', tone: 'go' };
         }
         case 'over':
           return {
             ...common,
-            phase,
+            phase: round.phase,
             message: newBest ? `New best: ${score}!` : `Time's up! ${score} points, ${hits} mole${hits === 1 ? '' : 's'} whacked${golds ? `, ${golds} golden` : ''}.`,
-            button: phaseTime > OVER_LOCK ? 'GO!' : '…',
-            tone: phaseTime > OVER_LOCK ? 'go' : 'wait',
+            button: round.canStart ? 'GO!' : '…',
+            tone: round.canStart ? 'go' : 'wait',
             settings
           };
       }
     },
 
-    peek: () => ({ holes: holes.map((h) => ({ id: h.id, state: h.state, gold: h.gold, t: h.t, stay: h.stay })), phase, timeLeft: timeLeftExact(), bestStreak, onRoof })
+    peek: () => ({ holes: holes.map((h) => ({ id: h.id, state: h.state, gold: h.gold, t: h.t, stay: h.stay })), phase: round.phase, timeLeft: timeLeftExact(), bestStreak, onRoof })
   };
 }
