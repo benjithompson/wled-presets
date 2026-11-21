@@ -12,6 +12,7 @@ import { LineCard, OfferCard, TurnBanner } from './LineParts.tsx';
 import { ArcadeWindow } from './ArcadeHud.tsx';
 import { GameScreen, GameWindow } from './GameWindow.tsx';
 import { PaintStudio } from './PaintStudio.tsx';
+import { MoleBoard, WhackWindow } from './WhackArcade.tsx';
 import { cn } from '../lib/utils.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
@@ -97,7 +98,19 @@ export function PlayPage() {
   const keyMap = useRef(new Map<string, string>());
   // While initials are typed, the keys are for the letters.
   const entering = playing && !!status?.enterInitials;
-  keyMap.current = entering ? new Map() : new Map(controls ? controls.flatMap((c) => (c.keys ?? []).map((k) => [k, c.id] as const)) : [['Space', 'main'], ['Enter', 'main']]);
+  const moles = playing ? status?.moles : undefined;
+  keyMap.current = entering
+    ? new Map()
+    : new Map(
+        controls
+          ? controls.flatMap((c) => (c.keys ?? []).map((k) => [k, c.id] as const))
+          : [
+              ['Space', 'main'],
+              ['Enter', 'main'],
+              // Whack-a-Mole: the number keys whack the holes, 1 for the first (0 for the tenth).
+              ...(moles?.holes.slice(0, 10).flatMap((h, i) => [[`Digit${(i + 1) % 10}`, h.id] as const, [`Numpad${(i + 1) % 10}`, h.id] as const]) ?? [])
+            ]
+      );
   useEffect(() => {
     if (!playing) return;
     const down = (e: KeyboardEvent) => {
@@ -198,6 +211,10 @@ export function PlayPage() {
                   <ArcadeWindow hud={arcade} health={status.progress}>
                     <GameScreen layout={layout} getFrame={() => frame.current} />
                   </ArcadeWindow>
+                ) : moles ? (
+                  <WhackWindow board={moles} score={status.score} phase={phase}>
+                    <GameScreen layout={layout} getFrame={() => frame.current} />
+                  </WhackWindow>
                 ) : (
                   <GameWindow status={status}>
                     <GameScreen layout={layout} getFrame={() => frame.current} />
@@ -226,7 +243,9 @@ export function PlayPage() {
                 </p>
                 {status?.enterInitials ? <InitialsEntry entry={status.enterInitials} onSave={(initials) => send({ type: 'initials', id: status.enterInitials!.id, initials })} /> : null}
                 {status?.settings?.length ? <Settings settings={status.settings} onPick={(id, value) => send({ type: 'setting', id, value })} /> : null}
-                {controls?.length ? (
+                {moles ? (
+                  <MoleBoard board={moles} phase={phase} button={buttonLabel} tone={tone} pressed={pressed} onPress={press} onRelease={release} />
+                ) : controls?.length ? (
                   <ControlRow controls={controls} pressed={pressed} tone={tone} disabled={phase === 'setup'} onPress={press} onRelease={release} />
                 ) : (
                   <button
@@ -258,7 +277,7 @@ export function PlayPage() {
                   </button>
                 )}
                 <p className="hidden text-sm text-white/40 pointer-fine:block">
-                  {controls?.length ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
+                  {controls?.length || moles ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
                 </p>
               </section>
             ) : (

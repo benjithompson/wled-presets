@@ -153,7 +153,7 @@ export function ArcadeWindow({ hud, health, children }: { hud: Hud; health?: { v
 }
 
 /** The score counts up to its new value, like the reels of an arcade cabinet. */
-function useRolling(target: number) {
+export function useRolling(target: number) {
   const [shown, setShown] = useState(target);
   const at = useRef(target);
   useEffect(() => {
@@ -179,7 +179,7 @@ function useRolling(target: number) {
  * True for a while after a count goes up (not when the page first shows it): a celebration
  * that plays once per new multiplier, crash or record.
  */
-function useEdge(count: number, ms: number) {
+export function useEdge(count: number, ms: number) {
   const seen = useRef(count);
   const [on, setOn] = useState(false);
   useEffect(() => {

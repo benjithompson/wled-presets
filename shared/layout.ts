@@ -1713,6 +1713,8 @@ export interface GameStatus {
   arcade?: ArcadeHud;
   /** Light Painter: the phone shows the paint box and the yard to paint on (see paint.ts). */
   paint?: PaintPad;
+  /** Whack-a-Mole: the phone shows the holes to whack, and the arcade's marquee (see MoleBoard). */
+  moles?: MoleBoard;
   /** The last game's score made the board: the phone asks for initials. */
   enterInitials?: { id: number; rank: number; score: number; refused?: boolean };
 }
@@ -1735,6 +1737,40 @@ export interface ArcadeHud {
   drops: number;
   /** Small facts in the corner, for example the speed and the stage. */
   info: { label: string; value: string | number }[];
+}
+
+/**
+ * Whack-a-Mole on the phone: one hole per bush or tree of the yard (or stretch of roof), left to
+ * right as seen from the street. A tap on a hole sends a press with the hole's id as the button.
+ */
+export interface MoleBoard {
+  holes: MoleHole[];
+  /** Whole seconds left in the round, and how long a round is. */
+  timeLeft: number;
+  duration: number;
+  /** Big over the holes before a round: "3", "2", "1", "GO!". */
+  countdown?: string | null;
+  /** The points multiplier now (1 to 4), and whacks in a row. */
+  mult: number;
+  streak: number;
+  best: number;
+  /** Moles whacked this round, and moles that got away. */
+  hits: number;
+  missed: number;
+}
+
+export interface MoleHole {
+  /** The button id its press sends: h0, h1… */
+  id: string;
+  /** The hole's own color (CSS), the color it glows in the yard. */
+  color: string;
+  kind: 'bush' | 'tree' | 'roof';
+  /** What is in it now: nothing, a mole (a golden one is worth more), a whacked one, one that got away. */
+  state: 'empty' | 'up' | 'gold' | 'hit' | 'miss';
+  /** Counts the moles that came up in this hole, so the phone animates each new one. */
+  n: number;
+  /** The last whack's points, for the "+20" that pops off the hole. */
+  points: number;
 }
 
 /** An arcade high-score table: the best scores of one game (and its settings), with initials. */
