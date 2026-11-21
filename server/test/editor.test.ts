@@ -1,8 +1,9 @@
 // The layout editor's logic that needs no screen: line edits, undo, and the 2D views.
 import { describe, expect, it } from 'vitest';
-import { buildStage, pinPoint, pointOffsets, removePoint, sampleLayout, setSkipped, splitLine, unpinPoint, type Fixture } from '../../shared/layout.ts';
+import { buildStage, BUSH_TALL, layoutGround, layoutScale, pinPoint, pointOffsets, removePoint, sampleLayout, setSkipped, splitLine, unpinPoint, type Fixture, type Layout } from '../../shared/layout.ts';
 import { EditHistory } from '../../web/src/pages/admin/editHistory.ts';
-import { fromView, toView, viewPositions, type ViewSide } from '../../web/src/yard/views.ts';
+import { draftOutline, draftSize, shapeFrom } from '../../web/src/pages/admin/newShapes.ts';
+import { fromView, LayoutInView, toView, viewPositions, type ViewSide } from '../../web/src/yard/views.ts';
 
 const fx = (effect: string) => ({ effect }) as unknown as NonNullable<Fixture['effect']>;
 
@@ -124,5 +125,72 @@ describe('the 2D views', () => {
         expect(uv[i * 2 + 1]).toBeCloseTo(at.v, 3);
       }
     }
+  });
+});
+
+describe('a layout in one view', () => {
+  const layout: Layout = { ...sampleLayout(), fixtures: [line, { ...line, id: 'm', points: [{ x: 300, y: 100 }, { x: 300, y: 400, z: 80 }], pointLeds: undefined, skip: undefined }, { id: 'b', name: 'Bush', kind: 'bush', points: [{ x: 600, y: 500, z: 40 }], radius: 50, pixels: 50, deviceId: null, startPixel: 0, reversed: false }] };
+  const front = new LayoutInView(layout, 'front', -480);
+  const top = new LayoutInView(layout, 'top', -480);
+
+  it('lists what can be snapped to, leaving out a point being dragged and its segments', () => {
+    const t = front.targets();
+    expect(t.points).toHaveLength(6);
+    expect(t.segments).toHaveLength(4);
+    expect(t.centers).toEqual([{ u: 600, v: 500 }]);
+    const dragging = front.targets({ id: 'l', index: 1 }, true);
+    expect(dragging.points).toHaveLength(5);
+    expect(dragging.segments).toHaveLength(2);
+    expect(dragging.centers).toEqual([]);
+  });
+
+  it('finds the point at a spot, the nearest end of a line, and the point on a segment', () => {
+    expect(front.pointAt({ u: 300, v: 100 })).toEqual({ x: 300, y: 100 });
+    expect(front.pointAt({ u: 300, v: 100 }, { id: 'l', index: 3 })).toEqual({ x: 300, y: 100 });
+    expect(front.pointAt({ u: 310, v: 100 })).toBeUndefined();
+    expect(front.lineEndAt({ u: 302, v: 398 }, 10)).toMatchObject({ f: { id: 'm' }, at: 'last' });
+    expect(front.lineEndAt({ u: 150, v: 150 }, 10)).toBeNull();
+    // Halfway down the second line, seen from above: its depth is the view's, its height halfway.
+    expect(top.pointOnLine(layout.fixtures[1], 0, { u: 300, v: 480 + 40 })).toEqual({ x: 300, y: 250, z: 40 });
+  });
+
+  it('moves points in the view, keeping the coordinate it does not show', () => {
+    expect(top.moved([{ x: 1, y: 2, z: 3 }], 10, 20)).toEqual([{ x: 11, y: 2, z: 23 }]);
+    expect(new LayoutInView(layout, 'side', -480).moved([{ x: 1, y: 2 }], 10, 20)).toEqual([{ x: 1, y: 22, z: 10 }]);
+  });
+
+  it('boxes an object: a line by its points, a bush by its size', () => {
+    expect(front.box(layout.fixtures[0])).toEqual({ x: 0, y: 100, w: 300, h: 0 });
+    expect(front.box(layout.fixtures[2])).toEqual({ x: 550, y: 500 - 50 * BUSH_TALL, w: 100, h: 100 * BUSH_TALL });
+    expect(top.box(layout.fixtures[2])).toEqual({ x: 550, y: 470, w: 100, h: 100 });
+  });
+});
+
+describe('drawing a new shape', () => {
+  const layout = sampleLayout();
+  const s = layoutScale(layout);
+  const ground = layoutGround(layout);
+
+  it('sizes it as the pointer is dragged', () => {
+    expect(draftSize({ shape: 'bush', side: 'front', at: { u: 0, v: 0 }, size: 0 }, { u: 30, v: 40 * BUSH_TALL })).toBe(50);
+    expect(draftSize({ shape: 'tree', side: 'front', at: { u: 0, v: 300 }, size: 0 }, { u: 99, v: 100 })).toBe(200);
+    expect(draftSize({ shape: 'tree', side: 'front', at: { u: 0, v: 300 }, size: 0 }, { u: 0, v: 400 })).toBe(0);
+    expect(draftSize({ shape: 'semicircle', side: 'top', at: { u: 0, v: 0 }, size: 0 }, { u: 30, v: 40 })).toBe(50);
+    expect(draftOutline({ shape: 'tree', side: 'front', at: { u: 100, v: 300 }, size: 150 })).toBe('M 50.5 300 L 100 150 L 149.5 300 Z');
+  });
+
+  it('makes a bush against the front wall, or on the ground from above', () => {
+    expect(shapeFrom({ shape: 'bush', side: 'front', at: { u: 200, v: 600 }, size: 80 }, layout, -480, 'n')).toMatchObject({ id: 'n', kind: 'bush', points: [{ x: 200, y: 600, z: 80 }], radius: 80, pattern: 'fill', pixels: 60 });
+    const small = shapeFrom({ shape: 'bush', side: 'top', at: { u: 200, v: 500 }, size: 0 }, layout, -480, 'n');
+    expect(small).toMatchObject({ name: `Bush ${layout.fixtures.filter((f) => f.kind === 'bush').length + 1}`, radius: 70, points: [{ x: 200, y: Math.round(ground - 70 * BUSH_TALL), z: 20 }] });
+  });
+
+  it('makes a tree and a semicircle of a usual size from a click', () => {
+    const tree = shapeFrom({ shape: 'tree', side: 'front', at: { u: 200, v: 600 }, size: 0 }, layout, -480, 'n');
+    const height = Math.max(40, 2.5 * s);
+    expect(tree).toMatchObject({ kind: 'tree', height: Math.round(height), radius: Math.round(height * 0.33), pattern: 'spiral', turns: 8, pixels: 200 });
+    expect(tree.points[0]).toEqual({ x: 200, y: 600, z: Math.round(Math.round(height * 0.33) + 0.5 * s) });
+    const semi = shapeFrom({ shape: 'semicircle', side: 'top', at: { u: 200, v: 500 }, size: 0 }, layout, -480, 'n');
+    expect(semi).toMatchObject({ kind: 'semicircle', radius: Math.max(15, Math.round(0.6 * s)), strands: 8, zigzag: 'down', pixels: 100, points: [{ x: 200, y: Math.round(ground), z: 20 }] });
   });
 });

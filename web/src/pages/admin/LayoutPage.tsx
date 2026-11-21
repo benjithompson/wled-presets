@@ -77,7 +77,6 @@ import {
   deviceRuns,
   extendLine,
   insertPoint,
-  pointOnSegment,
   fromLedRange,
   isPinned,
   LAYOUT_WIDTH,
@@ -88,7 +87,6 @@ import {
   paintMatch,
   pointOffsets,
   designReach,
-  drawnByPaths,
   objectPaths,
   treeOutline,
   lineLengths,
@@ -132,10 +130,11 @@ import { paintCheck, pictureBlocks, validCheck } from '../../../../shared/check.
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
-import { fromView, toView, type ViewSide } from '../../yard/views.ts';
+import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
+import { draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
 import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
-import { closestOnSegment, emptyTargets, onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
+import { onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
 import { KIND_ICONS, KIND_LABELS } from '../../lib/kinds.ts';
 import { EditHistory } from './editHistory.ts';
@@ -179,9 +178,7 @@ type Drag =
   /** A press on a locked object: it stays put; moving the pointer says why. */
   | { kind: 'locked'; id: string; from: UV; warned: boolean }
   | { kind: 'ground' }
-  | { kind: 'newBush'; side: ViewSide; center: UV; radius: number }
-  | { kind: 'newTree'; side: ViewSide; base: UV; size: number }
-  | { kind: 'newSemicircle'; side: ViewSide; base: UV; radius: number }
+  | ({ kind: 'newShape' } & ShapeDraft)
   | { kind: 'pan'; side: ViewSide; x: number; y: number; cam: Cam };
 type ViewName = ViewSide | '3d';
 /** How the viewports share the space, as in CAD programs. */
@@ -1106,18 +1103,8 @@ export function LayoutPage() {
     setLightEdit(null);
   };
 
-  /** The 3D point of a line that sits at this spot in a view, if any. */
-  const pointAtView = (side: ViewSide, at: UV, exclude?: { id: string; index: number }): Point | undefined => {
-    for (const f of layout?.fixtures ?? []) {
-      if (!isLine(f)) continue;
-      for (let i = 0; i < f.points.length; i++) {
-        if (exclude?.id === f.id && exclude.index === i) continue;
-        const q = toView(f.points[i], side, zMin);
-        if (Math.abs(q.u - at.u) < 1 && Math.abs(q.v - at.v) < 1) return f.points[i];
-      }
-    }
-    return undefined;
-  };
+  /** The layout as one view shows it (see LayoutInView). */
+  const inView = (side: ViewSide) => new LayoutInView(layout, side, zMin);
 
   function finishLine(kind: LineTool, d = draft) {
     // A double-click adds the same point twice; drop near-duplicates.
@@ -1131,7 +1118,7 @@ export function LayoutPage() {
     const to3d = (start: Point) => {
       let prev = start;
       return uv.map((p) => {
-        const hit = pointAtView(d.side, p);
+        const hit = inView(d.side).pointAt(p);
         prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev);
         return prev;
       });
@@ -1422,7 +1409,7 @@ export function LayoutPage() {
     let x1 = side === 'side' ? zRange[1] : (layout?.width ?? LAYOUT_WIDTH);
     let y1 = side === 'top' ? zRange[1] - zRange[0] : (layout?.height ?? 900);
     for (const f of layout?.fixtures ?? []) {
-      const b = boxOf(f, side);
+      const b = inView(side).box(f);
       x0 = Math.min(x0, b.x);
       y0 = Math.min(y0, b.y);
       x1 = Math.max(x1, b.x + b.w);
@@ -1436,29 +1423,6 @@ export function LayoutPage() {
   }
   const viewBoxFor = (side: ViewSide) => viewBoxOf(camFor(side), sizeOf(side), offOf(side));
 
-  /** The box around an object in a view, in view units. */
-  const boxOf = (f: Fixture, side: ViewSide): Box => {
-    const V = (p: Point) => toView(p, side, zMin);
-    if (drawnByPaths(f)) {
-      const pts: Point[] = objectPaths(f, layout ? layoutScale(layout) : undefined).flat();
-      if (!pts.length) pts.push(f.points[0]);
-      const us = pts.map((p) => V(p).u);
-      const vs = pts.map((p) => V(p).v);
-      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
-    }
-    const c = V(f.points[0]);
-    const r = radiusOf(f);
-    if (side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
-    if (f.kind === 'tree') {
-      // Its outline from that side (tilted, as it is), with the whole ball for a cap.
-      const pts = [...treeOutline({ ...f, cover: undefined }, side === 'side' ? 'side' : 'front').map(V)];
-      const us = pts.map((p) => p.u);
-      const vs = pts.map((p) => p.v);
-      return { x: Math.min(...us), y: Math.min(...vs), w: Math.max(...us) - Math.min(...us), h: Math.max(...vs) - Math.min(...vs) };
-    }
-    const h = r * BUSH_TALL;
-    return { x: c.u - r, y: c.v - h, w: 2 * r, h: 2 * h };
-  };
   /** F: zoom every 2D view to the selected object, or to the whole yard when nothing is selected. */
   function frameSelection(id = selected) {
     const f = layout?.fixtures.find((x) => x.id === id);
@@ -1466,7 +1430,7 @@ export function LayoutPage() {
     const pad = layoutScale(layout) * 0.75;
     const next: Partial<Record<ViewSide, Cam>> = {};
     for (const side of SIDES) {
-      const b = boxOf(f, side);
+      const b = inView(side).box(f);
       next[side] = fitCam({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad }, sizeOf(side), offOf(side), 1);
     }
     setCams(next);
@@ -1555,17 +1519,8 @@ export function LayoutPage() {
   };
 
   /** What can be snapped to in a view. `exclude`: a point being dragged, and its two segments. */
-  const targetsFor = (side: ViewSide, exclude?: { id: string; index: number }, linesOnly = false): SnapTargets => {
-    const t = emptyTargets();
-    for (const f of layout?.fixtures ?? []) {
-      const pts = f.points.map((p) => toView(p, side, zMin));
-      if (!isLine(f)) {
-        if (!linesOnly) t.centers.push(pts[0]);
-        continue;
-      }
-      pts.forEach((p, i) => !(exclude?.id === f.id && exclude.index === i) && t.points.push(p));
-      for (let k = 0; k < pts.length - 1; k++) if (!(exclude?.id === f.id && (exclude.index === k || exclude.index === k + 1))) t.segments.push([pts[k], pts[k + 1]]);
-    }
+  const targetsFor = (side: ViewSide, exclude?: PointRef, linesOnly = false): SnapTargets => {
+    const t = inView(side).targets(exclude, linesOnly);
     if (!linesOnly && draft.side === side) {
       t.points.push(...draft.pts);
       for (let k = 0; k < draft.pts.length - 1; k++) t.segments.push([draft.pts[k], draft.pts[k + 1]]);
@@ -1596,29 +1551,10 @@ export function LayoutPage() {
     });
 
   /** The end of a line near this spot, for continuing that line. */
-  const lineEndAt = (side: ViewSide, at: UV): { f: Fixture; at: 'first' | 'last' } | null => {
-    let best: { f: Fixture; at: 'first' | 'last' } | null = null;
-    let bestD = tolFor(side);
-    for (const f of layout?.fixtures ?? []) {
-      if (!isLine(f)) continue;
-      for (const end of ['first', 'last'] as const) {
-        const q = toView(f.points[end === 'first' ? 0 : f.points.length - 1], side, zMin);
-        const d = Math.hypot(q.u - at.u, q.v - at.v);
-        if (d <= bestD) {
-          best = { f, at: end };
-          bestD = d;
-        }
-      }
-    }
-    return best;
-  };
+  const lineEndAt = (side: ViewSide, at: UV) => inView(side).lineEndAt(at, tolFor(side));
 
   /** The 3D point on segment k of a line nearest to a spot in a view. */
-  const pointOnLine = (f: Fixture, k: number, raw: UV, side: ViewSide): Point => {
-    const V = (q: Point) => toView(q, side, zMin);
-    const { at, t } = closestOnSegment(raw, V(f.points[k]), V(f.points[k + 1]));
-    return fromView({ u: Math.round(at.u), v: Math.round(at.v) }, side, zMin, pointOnSegment(f, k, t));
-  };
+  const pointOnLine = (f: Fixture, k: number, raw: UV, side: ViewSide): Point => inView(side).pointOnLine(f, k, raw);
 
   /** Adds a point on segment k and selects it; with `drag`, the pointer then moves it. */
   const addPointOn = (f: Fixture, k: number, raw: UV, side: ViewSide, drag?: RPointerEvent) => {
@@ -1716,7 +1652,7 @@ export function LayoutPage() {
     if (tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
       const p = snapAt(e, side).at;
       svgs.current[side]?.setPointerCapture(e.pointerId);
-      setDrag(tool === 'bush' ? { kind: 'newBush', side, center: p, radius: 0 } : tool === 'tree' ? { kind: 'newTree', side, base: p, size: 0 } : { kind: 'newSemicircle', side, base: p, radius: 0 });
+      setDrag({ kind: 'newShape', shape: tool, side, at: p, size: 0 });
       return;
     }
     if (tool === 'align') {
@@ -1804,7 +1740,7 @@ export function LayoutPage() {
       const s = e.shiftKey ? snapAt(e, side, drag.start, { id: f.id, index: i }, 90) : snapAt(e, side, neighbour ? V(neighbour) : null, { id: f.id, index: i });
       setSnapHint({ ...s, side });
       // On another point: take that point's position in 3D, so the two points join.
-      const hit = s.kind === 'point' ? pointAtView(side, s.at, { id: f.id, index: i }) : undefined;
+      const hit = s.kind === 'point' ? inView(side).pointAt(s.at, { id: f.id, index: i }) : undefined;
       update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q)) : q)) });
     } else if (drag.kind === 'move') {
       let du = p.u - drag.from.u;
@@ -1821,11 +1757,7 @@ export function LayoutPage() {
         if (axis !== 'v') du = onGrid(a.u + du, grid, 'u') - a.u;
         if (axis !== 'u') dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
-      update(drag.id, {
-        points: drag.original.map((q) =>
-          side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : side === 'top' ? { ...q, x: q.x + du, z: (q.z ?? 0) + dv } : { ...q, z: (q.z ?? 0) + du, y: q.y + dv }
-        )
-      });
+      update(drag.id, { points: inView(side).moved(drag.original, du, dv) });
     } else if (drag.kind === 'rotate' && f) {
       // The front view's rotation turns clockwise on the screen; facing, seen from above, the other way.
       const d = screenAngle(drag.center, p) - drag.start;
@@ -1846,74 +1778,14 @@ export function LayoutPage() {
       update(drag.id, { height: Math.max(20, Math.round(f.points[0].y - p.v)) });
     } else if (drag.kind === 'ground') {
       updateLayout({ groundY: Math.max(0, Math.min(layout.height, p.v)) });
-    } else if (drag.kind === 'newBush') {
-      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.center.u, (p.v - drag.center.v) / (side === 'front' ? BUSH_TALL : 1))) });
-    } else if (drag.kind === 'newTree') {
-      setDrag({ ...drag, size: Math.round(side === 'front' ? Math.max(0, drag.base.v - p.v) : Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
-    } else if (drag.kind === 'newSemicircle') {
-      setDrag({ ...drag, radius: Math.round(Math.hypot(p.u - drag.base.u, p.v - drag.base.v)) });
+    } else if (drag.kind === 'newShape') {
+      setDrag({ ...drag, size: draftSize(drag, p) });
     }
   }
 
   function onPointerUp() {
     setSnapHint(null);
-    if (layout && drag?.kind === 'newSemicircle') {
-      const s = layoutScale(layout);
-      const b = drag.base;
-      const r = Math.max(15, drag.radius || Math.round(0.6 * s));
-      const lt = lightsOf(layout, layout.lights);
-      // Front view: its straight edge where you pressed, half a meter in front of the wall. From above: on the ground.
-      const base: Point = drag.side === 'front' ? { x: b.u, y: b.v, z: Math.round(0.5 * s) } : { x: b.u, y: Math.round(layoutGround(layout)), z: Math.round(b.v + zMin) };
-      addFixture({
-        id: uid(),
-        name: `Semicircle ${layout.fixtures.filter((f) => f.kind === 'semicircle').length + 1}`,
-        kind: 'semicircle',
-        points: [base],
-        radius: r,
-        strands: 8,
-        zigzag: 'down',
-        pixels: lt?.perStrand ?? 100,
-        ...(lt ? { lights: lt.id } : {}),
-        deviceId: null,
-        startPixel: 0,
-        reversed: false
-      });
-    }
-    if (layout && (drag?.kind === 'newBush' || drag?.kind === 'newTree')) {
-      const s = layoutScale(layout);
-      const ground = layoutGround(layout);
-      const count = layout.fixtures.filter((f) => f.kind === (drag.kind === 'newBush' ? 'bush' : 'tree')).length;
-      if (drag.kind === 'newBush') {
-        const r = Math.max(30, drag.radius || 70);
-        const c = drag.center;
-        // From the front: the bush touches the front wall. From above: it sits on the ground.
-        const center: Point = drag.side === 'front' ? { x: c.u, y: c.v, z: r } : { x: c.u, y: Math.round(ground - r * BUSH_TALL), z: Math.round(c.v + zMin) };
-        const lt = lightsOf(layout, layout.lights);
-        // One strand of lights per bush, when the strands are known.
-        addFixture({ id: uid(), name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: lt?.perStrand ?? 60, ...(lt ? { lights: lt.id } : {}), deviceId: null, startPixel: 0, reversed: false });
-      } else {
-        const b = drag.base;
-        // From the front you drag the height; from above, the radius of the base.
-        const height = drag.side === 'front' ? Math.max(40, drag.size || 2.5 * s) : Math.max(40, (drag.size || 0.6 * s) * 3);
-        const r = Math.round(drag.side === 'front' ? height * 0.33 : Math.max(15, drag.size || 0.6 * s));
-        const base: Point = drag.side === 'front' ? { x: b.u, y: b.v, z: Math.round(r + 0.5 * s) } : { x: b.u, y: Math.round(ground), z: Math.round(b.v + zMin) };
-        addFixture({
-          id: uid(),
-          name: `Tree ${count + 1}`,
-          kind: 'tree',
-          points: [base],
-          radius: r,
-          height: Math.round(height),
-          pattern: 'spiral',
-          turns: 8,
-          pixels: lightsOf(layout, layout.lights)?.perStrand ? lightsOf(layout, layout.lights)!.perStrand! * 4 : 200,
-          ...(layout.lights && lightsOf(layout, layout.lights) ? { lights: layout.lights } : {}),
-          deviceId: null,
-          startPixel: 0,
-          reversed: false
-        });
-      }
-    }
+    if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid()));
     setDrag(null);
   }
 
@@ -2324,7 +2196,7 @@ export function LayoutPage() {
     if (!f || f.locked || tool !== 'select' || panMode || probe || drawing || multi.length > 1) return null;
     if (isLine(f) && (corner != null || segment != null)) return null;
     const front = side === 'front';
-    const box = boxOf(f, side);
+    const box = inView(side).box(f);
     const anchor = isLine(f) ? { u: box.x + box.w / 2, v: box.y + box.h / 2 } : V(f.points[0]);
     const shaped = f.kind === 'tree' || f.kind === 'semicircle' || f.kind === 'custom';
     // What the ring turns in this view: left and right from the front, which way it faces from
@@ -2620,7 +2492,7 @@ export function LayoutPage() {
             const hitClass = tool === 'select' && !panMode ? (f.locked ? 'cursor-pointer' : 'cursor-move') : '';
             if (f.kind === 'custom' || f.kind === 'semicircle') {
               const paths = objectPaths(f, scale).map((path) => path.map(V));
-              const b = boxOf(f, side);
+              const b = inView(side).box(f);
               const pad = 10 * k;
               return (
                 <g key={f.id}>
@@ -2706,48 +2578,9 @@ export function LayoutPage() {
             </>
           ) : null}
 
-          {/* Bush or tree being drawn */}
-          {drag?.kind === 'newBush' && drag.side === side ? (
-            <ellipse
-              cx={drag.center.u}
-              cy={drag.center.v}
-              rx={drag.radius}
-              ry={drag.radius * (front ? BUSH_TALL : 1)}
-              fill="rgba(52,211,153,0.15)"
-              stroke="#34d399"
-              strokeWidth={2.5 * k}
-              strokeDasharray={dash(8, 6)}
-              pointerEvents="none"
-            />
-          ) : null}
-          {drag?.kind === 'newTree' && drag.side === side ? (
-            front ? (
-              <polygon
-                points={`${drag.base.u - drag.size * 0.33},${drag.base.v} ${drag.base.u},${drag.base.v - drag.size} ${drag.base.u + drag.size * 0.33},${drag.base.v}`}
-                fill="rgba(52,211,153,0.15)"
-                stroke="#34d399"
-                strokeWidth={2.5 * k}
-                strokeDasharray={dash(8, 6)}
-                pointerEvents="none"
-              />
-            ) : (
-              <circle cx={drag.base.u} cy={drag.base.v} r={drag.size} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
-            )
-          ) : null}
-          {drag?.kind === 'newSemicircle' && drag.side === side ? (
-            <path
-              // From the front: the round side up. From above: a flat object is a line.
-              d={
-                front
-                  ? `M ${drag.base.u - drag.radius} ${drag.base.v} A ${drag.radius} ${drag.radius} 0 0 1 ${drag.base.u + drag.radius} ${drag.base.v} Z`
-                  : `M ${drag.base.u - drag.radius} ${drag.base.v} L ${drag.base.u + drag.radius} ${drag.base.v}`
-              }
-              fill="rgba(52,211,153,0.15)"
-              stroke="#34d399"
-              strokeWidth={2.5 * k}
-              strokeDasharray={dash(8, 6)}
-              pointerEvents="none"
-            />
+          {/* A bush, tree or semicircle being drawn */}
+          {drag?.kind === 'newShape' && drag.side === side ? (
+            <path d={draftOutline(drag)} fill="rgba(52,211,153,0.15)" stroke="#34d399" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
           ) : null}
 
           {snapHint?.side === side ? <SnapMarker s={snapHint} k={k} /> : null}
