@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildStage, sampleLayout } from '../../shared/layout.ts';
 import { BEAD_COLORS, beadsGame, STAGE_EVERY } from '../src/game/beads.ts';
 import { Frame } from '../src/game/frame.ts';
-import { css, Yard } from '../src/game/kit.ts';
+import { hex } from '../../shared/color.ts';
+import { Yard } from '../src/game/kit.ts';
 import { press, release, run } from './harness.ts';
 
 /** Which bead color a bush shows: the one its average color points the same way as. */
@@ -65,7 +66,7 @@ describe('Bead Rush', () => {
     run(game, frame, 1);
     const s = game.status();
     expect(s.controls!.map((c) => c.id)).toEqual(['left', 'main', 'right']);
-    expect(s.controls![1]).toMatchObject({ big: true, color: css(BEAD_COLORS[game.peek().loaded].color) });
+    expect(s.controls![1]).toMatchObject({ big: true, color: hex(BEAD_COLORS[game.peek().loaded].color) });
     expect(s.controls![0].keys).toContain('ArrowLeft');
     expect(s.controls![2].keys).toContain('ArrowRight');
     expect(s.keysHint).toMatch(/←/);
@@ -99,7 +100,7 @@ describe('Bead Rush', () => {
     expect(bushTone(stage, frame, 1)).toMatchObject({ tone: loaded });
     expect(bushTone(stage, frame, 0).tone).toBe(palette[(at() + 2) % 3]);
     expect(bushTone(stage, frame, 2).tone).toBe(palette[(at() + 1) % 3]);
-    expect(game.status().controls![0].color).toBe(css(BEAD_COLORS[palette[(at() + 2) % 3]].color));
+    expect(game.status().controls![0].color).toBe(hex(BEAD_COLORS[palette[(at() + 2) % 3]].color));
   });
 
   it('fires on the press, and pops three of a color at the front', () => {

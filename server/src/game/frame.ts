@@ -1,9 +1,7 @@
 // A frame of light for every LED on the stage, in linear 0..1 RGB. Games draw into it
 // additively; the host converts it to bytes for the simulator and, later, the real lights.
 
-import { toBytes } from '../../../shared/effects.ts';
-
-export type Rgb = [number, number, number];
+import { toBytes, type Rgb } from '../../../shared/color.ts';
 
 export class Frame {
   readonly data: Float32Array;
@@ -54,20 +52,3 @@ export class Frame {
     return toBytes(this.data, out);
   }
 }
-
-const hsvChannel = (n: number, h6: number, v: number, vs: number) => {
-  const k = (n + h6) % 6;
-  return v - vs * Math.max(0, Math.min(k, 4 - k, 1));
-};
-
-/** A color from hue (any number: it wraps around, so -0.25 is 0.75), saturation and value. */
-export function hsv(h: number, s = 1, v = 1): Rgb {
-  const h6 = (h - Math.floor(h)) * 6;
-  const vs = v * s;
-  return [hsvChannel(5, h6, v, vs), hsvChannel(3, h6, v, vs), hsvChannel(1, h6, v, vs)];
-}
-
-export const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-
-export const WHITE: Rgb = [1, 1, 1];
-export const WARM: Rgb = [1, 0.62, 0.28];

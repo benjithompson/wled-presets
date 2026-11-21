@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, heat, Recent, scale, Yard, type Part } from './kit.ts';
+import { hsv, mix, scale, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { COLORS, heat, Recent, TONES, Yard, type Part } from './kit.ts';
 import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
 import { overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -48,11 +49,7 @@ export const LAG = 0.1;
 const PER_MULT = 8;
 const MAX_MULT = 4;
 /** Your colors and the walls': far apart on real LEDs, and none of white, gold or red. */
-export const GATE_COLORS: Rgb[] = [
-  [0.05, 1, 0.12],
-  [0.14, 0.08, 1],
-  [1, 0, 0.7]
-];
+export const GATE_COLORS: Rgb[] = [TONES.green, TONES.blue, TONES.magenta];
 const NAMES = ['GREEN', 'BLUE', 'PINK'];
 /** Half the width of a wall, in roof steps. */
 const WALL_HALF = 1.5;
@@ -220,7 +217,7 @@ export function colorgateGame(stage: Stage): Game {
     streak = 0;
     judged++;
     missFlash = 1;
-    burst(home, [COLORS.bad, [1, 0.3, 0], GATE_COLORS[w.tone]], 30, n * 0.3, 1);
+    burst(home, [COLORS.bad, COLORS.ember, GATE_COLORS[w.tone]], 30, n * 0.3, 1);
     // Every wall still coming shatters and falls off the gutter: a moment to breathe.
     for (const o of walls) {
       if (o === w) continue;

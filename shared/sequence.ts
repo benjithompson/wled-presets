@@ -7,6 +7,7 @@
 // The server plays sequences on the real lights, and the editor draws the same frames in the
 // browser. Keep this file free of Node and DOM APIs.
 
+import { clamp01 } from './color.ts';
 import { effectObjects, effectTarget, isSpatial, RunSet, YARD, type EffectSettings } from './effects.ts';
 import { activeLeds, isLine, segmentLeds, type Layout, type Stage } from './layout.ts';
 
@@ -559,7 +560,6 @@ export class SequencePlayer {
   }
 }
 
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 /** Mixes a layer (colors already weighted by cover, cover 0..1 per LED) over `out`. */
 function blend(out: Float32Array, col: Float32Array, cover: Float32Array, opacity: number, mode: BlendMode) {

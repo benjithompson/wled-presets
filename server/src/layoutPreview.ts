@@ -1,4 +1,5 @@
-import { LayoutEffects, toBytes } from '../../shared/effects.ts';
+import { toBytes } from '../../shared/color.ts';
+import { LayoutEffects } from '../../shared/effects.ts';
 import { framePut, paintEditorView, PREVIEW_EXPIRE_MS, type PreviewRequest, type SequencePreviewRequest } from '../../shared/editorView.ts';
 import { buildStage, deviceLed, editorPulse, layoutShapeKey, type Layout, type Stage } from '../../shared/layout.ts';
 import { checkMoves, validCheck } from '../../shared/check.ts';

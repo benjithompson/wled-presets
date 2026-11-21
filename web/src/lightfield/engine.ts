@@ -1,7 +1,7 @@
+import { fromHex, type Rgb } from '../../../shared/color.ts';
 import * as S from './shaders.ts';
 import { borderPoint } from '../lib/border.ts';
 
-type Rgb = [number, number, number];
 
 export interface Look {
   /** Hex colors. Empty uses the default palette. */
@@ -70,11 +70,6 @@ class Program {
     return this;
   }
 }
-
-const hexToRgb = (h: string): Rgb => {
-  const n = parseInt(h.replace('#', ''), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-};
 
 /**
  * Default for how fast simulation time runs, as a fraction of real time. Lower is calmer.
@@ -340,7 +335,7 @@ export class LightFieldEngine {
   /** A radial burst of the given colors at a screen point, for example a tapped button. */
   burst(clientX: number, clientY: number, colors?: string[], strength = 1) {
     const { x, y } = this.toUv(clientX, clientY);
-    const palette = (colors?.length ? colors : this.activeLook().colors).map(hexToRgb);
+    const palette = (colors?.length ? colors : this.activeLook().colors).map(fromHex);
     const n = 10;
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 + Math.random() * 0.4;
@@ -389,7 +384,7 @@ export class LightFieldEngine {
 
   private retarget(instant: boolean) {
     const look = this.activeLook();
-    const colors = look.colors.map(hexToRgb);
+    const colors = look.colors.map(fromHex);
     const count = Math.max(4, Math.min(7, colors.length + 2));
     while (this.emitters.length < count) {
       const i = this.emitters.length;
@@ -419,7 +414,7 @@ export class LightFieldEngine {
   }
 
   private randomSplat(strength: number) {
-    const colors = this.activeLook().colors.map(hexToRgb);
+    const colors = this.activeLook().colors.map(fromHex);
     const c = colors[Math.floor(Math.random() * colors.length)];
     const a = Math.random() * Math.PI * 2;
     this.queue.push({
@@ -479,7 +474,7 @@ export class LightFieldEngine {
       p.px = p.x;
       p.py = p.y;
       const strength = p.down || p.type !== 'mouse' ? 1 : 0.45;
-      const colors = look.colors.map(hexToRgb);
+      const colors = look.colors.map(fromHex);
       const c = colors[Math.floor(this.time * 0.8) % colors.length];
       const amount = Math.min(Math.hypot(dx * aspect, dy) * 18, 1) * 0.22 * strength;
       this.splat(p.x, p.y, dx * 5200 * strength, dy * 5200 * strength, c.map((v) => v * amount) as Rgb, 0.0007);

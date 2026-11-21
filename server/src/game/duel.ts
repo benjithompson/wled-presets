@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, css, Flare, heat, Recent, Sparks, Trail, Yard } from './kit.ts';
+import { hex, hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { COLORS, Flare, heat, Recent, Sparks, Trail, Yard } from './kit.ts';
 import { Fx, MIN_ROOF, Round } from './round.ts';
 import type { Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -492,7 +493,7 @@ export function duelGame(stage: Stage): Game {
 
     status(): GameStatusFields {
       if (!playable) return round.setup();
-      const scores = TEAMS.map((t, i) => ({ name: slots[i].house ? `${t.name} (house)` : t.name, color: css(t.color), value: score[i] }));
+      const scores = TEAMS.map((t, i) => ({ name: slots[i].house ? `${t.name} (house)` : t.name, color: hex(t.color), value: score[i] }));
       const base = { score: 0, lives: null, goal: null, scores, stats: rally > 1 && round.phase === 'rally' ? [{ label: 'Rally', value: rally }] : [] };
       const w = score[0] >= WIN ? 0 : 1;
       const messages: Record<Phase, string> = {
@@ -514,7 +515,7 @@ export function duelGame(stage: Stage): Game {
         return { you: null, button: '👀', tone: 'wait', message: round.phase === 'lobby' ? 'Two players are on. Watch the roof!' : `Watching: ${TEAMS[0].name} ${score[0]}–${score[1]} ${TEAMS[1].name}` };
       }
       const team = TEAMS[side];
-      const you = { name: team.name, color: css(team.color) };
+      const you = { name: team.name, color: hex(team.color) };
       const end = side === 0 ? 'left' : 'right';
       if (round.phase === 'lobby') {
         return { you, button: 'VS HOUSE', tone: 'go', message: `You're ${team.name}: the ${end} end of the roof. Waiting for a friend to tap on their phone… or tap again to play the house.` };

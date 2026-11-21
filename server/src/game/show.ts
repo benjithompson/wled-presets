@@ -17,7 +17,8 @@
 //
 // Big moments (game over, a stage cleared) can go over the pieces instead (`over: true`).
 
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
+import { ease, hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
 import type { Yard } from './kit.ts';
 
 /** Which way a sweep (or a mood's wipe) crosses the yard, as seen from the street. */
@@ -120,7 +121,6 @@ export const NIGHT_MOOD: Mood = { a: [0.1, 0.12, 0.55], b: [0.4, 0.06, 0.6] };
 /** Seconds a rocket takes to climb. */
 const ROCKET = 0.75;
 
-const ease = (t: number) => t * t * (3 - 2 * t);
 
 export class Show {
   readonly yard: Yard;

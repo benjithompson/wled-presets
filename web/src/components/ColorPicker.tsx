@@ -1,5 +1,6 @@
 import { useRef, type KeyboardEvent, type PointerEvent } from 'react';
-import { cn, hsvToHex } from '../lib/utils.ts';
+import { fromHex, hex, hsv } from '../../../shared/color.ts';
+import { cn } from '../lib/utils.ts';
 
 export const SWATCHES: { hex: string; name: string }[] = [
   { hex: '#ffa757', name: 'Warm white' },
@@ -14,11 +15,11 @@ export const SWATCHES: { hex: string; name: string }[] = [
   { hex: '#ff00b4', name: 'Pink' }
 ];
 
-function hexToHue(hex: string): number | null {
-  const n = parseInt(hex.slice(1), 16);
-  const r = ((n >> 16) & 255) / 255;
-  const g = ((n >> 8) & 255) / 255;
-  const b = (n & 255) / 255;
+/** The color of a hue on the ring, in degrees. */
+const hueColor = (deg: number) => hex(hsv(deg / 360));
+
+function hexToHue(value: string): number | null {
+  const [r, g, b] = fromHex(value);
   const max = Math.max(r, g, b);
   const d = max - Math.min(r, g, b);
   if (d < 0.25) return null; // near white or grey: no hue marker
@@ -46,15 +47,15 @@ export function ColorPicker({
     const dist = Math.hypot(dx, dy) / (r.width / 2);
     if (dist < 0.6 || dist > 1.02) return;
     const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-    onPick(hsvToHex(deg, 1, 1), ring.current);
+    onPick(hueColor(deg), ring.current);
   }
 
   function onKey(e: KeyboardEvent<HTMLDivElement>) {
     if (disabled || !ring.current) return;
     const step = e.shiftKey ? 30 : 10;
     const cur = hue ?? 0;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') onPick(hsvToHex((cur + step) % 360, 1, 1), ring.current);
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') onPick(hsvToHex((cur - step + 360) % 360, 1, 1), ring.current);
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') onPick(hueColor((cur + step) % 360), ring.current);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') onPick(hueColor((cur - step + 360) % 360), ring.current);
     else return;
     e.preventDefault();
   }

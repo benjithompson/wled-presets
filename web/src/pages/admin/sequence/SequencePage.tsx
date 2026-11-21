@@ -39,7 +39,8 @@ import {
   ZoomOut
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { effectInfo, paletteColors, toBytes, YARD, type EffectId } from '../../../../../shared/effects.ts';
+import { toBytes } from '../../../../../shared/color.ts';
+import { effectInfo, paletteColors, YARD, type EffectId } from '../../../../../shared/effects.ts';
 import { buildStage, type Layout, type Stage } from '../../../../../shared/layout.ts';
 import { activeAt, clipEnd, emptySequence, newId, SequencePlayer, transitionInfo, type SeqClip, type Sequence } from '../../../../../shared/sequence.ts';
 import { Button, ConfirmDialog, Spinner } from '../../../components/ui.tsx';

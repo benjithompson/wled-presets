@@ -1,6 +1,7 @@
 import type { Stage } from '../../../shared/layout.ts';
-import { hsv, mix, WHITE, type Frame, type Rgb } from './frame.ts';
-import { COLORS, Flare, Recent, Sparks, Yard, type Part } from './kit.ts';
+import { hsv, mix, WHITE, type Rgb } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
+import { COLORS, Flare, FOUR_TONES, Recent, Sparks, Yard, type Part } from './kit.ts';
 import { endGlow, Fx, MIN_ROOF, Round } from './round.ts';
 import { NIGHT_MOOD, overMood, type Mood } from './show.ts';
 import type { Game, GameInput, GameStatusFields } from './types.ts';
@@ -42,12 +43,7 @@ interface Chunk {
 }
 
 /** The layers' colors, in turn: the Cascade orbs, far apart on real LEDs. */
-const LAYER_COLORS: Rgb[] = [
-  [0.05, 1, 0.12],
-  [0, 0.72, 1],
-  [0.14, 0.08, 1],
-  [1, 0, 0.7]
-];
+const LAYER_COLORS = FOUR_TONES;
 const NIGHT: Rgb = [0.02, 0.012, 0.04];
 /** A press counts where the bar was this long ago: the phone and Wi-Fi are a little late. */
 const LAG = 0.08;

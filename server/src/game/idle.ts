@@ -1,5 +1,6 @@
 import { roofTrack, type Stage } from '../../../shared/layout.ts';
-import { hsv, type Frame } from './frame.ts';
+import { hsv } from '../../../shared/color.ts';
+import { type Frame } from './frame.ts';
 import type { Game } from './types.ts';
 
 /** Calm animation shown when nobody is playing: slow color waves on the roof; everything else breathes. */
