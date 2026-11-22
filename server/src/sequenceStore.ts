@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { MAX_SEQUENCE_SECONDS, TRANSITIONS, type AudioClip, type AudioTrack, type Marker, type SeqClip, type SeqTrack, type Sequence, type TransitionId } from '../../shared/sequence.ts';
+import { MAX_SEQUENCE_SECONDS, TRANSITION_CHOICES, type AudioClip, type AudioTrack, type Marker, type SeqClip, type SeqTrack, type Sequence, type TransitionChoice } from '../../shared/sequence.ts';
 import { effectSettingsSchema } from './layoutStore.ts';
 import type { SchemaOf } from './schemaOf.ts';
 
 const id = z.string().min(1).max(64);
 const seconds = z.number().finite().min(0).max(MAX_SEQUENCE_SECONDS);
-const transition = z.enum(TRANSITIONS.map((t) => t.id) as [TransitionId, ...TransitionId[]]);
+const transition = z.enum(TRANSITION_CHOICES.map((t) => t.id) as [TransitionChoice, ...TransitionChoice[]]);
 
 const clipSchema = z.object({
   id,

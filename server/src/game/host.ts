@@ -3,6 +3,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
+import { Crossover, pickTransition, type SceneTransition } from '../../../shared/transitions.ts';
 import { buildStage, CONTROL_ID, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
 import { GAME_CATALOG, type GameId, type PlayMessage } from '../../../shared/games.ts';
 import { endRun, nameScore, pendingInitials, removeScore, scoreboard } from './kit.ts';
@@ -255,8 +256,10 @@ export class GameHost implements FrameSource {
   /**
    * Plays a scene's show: a sequence (looping), or effects. Null, or a show with nothing in it,
    * stops. The same show again (on a changed yard) keeps running where it can.
+   * `transition`: the show that plays now gives way to this one with it (when one plays, and no
+   * game runs). Devices that only the old show lit go back to their own state at once.
    */
-  playShow(show: Show | null): { devices: string[]; objects: number } {
+  playShow(show: Show | null, transition?: SceneTransition | null): { devices: string[]; objects: number } {
     const seq = show?.sequence && show.sequence.tracks.some((t) => t.clips.length) ? show.sequence : null;
     const fx = !seq && show?.effects && Object.keys(show.effects).length ? show.effects : null;
     if (!seq && !fx) {
@@ -269,7 +272,11 @@ export class GameHost implements FrameSource {
     }
     const same = this.show && (seq ? this.show.sequence === seq : this.show.effects === fx);
     this.show = seq ? { sequence: seq } : { effects: fx };
-    if (seq) {
+    const prev = this.scene;
+    if (transition && transition.seconds > 0 && prev && !same && this.game.id === 'idle') {
+      const next: Program = seq ? sequenceProgram(this.stage, this.layout, seq) : new EffectScene(this.stage, this.layout, fx!);
+      this.scene = new Crossover<Layout, Program>(this.stage, prev, next, pickTransition(transition.type, Math.random()), transition.seconds);
+    } else if (seq) {
       if (!same || !this.scene) this.scene = sequenceProgram(this.stage, this.layout, seq);
       else this.scene.setStage(this.stage, this.layout);
     } else if (this.scene instanceof EffectScene) {
@@ -504,8 +511,11 @@ export class GameHost implements FrameSource {
       this.game = idleGame(this.gameStage);
     }
     const gameOn = this.game.id !== 'idle';
-    if (!gameOn && this.scene) this.scene.update(dt, this.frame.data);
-    else {
+    if (!gameOn && this.scene) {
+      this.scene.update(dt, this.frame.data);
+      // A transition that has ended leaves the new show.
+      if (this.scene instanceof Crossover && this.scene.done) this.scene = this.scene.to;
+    } else {
       this.game.update(dt, this.frame);
       // Lights outside the game area stay dark, whatever the game drew there.
       const d = this.frame.data;

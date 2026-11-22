@@ -2,6 +2,7 @@
 // that depends on Node or the DOM.
 
 import type { EffectSettings } from './effects.ts';
+import type { SceneTransitionChoice } from './transitions.ts';
 
 export interface Device {
   id: string;
@@ -84,6 +85,14 @@ export interface Settings {
   revertMinutes: number;
   discoverySubnets: string[];
   showColors: boolean;
+  /**
+   * How the lights go from one scene to the next when someone picks a scene: a transition,
+   * "random" (a different one each time), or "none" (at once). Effects and sequences, which the
+   * server draws, transition; a device that plays a WLED preset changes as WLED does.
+   */
+  sceneTransition: SceneTransitionChoice;
+  /** How long the transition takes, in seconds. */
+  sceneTransitionSeconds: number;
 }
 
 export interface PublicScene {

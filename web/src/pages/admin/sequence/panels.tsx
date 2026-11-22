@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Box, Copy, Crosshair, Scissors, Trash2 } from 'lucide-react';
 import { EFFECTS, effectInfo, paletteColors, YARD, type EffectId, type EffectInfo, type EffectSettings } from '../../../../../shared/effects.ts';
 import type { FixtureKind, Layout } from '../../../../../shared/layout.ts';
-import { BLEND_MODES, clipEnd, neighbours, overlapOf, TRANSITIONS, transitionInfo, type BlendMode, type SeqClip, type Sequence, type TransitionId } from '../../../../../shared/sequence.ts';
+import { BLEND_MODES, clipEnd, neighbours, overlapOf, TRANSITION_CHOICES, transitionInfo, type BlendMode, type SeqClip, type Sequence, type TransitionChoice } from '../../../../../shared/sequence.ts';
 import { KIND_ICONS } from '../../../lib/kinds.ts';
 import { cn } from '../../../lib/utils.ts';
 import { EffectProps, PaletteSwatch } from '../effectProps.tsx';
@@ -45,7 +45,7 @@ export function Browser({
   /** Adds a clip of this effect at the playhead. */
   onAdd: (id: EffectId) => void;
   /** Gives the selected clips this transition. */
-  onTransition: (id: TransitionId) => void;
+  onTransition: (id: TransitionChoice) => void;
   /** The color an object shows now (CSS), from the preview. */
   swatch: (id: string) => string | null;
   hover: string | null;
@@ -129,7 +129,7 @@ export function Browser({
                 : 'Drag a transition onto a clip: it is how the clip comes in. Overlap two clips on one layer to cross over from one to the other (also from one object to another). Click one to give it to the selected clips.'}
             </p>
             <div className="space-y-1">
-              {TRANSITIONS.map((t) => (
+              {TRANSITION_CHOICES.map((t) => (
                 <button
                   key={t.id}
                   type="button"
@@ -198,20 +198,32 @@ export function Browser({
   );
 }
 
+/** The transitions as select options: each one, then "random". */
+export const TRANSITION_OPTIONS = TRANSITION_CHOICES.map((t): [TransitionChoice, string] => [t.id, t.name]);
+
 /** A small picture of a transition. */
-export function TransitionIcon({ id }: { id: TransitionId }) {
+export function TransitionIcon({ id }: { id: TransitionChoice }) {
   const common = 'size-8 shrink-0 rounded-md overflow-hidden ring-1 ring-black/10';
   const a = '#7c3aed';
   const b = '#f59e0b';
-  const bg: Record<TransitionId, string> = {
+  const bg: Record<TransitionChoice, string> = {
     fade: `linear-gradient(90deg, ${a}, ${b})`,
     dip: `linear-gradient(90deg, ${a}, #000 50%, ${b})`,
+    flash: `linear-gradient(90deg, ${a}, #fff 50%, ${b})`,
     wipeRight: `linear-gradient(90deg, ${b} 45%, ${a} 55%)`,
     wipeLeft: `linear-gradient(90deg, ${a} 45%, ${b} 55%)`,
     wipeUp: `linear-gradient(0deg, ${b} 45%, ${a} 55%)`,
     wipeDown: `linear-gradient(180deg, ${b} 45%, ${a} 55%)`,
+    diagonal: `linear-gradient(45deg, ${b} 45%, ${a} 55%)`,
+    splitOut: `linear-gradient(90deg, ${a} 22%, ${b} 30% 70%, ${a} 78%)`,
+    splitIn: `linear-gradient(90deg, ${b} 22%, ${a} 30% 70%, ${b} 78%)`,
     iris: `radial-gradient(circle, ${b} 35%, ${a} 45%)`,
-    dissolve: `repeating-conic-gradient(${a} 0 25%, ${b} 0 50%) 0 0 / 8px 8px`
+    irisClose: `radial-gradient(circle, ${a} 35%, ${b} 45%)`,
+    clock: `conic-gradient(${b} 0 35%, ${a} 35% 100%)`,
+    blinds: `repeating-linear-gradient(90deg, ${b} 0 3px, ${a} 3px 5.33px)`,
+    strings: `repeating-linear-gradient(0deg, #0008 0 2px, #0000 2px 8px), linear-gradient(90deg, ${b} 0 60%, ${a} 60%)`,
+    dissolve: `repeating-conic-gradient(${a} 0 25%, ${b} 0 50%) 0 0 / 8px 8px`,
+    random: `conic-gradient(${a} 0 25%, ${b} 0 50%, #fff 0 75%, #000 0)`
   };
   return <span className={common} style={{ background: bg[id] }} />;
 }
@@ -459,7 +471,7 @@ function ClipInspector({
         <PropNumber label="End" unit="s" decimal step={0.1} min={clip.start + MIN_CLIP} max={seq.duration} value={round(clipEnd(clip))} onChange={(end) => set({ duration: round(end - clip.start) })} />
       </PropSection>
       <PropSection id="seq-trans" title="Transitions">
-        <PropSelect<TransitionId> label={ov ? 'Cross over' : 'In'} value={clip.transitionIn ?? 'fade'} options={TRANSITIONS.map((t): [TransitionId, string] => [t.id, t.name])} onChange={(transitionIn) => set({ transitionIn })} />
+        <PropSelect<TransitionChoice> label={ov ? 'Cross over' : 'In'} value={clip.transitionIn ?? 'fade'} options={TRANSITION_OPTIONS} onChange={(transitionIn) => set({ transitionIn })} />
         {ov ? (
           <PropNote>
             Crosses over from the clip before it over {ov.toFixed(2)} s (where they overlap). {transitionInfo(clip.transitionIn).description}
@@ -467,7 +479,8 @@ function ClipInspector({
         ) : (
           <PropNumber label="Fade in" unit="s" decimal step={0.1} min={0} max={clip.duration} value={round(clip.fadeIn ?? 0)} onChange={(fadeIn) => set({ fadeIn })} />
         )}
-        <PropSelect<TransitionId> label="Out" value={clip.transitionOut ?? 'fade'} options={TRANSITIONS.map((t): [TransitionId, string] => [t.id, t.name])} onChange={(transitionOut) => set({ transitionOut })} />
+        <PropSelect<TransitionChoice> label="Out" value={clip.transitionOut ?? 'fade'} options={TRANSITION_OPTIONS} onChange={(transitionOut) => set({ transitionOut })} />
+        {clip.transitionOut === 'random' && !next ? <PropNote>{transitionInfo('random').description}</PropNote> : null}
         {next ? (
           <PropNote>The next clip on this layer crosses over this one (its own transition decides how).</PropNote>
         ) : (
@@ -539,10 +552,10 @@ function MultiInspector({
         </PropSection>
       ) : null}
       <PropSection id="seq-multi-actions" title="Clips">
-        <PropSelect<TransitionId | ''>
+        <PropSelect<TransitionChoice | ''>
           label="Transition in"
           value=""
-          options={[['', 'Set for all…'], ...TRANSITIONS.map((t): [TransitionId, string] => [t.id, t.name])]}
+          options={[['', 'Set for all…'], ...TRANSITION_OPTIONS]}
           onChange={(t) => t && change(updateClips(seq, ids, (c) => ({ ...c, transitionIn: t })))}
         />
         <div className="flex flex-wrap gap-1.5 pt-1">
