@@ -10,7 +10,8 @@ import { Cabinet } from './GameWindow.tsx';
 // chasing bulbs with the score, the clock and the multiplier. Below: the playfield, a grassy deck
 // in a candy-striped frame with one hole per bush or tree of the yard, left to right as seen from
 // the street. A mole pops up in a hole here when it pops up in the yard, in that hole's color;
-// a whack blows it up in confetti, and one that gets away flashes red and is gone.
+// a whack blows it up in confetti, and one that gets away flashes red and is gone. A whack at an
+// empty hole (a slip) flashes the hole and the clock red and takes seconds off the clock.
 
 /** Each multiplier's color: ×1 plain, ×2 cyan, ×3 magenta, ×4 a rainbow. */
 const MULT_COLOR = ['#fef3c7', '#fef3c7', '#22d3ee', '#e879f9', '#fde047'];
@@ -40,6 +41,8 @@ export function WhackWindow({ board, score, phase, children }: { board: Board; s
   const newBest = board.best > 0 && score > board.best;
   const best = useEdge(newBest ? 1 : 0, 1600);
   const power = useEdge(board.mult, 1200);
+  // A slip: the clock flashes red, "−2 s" drops off it, and the cabinet's edge flashes red.
+  const slip = board.slip;
 
   // Points as they land: "+20" floats up off the score.
   const [gains, setGains] = useState<{ id: number; value: number }[]>([]);
@@ -80,11 +83,16 @@ export function WhackWindow({ board, score, phase, children }: { board: Board; s
             </p>
           ) : (
             <p
-              key={hurry ? board.timeLeft : 'clock'}
-              className={cn('mt-1 text-2xl leading-none font-black tabular-nums sm:text-3xl', hurry ? 'hud-bump text-orange-300 [text-shadow:0_0_14px_rgba(251,146,60,0.9)]' : 'text-cyan-200 [text-shadow:0_0_12px_rgba(34,211,238,0.7)]')}
+              key={slip ? `slip${slip.n}` : hurry ? board.timeLeft : 'clock'}
+              className={cn('relative mt-1 text-2xl leading-none font-black tabular-nums sm:text-3xl', hurry ? 'hud-bump text-orange-300 [text-shadow:0_0_14px_rgba(251,146,60,0.9)]' : 'text-cyan-200 [text-shadow:0_0_12px_rgba(34,211,238,0.7)]', slip && 'mole-slip-clock')}
               aria-label={`${board.timeLeft} seconds left`}
             >
               0:{String(board.timeLeft).padStart(2, '0')}
+              {slip ? (
+                <span className="hud-float pointer-events-none absolute top-0 left-full ml-1.5 text-base font-black whitespace-nowrap text-red-400 [text-shadow:0_0_10px_#ef4444]">
+                  −{slip.cost} s
+                </span>
+              ) : null}
             </p>
           )}
         </div>
@@ -128,6 +136,7 @@ export function WhackWindow({ board, score, phase, children }: { board: Board; s
       </div>
       <Bulbs fast={phase === 'running' && board.mult > 1} />
       {power && board.mult > 1 ? <div key={`edge${board.mult}`} className="hud-flash pointer-events-none absolute inset-0 rounded-3xl border-4" style={{ borderColor: color }} /> : null}
+      {slip ? <div key={`slip${slip.n}`} className="hud-flash pointer-events-none absolute inset-0 rounded-3xl border-4 border-red-500 bg-red-500/15" /> : null}
     </Cabinet>
   );
 }
@@ -209,6 +218,7 @@ export function MoleBoard({
                   size={size}
                   style={{ left: spots[i].left, top: spots[i].top }}
                   down={pressed.has(h.id)}
+                  slip={board.slip?.hole === h.id ? board.slip : null}
                   disabled={idle || phase === 'countdown' || phase === 'setup'}
                   onPress={onPress}
                   onRelease={onRelease}
@@ -263,6 +273,7 @@ function Hole({
   size,
   style,
   down,
+  slip,
   disabled,
   onPress,
   onRelease
@@ -272,6 +283,8 @@ function Hole({
   size: number;
   style: React.CSSProperties;
   down: boolean;
+  /** The last slip, when it was in this hole: it flashes red. */
+  slip: Board['slip'];
   disabled: boolean;
   onPress: (id: string) => void;
   onRelease: (id: string) => void;
@@ -291,6 +304,11 @@ function Hole({
       navigator.vibrate?.(25);
     } else if (state === 'miss') navigator.vibrate?.([30, 40, 30]);
   }, [state, hole.n]);
+  // A slip: one long buzz, unlike a whack's tap.
+  const slipN = slip?.n;
+  useEffect(() => {
+    if (slipN) navigator.vibrate?.(120);
+  }, [slipN]);
 
   return (
     <button
@@ -321,6 +339,13 @@ function Hole({
             : `0 0 0 3px color-mix(in srgb, ${color} 45%, transparent), inset 0 ${size * 0.08}px ${size * 0.22}px rgba(0,0,0,0.85)`
         }}
       />
+      {/* A slip: the hole flashes red and shakes, and "−2 s" pops off it. */}
+      {slip ? <span key={`slip${slip.n}`} className="mole-slip pointer-events-none absolute -inset-1 rounded-full" /> : null}
+      {slip ? (
+        <span key={`cost${slip.n}`} className="hud-pop pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 rounded-full bg-red-600 px-2 py-0.5 text-xs font-black tracking-wider whitespace-nowrap text-white shadow-lg">
+          MISS −{slip.cost} s
+        </span>
+      ) : null}
       {/* A whack: a ring of rainbow spins out of the hole. */}
       {state === 'hit' ? <span key={`ring${hole.n}`} className="mole-blast pointer-events-none absolute -inset-2 rounded-full" /> : null}
       {/* The mole, clipped by the hole: it pops up from below and ducks back down. */}
