@@ -290,22 +290,33 @@ describe('sending to devices', () => {
     await mock.close();
   }, 10_000);
 
-  it('switches a device that is off in WLED on for the frames, and off again after', async () => {
+  it('switches a device that is off on for the frames, and after them as the admin’s switch says', async () => {
     const mock = await startMockWled(0, 'Roof', 600);
     mock.state.on = false;
     const sender = new LightSender();
     const device = { id: 'd', name: 'Roof', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 600 }, udpport: mock.port, ddpport: mock.ddpPort() } };
     const frame = new Uint8Array(600 * 3).fill(90);
-    try {
+    const play = async (sender: LightSender, d: typeof device & { switchedOff?: boolean }) => {
       const until = Date.now() + 300;
       while (Date.now() < until) {
-        sender.send(device, frame);
+        sender.send(d, frame);
         await new Promise((r) => setTimeout(r, 33));
       }
       expect(mock.state.on).toBe(true);
-      expect(rgb(mock.realtime.leds, 10)).toEqual([90, 90, 90]);
-      sender.end(device);
+      sender.end(d);
       await new Promise((r) => setTimeout(r, 150));
+    };
+    try {
+      // Switched on here (it was off in WLED a moment ago, or the switch-on is on its way): on after.
+      await play(sender, device);
+      expect(rgb(mock.realtime.leds, 10)).toEqual([90, 90, 90]);
+      expect(mock.state.on).toBe(true);
+      expect(mock.requests.at(-1)).toMatchObject({ body: { lor: 1 } });
+      // Switched off by an admin, lit by an editor's preview: off after.
+      mock.state.on = false;
+      const preview = new LightSender();
+      await play(preview, { ...device, enabled: false, switchedOff: true });
+      preview.close();
       expect(mock.state.on).toBe(false);
       expect(mock.requests.at(-1)).toMatchObject({ body: { lor: 1, on: false } });
     } finally {

@@ -12,7 +12,7 @@ import { RoofView, type Peek } from '../src/roofView.ts';
 import { WledPeek } from '../src/wledPeek.ts';
 import { sampleLayout, type Layout } from '../../shared/layout.ts';
 import { LightSender, type DeviceTarget } from '../src/lightSender.ts';
-import { FramePipeline } from '../src/framePipeline.ts';
+import { FramePipeline, layoutOutput } from '../src/framePipeline.ts';
 import { LayoutPreview } from '../src/layoutPreview.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
@@ -154,6 +154,46 @@ describe('power', () => {
     } finally {
       preview.close();
       pipeline.close();
+    }
+  }, 10_000);
+
+  it('leaves a device on that an admin switched off and on again while a scene played on it, also after a restart', async () => {
+    // A scene's effects on the tree (device 1), as the game host plays them: frames that do not wake.
+    const layout: Layout = { ...sampleLayout(), fixtures: sampleLayout().fixtures.map((f, i) => ({ ...f, deviceId: i === 1 ? ids[1] : null })) };
+    const out = layoutOutput(layout);
+    const bytes = new Uint8Array(out.stage.pixelCount * 3).fill(120);
+    const sender = new LightSender();
+    const pipeline = new FramePipeline(() => t.lights.liveDevices(), sender);
+    pipeline.add({ running: true, tick: () => ({ maps: out.maps, bytes }) });
+    pipeline.wake();
+    try {
+      await wait(400);
+      expect(mocks[1].state.on).toBe(true);
+      // Off, and on again a few seconds later.
+      await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
+      await wait(500);
+      expect(mocks[1].state.on).toBe(false);
+      await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: ids[1] });
+      await wait(600);
+      expect(mocks[1].state.on).toBe(true);
+      // The server stops (a deploy), as index.ts does it.
+      await sender.release(t.lights.devicesWithStatus());
+      pipeline.close();
+      await wait(300);
+      expect(mocks[1].state.on).toBe(true);
+    } finally {
+      pipeline.close();
+      sender.close();
+    }
+    // The next server finds the device as the switch left it, so it does not switch it off here.
+    const next = new Lights(t.db, new Bus());
+    next.settleMs = 50;
+    next.start(100);
+    try {
+      await wait(800);
+      expect(next.isOff(ids[1])).toBe(false);
+    } finally {
+      next.stop();
     }
   }, 10_000);
 });
