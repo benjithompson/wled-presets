@@ -120,4 +120,17 @@ describe('the showcase', () => {
     const changes = beats.slice(1).filter((b, i) => Math.hypot(...b.hue.map((x, k) => x - beats[i].hue[k])) > 0.3).length;
     expect(changes).toBeGreaterThanOrEqual(5);
   });
+
+  it('sweeps light across the whole yard to the beat, and plays a big new picture every few bars', () => {
+    const { sequence } = showcase(yard());
+    const sweeps = sequence.tracks.find((t) => t.name.startsWith('Yard sweeps'))!.clips;
+    expect(sweeps.every((c) => c.targets.join() === '*')).toBe(true);
+    // A wave on every beat of bars 16 to 19, coming in and going out left to right.
+    const waves = sweeps.filter((c) => c.effect.effect === 'solid' && c.duration < BEAT + 0.01);
+    expect(waves.map((c) => c.start)).toEqual(Array.from({ length: 16 }, (_, k) => Math.round((64 + k) * BEAT * 10000) / 10000));
+    for (const c of waves) expect([c.transitionIn, c.transitionOut, c.fadeIn! + c.fadeOut! <= c.duration]).toEqual(['wipeRight', 'wipeRight', true]);
+    expect(sweeps.filter((c) => c.effect.effect === 'scanner').map((c) => c.effect.direction)).toEqual(['right', 'right']);
+    const pictures = new Set(sequence.tracks.find((t) => t.name === 'Yard 3-D')!.clips.map((c) => c.effect.effect));
+    expect(pictures.size).toBeGreaterThanOrEqual(14);
+  });
 });

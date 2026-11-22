@@ -262,6 +262,13 @@ class Layer {
     );
   }
 
+  /** A band of light that sweeps across the whole yard in `dur` seconds: it wipes in from one side and out after it. */
+  sweep(t: number, dur: number, color: string, brightness: number, dir: 'wipeRight' | 'wipeLeft' = 'wipeRight') {
+    const start = r4(t);
+    const half = Math.floor(((r4(t + dur) - start) / 2) * 10000) / 10000;
+    this.add([YARD], t, dur, solid(color, brightness), { fadeIn: half, transitionIn: dir, fadeOut: half, transitionOut: dir });
+  }
+
   track(): SeqTrack {
     return { id: newId('layer'), name: this.name, clips: this.clips, opacity: this.opacity, blend: this.blend };
   }
@@ -269,20 +276,32 @@ class Layer {
 
 /** The yard's 3-D picture behind the band, section by section. */
 const BED: { from: number; to: number; effect: EffectSettings; in?: TransitionChoice; overlap?: number; fadeIn?: number; fadeOut?: number; name: string; tint?: boolean }[] = [
-  { name: 'Nebula', from: 0, to: at(4), effect: fx('nebula', { brightness: 0.5, speed: 0.35, size: 0.65 }), fadeIn: at(2) },
-  { name: 'Double helix', tint: true, from: at(4), to: at(8), effect: fx('helix', { brightness: 0.6, speed: 0.55 }), in: 'diagonal', overlap: BAR },
-  { name: 'Rising wash', from: at(8), to: at(10), effect: fx('wash', { palette: 'neon', brightness: 0.45, intensity: 0.75, size: 0.35, speed: 0.55, direction: 'up' }), in: 'iris', overlap: 2 * BEAT },
-  { name: 'Rising wash, faster', from: at(10), to: at(12), effect: fx('wash', { palette: 'neon', brightness: 0.7, intensity: 0.85, size: 0.25, speed: 0.85, direction: 'up' }), in: 'fade', overlap: BEAT },
+  // Intro: night sky, then fireflies wake up.
+  { name: 'Nebula', from: 0, to: at(2), effect: fx('nebula', { brightness: 0.5, speed: 0.35, size: 0.65 }), fadeIn: at(1, 2) },
+  { name: 'Fireflies', from: at(2), to: at(4), effect: fx('fireflies', { brightness: 0.9, intensity: 0.95, size: 0.75 }), in: 'dissolve', overlap: BAR },
+  // Build: things start to turn.
+  { name: 'Double helix', tint: true, from: at(4), to: at(6), effect: fx('helix', { brightness: 0.6, speed: 0.55 }), in: 'diagonal', overlap: BAR },
+  { name: 'Orbits', from: at(6), to: at(8), effect: fx('orbits', { brightness: 0.75, intensity: 0.7, speed: 0.6 }), in: 'iris', overlap: 2 * BEAT },
+  // Rise: the jump to hyperspace, faster and faster.
+  { name: 'Hyperspace', from: at(8), to: at(10), effect: fx('hyperspace', { brightness: 0.8, intensity: 0.95, speed: 0.55, size: 0.6, direction: 'out' }), in: 'iris', overlap: 2 * BEAT },
+  { name: 'Hyperspace, faster', from: at(10), to: at(12), effect: fx('hyperspace', { brightness: 1, intensity: 1, speed: 0.9, size: 0.8, direction: 'out' }), in: 'fade', overlap: BEAT },
+  // Drop: a new big picture every two bars.
   { name: 'Kaleidoscope', tint: true, from: at(12), to: at(14), effect: fx('kaleidoscope', { brightness: 1, speed: 0.6, intensity: 0.6 }) },
-  { name: 'Vortex', tint: true, from: at(14), to: at(16), effect: fx('vortex', { palette: 'party', brightness: 1, intensity: 0.6, speed: 0.6 }), in: 'clock', overlap: 2 * BEAT },
-  { name: 'Shockwaves', from: at(16), to: at(18), effect: fx('shockwave', { brightness: 1, intensity: 0.75 }), in: 'blinds', overlap: 2 * BEAT },
+  { name: 'Plasma globe', from: at(14), to: at(16), effect: fx('tesla', { brightness: 1, intensity: 1, size: 0.7, speed: 0.65 }), in: 'clock', overlap: 2 * BEAT },
+  { name: 'Vortex', tint: true, from: at(16), to: at(18), effect: fx('vortex', { palette: 'party', brightness: 1, intensity: 0.6, speed: 0.6 }), in: 'blinds', overlap: 2 * BEAT },
   { name: 'Equalizer', from: at(18), to: at(20), effect: fx('equalizer', { brightness: 1, intensity: 0.8 }), in: 'splitOut', overlap: 2 * BEAT },
-  { name: 'Lava lamp', tint: true, from: at(20), to: at(24), effect: fx('lavalamp', { palette: 'galaxy', brightness: 0.55, speed: 0.45 }), in: 'dissolve', overlap: BAR },
+  // Breakdown: falling into a black hole, then snow.
+  { name: 'Black hole', from: at(20), to: at(22), effect: fx('blackhole', { palette: 'galaxy', brightness: 1, intensity: 0.7, size: 0.7, speed: 0.5 }), in: 'dissolve', overlap: BAR },
+  { name: 'Snowfall', from: at(22), to: at(24), effect: fx('snowfall', { brightness: 0.75, intensity: 0.7, speed: 0.55 }), in: 'wipeDown', overlap: 2 * BEAT },
+  // Drop 2: rings of color, a hologram in the air, fireworks.
   { name: 'Color rings', from: at(24), to: at(26), effect: fx('wash', { palette: 'rainbow', brightness: 0.75, intensity: 0.7, size: 0.3, speed: 0.75, direction: 'out' }) },
-  { name: 'Starburst', from: at(26), to: at(28), effect: fx('starburst', { brightness: 1, intensity: 0.85 }), in: 'wipeUp', overlap: 2 * BEAT },
-  { name: 'Bonfire', from: at(28), to: at(30), effect: fx('bonfire', { brightness: 0.9, intensity: 0.7, speed: 0.6 }), in: 'irisClose', overlap: 2 * BEAT },
+  { name: 'Hologram', from: at(26), to: at(28), effect: fx('hologram', { palette: 'neon', brightness: 1, intensity: 0.5, size: 0.7, speed: 0.6 }), in: 'wipeUp', overlap: 2 * BEAT },
+  { name: 'Starburst', from: at(28), to: at(30), effect: fx('starburst', { brightness: 1, intensity: 0.9 }), in: 'irisClose', overlap: 2 * BEAT },
   { name: 'Supernova', from: at(30), to: SHOWCASE_SECONDS, effect: fx('supernova', { brightness: 1, size: 0.7 }), in: 'flash', overlap: BEAT, fadeOut: at(1) }
 ];
+
+/** The laser scan's speed for one pass across the yard every `beats` beats (a pass is 1.5625 of its seconds at speed 0.5). */
+const scanSpeed = (beats: number) => Math.max(0, Math.min(1, 0.5 + Math.log2(1.5625 / (beats * BEAT)) / 4));
 
 /** How a tinted picture changes color at a bar line inside its section. */
 const BAR_TURNS: TransitionChoice[] = ['fade', 'wipeUp', 'diagonal', 'wipeDown'];
@@ -313,6 +332,7 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
   const score = compose();
 
   const blackout = new Layer('Blackout', 'normal');
+  const sweeps = new Layer('Yard sweeps (beat)', 'add');
   const flash = new Layer('Flash', 'add');
   const stabs = new Layer('Chord stabs', 'normal');
   const kick = new Layer('Kick (trees)', 'normal');
@@ -347,7 +367,7 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         // The roof sweeps a new color across on every beat of the drops: side to side in the
         // first, opening from the middle and closing in the second.
         if (bar >= 12 && bar < 30) {
-          const colors = [chord.color, chord.accent, whiter(chord.color, 0.35), chordOf(bar + 1).color];
+          const colors = [chord.color, chord.accent, whiter(chord.color, 0.35), chordOf(bar + 2).color];
           const dir: TransitionChoice = bar >= 24 ? (beat % 2 ? 'splitIn' : 'splitOut') : beat % 2 ? 'wipeLeft' : 'wipeRight';
           sweep.add(b.roof.map((p) => p.key), n.t, BEAT, solid(colors[beat], bar >= 24 ? 0.7 : 0.95), { fadeIn: r4(BEAT * 0.22), transitionIn: dir, fadeOut: r4(BEAT * 0.7) });
         }
@@ -431,6 +451,17 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
     });
   }
 
+  // Sweeps across the whole yard to the beat. A laser scans left to right and back, one pass
+  // every two beats late in the build and one a beat at the end of the second drop; a wave of
+  // color rolls left to right on every beat of the first drop's second half, and once a bar in
+  // the breakdown.
+  const laser = (bar: number, bars: number, beats: number, colors: string[], brightness: number) =>
+    sweeps.add([YARD], at(bar), bars * BAR, fx('scanner', { palette: 'custom', colors, brightness, speed: scanSpeed(beats), intensity: 0.55, size: 0.6, direction: 'right' }), { name: 'Laser sweeps' });
+  laser(6, 2, 2, [whiter(chordOf(6).color, 0.4), whiter(chordOf(6).accent, 0.4)], 0.7);
+  for (let bar = 16; bar < 20; bar++) for (let k = 0; k < 4; k++) sweeps.sweep(at(bar, k), BEAT, k % 2 ? chordOf(bar).accent : chordOf(bar).color, 0.75);
+  for (const bar of [22, 23]) sweeps.sweep(at(bar), BAR, whiter(chordOf(bar).accent, 0.3), 0.5);
+  laser(28, 2, 1, [chordOf(28).color, chordOf(28).accent, '#ffffff', chordOf(29).color, chordOf(29).accent, '#ffffff'], 1);
+
   // The beat of silence before each drop.
   blackout.add([YARD], at(11, 3), BEAT, solid('#000000', 1));
   blackout.add([YARD], at(23, 3, 2), BEAT / 2, solid('#000000', 1));
@@ -457,7 +488,7 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
     }
   }
 
-  const layers = [blackout, flash, stabs, kick, clap, roll, lead, arp, sweep, roof, bass, hats, pump, bed];
+  const layers = [blackout, sweeps, flash, stabs, kick, clap, roll, lead, arp, sweep, roof, bass, hats, pump, bed];
   const sequence: Sequence = {
     id: '',
     name,
