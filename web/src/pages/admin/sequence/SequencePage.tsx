@@ -43,6 +43,7 @@ import { toBytes } from '../../../../../shared/color.ts';
 import { effectInfo, paletteColors, YARD, type EffectId } from '../../../../../shared/effects.ts';
 import { buildStage, type Layout, type Stage } from '../../../../../shared/layout.ts';
 import { activeAt, clipEnd, emptySequence, newId, SequencePlayer, transitionInfo, type SeqClip, type Sequence } from '../../../../../shared/sequence.ts';
+import { showcase, SHOWCASE_BPM, SHOWCASE_SECONDS } from '../../../../../shared/showcase.ts';
 import { Button, ConfirmDialog, Spinner } from '../../../components/ui.tsx';
 import { BottomSheet, MoreButton, type SheetSize } from '../../../components/mobile.tsx';
 import { useMedia } from '../../../lib/useMedia.ts';
@@ -249,6 +250,32 @@ export function SequencePage() {
       return null;
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** A new showcase for this yard: the sequence opens at once, and its music follows when it is made and uploaded. */
+  async function newShowcase() {
+    if (!layout) return;
+    const n = (list?.sequences.filter((s) => s.name.startsWith('Showcase')).length ?? 0) + 1;
+    const { sequence, score } = showcase(layout, n > 1 ? `Showcase ${n}` : 'Showcase');
+    open(sequence, false);
+    const audioTrack = sequence.audio[0].id;
+    const id = toast.loading('Making the music…');
+    try {
+      const { renderShowcaseAudio } = await import('./showcaseAudio.ts');
+      const blob = await renderShowcaseAudio(score, SHOWCASE_SECONDS);
+      const up = await api.uploadAudio(new File([blob], 'Showcase beat.wav', { type: 'audio/wav' }));
+      await audio.load(up.id);
+      const cur = seqRef.current;
+      // Another sequence was opened meanwhile: the music stays uploaded, for the audio browser.
+      if (!cur || !cur.audio.some((t) => t.id === audioTrack)) return void toast.success('The showcase music is uploaded.', { id });
+      const clip = { id: newId('aclip'), fileId: up.id, name: `Showcase beat (${SHOWCASE_BPM} BPM)`, start: 0, offset: 0, duration: SHOWCASE_SECONDS };
+      const next = { ...cur, audio: cur.audio.map((t) => (t.id === audioTrack ? { ...t, clips: [...t.clips, clip] } : t)) };
+      seqRef.current = next;
+      setSeqState(next);
+      toast.success('Showcase ready: press play. Save it to keep it.', { id });
+    } catch (e) {
+      toast.error(`The showcase plays without music: ${errorText(e)}`, { id });
     }
   }
 
@@ -670,6 +697,7 @@ export function SequencePage() {
           onClose={() => setMenu(false)}
           onOpen={(id) => guard(() => void loadById(id))}
           onNew={() => guard(() => open(emptySequence(`Sequence ${list.sequences.length + 1}`), false))}
+          onShowcase={layout ? () => guard(() => void newShowcase()) : undefined}
           onDuplicate={() => open({ ...seq, id: '', name: `${seq.name} copy` }, false)}
           onDelete={() =>
             setConfirm({ title: `Delete “${seq.name}”?`, body: 'Scenes that play it stop playing it. Audio files stay uploaded.', label: 'Delete sequence', danger: true, run: () => void remove() })
@@ -1067,6 +1095,7 @@ function SequenceMenu({
   onClose,
   onOpen,
   onNew,
+  onShowcase,
   onDuplicate,
   onDelete
 }: {
@@ -1075,6 +1104,8 @@ function SequenceMenu({
   onClose: () => void;
   onOpen: (id: string) => void;
   onNew: () => void;
+  /** A 60-second show to a beat, made for this yard. */
+  onShowcase?: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
@@ -1108,6 +1139,11 @@ function SequenceMenu({
       <button type="button" role="menuitem" className={item} onClick={() => (onClose(), onNew())}>
         <FilePlus2 /> New sequence
       </button>
+      {onShowcase ? (
+        <button type="button" role="menuitem" className={item} onClick={() => (onClose(), onShowcase())} title="A 60-second show to a beat, made for this yard, with its music: the objects play like instruments over 3-D effects">
+          <Sparkles /> New showcase (60 s, to a beat)
+        </button>
+      ) : null}
       <button type="button" role="menuitem" className={item} onClick={() => (onClose(), onDuplicate())}>
         <Copy /> Duplicate this one
       </button>
