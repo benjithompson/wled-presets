@@ -2,14 +2,16 @@
 // are its band. The trees are the kick drum, the bushes the hi-hats and the bass, the roof's
 // segments the keys the melody plays on (low notes on the left, high ones on the right), and
 // the whole yard plays 3-D effects behind them, ducking on every kick in the drops. An
-// arpeggio hops from object to object like notes on a staff.
+// arpeggio hops from object to object like notes on a staff. The roof is the lead: its own
+// moving color all through, a new color swept across it on every beat of the drops. Every
+// chord has a color and an accent, so the colors change every bar and every beat.
 //
 // One score drives both the lights (a sequence) and the music (the editor synthesizes it into
 // an audio track, web/src/pages/admin/sequence/showcaseAudio.ts), so every flash lands on its
 // note. Keep this file free of Node and DOM APIs.
 
 import { hex, hsv, mix, fromHex } from './color.ts';
-import { defaultSettings, effectKey, YARD, type EffectId, type EffectSettings } from './effects.ts';
+import { defaultSettings, effectInfo, effectKey, YARD, type EffectId, type EffectSettings } from './effects.ts';
 import { activeLeds, buildStage, isLine, segmentLeds, type Layout } from './layout.ts';
 import { newId, type SeqClip, type SeqTrack, type Sequence } from './sequence.ts';
 import type { TransitionChoice } from './transitions.ts';
@@ -58,12 +60,12 @@ const SECTIONS = [
   { bar: 30, label: 'Finale' }
 ];
 
-/** A minor: Am, F, C, G, one chord a bar. */
+/** A minor: Am, F, C, G, one chord a bar. Each has its color and an accent that answers it. */
 const CHORDS = [
-  { name: 'Am', bass: 33, tones: [57, 60, 64, 69], color: '#b000ff' },
-  { name: 'F', bass: 29, tones: [53, 57, 60, 65], color: '#0050ff' },
-  { name: 'C', bass: 36, tones: [60, 64, 67, 72], color: '#00e0b0' },
-  { name: 'G', bass: 31, tones: [55, 59, 62, 67], color: '#ff6000' }
+  { name: 'Am', bass: 33, tones: [57, 60, 64, 69], color: '#b000ff', accent: '#ff2a8a' },
+  { name: 'F', bass: 29, tones: [53, 57, 60, 65], color: '#0050ff', accent: '#00e5ff' },
+  { name: 'C', bass: 36, tones: [60, 64, 67, 72], color: '#00e0b0', accent: '#ffe000' },
+  { name: 'G', bass: 31, tones: [55, 59, 62, 67], color: '#ff6000', accent: '#ff0050' }
 ];
 const chordOf = (bar: number) => CHORDS[bar % 4];
 
@@ -224,6 +226,8 @@ function fx(effect: EffectId, s: Partial<EffectSettings>): EffectSettings {
   return { ...defaultSettings(effect), ...s };
 }
 
+const effectName = (id: EffectId) => effectInfo(id).name;
+
 const r4 = (x: number) => Math.round(x * 10000) / 10000;
 
 class Layer {
@@ -264,21 +268,41 @@ class Layer {
 }
 
 /** The yard's 3-D picture behind the band, section by section. */
-const BED: { from: number; to: number; effect: EffectSettings; in?: TransitionChoice; overlap?: number; fadeIn?: number; fadeOut?: number; name: string }[] = [
+const BED: { from: number; to: number; effect: EffectSettings; in?: TransitionChoice; overlap?: number; fadeIn?: number; fadeOut?: number; name: string; tint?: boolean }[] = [
   { name: 'Nebula', from: 0, to: at(4), effect: fx('nebula', { brightness: 0.5, speed: 0.35, size: 0.65 }), fadeIn: at(2) },
-  { name: 'Double helix', from: at(4), to: at(8), effect: fx('helix', { brightness: 0.6, speed: 0.55 }), in: 'diagonal', overlap: BAR },
+  { name: 'Double helix', tint: true, from: at(4), to: at(8), effect: fx('helix', { brightness: 0.6, speed: 0.55 }), in: 'diagonal', overlap: BAR },
   { name: 'Rising wash', from: at(8), to: at(10), effect: fx('wash', { palette: 'neon', brightness: 0.45, intensity: 0.75, size: 0.35, speed: 0.55, direction: 'up' }), in: 'iris', overlap: 2 * BEAT },
   { name: 'Rising wash, faster', from: at(10), to: at(12), effect: fx('wash', { palette: 'neon', brightness: 0.7, intensity: 0.85, size: 0.25, speed: 0.85, direction: 'up' }), in: 'fade', overlap: BEAT },
-  { name: 'Kaleidoscope', from: at(12), to: at(14), effect: fx('kaleidoscope', { brightness: 1, speed: 0.6, intensity: 0.6 }) },
-  { name: 'Vortex', from: at(14), to: at(16), effect: fx('vortex', { palette: 'party', brightness: 1, intensity: 0.6, speed: 0.6 }), in: 'clock', overlap: 2 * BEAT },
+  { name: 'Kaleidoscope', tint: true, from: at(12), to: at(14), effect: fx('kaleidoscope', { brightness: 1, speed: 0.6, intensity: 0.6 }) },
+  { name: 'Vortex', tint: true, from: at(14), to: at(16), effect: fx('vortex', { palette: 'party', brightness: 1, intensity: 0.6, speed: 0.6 }), in: 'clock', overlap: 2 * BEAT },
   { name: 'Shockwaves', from: at(16), to: at(18), effect: fx('shockwave', { brightness: 1, intensity: 0.75 }), in: 'blinds', overlap: 2 * BEAT },
   { name: 'Equalizer', from: at(18), to: at(20), effect: fx('equalizer', { brightness: 1, intensity: 0.8 }), in: 'splitOut', overlap: 2 * BEAT },
-  { name: 'Lava lamp', from: at(20), to: at(24), effect: fx('lavalamp', { palette: 'galaxy', brightness: 0.55, speed: 0.45 }), in: 'dissolve', overlap: BAR },
+  { name: 'Lava lamp', tint: true, from: at(20), to: at(24), effect: fx('lavalamp', { palette: 'galaxy', brightness: 0.55, speed: 0.45 }), in: 'dissolve', overlap: BAR },
   { name: 'Color rings', from: at(24), to: at(26), effect: fx('wash', { palette: 'rainbow', brightness: 0.75, intensity: 0.7, size: 0.3, speed: 0.75, direction: 'out' }) },
   { name: 'Starburst', from: at(26), to: at(28), effect: fx('starburst', { brightness: 1, intensity: 0.85 }), in: 'wipeUp', overlap: 2 * BEAT },
   { name: 'Bonfire', from: at(28), to: at(30), effect: fx('bonfire', { brightness: 0.9, intensity: 0.7, speed: 0.6 }), in: 'irisClose', overlap: 2 * BEAT },
   { name: 'Supernova', from: at(30), to: SHOWCASE_SECONDS, effect: fx('supernova', { brightness: 1, size: 0.7 }), in: 'flash', overlap: BEAT, fadeOut: at(1) }
 ];
+
+/** How a tinted picture changes color at a bar line inside its section. */
+const BAR_TURNS: TransitionChoice[] = ['fade', 'wipeUp', 'diagonal', 'wipeDown'];
+
+/** The roof's own picture in a bar: moving color in the chord's two colors, busier as the song goes (in the drops, under the beat sweeps). */
+function roofEffect(bar: number): EffectSettings | null {
+  const c = chordOf(bar);
+  const two = { palette: 'custom' as const, colors: [c.color, c.accent] };
+  if (bar < 4) return fx('rainbow', { ...two, speed: 0.35, size: 0.7, brightness: 0.45 + 0.1 * bar });
+  if (bar < 8) return fx('chase', { ...two, speed: 0.55, intensity: 0.5, size: 0.4, brightness: 0.75 });
+  if (bar < 12) return fx('wipe', { ...two, speed: 0.55 + 0.12 * (bar - 8), intensity: 0.1, size: 0.3, brightness: 0.6 + 0.1 * (bar - 8) });
+  if (bar < 20) {
+    const k = Math.floor((bar - 12) / 2);
+    const effect = (['chase', 'candy', 'sparkle', 'wipe'] as EffectId[])[k];
+    return fx(effect, { ...two, speed: 0.75, intensity: 0.55, size: 0.4, brightness: 0.4 });
+  }
+  if (bar < 24) return fx('breathe', { ...two, speed: 0.6, intensity: 0.35, brightness: 0.7 });
+  if (bar < 30) return fx('rainbow', { palette: 'custom', colors: [c.color, c.accent, chordOf(bar + 1).color], speed: 0.8, size: 0.4, brightness: 0.45 });
+  return null;
+}
 
 /**
  * The showcase for a layout: a 60-second sequence at 128 beats a minute, and its score (for the
@@ -293,12 +317,13 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
   const stabs = new Layer('Chord stabs', 'normal');
   const kick = new Layer('Kick (trees)', 'normal');
   const clap = new Layer('Clap (roof)', 'add');
-  const roll = new Layer('Snare roll (roof keys)', 'normal');
+  const roll = new Layer('Roof keys (beats, snare roll)', 'normal');
   const lead = new Layer('Melody (roof keys)', 'normal');
   const arp = new Layer('Arpeggio (note to note)', 'normal');
   const bass = new Layer('Bass (bushes)', 'lighten');
   const hats = new Layer('Hi-hats (bushes)', 'add');
-  const pad = new Layer('Pad (roof)', 'lighten', 0.8);
+  const sweep = new Layer('Roof (beat sweeps)', 'lighten');
+  const roof = new Layer('Roof (color)', 'lighten');
   const pump = new Layer('Pump: the yard ducks on the kick', 'multiply');
   const bed = new Layer('Yard 3-D', 'normal');
 
@@ -314,15 +339,25 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
       case 'kick': {
         // Short, so the yard's picture shows on the trees between the beats.
         const dur = BEAT * (bar >= 12 ? 0.6 : 0.75);
-        const color = bar >= 12 ? whiter(chord.color, 0.55) : chord.color;
+        // The chord's color on the strong beats, its accent on the others.
+        const beat = Math.round((n.t - at(bar)) / BEAT);
+        const base = beat % 2 ? chord.accent : chord.color;
+        const color = bar >= 12 ? whiter(base, 0.45) : base;
         kick.hit(b.kick, n.t, dur, color, n.vel, bar >= 12 ? 'wipeDown' : 'fade');
+        // The roof sweeps a new color across on every beat of the drops: side to side in the
+        // first, opening from the middle and closing in the second.
+        if (bar >= 12 && bar < 30) {
+          const colors = [chord.color, chord.accent, whiter(chord.color, 0.35), chordOf(bar + 1).color];
+          const dir: TransitionChoice = bar >= 24 ? (beat % 2 ? 'splitIn' : 'splitOut') : beat % 2 ? 'wipeLeft' : 'wipeRight';
+          sweep.add(b.roof.map((p) => p.key), n.t, BEAT, solid(colors[beat], bar >= 24 ? 0.7 : 0.95), { fadeIn: r4(BEAT * 0.22), transitionIn: dir, fadeOut: r4(BEAT * 0.7) });
+        }
         if (bar >= 12) pump.hit([{ key: YARD, x: 0.5 }], n.t, BEAT * 0.8, '#4d4d4d', 1, bar >= 24 ? 'splitOut' : kicks % 8 < 4 ? 'fade' : 'iris');
         n.pan = panOf(b.kick);
         kicks++;
         break;
       }
       case 'clap':
-        clap.hit(b.roof, n.t, BEAT * 0.5, whiter(chord.color, 0.5), 0.8, 'fade', 'splitOut');
+        clap.hit(b.roof, n.t, BEAT * 0.5, whiter(Math.round((n.t - at(bar)) / BEAT) === 1 ? chord.accent : chord.color, 0.5), 0.8, 'fade', 'splitOut');
         n.pan = 0;
         break;
       case 'snare': {
@@ -335,13 +370,13 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
       case 'hat': {
         if (bar >= 12) break;
         const p = half(b.hats, hatN++);
-        hats.hit(p, n.t, S16 * 0.95, '#a8d4ff', 0.55);
+        hats.hit(p, n.t, S16 * 0.95, whiter(hatN % 2 ? chord.accent : chord.color, 0.45), 0.6);
         n.pan = panOf(p);
         break;
       }
       case 'bass': {
         const p = half(b.hats, basses++);
-        bass.hit(p, n.t, Math.min(n.dur, S16 * 1.9), chord.color, bar >= 12 ? 1 : 0.7);
+        bass.hit(p, n.t, Math.min(n.dur, S16 * 1.9), basses % 4 === 0 ? chord.accent : chord.color, bar >= 12 ? 1 : 0.7);
         n.pan = panOf(p);
         break;
       }
@@ -352,23 +387,15 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         break;
       }
       case 'arp': {
-        const p = [bar >= 24 ? byPitch(b.all, note, 65, 88) : byPitch(b.ground, note, 53, 84)];
-        arp.hit(p, n.t, n.dur * 0.94, noteColor(note, bar >= 24 ? 0.85 : 1), n.vel + 0.3);
+        // In the second drop it runs up and down the roof, and along the ground with it.
+        const p = bar >= 24 ? [byPitch(b.keys, note, 69, 88), byPitch(b.ground, note, 69, 88)] : [byPitch(b.ground, note, 53, 84)];
+        arp.hit([...new Map(p.map((x) => [x.key, x])).values()], n.t, n.dur * 0.94, noteColor(note, bar >= 24 ? 0.85 : 1), n.vel + 0.3);
         n.pan = panOf(p);
         break;
       }
-      case 'pad': {
-        // Each chord wipes over the one before it, from the left and then from the right.
-        const first = bar === 0 || bar === 20;
-        pad.add(
-          b.roof.map((p) => p.key),
-          n.t - (first ? 0 : BEAT),
-          n.dur + (first ? 0 : BEAT),
-          fx('breathe', { palette: 'custom', colors: [chord.color], brightness: n.vel * 0.8, intensity: 0.35, speed: 0.6 }),
-          first ? { fadeIn: r4(BAR / 2) } : { transitionIn: bar % 2 ? 'wipeRight' : 'wipeLeft' }
-        );
+      case 'pad':
+        n.pan = 0;
         break;
-      }
       case 'stab': {
         // The finale: left, right, left, everything; then one last chord that closes in to the middle.
         const last = bar === 31;
@@ -383,22 +410,54 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         break;
     }
   }
+  // The build: the roof counts the beats, one key a beat, there and back.
+  if (b.keys.length > 1)
+    for (let k = 0; k < 16; k++) {
+      const n = b.keys.length;
+      const i = k % (2 * n - 2) < n ? k % (2 * n - 2) : 2 * n - 2 - (k % (2 * n - 2));
+      const chord = chordOf(4 + Math.floor(k / 4));
+      roll.hit([b.keys[i]], at(4, k), BEAT * 0.9, whiter(k % 2 ? chord.accent : chord.color, 0.3), 1);
+    }
+
+  // The roof's own color, a new one every bar, wiping in from one side and then the other.
+  for (let bar = 0; bar < 30; bar++) {
+    const effect = roofEffect(bar);
+    if (!effect) continue;
+    const section = SECTIONS.some((x) => x.bar === bar);
+    const overlap = bar === 0 || bar === 12 || bar === 24 ? 0 : section ? BEAT : BEAT / 2;
+    roof.add(b.roof.map((p) => p.key), at(bar) - overlap, BAR + overlap, effect, {
+      name: `${chordOf(bar).name}: ${effectName(effect.effect)}`,
+      ...(bar === 0 ? { fadeIn: r4(BAR / 2) } : overlap ? { transitionIn: bar === 20 ? 'dissolve' : bar % 2 ? 'wipeRight' : 'wipeLeft' } : {})
+    });
+  }
+
   // The beat of silence before each drop.
   blackout.add([YARD], at(11, 3), BEAT, solid('#000000', 1));
   blackout.add([YARD], at(23, 3, 2), BEAT / 2, solid('#000000', 1));
 
   // Each picture crosses over the one before it (overlap) so the new one is in on the downbeat.
+  // A tinted picture takes the chord's colors, a new set every bar, sweeping in over half a beat.
   for (const s of BED) {
     const ov = s.overlap ?? 0;
-    bed.add([YARD], s.from - ov, s.to - s.from + ov, s.effect, {
-      name: s.name,
-      ...(s.in ? { transitionIn: s.in } : {}),
-      ...(s.fadeIn ? { fadeIn: r4(s.fadeIn) } : {}),
-      ...(s.fadeOut ? { fadeOut: r4(s.fadeOut) } : {})
-    });
+    const more = { ...(s.fadeIn ? { fadeIn: r4(s.fadeIn) } : {}), ...(s.fadeOut ? { fadeOut: r4(s.fadeOut) } : {}) };
+    if (!s.tint) {
+      bed.add([YARD], s.from - ov, s.to - s.from + ov, s.effect, { name: s.name, ...(s.in ? { transitionIn: s.in } : {}), ...more });
+      continue;
+    }
+    for (let bar = Math.round(s.from / BAR); bar < Math.round(s.to / BAR); bar++) {
+      const first = at(bar) === s.from;
+      const o = first ? ov : BEAT / 2;
+      const c = chordOf(bar);
+      const turn = BAR_TURNS[bar % BAR_TURNS.length];
+      bed.add([YARD], at(bar) - o, BAR + o, { ...s.effect, palette: 'custom', colors: [c.color, c.accent, chordOf(bar + 1).color] }, {
+        name: `${s.name} (${c.name})`,
+        ...(first ? (s.in ? { transitionIn: s.in } : {}) : { transitionIn: turn }),
+        ...(first ? more : {})
+      });
+    }
   }
 
-  const layers = [blackout, flash, stabs, kick, clap, roll, lead, arp, bass, hats, pad, pump, bed];
+  const layers = [blackout, flash, stabs, kick, clap, roll, lead, arp, sweep, roof, bass, hats, pump, bed];
   const sequence: Sequence = {
     id: '',
     name,

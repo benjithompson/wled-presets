@@ -44,7 +44,7 @@ const level = (stage: ReturnType<typeof buildStage>, out: Float32Array, id: stri
 };
 
 describe('the showcase', () => {
-  it('is a valid 60-second sequence to a beat, and only its pictures and pads cross over', () => {
+  it('is a valid 60-second sequence to a beat, and only its pictures and the roof colors cross over', () => {
     for (const layout of [yard(), sampleLayout(), { ...sampleLayout(), fixtures: [] }]) {
       const { sequence } = showcase(layout);
       expect(sequenceInput.safeParse(sequence).success).toBe(true);
@@ -53,7 +53,7 @@ describe('the showcase', () => {
       expect(sequence.markers.map((m) => m.label)).toContain('Drop');
       for (const t of sequence.tracks) {
         const crossing = neighbours(t).filter((n) => n.prev).length;
-        if (!['Yard 3-D', 'Pad (roof)'].includes(t.name)) expect(crossing, t.name).toBe(0);
+        if (!['Yard 3-D', 'Roof (color)'].includes(t.name)) expect(crossing, t.name).toBe(0);
       }
     }
   });
@@ -92,5 +92,32 @@ describe('the showcase', () => {
     const between = level(stage, at(drop + 1.4 * BEAT), 'tree-l');
     expect(onBeat).toBeGreaterThan(0.5);
     expect(onBeat).toBeGreaterThan(between + 0.2);
+  });
+
+  it('gives the roof a color of its own every bar, and sweeps a new one across it on every beat of the drops', () => {
+    const layout = yard();
+    const { sequence } = showcase(layout);
+    const roof = sequence.tracks.find((t) => t.name === 'Roof (color)')!.clips;
+    for (let bar = 0; bar < 30; bar++) {
+      const mid = (bar + 0.5) * 4 * BEAT;
+      expect(roof.filter((c) => c.start <= mid && c.start + c.duration > mid).length, `bar ${bar}`).toBe(1);
+    }
+    expect(new Set(roof.map((c) => c.effect.colors!.join())).size).toBeGreaterThanOrEqual(4);
+
+    const drop = 12 * 4 * BEAT;
+    const { stage, frames } = play(layout, drop + 9 * BEAT);
+    const at = (t: number) => frames.reduce((a, f) => (Math.abs(f.t - t) < Math.abs(a.t - t) ? f : a)).out;
+    const color = (out: Float32Array) => {
+      const f = stage.fixtures.find((x) => x.id === 'roof')!;
+      const c = [0, 0, 0];
+      for (let i = f.offset; i < f.offset + f.count; i++) for (let k = 0; k < 3; k++) c[k] += out[i * 3 + k] / f.count;
+      const m = Math.max(...c);
+      return { level: m, hue: c.map((x) => x / m) };
+    };
+    // After the drop's first flash: each beat, a bright roof in a color unlike the beat before.
+    const beats = [2, 3, 4, 5, 6, 7, 8].map((k) => color(at(drop + (k + 0.4) * BEAT)));
+    for (const b of beats) expect(b.level).toBeGreaterThan(0.35);
+    const changes = beats.slice(1).filter((b, i) => Math.hypot(...b.hue.map((x, k) => x - beats[i].hue[k])) > 0.3).length;
+    expect(changes).toBeGreaterThanOrEqual(5);
   });
 });
