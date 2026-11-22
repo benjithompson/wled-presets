@@ -72,16 +72,12 @@ interface Link {
   probing: boolean;
   inflight: boolean;
   lastHttp: number;
-  /** Whether the device was on before we took over (null: not known yet; see wake). */
-  wasOn: boolean | null;
-  /** Done once wasOn is known and a device that was off has been told to switch on. */
+  /** Done once a device that was off has been told to switch on (see wake). */
   woke: Promise<void>;
   /** Done once the last HTTP frame has reached the device (or failed to). */
   flight: Promise<void>;
   /** The device as it was at its last frame (an admin may switch it on or off meanwhile). */
   device: DeviceTarget;
-  /** Whether an admin had switched the device off when the stream started (see DeviceTarget). */
-  offHere: boolean;
   idleTimer: NodeJS.Timeout | null;
   note: string;
   /** Smoothed time for one HTTP frame to reach the device, in ms. */
@@ -133,7 +129,7 @@ export class LightSender {
     const now = Date.now();
     let link = this.links.get(d.id);
     if (!link) {
-      link = { mode: 'checking', startedAt: now, lastFrame: now, probing: false, inflight: false, lastHttp: 0, wasOn: null, woke: Promise.resolve(), flight: Promise.resolve(), device: d, offHere: !!d.switchedOff, idleTimer: null, httpMs: 80, sentAt: 0, note: 'Checking that real-time UDP (DDP) reaches the device.' };
+      link = { mode: 'checking', startedAt: now, lastFrame: now, probing: false, inflight: false, lastHttp: 0, woke: Promise.resolve(), flight: Promise.resolve(), device: d, idleTimer: null, httpMs: 80, sentAt: 0, note: 'Checking that real-time UDP (DDP) reaches the device.' };
       link.woke = this.wake(d, link);
       // We may have told the device to ignore real-time data a moment ago (see end()); a new
       // stream must undo that, or the device would keep ignoring it.
@@ -196,8 +192,8 @@ export class LightSender {
 
   /**
    * Gives back every device that gets frames over HTTP now (unfreezes its effect), and
-   * switches off again a device that was off before the frames. Call it before the server
-   * stops; otherwise such a device would stay frozen on the last frame, or on.
+   * switches off again a device an admin switched off (an editor's preview lit it). Call it
+   * before the server stops; otherwise such a device would stay frozen on the last frame, or on.
    */
   async release(devices: DeviceTarget[]) {
     await Promise.all(
@@ -268,7 +264,7 @@ export class LightSender {
       link.idleTimer = null;
       if (Date.now() - link.lastFrame < IDLE_MS) return this.armIdle(d, link);
       this.links.delete(d.id);
-      // UDP streams end by themselves, but a device switched on for them goes off again. An
+      // UDP streams end by themselves, but a device an admin switched off goes off again. An
       // HTTP stream gives the device back: unfreeze the effect.
       if (link.mode === 'http') this.giveBack(link.device, link);
       else if (!this.onAfter(link)) this.giveBack(link.device, link, false);
@@ -277,31 +273,35 @@ export class LightSender {
   }
 
   /**
-   * A device that is off (switched off in WLED, or by an admin here) would not show the
-   * frames: it is switched on for them, and off again when they end (see giveBack).
+   * A device that is off (switched off by an admin here, for an editor's preview, or a moment
+   * before the app hears that it was switched on) would not show the frames: it is switched on
+   * for them.
    */
   private async wake(d: DeviceTarget, link: Link) {
     const recent = this.gaveBack.get(d.id);
-    if (recent && Date.now() - recent.at < 10_000) link.wasOn = recent.on;
+    let on: boolean;
+    if (recent && Date.now() - recent.at < 10_000) on = recent.on;
     else {
       const s = await wled.state(d);
-      link.wasOn = s.ok ? s.data.on !== false : true;
+      on = s.ok ? s.data.on !== false : true;
     }
-    if (!link.wasOn && this.links.get(d.id) === link) await wled.setState(d, { on: true }, 1500);
+    if (!on && this.links.get(d.id) === link) await wled.setState(d, { on: true }, 1500);
   }
 
   /**
-   * Whether the device is on once the stream ends: off when an admin has switched it off (now),
-   * on when an admin switched it on since the stream started, else as it was before.
+   * Whether the device is on once the stream ends: as the admin's switch says now (see
+   * DeviceTarget.switchedOff), not as the device was when the stream started. A device switched
+   * off in WLED is switched off here too (see Lights.observe), so the switch knows. What the
+   * stream found could be stale (a switch-on still on its way, a device given back off a moment
+   * ago), and switching the device off by it left a device dark that the switch says is on: at
+   * the next start the app took that for a change made outside it, and switched it off for good.
    */
   private onAfter(link: Link): boolean {
-    if (link.device.switchedOff) return false;
-    if (link.offHere) return true;
-    return link.wasOn ?? true;
+    return !link.device.switchedOff;
   }
 
   /**
-   * Puts the device's own state back: on or off as it was before the stream. UDP: "lor: 1"
+   * Puts the device's own state back: on, or off when an admin has switched it off (see onAfter). UDP: "lor: 1"
    * tells WLED to show its own state until the real-time data has ended (it resets by
    * itself). HTTP: unfreeze the effect. `override: false`: the real-time data has ended already.
    *
