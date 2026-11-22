@@ -2,7 +2,7 @@
 // and how. The effects themselves are in shared/effects.ts.
 import type { ReactNode } from 'react';
 import { Copy, Plus, X } from 'lucide-react';
-import { defaultSettings, DIRECTIONS, effectDirection, EFFECTS, effectInfo, paletteColors, PALETTES, type Direction, type EffectId, type EffectSettings, type PaletteId } from '../../../../shared/effects.ts';
+import { defaultSettings, DIRECTIONS, effectDirection, EFFECTS, effectInfo, effectView, hasView, paletteColors, PALETTES, VIEWS, type Direction, type EffectId, type EffectSettings, type PaletteId, type View } from '../../../../shared/effects.ts';
 import { PropButton, PropNote, PropRow, PropSelect, PropSlider } from './props.tsx';
 
 /** The effect menu: the basics, effects along a string, and effects in space. */
@@ -61,9 +61,9 @@ export function EffectProps({
         groups={EFFECT_GROUPS}
         onChange={(id) => {
           if (!id) return onChange(undefined);
-          // A new effect starts with its own colors, unless you picked yours.
+          // A new effect starts with its own colors, unless you picked yours, and keeps the view from above.
           const next = defaultSettings(id);
-          onChange(effect ? { ...next, ...(ownColors(effect) ? { palette: 'custom', colors: effect.colors } : {}), brightness: effect.brightness } : next);
+          onChange(effect ? { ...next, ...(ownColors(effect) ? { palette: 'custom', colors: effect.colors } : {}), ...(effectView(effect) === 'top' && hasView(id) ? { view: 'top' } : {}), brightness: effect.brightness } : next);
         }}
       />
       {effect && info ? (
@@ -83,6 +83,15 @@ export function EffectProps({
           {info.intensity ? <PropSlider label={info.intensity} value={effect.intensity} onChange={(intensity) => set({ intensity })} /> : null}
           {info.size ? <PropSlider label={info.size} value={effect.size} onChange={(size) => set({ size })} /> : null}
           <PropSlider label="Brightness" value={effect.brightness} onChange={(brightness) => set({ brightness })} />
+          {hasView(effect.effect) ? (
+            <PropSelect<View>
+              label="View"
+              hint="From the street, the picture faces the street. From above, it lies flat over the yard, so it spreads over the lawn and the lights on the ground."
+              value={effectView(effect)}
+              options={Object.entries(VIEWS) as [View, string][]}
+              onChange={(view) => set({ view: view === 'top' ? 'top' : undefined })}
+            />
+          ) : null}
           {info.directions ? (
             <PropSelect<Direction>
               label="Direction"

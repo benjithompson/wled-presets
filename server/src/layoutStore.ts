@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { DIRECTIONS, EFFECTS, PALETTES, type Direction, type EffectId, type PaletteId } from '../../shared/effects.ts';
+import { DIRECTIONS, EFFECTS, PALETTES, VIEWS, type Direction, type EffectId, type PaletteId, type View } from '../../shared/effects.ts';
 import { deviceRuns, FIXTURE_KINDS, FIXTURE_PATTERNS, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, SIDES, SPINS, sampleLayout, TREE_SHAPES, UNITS, ZIGZAGS, type AerialPicture, type Design, type Fixture, type Layout } from '../../shared/layout.ts';
 import type { EffectSettings } from '../../shared/effects.ts';
 import type { LightType } from '../../shared/lights.ts';
@@ -28,7 +28,8 @@ export const effectSettingsSchema = z.object({
   size: unit,
   brightness: unit,
   reverse: z.boolean().optional(),
-  direction: z.enum(Object.keys(DIRECTIONS) as [Direction, ...Direction[]]).optional()
+  direction: z.enum(Object.keys(DIRECTIONS) as [Direction, ...Direction[]]).optional(),
+  view: z.enum(Object.keys(VIEWS) as [View, ...View[]]).optional()
 } satisfies SchemaOf<EffectSettings>);
 
 /** Effects by layout object id, or "<object id>#<segment>" for one segment of a line. */
