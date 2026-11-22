@@ -182,6 +182,21 @@
   8%, 25%, 41%, 58%, 75%, 100% { background-color: #1c1917; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.3); }
 }
 .mole-miss { animation: mole-miss 0.75s steps(1, end) forwards; }
+/* A slip (a whack at an empty hole): two quick red flashes, a shake, and the clock flashes red. */
+@keyframes mole-slip {
+  0% { background-color: #ef4444; box-shadow: 0 0 0 5px #ef4444, 0 0 30px #ef4444; transform: translateX(-6%); }
+  12.5% { background-color: #ef4444; box-shadow: 0 0 0 5px #ef4444, 0 0 30px #ef4444; transform: translateX(6%); }
+  25% { background-color: transparent; box-shadow: none; transform: translateX(0); }
+  50% { background-color: #ef4444; box-shadow: 0 0 0 5px #ef4444, 0 0 30px #ef4444; transform: translateX(-4%); }
+  62.5% { background-color: #ef4444; box-shadow: 0 0 0 5px #ef4444, 0 0 30px #ef4444; transform: translateX(4%); }
+  75%, 100% { background-color: transparent; box-shadow: none; transform: translateX(0); }
+}
+.mole-slip { animation: mole-slip 0.8s steps(1, end) forwards; }
+@keyframes mole-slip-clock {
+  0%, 50% { color: #f87171; text-shadow: 0 0 16px #ef4444; }
+  25%, 75%, 100% { color: inherit; }
+}
+.mole-slip-clock { animation: mole-slip-clock 0.8s steps(1, end) forwards; }
 /* A whack: a ring of rainbow that spins out of the hole and fades. */
 @keyframes mole-blast {
   0% { transform: scale(0.6) rotate(0deg); opacity: 1; }

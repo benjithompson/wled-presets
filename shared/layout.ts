@@ -1873,6 +1873,10 @@ export interface MoleBoard {
   /** Moles whacked this round, and moles that got away. */
   hits: number;
   missed: number;
+  /** Whacks at empty holes this round (slips): each costs seconds off the clock. */
+  slips: number;
+  /** The last slip, numbered so the phone flashes each new one red: its hole and the seconds it cost. Null once it is old. */
+  slip: { n: number; hole: string; cost: number } | null;
 }
 
 export interface MoleHole {

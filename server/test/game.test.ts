@@ -424,8 +424,9 @@ describe('game host', () => {
     expect(sizes.length).toBeGreaterThanOrEqual(25);
     expect(sizes.length).toBeLessThanOrEqual(32);
     expect(last!.length).toBe((450 + 180) * 3);
-    // Mostly dark: far smaller than the raw frame.
-    expect(Math.max(...sizes)).toBeLessThan(((450 + 180) * 3) / 3);
+    // Mostly dark: far smaller than the raw frame. (How small depends on where the game's random
+    // sparks and fireworks are, so a third of it was too tight: 633 of 630 bytes failed CI once.)
+    expect(Math.max(...sizes)).toBeLessThan(((450 + 180) * 3) / 2);
     // A still yard (a solid color scene) sends one frame, then nothing until it changes.
     ws.send(JSON.stringify({ type: 'stop' }));
     host.playEffects({ '*': { ...defaultSettings('solid'), brightness: 1 } });

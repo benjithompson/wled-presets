@@ -1,5 +1,5 @@
 import type { GameSetting, MoleBoard, MoleHole, Stage } from '../../../shared/layout.ts';
-import { ease, hex, hsv, lerp, mix, scale, WHITE, type Rgb } from '../../../shared/color.ts';
+import { ease, hex, hsv, lerp, mix, WHITE, type Rgb } from '../../../shared/color.ts';
 import { type Frame } from './frame.ts';
 import { COLORS, Flare, Sparks, Yard, type Part } from './kit.ts';
 import { Fx, Round } from './round.ts';
@@ -12,7 +12,9 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // burst of color: the bush swirls through the rainbow, a firework bursts over it, a shockwave runs
 // through the house and sparks fly along the roof. A mole that gets away flashes red three times
 // and is gone. A round lasts 45 seconds and speeds up as it goes; whacks in a row raise the
-// multiplier, and now and then a golden mole is worth five times as much.
+// multiplier, and now and then a golden mole is worth five times as much. A whack at an empty hole
+// (a slip: mashing, or a finger off target) costs seconds off the clock, and the hole and the
+// roof's clock flash red, so it pays to aim.
 //
 //   bushes and trees: the holes, each in its own color (never red: red means one got away).
 //   roof: the round's clock, a rainbow marquee that shrinks toward the middle as time runs out
@@ -48,6 +50,11 @@ const HURRY = 10;
 const OVER_LOCK = 2;
 /** At most this many holes (the biggest objects, if there are more). */
 const MAX_HOLES = 20;
+/** Seconds off the clock for a whack at an empty hole, on each level. */
+export const SLIP_COST: Record<Level, number> = { easy: 1, normal: 2, hard: 3 };
+/** Seconds of a slip's red flashes on the hole and the clock, and of its "−2 s" on the phone. */
+const SLIP_TIME = 0.5;
+const SLIP_NEWS = 1.2;
 
 /** How the round goes on each level: from its start to its end (it speeds up). */
 const PACE: Record<Level, { stay: [number, number]; gap: [number, number]; up: [number, number]; gold: number }> = {
@@ -88,6 +95,8 @@ interface Hole {
   gold: boolean;
   /** Seconds in this state. */
   t: number;
+  /** Seconds since a whack here missed (a slip), for its red flashes. */
+  slip: number;
   /** How long this mole stays up before it sinks. */
   stay: number;
   n: number;
@@ -106,6 +115,9 @@ export interface WhackPeek {
   timeLeft: number;
   bestStreak: number;
   onRoof: boolean;
+  /** Whacks at empty holes this round, and the seconds they cost. */
+  slips: number;
+  lost: number;
 }
 
 export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
@@ -121,9 +133,9 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   const objects = [...yard.bushes, ...yard.trees].sort((p, q) => q.count - p.count).slice(0, MAX_HOLES).sort((p, q) => p.x - q.x);
   const onRoof = objects.length < 3;
   const holes: Hole[] = [];
-  const hole = (h: Omit<Hole, 'id' | 'color' | 'state' | 'gold' | 't' | 'stay' | 'n' | 'points'>) => {
+  const hole = (h: Omit<Hole, 'id' | 'color' | 'state' | 'gold' | 't' | 'slip' | 'stay' | 'n' | 'points'>) => {
     const i = holes.length;
-    holes.push({ ...h, id: `h${i}`, color: hsv(HOLE_HUES[i % HOLE_HUES.length]), state: 'empty', gold: false, t: REST, stay: 1, n: 0, points: 0 });
+    holes.push({ ...h, id: `h${i}`, color: hsv(HOLE_HUES[i % HOLE_HUES.length]), state: 'empty', gold: false, t: REST, slip: 9, stay: 1, n: 0, points: 0 });
   };
   if (!onRoof) {
     for (const p of objects) hole({ kind: p.fixture.kind === 'tree' ? 'tree' : 'bush', x: p.x, y: (p.top + p.bottom) / 2, top: p.top, u: p.up, a: p.across, put: (k, c, v) => yard.add(p.offset + k, c, v), part: p, roofPos: n ? roof.above(p.x) : 0 });
@@ -172,6 +184,12 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   let hits = 0;
   let missed = 0;
   let golds = 0;
+  /** Whacks at empty holes this round, the seconds they cost, and the hole of the last one. */
+  let slips = 0;
+  let lost = 0;
+  let slipHole = '';
+  /** Seconds since the last slip. */
+  let sinceSlip = 9;
   let bestStreak = 0;
   let newBest = false;
   let nextMole = 0;
@@ -181,7 +199,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   let lastCount = -1;
 
   const elapsed = () => (round.phase === 'running' ? Math.min(ROUND, round.time) : 0);
-  const timeLeftExact = () => (round.phase === 'running' ? Math.max(0, ROUND - round.time) : round.phase === 'over' ? 0 : ROUND);
+  const timeLeftExact = () => (round.phase === 'running' ? Math.max(0, ROUND - round.time - lost) : round.phase === 'over' ? 0 : ROUND);
   const mult = () => 1 + MULT_AT.filter((m) => streak >= m).length;
   const upCount = () => holes.filter((h) => h.state === 'up').length;
 
@@ -189,12 +207,14 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     for (const h of holes) {
       h.state = 'empty';
       h.t = REST;
+      h.slip = 9;
       h.gold = false;
     }
   }
 
   function start() {
-    score = streak = hits = missed = golds = bestStreak = 0;
+    score = streak = hits = missed = golds = bestStreak = slips = lost = 0;
+    sinceSlip = 9;
     newBest = false;
     lastCount = -1;
     clearHoles();
@@ -262,11 +282,25 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     } else show.rocket([h.color, COLORS.gold], { size: 0.7, max: 2 });
   }
 
-  /** A whack at a hole with no mole in it: it only breaks the streak. */
+  /**
+   * A whack at a hole with no mole in it (a slip): the streak starts over, the clock loses a
+   * few seconds, and the hole, the roof's clock and the yard flash red. Another tap on a mole
+   * just whacked (a double tap) costs nothing.
+   */
   function bonk(h: Hole) {
+    if (h.state === 'hit') return;
     streak = 0;
     sinceWhack = 0;
-    show.flash(h.x, h.y, scale(h.color, 0.5), { size: 0.8, duration: 0.2 });
+    slips++;
+    lost += SLIP_COST[level];
+    slipHole = h.id;
+    sinceSlip = 0;
+    h.slip = 0;
+    // No mole pops up right where the slip was: it would look like the whack missed it.
+    if (h.state === 'empty') h.t = 0;
+    show.flash(h.x, h.y, RED, { size: 1.1, duration: 0.4 });
+    show.pulse(RED, 0.18);
+    if (n) sparks.burst(h.roofPos, [RED, COLORS.ember], 12, n * 0.12);
   }
 
   function getAway(h: Hole) {
@@ -319,8 +353,10 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
 
   function step(dt: number) {
     sinceWhack += dt;
+    sinceSlip += dt;
     for (const h of holes) {
       h.t += dt;
+      h.slip += dt;
       if (h.state === 'up' && h.t >= h.stay + SINK) {
         if (round.phase === 'running') getAway(h);
         else {
@@ -358,7 +394,7 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       // Never a dull moment: with no mole up, the next one comes sooner.
       if (upCount() === 0) nextMole = Math.min(nextMole, 0.25);
       if (nextMole <= 0 && upCount() < most && popMole()) nextMole = lerp(pace.gap[0], pace.gap[1], p) * (0.7 + Math.random() * 0.6);
-      if (round.time >= ROUND) endRound();
+      if (timeLeftExact() <= 0) endRound();
     } else if (round.phase === 'ready') {
       // A demo: moles pop up slowly in the yard to draw a crowd.
       nextMole -= dt;
@@ -377,6 +413,11 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   /** One hole: a mole popping up, standing, sinking; an explosion of color; three red flashes. */
   function drawHole(h: Hole) {
     const m = h.u.length;
+    // A slip here: two quick red flashes over whatever the hole shows.
+    if (h.slip < SLIP_TIME && Math.floor((h.slip / SLIP_TIME) * 4) % 2 === 0) {
+      for (let k = 0; k < m; k++) h.put(k, RED, 0.9);
+      return;
+    }
     if (h.state === 'empty') {
       // The hole's rim: its lowest lights glow faintly in its color, so kids can see where moles come from.
       for (let k = 0; k < m; k++) if (h.u[k] < 0.22) h.put(k, h.color, 0.05 + 0.03 * Math.sin(round.clock * 2 + h.x * 0.01));
@@ -454,6 +495,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       const bulb = Math.max(0, Math.cos((i / 5 - round.clock * speed * 2) * Math.PI * 2)) ** 6;
       let c = hsv(i / n * 1.5 - round.clock * 0.25);
       if (hurry) c = mix(COLORS.ember, COLORS.gold, 0.5 + 0.5 * Math.sin(round.clock * 6));
+      // A slip: the clock flashes red as it loses its seconds.
+      if (round.phase === 'running' && sinceSlip < SLIP_TIME && Math.floor((sinceSlip / SLIP_TIME) * 4) % 2 === 0) c = RED;
       if (round.phase === 'over') c = mix(hsv(i / n * 2 + round.clock * 0.5), COLORS.gold, 0.3);
       // The band's ends burn brighter, so the shrinking reads from the street.
       const end = Math.exp(-((((share - d) * half) / (stage.scale * 0.25)) ** 2));
@@ -531,7 +574,9 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
         streak: round.phase === 'running' ? streak : 0,
         best,
         hits,
-        missed
+        missed,
+        slips,
+        slip: slips && round.phase === 'running' && sinceSlip < SLIP_NEWS ? { n: slips, hole: slipHole, cost: SLIP_COST[level] } : null
       };
       const settings: GameSetting[] = [{ id: 'level', label: 'Speed', value: level, choices: LEVELS.map((l) => ({ value: l, label: LEVEL_NAMES[l] })) }];
       const common = { score, lives: null, goal: null, moles, keysHint: `${holes.length > 9 ? 'Keys 1–9 and 0' : `Keys 1–${holes.length}`} whack the holes, space to start` };
@@ -543,14 +588,18 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
         case 'running': {
           const m = mult();
           const message =
-            timeLeftExact() <= HURRY ? 'Hurry! The clock is running out!' : m >= 4 ? `MOLE MANIA! ×4 points!` : m > 1 ? `${streak} in a row! ×${m} points!` : hits ? 'Whack! Keep going!' : 'Whack the moles that pop up!';
+            sinceSlip < SLIP_NEWS
+              ? `Missed! −${SLIP_COST[level]} s. Aim for the moles!`
+              : timeLeftExact() <= HURRY ? 'Hurry! The clock is running out!' : m >= 4 ? `MOLE MANIA! ×4 points!` : m > 1 ? `${streak} in a row! ×${m} points!` : hits ? 'Whack! Keep going!' : 'Whack the moles that pop up!';
           return { ...common, phase: round.phase, message, button: 'WHACK', tone: 'go' };
         }
         case 'over':
           return {
             ...common,
             phase: round.phase,
-            message: newBest ? `New best: ${score}!` : `Time's up! ${score} points, ${hits} mole${hits === 1 ? '' : 's'} whacked${golds ? `, ${golds} golden` : ''}.`,
+            message: newBest
+              ? `New best: ${score}!`
+              : `Time's up! ${score} points, ${hits} mole${hits === 1 ? '' : 's'} whacked${golds ? `, ${golds} golden` : ''}${slips ? `, ${slips} slip${slips === 1 ? '' : 's'} (−${lost} s)` : ''}.`,
             button: round.canStart ? 'GO!' : '…',
             tone: round.canStart ? 'go' : 'wait',
             settings
@@ -558,6 +607,6 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
       }
     },
 
-    peek: () => ({ holes: holes.map((h) => ({ id: h.id, state: h.state, gold: h.gold, t: h.t, stay: h.stay })), phase: round.phase, timeLeft: timeLeftExact(), bestStreak, onRoof })
+    peek: () => ({ holes: holes.map((h) => ({ id: h.id, state: h.state, gold: h.gold, t: h.t, stay: h.stay })), phase: round.phase, timeLeft: timeLeftExact(), bestStreak, onRoof, slips, lost })
   };
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONTROL_ID, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { Frame } from '../src/game/frame.ts';
 import { bestScore, memoryScores, scoreboard, useScoreStore, Yard } from '../src/game/kit.ts';
-import { ROUND, whackGame } from '../src/game/whack.ts';
+import { ROUND, SLIP_COST, whackGame } from '../src/game/whack.ts';
 import { press as pressButton, setup as play } from './harness.ts';
 
 beforeEach(() => useScoreStore(memoryScores()));
@@ -107,6 +107,53 @@ describe('Whack-a-Mole', () => {
     expect(red).toBeGreaterThan(part.count / 2);
     run(0.8);
     expect(game.peek().holes.find((x) => x.id === left.id)!.state).not.toBe('miss');
+  });
+
+  it('takes seconds off the clock for a whack at an empty hole, and flashes it and the clock red', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const { game, frame, stage, press, nextMole, begin } = setup();
+    begin();
+    const h = nextMole();
+    press(h.id);
+    // Another tap on the mole just whacked (a double tap) costs nothing.
+    press(h.id);
+    expect(game.peek()).toMatchObject({ slips: 0, lost: 0 });
+    expect(game.status().moles!.streak).toBe(1);
+    const before = game.peek().timeLeft;
+    const holes = game.peek().holes;
+    const empty = holes.findIndex((x) => x.state === 'empty');
+    press(holes[empty].id);
+    expect(game.peek()).toMatchObject({ slips: 1, lost: SLIP_COST.normal });
+    expect(game.peek().timeLeft).toBeCloseTo(before - SLIP_COST.normal, 5);
+    const board = game.status().moles!;
+    expect(board).toMatchObject({ streak: 0, slips: 1, slip: { n: 1, hole: holes[empty].id, cost: 2 } });
+    expect(game.status().message).toMatch(/Missed! −2 s/);
+    // The hole's lights flash red.
+    game.update(1 / 60, frame);
+    const part = [...new Yard(stage).bushes, ...new Yard(stage).trees].sort((p, q) => p.x - q.x)[empty];
+    let red = 0;
+    for (let i = part.offset; i < part.offset + part.count; i++) if (frame.data[i * 3] > 0.5 && frame.data[i * 3 + 1] < 0.15) red++;
+    expect(red).toBe(part.count);
+    // The news goes after a moment; the count stays for the end of the round.
+    for (let i = 0; i < 90; i++) game.update(1 / 60, frame);
+    expect(game.status().moles!.slip).toBeNull();
+    expect(game.status().moles!.slips).toBe(1);
+  });
+
+  it('costs more on Hard, and slips can end the round early', () => {
+    const { game, run, press, begin } = setup();
+    game.setting!('level', 'hard');
+    begin();
+    // Mashing every empty hole: 3 s each.
+    for (let k = 0; k < 15 && game.status().phase === 'running'; k++) {
+      const empty = game.peek().holes.find((x) => x.state === 'empty');
+      if (empty) press(empty.id);
+      run(0.05);
+    }
+    expect(game.peek().lost).toBeGreaterThanOrEqual(ROUND - 1);
+    run(0.1);
+    expect(game.status().phase).toBe('over');
+    expect(game.status().message).toMatch(/slips \(−\d+ s\)/);
   });
 
   it('still counts a whack while the mole ducks back down (a late tap over Wi-Fi)', () => {
