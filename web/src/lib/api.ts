@@ -182,6 +182,8 @@ export const api = {
   sequence: (id: string) => request<Sequence>(`/api/admin/sequences/${encodeURIComponent(id)}`),
   createSequence: (s: Omit<Sequence, 'id' | 'updatedAt'>) => request<Sequence>('/api/admin/sequences', { body: s }),
   saveSequence: ({ id, updatedAt: _u, ...s }: Sequence) => request<Sequence>(`/api/admin/sequences/${encodeURIComponent(id)}`, { method: 'PUT', body: s }),
+  /** Checks a sequence (one opened from a file) without saving it. */
+  checkSequence: (s: unknown) => request<Sequence>('/api/admin/sequences/check', { body: s }),
   deleteSequence: (id: string) => request(`/api/admin/sequences/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // inFront: sent only by an editor window in front (see useInFront).
   previewSequence: (req: SequencePreviewRequest) => request<{ devices: string[] }>('/api/admin/sequence-preview', { method: 'POST', body: { active: true, inFront: true, ...req } }),

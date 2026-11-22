@@ -18,8 +18,10 @@ import {
   ChevronDown,
   Clapperboard,
   Copy,
+  Download,
   FilePlus2,
   Flag,
+  FolderOpen,
   Lightbulb,
   LightbulbOff,
   Magnet,
@@ -56,6 +58,7 @@ import { YardView } from '../../../yard/YardView.tsx';
 import { OVERVIEW } from '../AdminLayout.tsx';
 import { PaletteSwatch } from '../effectProps.tsx';
 import { AudioEngine, Clock } from './audio.ts';
+import { openSequenceFile, saveSequenceFile } from './sequenceFiles.ts';
 import { findClip, fmtTime, makeClip, removeClips, round, splitClips, targetsLabel, type Selection } from './model.ts';
 import { Browser, Inspector } from './panels.tsx';
 import { MAX_PPS, MIN_PPS, Timeline, useClockTick, type TimelineApi } from './Timeline.tsx';
@@ -139,6 +142,7 @@ export function SequencePage() {
   const audio = useMemo(() => new AudioEngine(), []);
   const timelineApi = useRef<TimelineApi | null>(null);
   const audioInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const audioTarget = useRef<string | null>(null);
   const clipboard = useRef<{ clips: (SeqClip & { track: string })[]; t0: number } | null>(null);
 
@@ -276,6 +280,34 @@ export function SequencePage() {
       toast.success('Showcase ready: press play. Save it to keep it.', { id });
     } catch (e) {
       toast.error(`The showcase plays without music: ${errorText(e)}`, { id });
+    }
+  }
+
+  /** Downloads the sequence as it is now, with its music, to keep it or open it on another site. */
+  async function saveToFile() {
+    const cur = seqRef.current;
+    if (!cur) return;
+    const id = toast.loading('Saving to a file…');
+    try {
+      const { name, missing } = await saveSequenceFile(cur);
+      if (missing.length) toast.warning(`${name} saved without ${missing.join(', ')}: that audio is no longer uploaded.`, { id });
+      else toast.success(`${name} saved to your downloads`, { id });
+    } catch (e) {
+      toast.error(errorText(e), { id });
+    }
+  }
+
+  /** Opens a sequence file as a new, unsaved sequence; its music is uploaded. */
+  async function openFile(file: File) {
+    const id = toast.loading(`Opening ${file.name}…`);
+    try {
+      const { sequence, unknownObjects } = await openSequenceFile(file, layout);
+      open(sequence, false);
+      const n = unknownObjects.length;
+      if (n) toast.warning(`“${sequence.name}” opened. ${n} object${n === 1 ? '' : 's'} it lights ${n === 1 ? 'is' : 'are'} not in this yard (${unknownObjects.slice(0, 4).join(', ')}${n > 4 ? '…' : ''}): those clips light nothing. Save it to keep it.`, { id, duration: 10_000 });
+      else toast.success(`“${sequence.name}” opened. Save it to keep it.`, { id });
+    } catch (e) {
+      toast.error(`Couldn't open ${file.name}: ${errorText(e)}`, { id });
     }
   }
 
@@ -698,6 +730,8 @@ export function SequencePage() {
           onOpen={(id) => guard(() => void loadById(id))}
           onNew={() => guard(() => open(emptySequence(`Sequence ${list.sequences.length + 1}`), false))}
           onShowcase={layout ? () => guard(() => void newShowcase()) : undefined}
+          onOpenFile={() => fileInput.current?.click()}
+          onSaveFile={() => void saveToFile()}
           onDuplicate={() => open({ ...seq, id: '', name: `${seq.name} copy` }, false)}
           onDelete={() =>
             setConfirm({ title: `Delete “${seq.name}”?`, body: 'Scenes that play it stop playing it. Audio files stay uploaded.', label: 'Delete sequence', danger: true, run: () => void remove() })
@@ -832,6 +866,18 @@ export function SequencePage() {
           const files = [...(e.target.files ?? [])];
           e.target.value = '';
           if (files.length) void addAudioFiles(files, audioTarget.current, clock.time());
+        }}
+      />
+
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".wledseq,.json,application/json"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) guard(() => void openFile(file));
         }}
       />
 
@@ -1096,6 +1142,8 @@ function SequenceMenu({
   onOpen,
   onNew,
   onShowcase,
+  onOpenFile,
+  onSaveFile,
   onDuplicate,
   onDelete
 }: {
@@ -1106,6 +1154,10 @@ function SequenceMenu({
   onNew: () => void;
   /** A 60-second show to a beat, made for this yard. */
   onShowcase?: () => void;
+  /** A sequence saved to a file, opened as a new one. */
+  onOpenFile: () => void;
+  /** This sequence, with its music, to a file. */
+  onSaveFile: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
@@ -1144,6 +1196,12 @@ function SequenceMenu({
           <Sparkles /> New showcase (60 s, to a beat)
         </button>
       ) : null}
+      <button type="button" role="menuitem" className={item} onClick={() => (onClose(), onOpenFile())} title="Open a sequence saved to a file (.wledseq), with its music, as a new sequence">
+        <FolderOpen /> Open from file…
+      </button>
+      <button type="button" role="menuitem" className={item} onClick={() => (onClose(), onSaveFile())} title="Save this sequence, as it is now, to a file with its music: keep it, or open it on another site">
+        <Download /> Save to file
+      </button>
       <button type="button" role="menuitem" className={item} onClick={() => (onClose(), onDuplicate())}>
         <Copy /> Duplicate this one
       </button>
