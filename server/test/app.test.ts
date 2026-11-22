@@ -520,6 +520,16 @@ describe('sequences', () => {
     expect((await t.call('GET', '/api/admin/overview')).json.scenes[0].sequenceId).toBeUndefined();
   });
 
+  it('checks a sequence opened from a file without saving it', async () => {
+    await login();
+    const ok = await t.call('POST', '/api/admin/sequences/check', { ...body, id: 'elsewhere', updatedAt: 'x' });
+    expect(ok.status).toBe(200);
+    expect(ok.json).toMatchObject({ id: '', name: 'Show', tracks: body.tracks, markers: body.markers });
+    expect(ok.json.updatedAt).toBeUndefined();
+    expect((await t.call('GET', '/api/admin/sequences')).json.sequences).toEqual([]);
+    expect((await t.call('POST', '/api/admin/sequences/check', { ...body, duration: -1 })).status).toBe(400);
+  });
+
   it('refuses a preview on the lights from an editor that is not in front (an older page)', async () => {
     await login();
     const req = { active: true, sequence: body, time: 0, playing: false };

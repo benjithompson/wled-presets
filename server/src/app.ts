@@ -741,6 +741,9 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     return c.json(seq, 201);
   });
 
+  // A sequence opened from a file: checked as one being saved, but not saved.
+  admin.post('/sequences/check', async (c) => c.json({ ...(await body(c, sequenceInput)), id: '' }));
+
   admin.put('/sequences/:id', async (c) => {
     const prev = db.getSequence(c.req.param('id'));
     if (!prev) throw new HttpError(404, 'Unknown sequence');
