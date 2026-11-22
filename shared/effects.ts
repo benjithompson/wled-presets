@@ -23,6 +23,18 @@ export const DIRECTIONS: Record<Direction, string> = {
   in: 'From the edges in'
 };
 
+/**
+ * Where a 3-D effect's picture is seen from. Front: it faces the street, as you see the house.
+ * Top: it lies flat over the yard, as seen from above, so it spreads over the lawn, the paths and
+ * the bushes on the ground (its "up" points to the house, and its depth is the height).
+ */
+export type View = 'front' | 'top';
+
+export const VIEWS: Record<View, string> = {
+  front: 'From the street',
+  top: 'From above'
+};
+
 /** The effect one object plays, and how. Every number is 0..1. */
 export interface EffectSettings {
   effect: EffectId;
@@ -40,6 +52,8 @@ export interface EffectSettings {
   reverse?: boolean;
   /** 3-D effects with a direction (see EffectInfo.directions). Default: the first one. */
   direction?: Direction;
+  /** 3-D effects with a view (see EffectInfo.view and hasView). Default: front. */
+  view?: View;
 }
 
 export interface EffectInfo {
@@ -66,6 +80,8 @@ export interface EffectInfo {
   directions?: Direction[];
   /** 3-D without directions: what "reverse" does. Left out: no reverse. */
   reverse?: string;
+  /** 3-D: false when seeing it from above changes nothing (its directions already go every way, or it is round). */
+  view?: false;
 }
 
 /** Every effect, by id, in the order the pickers list them. */
@@ -101,7 +117,8 @@ const EFFECT_INFO = {
     size: 'Band width',
     energy: 0.35,
     space: '3d',
-    directions: ['right', 'left', 'up', 'down', 'toward', 'away', 'out', 'in']
+    directions: ['right', 'left', 'up', 'down', 'toward', 'away', 'out', 'in'],
+    view: false
   },
   scanner: {
     name: 'Laser scan',
@@ -111,7 +128,8 @@ const EFFECT_INFO = {
     size: 'Beam width',
     energy: 0.6,
     space: '3d',
-    directions: ['right', 'up', 'toward', 'out']
+    directions: ['right', 'up', 'toward', 'out'],
+    view: false
   },
   bonfire: { name: 'Bonfire', description: 'Fire that climbs from the ground: bushes burn, flames lick up the walls, sparks rise into the night.', palette: 'fire', intensity: 'Flame height', size: 'Flame size', energy: 0.6, space: '3d', reverse: 'Flames hang from the top' },
   vortex: { name: 'Vortex', description: 'Spiral arms spin: around the trunk of a tree, or like a pinwheel on a flat object or the house.', palette: 'christmas', intensity: 'Arms', size: 'Twist', energy: 0.5, space: '3d', reverse: 'Spin the other way' },
@@ -123,7 +141,8 @@ const EFFECT_INFO = {
     size: 'Ring width',
     energy: 0.65,
     space: '3d',
-    directions: ['out', 'in']
+    directions: ['out', 'in'],
+    view: false
   },
   nebula: {
     name: 'Nebula',
@@ -133,7 +152,8 @@ const EFFECT_INFO = {
     size: 'Cloud size',
     energy: 0.25,
     space: '3d',
-    directions: ['right', 'left', 'up', 'down', 'toward', 'away']
+    directions: ['right', 'left', 'up', 'down', 'toward', 'away'],
+    view: false
   },
   snowfall: { name: 'Snowfall', description: 'Flakes drift down past the lights; where they touch, the lights sparkle and keep a soft glow that melts away.', palette: 'snow', intensity: 'Snow', size: 'Flake size', energy: 0.25, space: '3d', reverse: 'Rise like bubbles' },
   fireflies: { name: 'Fireflies', description: 'Glowing orbs wander lazily through the yard, from bush to roof, and blink on and off.', palette: 'aurora', intensity: 'Fireflies', size: 'Glow size', energy: 0.3, space: '3d' },
@@ -221,6 +241,17 @@ export function paletteColors(s: Pick<EffectSettings, 'palette' | 'colors'>): st
 export function defaultSettings(effect: EffectId): EffectSettings {
   const info = effectInfo(effect);
   return { effect, palette: info.palette, ...(info.colors ? { colors: [...info.colors] } : {}), speed: 0.5, intensity: 0.5, size: 0.5, brightness: 0.8 };
+}
+
+/** True for 3-D effects that can be seen from the front or from above. */
+export const hasView = (id: EffectId) => {
+  const info = effectInfo(id);
+  return info.space === '3d' && info.view !== false;
+};
+
+/** The view a 3-D effect plays in now (its setting; front for effects without one). */
+export function effectView(s: Pick<EffectSettings, 'effect' | 'view'>): View {
+  return s.view === 'top' && hasView(s.effect) ? 'top' : 'front';
 }
 
 /** The direction a 3-D effect moves in now (its setting, or its default). */
@@ -543,6 +574,17 @@ export function stageSpace(stage: Pick<Stage, 'positions3'>, leds: ArrayLike<num
   }
   sp.pitch = estimatePitch(sp);
   return sp;
+}
+
+/**
+ * The same LEDs as seen from above (the view "top"): the effect's x stays left to right, its y
+ * (up in the picture) runs toward the house, and its z (toward the viewer) is the height.
+ */
+export function topSpace(sp: Space): Space {
+  const n = sp.x.length;
+  const y = new Float32Array(n);
+  for (let i = 0; i < n; i++) y[i] = -sp.z[i];
+  return { x: sp.x, y, z: sp.y, ex: sp.ex, ey: sp.ez, ez: sp.ey, pitch: sp.pitch };
 }
 
 /** The median distance from an LED to its nearest neighbour, from a sample of LEDs. */
@@ -2318,8 +2360,11 @@ export class EffectRunner {
   private palKey = '';
   private buf: Float32Array;
   private space: Space;
+  /** The space seen from above (made when the view "top" first plays). */
+  private top: Space | null = null;
   private along: Float32Array | null = null;
   private alongDir: Direction | null = null;
+  private alongView: View | null = null;
 
   constructor(effect: EffectId, n: number, seed = 1, space?: Space) {
     this.n = n;
@@ -2334,6 +2379,7 @@ export class EffectRunner {
   setSpace(space: Space) {
     if (space.x.length !== this.n || space === this.space) return;
     this.space = space;
+    this.top = null;
     this.along = null;
   }
 
@@ -2350,9 +2396,12 @@ export class EffectRunner {
       this.palKey = key;
     }
     const dir = effectDirection(s);
-    if (!this.along || this.alongDir !== dir) {
-      this.along = directionCoord(this.space, dir);
+    const view = effectView(s);
+    const space = view === 'top' ? (this.top ??= topSpace(this.space)) : this.space;
+    if (!this.along || this.alongDir !== dir || this.alongView !== view) {
+      this.along = directionCoord(space, dir);
       this.alongDir = dir;
+      this.alongView = view;
     }
     const pace = paceOf(s);
     const step = Math.min(0.1, Math.max(0, dt)) * pace;
@@ -2364,7 +2413,7 @@ export class EffectRunner {
       intensity: clamp01(s.intensity),
       size: 2 ** ((clamp01(s.size) - 0.5) * 3),
       pal: this.pal,
-      space: this.space,
+      space,
       dir,
       along: this.along,
       reverse: !!s.reverse

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSettings, deviceKey, effectDirection, keyDevice, EFFECTS, effectObjects, EffectRunner, EffectScene, effectKey, effectsLook, effectTarget, isSpatial, layoutEffects, stageSpace, withEffects, YARD, type EffectSettings } from '../../shared/effects.ts';
+import { defaultSettings, deviceKey, effectDirection, keyDevice, EFFECTS, effectObjects, EffectRunner, EffectScene, effectKey, effectsLook, effectTarget, effectView, hasView, isSpatial, layoutEffects, stageSpace, withEffects, YARD, type EffectSettings, type Space } from '../../shared/effects.ts';
 import { buildStage, extendLine, fromLedRange, insertPoint, mapSegmentEffects, sampleLayout, segmentLeds, segmentsAfterRemove, type Layout } from '../../shared/layout.ts';
 import { GameHost } from '../src/game/host.ts';
 import { FramePipeline } from '../src/framePipeline.ts';
@@ -272,7 +272,7 @@ describe('3-D effects and the whole yard', () => {
     const out = new Float32Array(stage.pixelCount * 3);
     for (const { id } of EFFECTS.filter((e) => e.space === '3d')) {
       for (const k of [0, 1]) {
-        const s: EffectSettings = { ...defaultSettings(id), intensity: k, size: 1 - k, reverse: k === 1, brightness: 1 };
+        const s: EffectSettings = { ...defaultSettings(id), intensity: k, size: 1 - k, reverse: k === 1, view: k === 1 ? 'top' : undefined, brightness: 1 };
         const scene = new EffectScene(stage, layout, { [YARD]: s });
         let peak = 0;
         let bad = 0;
@@ -337,6 +337,38 @@ describe('3-D effects and the whole yard', () => {
     expect(effectDirection({ effect: 'scanner', direction: 'left' })).toBe('right');
     expect(isSpatial('nebula')).toBe(true);
     expect(isSpatial('aurora')).toBe(false);
+  });
+
+  it('lay a 3-D picture flat over the yard when seen from above', () => {
+    // A ring of lights on the ground, around the middle of the lawn.
+    const n = 64;
+    const x = new Float32Array(n);
+    const z = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = 0.5 * Math.cos((i / n) * Math.PI * 2);
+      z[i] = 0.5 * Math.sin((i / n) * Math.PI * 2);
+    }
+    const ground: Space = { x, y: new Float32Array(n), z, ex: 1, ey: 0, ez: 1, pitch: 0.05 };
+    // The same ring standing up, facing the street, with the house at the top.
+    const upright: Space = { x, y: z.map((v) => -v), z: new Float32Array(n), ex: 1, ey: 1, ez: 0, pitch: 0.05 };
+    const s: EffectSettings = { ...defaultSettings('kaleidoscope'), brightness: 1 };
+    const play = (sp: Space, v: EffectSettings) => {
+      const r = new EffectRunner('kaleidoscope', n, 3, sp);
+      for (let f = 0; f < 20; f++) r.render(1 / 60, v);
+      return Array.from(r.render(1 / 60, v));
+    };
+    const above = play(ground, { ...s, view: 'top' });
+    // From above, the ground ring shows what the upright ring shows from the street.
+    expect(above).toEqual(play(upright, s));
+    expect(above).not.toEqual(play(ground, s));
+    // Effects whose directions already go every way, and 1-D ones, have no view.
+    expect([hasView('kaleidoscope'), hasView('vortex'), hasView('wash'), hasView('shockwave'), hasView('aurora')]).toEqual([true, true, false, false, false]);
+    expect(effectView({ effect: 'wash', view: 'top' })).toBe('front');
+    expect(effectView({ effect: 'vortex', view: undefined })).toBe('front');
+    // The view is saved, and only these two.
+    const saved = layoutSchema.safeParse({ ...layout, effect: { ...s, view: 'top' } });
+    expect(saved.success && saved.data.effect?.view).toBe('top');
+    expect(layoutSchema.safeParse({ ...layout, effect: { ...s, view: 'side' } }).success).toBe(false);
   });
 });
 
