@@ -10,9 +10,11 @@
 import { clamp01 } from './color.ts';
 import { effectObjects, effectTarget, isSpatial, RunSet, YARD, type EffectSettings } from './effects.ts';
 import { activeLeds, isLine, segmentLeds, type Layout, type Stage } from './layout.ts';
+import { hashUnit, LedPlaces, pickTransition, transitionCoord, transitionWeights, unionBox, type Box, type TransitionChoice, type TransitionId } from './transitions.ts';
+
+export { TRANSITION_CHOICES, TRANSITIONS, transitionInfo, type TransitionChoice, type TransitionId } from './transitions.ts';
 
 export type BlendMode = 'normal' | 'add' | 'lighten' | 'multiply';
-export type TransitionId = 'fade' | 'dip' | 'wipeRight' | 'wipeLeft' | 'wipeUp' | 'wipeDown' | 'iris' | 'dissolve';
 
 export const BLEND_MODES: { id: BlendMode; name: string; description: string }[] = [
   { id: 'normal', name: 'Normal', description: 'Covers the layers below where it lights (dark parts of the effect cover too).' },
@@ -21,18 +23,6 @@ export const BLEND_MODES: { id: BlendMode; name: string; description: string }[]
   { id: 'multiply', name: 'Multiply (mask)', description: 'Tints and darkens the layers below with its colors: dark parts hide them.' }
 ];
 
-export const TRANSITIONS: { id: TransitionId; name: string; description: string }[] = [
-  { id: 'fade', name: 'Crossfade', description: 'One effect fades into the other.' },
-  { id: 'dip', name: 'Dip to black', description: 'Fades out to dark, then the next fades in.' },
-  { id: 'wipeRight', name: 'Wipe →', description: 'A soft edge sweeps from left to right across the yard.' },
-  { id: 'wipeLeft', name: 'Wipe ←', description: 'A soft edge sweeps from right to left.' },
-  { id: 'wipeUp', name: 'Wipe ↑', description: 'A soft edge rises from the ground up.' },
-  { id: 'wipeDown', name: 'Wipe ↓', description: 'A soft edge comes down from the top.' },
-  { id: 'iris', name: 'Iris', description: 'A circle opens from the middle out.' },
-  { id: 'dissolve', name: 'Sparkle dissolve', description: 'LEDs switch over one by one, in random order.' }
-];
-
-export const transitionInfo = (id: TransitionId | undefined) => TRANSITIONS.find((t) => t.id === id) ?? TRANSITIONS[0];
 export const blendInfo = (id: BlendMode | undefined) => BLEND_MODES.find((b) => b.id === id) ?? BLEND_MODES[0];
 
 export interface SeqClip {
@@ -46,9 +36,9 @@ export interface SeqClip {
   /** Seconds to fade in and out (when no other clip overlaps that end). */
   fadeIn?: number;
   fadeOut?: number;
-  /** How it comes in (also over an overlapping clip before it on the layer), and how it goes out. */
-  transitionIn?: TransitionId;
-  transitionOut?: TransitionId;
+  /** How it comes in (also over an overlapping clip before it on the layer), and how it goes out. "random": a different one each time round. */
+  transitionIn?: TransitionChoice;
+  transitionOut?: TransitionChoice;
   /** A label of your own. */
   name?: string;
 }
@@ -185,68 +175,6 @@ export function targetLeds(stage: Stage, layout: Pick<Layout, 'fixtures'>, targe
   return out;
 }
 
-// ---------- Transitions ----------
-
-/**
- * How much of an outgoing and an incoming clip shows at one LED, `p` (0..1) of the way through a
- * transition: [color out, cover out, color in, cover in]. Color weights mix the colors; cover
- * weights say how much the layer covers the layers below (so a fade to nothing shows them).
- * `s` is where the LED is for wipes (0..1 along the wipe), or a random number for a dissolve.
- */
-function mix(type: TransitionId, p: number, s: number, out: Float32Array) {
-  let m: number;
-  if (type === 'dip') {
-    out[0] = Math.max(0, 1 - 2 * p);
-    out[1] = Math.min(1, 2 - 2 * p);
-    out[2] = Math.max(0, 2 * p - 1);
-    out[3] = Math.min(1, 2 * p);
-    return;
-  }
-  if (type === 'fade') m = p;
-  else {
-    // A soft edge that crosses every LED between p = 0 and p = 1.
-    const W = type === 'dissolve' ? 0.06 : 0.18;
-    const x = (p * (1 + W) - s) / W;
-    m = x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
-  }
-  out[0] = out[1] = 1 - m;
-  out[2] = out[3] = m;
-}
-
-/** Where an LED is for a transition, 0..1 inside a box of the yard (x right, y up). */
-function transitionCoord(type: TransitionId, ux: number, uy: number, rnd: number, box: Box): number {
-  const w = box[1] - box[0];
-  const h = box[3] - box[2];
-  const fx = w > 1e-6 ? (ux - box[0]) / w : 0.5;
-  const fy = h > 1e-6 ? (uy - box[2]) / h : 0.5;
-  switch (type) {
-    case 'wipeRight':
-      return fx;
-    case 'wipeLeft':
-      return 1 - fx;
-    case 'wipeUp':
-      return fy;
-    case 'wipeDown':
-      return 1 - fy;
-    case 'iris': {
-      // A circle in the front view, from the middle of the box.
-      const cx = (box[0] + box[1]) / 2;
-      const cy = (box[2] + box[3]) / 2;
-      const R = Math.hypot(w, h) / 2 || 1;
-      return Math.min(1, Math.hypot(ux - cx, uy - cy) / R);
-    }
-    case 'dissolve':
-      return rnd;
-    default:
-      return 0;
-  }
-}
-
-/** A box in the yard: [x0, x1, y0, y1], in 0..1 across the whole yard (y up). */
-type Box = [number, number, number, number];
-
-const unionBox = (a: Box, b: Box): Box => [Math.min(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[3], b[3])];
-
 // ---------- Playing ----------
 
 /** The clips that play at time `t`, top layer first, and how far each has come in. */
@@ -291,7 +219,7 @@ export interface ActiveClip {
   /** 0..1: how far it has come in (1: fully in, below 1 while it fades in or crosses over). */
   level: number;
   /** Set while it crosses over from the clip before it: that clip, and how far (0..1). */
-  from?: { clipId: string; p: number; transition: TransitionId };
+  from?: { clipId: string; p: number; transition: TransitionChoice };
   fixtures: string[];
 }
 
@@ -307,18 +235,18 @@ export class SequencePlayer {
   private clips = new Map<string, ClipState>();
   /** Clips by layer, with their neighbours, rebuilt when the sequence changes. */
   private order: { track: SeqTrack; items: ReturnType<typeof neighbours> }[] = [];
-  /** Where each stage LED is in the whole yard (0..1, y up), and a random number per LED. */
-  private ux = new Float32Array(0);
-  private uy = new Float32Array(0);
-  private rnd = new Float32Array(0);
+  /** Where each stage LED is, for transitions. */
+  private places: LedPlaces | null = null;
   private trackCol = new Float32Array(0);
   private trackA = new Float32Array(0);
-  private w = new Float32Array(4);
-  private w2 = new Float32Array(4);
+  private w = new Float32Array(5);
+  private w2 = new Float32Array(5);
   /** Clips need a fresh start (after a jump): how many seconds of warm-up they get. */
   private warm = 2.5;
   private needsWarm = new Set<string>();
   time = 0;
+  /** How many times it has started again at the end: a "random" transition picks again each time round. */
+  pass = 0;
 
   constructor(stage: Stage, layout: Pick<Layout, 'fixtures'>, seq: Sequence) {
     this.stage = stage;
@@ -333,36 +261,14 @@ export class SequencePlayer {
   }
 
   setStage(stage: Stage, layout: Pick<Layout, 'fixtures'>) {
-    const changed = stage !== this.stage || layout !== this.layout || this.ux.length !== stage.pixelCount;
+    const changed = stage !== this.stage || layout !== this.layout || this.places?.ux.length !== stage.pixelCount;
     this.stage = stage;
     this.layout = layout;
-    if (!changed && this.ux.length) return;
+    if (!changed && this.places) return;
     const n = stage.pixelCount;
-    this.ux = new Float32Array(n);
-    this.uy = new Float32Array(n);
-    this.rnd = new Float32Array(n);
+    this.places = new LedPlaces(stage);
     this.trackCol = new Float32Array(n * 3);
     this.trackA = new Float32Array(n);
-    let x0 = Infinity;
-    let x1 = -Infinity;
-    let y0 = Infinity;
-    let y1 = -Infinity;
-    const P = stage.positions3;
-    for (let i = 0; i < n; i++) {
-      if (!stage.active[i]) continue;
-      x0 = Math.min(x0, P[i * 3]);
-      x1 = Math.max(x1, P[i * 3]);
-      y0 = Math.min(y0, -P[i * 3 + 1]);
-      y1 = Math.max(y1, -P[i * 3 + 1]);
-    }
-    const W = x1 - x0 || 1;
-    const H = y1 - y0 || 1;
-    for (let i = 0; i < n; i++) {
-      this.ux[i] = (P[i * 3] - x0) / W;
-      this.uy[i] = (-P[i * 3 + 1] - y0) / H;
-      this.rnd[i] = (Math.sin(i * 12.9898 + 4.1) * 43758.5453) % 1;
-      if (this.rnd[i] < 0) this.rnd[i] += 1;
-    }
     // Clip runs keep going where their LEDs stay the same.
     for (const id of this.clips.keys()) this.clips.get(id)!.sig = '';
   }
@@ -396,6 +302,7 @@ export class SequencePlayer {
     let t = this.time + Math.max(0, dt);
     if (t >= this.seq.duration) {
       if (loop && this.seq.duration > 0) {
+        this.pass++;
         this.seek(t % this.seq.duration, 0);
         t = this.time;
         dt = 0;
@@ -410,7 +317,16 @@ export class SequencePlayer {
 
   /** The clips that play at time `t` (default: now), top layer first (for the editor). */
   active(t = this.time): ActiveClip[] {
-    return activeAt(this.seq, t).map((a) => ({ ...a, fixtures: this.clips.get(a.clipId)?.fixtures ?? a.fixtures }));
+    return activeAt(this.seq, t).map((a) => ({
+      ...a,
+      ...(a.from ? { from: { ...a.from, transition: this.transitionOf(a.from.transition, a.clipId, 'in') } } : {}),
+      fixtures: this.clips.get(a.clipId)?.fixtures ?? a.fixtures
+    }));
+  }
+
+  /** The transition a clip comes in or goes out with: "random" picks one for the clip, again each time round. */
+  transitionOf(choice: TransitionChoice | undefined, clipId: string, side: 'in' | 'out'): TransitionId {
+    return pickTransition(choice, choice === 'random' ? hashUnit(`${clipId}|${side}|${this.pass}`) : 0);
   }
 
   private state(clip: SeqClip): ClipState | null {
@@ -441,7 +357,8 @@ export class SequencePlayer {
     }
     runs.commit();
     let box: Box = [Infinity, -Infinity, Infinity, -Infinity];
-    for (const i of leds) box = [Math.min(box[0], this.ux[i]), Math.max(box[1], this.ux[i]), Math.min(box[2], this.uy[i]), Math.max(box[3], this.uy[i])];
+    const { ux, uy } = this.places!;
+    for (const i of leds) box = [Math.min(box[0], ux[i]), Math.max(box[1], ux[i]), Math.min(box[2], uy[i]), Math.max(box[3], uy[i])];
     st = { sig, runs, leds: Int32Array.from(leds), col: new Float32Array(leds.length * 3), slots, box, fixtures: groups.map((g) => g.fixture) };
     this.clips.set(clip.id, st);
     for (const k of fresh) this.needsWarm.add(`${clip.id}\n${k}`);
@@ -510,51 +427,58 @@ export class SequencePlayer {
     let inBox = st.box;
     if (prev && t < clipEnd(prev)) {
       const ov = overlapOf(prev, clip);
-      inType = clip.transitionIn ?? 'fade';
+      inType = this.transitionOf(clip.transitionIn, clip.id, 'in');
       inP = ov > 0 ? (t - clip.start) / ov : 1;
       const ps = this.clips.get(prev.id);
       if (ps) inBox = unionBox(ps.box, st.box);
     } else if (clip.fadeIn && t - clip.start < clip.fadeIn) {
-      inType = clip.transitionIn ?? 'fade';
+      inType = this.transitionOf(clip.transitionIn, clip.id, 'in');
       inP = (t - clip.start) / clip.fadeIn;
     }
     // Out: the next clip crossing over this one, or a fade-out to nothing.
     let outType: TransitionId | null = null;
     let outP = 0;
     let outBox = st.box;
+    let fadeOut = false;
     if (next && t >= next.start) {
       const ov = overlapOf(clip, next);
-      outType = next.transitionIn ?? 'fade';
+      outType = this.transitionOf(next.transitionIn, next.id, 'in');
       outP = ov > 0 ? (t - next.start) / ov : 1;
       const ns = this.clips.get(next.id) ?? this.state(next);
       if (ns) outBox = unionBox(ns.box, st.box);
     } else if (clip.fadeOut && clipEnd(clip) - t < clip.fadeOut) {
-      outType = clip.transitionOut ?? 'fade';
+      outType = this.transitionOf(clip.transitionOut, clip.id, 'out');
+      fadeOut = true;
       outP = 1 - (clipEnd(clip) - t) / clip.fadeOut;
     }
     const w = this.w;
     const w2 = this.w2;
     const leds = st.leds;
     const col = st.col;
+    const places = this.places!;
     for (let j = 0; j < leds.length; j++) {
       const i = leds[j];
       let c = 1;
       let a = 1;
+      // A flash's white: the incoming clip adds it, over a crossover too; the outgoing one only when it fades out to nothing.
+      let white = 0;
       if (inType) {
-        mix(inType, clamp01(inP), transitionCoord(inType, this.ux[i], this.uy[i], this.rnd[i], inBox), w);
+        transitionWeights(inType, clamp01(inP), transitionCoord(inType, places, i, inBox), w);
         c = w[2];
         a = w[3];
+        white = w[4];
       }
       if (outType) {
-        mix(outType, clamp01(outP), transitionCoord(outType, this.ux[i], this.uy[i], this.rnd[i], outBox), w2);
+        transitionWeights(outType, clamp01(outP), transitionCoord(outType, places, i, outBox), w2);
         c *= w2[0];
         a *= w2[1];
+        if (fadeOut) white += w2[4];
       }
-      if (a <= 0 && c <= 0) continue;
+      if (a <= 0 && c <= 0 && white <= 0) continue;
       const k = i * 3;
-      tc[k] += col[j * 3] * c;
-      tc[k + 1] += col[j * 3 + 1] * c;
-      tc[k + 2] += col[j * 3 + 2] * c;
+      tc[k] += col[j * 3] * c + white;
+      tc[k + 1] += col[j * 3 + 1] * c + white;
+      tc[k + 2] += col[j * 3 + 2] * c + white;
       ta[i] = Math.min(1, ta[i] + a);
     }
   }

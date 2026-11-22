@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Settings } from '../../../../shared/types.ts';
+import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, transitionInfo } from '../../../../shared/transitions.ts';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { errorText, relativeTime } from '../../lib/utils.ts';
@@ -44,6 +45,7 @@ export function SettingsPage() {
     e.preventDefault();
     save.mutate({
       ...form,
+      sceneTransitionSeconds: Math.min(SCENE_TRANSITION_SECONDS.max, Math.max(SCENE_TRANSITION_SECONDS.min, form.sceneTransitionSeconds || SCENE_TRANSITION_SECONDS.default)),
       discoverySubnets: subnets
         .split(/[,\s]+/)
         .map((s) => s.trim())
@@ -103,6 +105,45 @@ export function SettingsPage() {
             <Field label="Revert after (minutes)" hint="0 turns auto-revert off.">
               {(id) => (
                 <Input id={id} type="number" min={0} max={1440} step={1} value={form.revertMinutes} onChange={(e) => set('revertMinutes', Math.max(0, Number(e.target.value) || 0))} />
+              )}
+            </Field>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="Scene transitions" description="How the lights go from one scene to the next when a visitor or an admin picks a scene. The auto-revert changes at once." />
+          <div className="grid gap-5 p-5 sm:grid-cols-2">
+            <Field
+              label="Transition"
+              hint={
+                form.sceneTransition === 'none'
+                  ? 'The new scene shows at once.'
+                  : `${transitionInfo(form.sceneTransition).description} Effects and sequences transition; a device that plays a WLED preset changes as WLED does.`
+              }
+            >
+              {(id) => (
+                <Select id={id} value={form.sceneTransition} onChange={(e) => set('sceneTransition', e.target.value as Settings['sceneTransition'])}>
+                  <option value="none">None (cut)</option>
+                  {TRANSITION_CHOICES.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="Length (seconds)" hint={`${SCENE_TRANSITION_SECONDS.min} to ${SCENE_TRANSITION_SECONDS.max} seconds.`}>
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={SCENE_TRANSITION_SECONDS.min}
+                  max={SCENE_TRANSITION_SECONDS.max}
+                  step={0.1}
+                  disabled={form.sceneTransition === 'none'}
+                  value={form.sceneTransitionSeconds}
+                  onChange={(e) => set('sceneTransitionSeconds', Math.max(0, Number(e.target.value) || 0))}
+                />
               )}
             </Field>
           </div>

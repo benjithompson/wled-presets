@@ -22,6 +22,7 @@ import { readGameArea, readSettings, writeGameArea, writeLineSettings, writeSett
 import { visitorCookie, visitorId } from './visitor.ts';
 import type { Visitor } from './line.ts';
 import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
+import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, type SceneTransitionChoice } from '../../shared/transitions.ts';
 import type { GameHost } from './game/host.ts';
 import type { RoofView } from './roofView.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
@@ -65,7 +66,10 @@ const settingsInput = z.object({
   showColors: z.boolean(),
   defaultSceneId: z.string().nullable(),
   revertMinutes: z.coerce.number().int().min(0).max(24 * 60),
-  discoverySubnets: z.array(z.string().trim().refine(isValidCidr, 'Use CIDR form, for example 192.168.1.0/24')).max(16)
+  discoverySubnets: z.array(z.string().trim().refine(isValidCidr, 'Use CIDR form, for example 192.168.1.0/24')).max(16),
+  /** Left out: kept as it is. */
+  sceneTransition: z.enum(['none', ...TRANSITION_CHOICES.map((t) => t.id)] as [SceneTransitionChoice, ...SceneTransitionChoice[]]).optional(),
+  sceneTransitionSeconds: z.number().finite().min(SCENE_TRANSITION_SECONDS.min).max(SCENE_TRANSITION_SECONDS.max).optional()
 });
 
 /** An RGB color, each part 0..255. */
@@ -811,7 +815,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const input = await body(c, settingsInput);
     if (input.defaultSceneId && !db.getScene(input.defaultSceneId)) throw new HttpError(400, 'Default scene does not exist');
     const prev = readSettings(db);
-    writeSettings(db, input);
+    writeSettings(db, { ...prev, ...input });
     const changes = (Object.keys(input) as (keyof typeof input)[]).filter((k) => JSON.stringify(input[k]) !== JSON.stringify(prev[k]));
     if (changes.length) lights.log('info', 'settings', `Settings changed: ${changes.join(', ')}`, { before: prev, after: input }, actor(c));
     lights.onSettingsChanged();

@@ -4,7 +4,8 @@ import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LightControls, 
 import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
-import { KEY, readLightControls, readSettings, writeLightControls } from './settings.ts';
+import { KEY, readLightControls, readSettings, sceneTransitionOf, writeLightControls } from './settings.ts';
+import type { SceneTransition } from '../../shared/transitions.ts';
 import { parseHex } from '../../shared/color.ts';
 import { baseUrl, lastWrite, wled, type FetchResult, type PowerState } from './wled.ts';
 import { mergeLooks, type PresetLook } from './presetLook.ts';
@@ -27,7 +28,11 @@ export type PresetImport = { deviceId: string; ok: true; count: number } | { dev
  * Plays a scene's effects on the layout objects, or a sequence (null: stops them). Returns the
  * devices that get the frames and the number of objects that are lit.
  */
-export type EffectPlayer = (show: { effects?: Record<string, EffectSettings> | null; sequence?: Sequence | null } | null) => { devices: string[]; objects: number };
+export type EffectPlayer = (
+  show: { effects?: Record<string, EffectSettings> | null; sequence?: Sequence | null } | null,
+  /** How the show that plays now gives way to this one (none: at once). */
+  transition?: SceneTransition | null
+) => { devices: string[]; objects: number };
 
 export interface Actor {
   ip?: string | null;
@@ -438,7 +443,9 @@ export class Lights {
     if (!scene) return null;
     const devices = this.onDevices();
     // Effects first: a device with an object that plays an effect gets the effect, not a preset.
-    const played = this.effectPlayer?.(this.showOf(scene)) ?? { devices: [], objects: 0 };
+    // A scene someone picks comes in with the scene transition; the auto-revert changes at once.
+    const transition = reason === 'user' ? sceneTransitionOf(readSettings(this.db)) : null;
+    const played = this.effectPlayer?.(this.showOf(scene), transition) ?? { devices: [], objects: 0 };
     const streamed = new Set(played.devices.filter((id) => !this.isOff(id)));
     const work = [];
     const skipped: string[] = [];

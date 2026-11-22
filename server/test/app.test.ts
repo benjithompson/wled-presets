@@ -187,6 +187,33 @@ describe('devices and scenes', () => {
     expect(state.scenes[0].palette.length).toBeGreaterThan(0);
   });
 
+  it('changes scenes with the scene transition from the settings', async () => {
+    await login();
+    const transitions: unknown[] = [];
+    t.lights.setEffectPlayer((show, transition) => {
+      transitions.push(transition ?? null);
+      return { devices: [], objects: show ? 1 : 0 };
+    });
+    const settings = (await t.call('GET', '/api/admin/overview')).json.settings;
+    expect(settings).toMatchObject({ sceneTransition: 'fade', sceneTransitionSeconds: 1 });
+    const scene = (await t.call('POST', '/api/admin/scenes', { name: 'Glow', effects: { roof: { effect: 'plasma', palette: 'rainbow', speed: 0.5, intensity: 0.5, size: 0.5, brightness: 1 } } })).json;
+    await t.call('POST', `/api/scenes/${scene.id}/apply`);
+    expect(transitions.at(-1)).toEqual({ type: 'fade', seconds: 1 });
+
+    expect((await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransition: 'random', sceneTransitionSeconds: 2.5 })).json).toMatchObject({ sceneTransition: 'random', sceneTransitionSeconds: 2.5 });
+    await t.call('POST', `/api/scenes/${scene.id}/apply`);
+    expect(transitions.at(-1)).toEqual({ type: 'random', seconds: 2.5 });
+    // Settings saved without them (an older page) keep them.
+    const { sceneTransition: _, sceneTransitionSeconds: __, ...older } = settings;
+    expect((await t.call('PUT', '/api/admin/settings', older)).json.sceneTransition).toBe('random');
+    expect((await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransition: 'sideways' })).status).toBe(400);
+    expect((await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransitionSeconds: 60 })).status).toBe(400);
+
+    await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransition: 'none' });
+    await t.call('POST', `/api/scenes/${scene.id}/apply`);
+    expect(transitions.at(-1)).toBeNull();
+  });
+
   it('skips devices without a mapping', async () => {
     await login();
     const [a, b] = await addDevices();

@@ -8,7 +8,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef,
 import { Eye, EyeOff, GripVertical, Lock, Music, Plus, Unlock, Upload, Volume2, VolumeX } from 'lucide-react';
 import { effectInfo, paletteColors, type EffectId } from '../../../../../shared/effects.ts';
 import type { Layout } from '../../../../../shared/layout.ts';
-import { blendInfo, clipEnd, neighbours, newId, overlapOf, transitionInfo, type AudioClip, type SeqClip, type Sequence, type TransitionId } from '../../../../../shared/sequence.ts';
+import { blendInfo, clipEnd, neighbours, newId, overlapOf, TRANSITION_CHOICES, transitionInfo, type AudioClip, type SeqClip, type Sequence } from '../../../../../shared/sequence.ts';
 import { cn } from '../../../lib/utils.ts';
 import { PEAKS_PER_SECOND, type AudioEngine, type Clock } from './audio.ts';
 import { findAudioClip, findClip, fmtTime, makeClip, MIN_CLIP, round, snapPoints, snapTime, targetsLabel, type Selection } from './model.ts';
@@ -453,7 +453,8 @@ export function Timeline({
     if (dropKind(e) !== 'transition') return;
     e.preventDefault();
     e.stopPropagation();
-    const id = e.dataTransfer.getData(TRANSITION_MIME) as TransitionId;
+    const id = TRANSITION_CHOICES.find((t) => t.id === e.dataTransfer.getData(TRANSITION_MIME))?.id;
+    if (!id) return;
     // Over the clip before it, if they overlap; else a fade in of 1 s.
     change(
       {

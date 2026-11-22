@@ -51,7 +51,7 @@ host.setGameArea(readGameArea(db));
 // One turn at a time with the lights: everyone else waits in line.
 host.line.configure(readLineSettings(db));
 // Scenes with effects: the game host draws them and sends them to the lights.
-lights.setEffectPlayer((show) => host.playShow(show));
+lights.setEffectPlayer((show, transition) => host.playShow(show, transition));
 // No game starts on lights that are switched off.
 host.closed = () => (lights.allOff() ? 'The lights are switched off right now.' : null);
 // Lights switched off on the devices themselves end the game, as the admin's switch does.
