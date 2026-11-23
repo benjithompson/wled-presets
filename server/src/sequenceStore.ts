@@ -20,6 +20,7 @@ const clipSchema = z.object({
   fadeOut: seconds.optional(),
   transitionIn: transition.optional(),
   transitionOut: transition.optional(),
+  eachObject: z.boolean().optional(),
   name: z.string().trim().max(80).optional()
 } satisfies SchemaOf<SeqClip>);
 
