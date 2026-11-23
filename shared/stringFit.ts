@@ -6,11 +6,14 @@
 //     from the string, so the wire is as long as the string;
 //   - a bush with a ring round its edge is as big as its string goes round;
 //   - a line, a custom object, and any shape the string cannot cover even so, cannot be
-//     stretched (a point dragged, a size made bigger) past the length of their string.
+//     stretched (a point dragged, a size made bigger) past the length of their string;
+//   - a roof that sets the yard's scale (see yardScale.ts) is as long as its string by
+//     definition: dragging it changes the scale instead.
 // Objects without a light type are not limited.
 
 import { BUSH_TURNS, capFloor, ledGap, layoutScale, treeSize, type Fixture, type Layout, type Point } from './layout.ts';
 import { lightsOf } from './lights.ts';
+import { setsScale } from './yardScale.ts';
 
 /** How much longer than the string a wire may be drawn (rounding, and how a curve is measured). */
 const SLACK = 0.03;
@@ -131,7 +134,8 @@ export function keepStrings(prev: Layout, next: Layout): { layout: Layout; limit
   const fixtures = next.fixtures.map((g) => {
     const f = before.get(g.id);
     const want = stringGap(g, next);
-    if (want == null) return g;
+    // A roof that sets the yard's scale is as long as its string, however it is drawn.
+    if (want == null || setsScale(g, next)) return g;
     const rewired = !f || WIRE_KEYS.some((k) => !same(f[k], g[k])) || stringGap(f, prev) !== want;
     if (!rewired && (f === g || same(f.points, g.points))) return g;
     // A locked object keeps its size (see keepLocked): a ring then stays as big as it is.

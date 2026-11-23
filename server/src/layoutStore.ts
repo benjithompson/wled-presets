@@ -71,6 +71,7 @@ export const layoutShape = z.object({
   height: z.number().min(200).max(4000),
   background: z.string().max(200).nullable(),
   scale: z.number().min(1).max(10_000).optional(),
+  scaleBy: z.literal('hand').optional(),
   units: z.enum(UNITS).optional(),
   groundY: coord.optional(),
   /** The whole yard's effect. */

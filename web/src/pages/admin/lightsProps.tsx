@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
 import { designLength, isLine, layoutScale, ledGap, MAX_FIXTURE_PIXELS, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
 import { fitsString, freeSetting } from '../../../../shared/stringFit.ts';
+import { setsScale } from '../../../../shared/yardScale.ts';
 import {
   BUILT_IN_LIGHTS,
   isBuiltInLight,
@@ -95,7 +96,9 @@ export function LightsProps({
   const pins = f.pointLeds?.filter((p) => p != null).length ?? 0;
   // How far apart the LEDs are on the drawing, along its wire (none for a net over a bush).
   const gap = lt ? ledGap(f, scale) : null;
-  const tooLong = lt ? !fitsString(f, layout) : false;
+  // A roof that sets the scale is as long as its string: the drawing is the measure.
+  const scales = setsScale(f, layout);
+  const tooLong = lt && !scales ? !fitsString(f, layout) : false;
   return (
     <>
       {custom ? (
@@ -137,7 +140,12 @@ export function LightsProps({
               The wire as drawn is longer than the string: {f.pixels} LEDs {spacingText(lt.spacing, units)} apart do not reach that far. {custom ? 'Make it smaller, or give its design more LEDs.' : freeSetting(f) ? 'Give it more LEDs, or make it smaller.' : 'Give it more LEDs.'}
             </PropNote>
           ) : null}
-          {fit != null && fit !== f.pixels ? (
+          {scales ? (
+            <PropNote>
+              Its LEDs set the yard’s scale: from corner to corner the roofline is as long as its string. More strings, or a corner’s LED moved, change the scale; the objects keep their size.
+            </PropNote>
+          ) : null}
+          {fit != null && fit !== f.pixels && !scales ? (
             <>
               <PropNote>
                 At {spacingText(lt.spacing, units)} apart, {fitLeds} LEDs fit the line as drawn{per ? ` (${fit / per} string${fit === per ? '' : 's'} of ${per})` : ''}; it has {f.pixels}.{' '}

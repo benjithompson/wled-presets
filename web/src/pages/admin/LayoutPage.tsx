@@ -130,6 +130,7 @@ import { Gizmo, screenAngle, wrapAngle, type GizmoPart } from './gizmo.tsx';
 import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
 import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
+import { autoScale, keepScale, roofScale } from '../../../../shared/yardScale.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
@@ -742,6 +743,16 @@ export function LayoutPage() {
   useEffect(() => {
     if (saved && !layout) setLayout(saved);
   }, [saved, layout]);
+  // The roofline sets the scale (see keepScale): a layout saved before it did takes it when it opens.
+  const scaleChecked = useRef(false);
+  useEffect(() => {
+    if (!layout || scaleChecked.current) return;
+    scaleChecked.current = true;
+    const r = autoScale(layout);
+    if (!r || r.scale === layoutScale(layout)) return;
+    edit((l) => l);
+    toast(`The roofline sets the scale now: its strings make the front view ${measureOf({ ...layout, scale: r.scale }).text(layout.width)} wide. Objects keep their size. Save to keep it.`, { id: 'scale' });
+  }, [layout]);
 
   const dirty = !!layout && !!saved && JSON.stringify(layout) !== JSON.stringify(saved);
   const stage = useMemo(() => (layout ? buildStage(layout) : null), [layout]);
@@ -906,10 +917,18 @@ export function LayoutPage() {
       if (!l) return l;
       const next = fn(l);
       if (force) return next;
-      // Wires stay within their strings (see keepStrings), then locked objects stay put.
-      const strung = keepStrings(l, next);
+      // The roofline sets the scale (see keepScale), wires stay within their strings (see
+      // keepStrings), then locked objects stay put.
+      const settle = (want: Layout) => {
+        const scaled = keepScale(l, want);
+        const strung = keepStrings(scaled.prev, scaled.layout);
+        return { strung, kept: keepLocked(scaled.prev, strung.layout) };
+      };
+      let { strung, kept } = settle(next);
+      // A locked roof that did not move: the scale is the one it gives as it is.
+      const r = kept.blocked.length ? autoScale(kept.layout) : null;
+      if (r && r.scale !== kept.layout.scale) ({ strung, kept } = settle(kept.layout));
       if (strung.limited.length) stringNote(strung.limited, strung.layout);
-      const kept = keepLocked(l, strung.layout);
       if (kept.blocked.length) lockedNote(kept.blocked);
       return kept.layout;
     });
@@ -2017,6 +2036,7 @@ export function LayoutPage() {
       history.clear();
       setHistoryTick((n) => n + 1);
       setLayout(out.layout);
+      scaleChecked.current = false;
       setSelected(null);
       setMulti([]);
       setCorner(null);
@@ -3862,9 +3882,11 @@ export function LayoutPage() {
                         : undefined
                     }
                     onScale={(meters) => {
-                      updateLayout({ scale: Math.round((tapeLength / meters) * 1000) / 1000 });
+                      updateLayout({ scale: Math.round((tapeLength / meters) * 1000) / 1000, scaleBy: 'hand' });
                       setTape(null);
-                      toast.success(`Scale set: ${m.text(tapeLength)} is now ${meters * (m.units === 'm' ? 1 : FEET_PER_METER)} ${m.units}.`);
+                      toast.success(
+                        `Scale set: ${m.text(tapeLength)} is now ${meters * (m.units === 'm' ? 1 : FEET_PER_METER)} ${m.units}.${roofScale(layout) ? ' It is set by hand now, not by the roofline (Yard size: Use the roofline).' : ''}`
+                      );
                     }}
                   />
                 ) : null}
@@ -4127,6 +4149,13 @@ function AerialProps({
 
 /** Units, scale and ground for the whole yard: the properties when nothing is selected. */
 function YardProps({ layout, m, onChange, onMeasure }: { layout: Layout; m: Measure; onChange: (patch: Partial<Layout>) => void; onMeasure: () => void }) {
+  // The roofline's LEDs are a known distance apart: they set the scale unless it is set by hand.
+  const roof = roofScale(layout);
+  const byRoof = !!roof && layout.scaleBy !== 'hand';
+  // Real meters as text in the editor's units, whatever the scale is now.
+  const metersText = (meters: number) => m.text(meters * layoutScale(layout));
+  const roofs = roof ? layout.fixtures.filter((f) => roof.roofs.includes(f.id)) : [];
+  const leds = roofs.reduce((a, f) => a + Math.floor(f.pixels), 0);
   return (
     <PropSection key="yard" id="yard" title="Yard size">
       <PropSelect<Units>
@@ -4140,21 +4169,41 @@ function YardProps({ layout, m, onChange, onMeasure }: { layout: Layout; m: Meas
       />
       <PropDistance
         label="Front view width"
-        hint="The real width of the front view. It sets the scale."
+        hint={byRoof ? 'The real width of the front view, from the roofline. Typing a width sets the scale by hand instead.' : 'The real width of the front view. It sets the scale.'}
         value={layout.width}
         m={m}
         min={0.1}
-        onChange={(lu) => onChange({ scale: Math.round(((layoutScale(layout) * layout.width) / lu) * 1000) / 1000 })}
+        onChange={(lu) => onChange({ scale: Math.round(((layoutScale(layout) * layout.width) / lu) * 1000) / 1000, scaleBy: 'hand' })}
       />
       <PropRow label="Scale">
-        <PropButton onClick={onMeasure} title="Measure something you know, then type its real size (M)">
-          <Ruler /> Measure
-        </PropButton>
+        <div className="flex flex-wrap gap-1.5">
+          {roof && !byRoof ? (
+            <PropButton onClick={() => onChange({ scaleBy: undefined })} title={`The roofline’s strings make the front view ${metersText(layout.width / roof.scale)} wide`}>
+              <Ruler /> Use the roofline
+            </PropButton>
+          ) : null}
+          <PropButton onClick={onMeasure} title={byRoof ? 'Measure something you know, then type its real size: the scale is then set by hand (M)' : 'Measure something you know, then type its real size (M)'}>
+            <Ruler /> Measure
+          </PropButton>
+        </div>
       </PropRow>
-      <PropNote>
-        Real distances make the top and 3D views true to life, and let animations move at real speeds. For the best scale, measure something you know at the front wall, for example a garage door. Then
-        drag the dashed ground line in the front view to the bottom of the front wall: heights count from there.
-      </PropNote>
+      {byRoof ? (
+        <PropNote>
+          Set by the roofline: {roofs.length > 1 ? `${roofs.length} roofs, ` : ''}
+          {leds} LEDs, {metersText(roof.meters)} of string from corner to corner{roofs.some((f) => f.skip?.length) ? ' (skipped segments left out)' : ''}. Match the roof to the lights (each corner gets its LED) and give it its
+          real number of strings: the scale follows, and so do the top and 3D views and the picture from above. Objects keep the size they are drawn at.
+        </PropNote>
+      ) : roof ? (
+        <PropNote>
+          Set by hand. The roofline’s strings would make the front view {metersText(layout.width / roof.scale)} wide.
+        </PropNote>
+      ) : (
+        <PropNote>
+          Real distances make the top and 3D views true to life, and let animations move at real speeds. Give the roofline its light string and the scale is set from it: its LEDs are a known distance
+          apart. Or measure something you know at the front wall, for example a garage door.
+        </PropNote>
+      )}
+      <PropNote>Drag the dashed ground line in the front view to the bottom of the front wall: heights count from there.</PropNote>
     </PropSection>
   );
 }
