@@ -73,10 +73,16 @@ function solve(lo: number, hi: number, gapAt: (v: number) => number | null, want
 export function fitString(f: Fixture, layout: Pick<Layout, 'lightTypes' | 'scale'>): Fixture {
   const want = stringGap(f, layout);
   const free = freeSetting(f);
-  // A tree shaped to the lights: its marks say where the wire goes, not its turns.
-  if (want == null || !free || Math.floor(f.pixels) < 2 || markedTree(f)) return f;
+  if (want == null || !free || Math.floor(f.pixels) < 2) return f;
   const scale = layoutScale(layout);
   const gap = (g: Fixture) => ledGap(g, scale);
+  // A tree shaped to the lights: its marks say where the wire goes, not its turns. A wave's
+  // rows are as wide as their LEDs: the widest at its radius, worked out here.
+  if (markedTree(f)) {
+    if (f.pattern !== 'wave') return f;
+    const radius = Math.max(5, Math.min(4000, Math.round(solve(5, 4000, (r) => gap({ ...f, radius: r }), want))));
+    return radius === f.radius ? f : { ...f, radius };
+  }
   let patch: Partial<Fixture>;
   if (free === 'turns') {
     const turns = solve(0.5, f.kind === 'bush' ? 50 : 100, (t) => gap({ ...f, turns: t }), want);
@@ -103,6 +109,9 @@ export function fitString(f: Fixture, layout: Pick<Layout, 'lightTypes' | 'scale
 
 /** Settings that change how long the wire is, or how far apart its LEDs are. */
 const WIRE_KEYS = ['kind', 'pixels', 'lights', 'radius', 'height', 'pattern', 'shape', 'cover', 'bias', 'sweep', 'startSide', 'endSide', 'zigzag', 'start', 'size', 'design', 'marks'] as const;
+
+/** What a marked wave's size is worked out again for (see keepStrings). */
+const MARK_KEYS = ['kind', 'pixels', 'lights', 'pattern', 'start', 'marks', 'shape', 'cover'] as const;
 
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
@@ -137,6 +146,12 @@ export function keepStrings(prev: Layout, next: Layout): { layout: Layout; limit
     const want = stringGap(g, next);
     // A roof that sets the yard's scale is as long as its string, however it is drawn.
     if (want == null || setsScale(g, next)) return g;
+    // A marked wave gets its size from its string when its marks or LEDs change; its size can
+    // then be set by hand (see waveRows).
+    if (markedTree(g) && g.pattern === 'wave') {
+      const refit = !f || MARK_KEYS.some((k) => !same(f[k], g[k])) || stringGap(f, prev) !== want;
+      return refit && !g.locked ? fitString(g, next) : g;
+    }
     const rewired = !f || WIRE_KEYS.some((k) => !same(f[k], g[k])) || stringGap(f, prev) !== want;
     if (!rewired && (f === g || same(f.points, g.points))) return g;
     // A locked object keeps its size (see keepLocked): a ring then stays as big as it is.
