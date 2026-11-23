@@ -6,7 +6,7 @@ import { cn } from '../lib/utils.ts';
 import { HoldRing } from '../components/HoldRing.tsx';
 
 /** How long a finger holds still on an LED to select its object, in ms. */
-const HOLD_MS = 1000;
+const HOLD_MS = 500;
 /** How near an LED (screen pixels) a click or a finger must be to pick its object. */
 const PICK_PX = { mouse: 12, touch: 28 };
 
