@@ -222,6 +222,12 @@ export interface Layout {
   fixtures: Fixture[];
   /** Layout units per meter, for real distances. Default: DEFAULT_SCALE. */
   scale?: number;
+  /**
+   * What sets the scale. Not set: the roofline, when a roof has a light type (its LEDs are a
+   * known distance apart, see shared/yardScale.ts); otherwise it is as set. 'hand': as set (the
+   * front view's width, or something measured).
+   */
+  scaleBy?: 'hand';
   /** Units for distances in the editor. Default: feet. */
   units?: Units;
   /** The ground in the front view: the y of the bottom of the front wall. Default: the bottom edge. */
