@@ -2,10 +2,11 @@
 // wreath, an arch…), see where every LED lands, and save it to the library to place it in the
 // yard as many times as you like. Designs are in meters, as seen from the front, y up.
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
-import { ArrowLeftRight, Camera, Crosshair, Maximize, MousePointer2, PenTool, Redo2, Trash2, Undo2 } from 'lucide-react';
+import { ArrowLeftRight, Camera, Check, Crosshair, Maximize, MousePointer2, PenTool, Plus, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from 'lucide-react';
 import { designCounts, designLeds, designLength, FEET_PER_METER, type Design, type DesignPoint, type DesignStroke, type Layout } from '../../../../shared/layout.ts';
 import { allLights, ledsForLength, lightsOf, lightSummary, spacingText, strandStarts, strandText } from '../../../../shared/lights.ts';
 import { Button, Dialog } from '../../components/ui.tsx';
+import { useMedia } from '../../lib/useMedia.ts';
 import { cn } from '../../lib/utils.ts';
 import { PhotoTrace } from './PhotoTrace.tsx';
 import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropText } from './props.tsx';
@@ -243,6 +244,10 @@ export function DesignEditor({
     tick((n) => n + 1);
   };
 
+  /** A touch screen: a finger reaches farther than a mouse, and buttons stand in for keys and double-clicks. */
+  const coarse = useMedia('(pointer: coarse)');
+  const reach = coarse ? 2.5 : 1;
+
   // ----- The view: meters to screen pixels -----
   const wrap = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 600, h: 440 });
@@ -275,7 +280,7 @@ export function DesignEditor({
   };
   const hitPoint = (X: number, Y: number): Pick | null => {
     let best: Pick | null = null;
-    let bd = 9;
+    let bd = 9 * reach;
     strokes.forEach((s, si) =>
       s.points.forEach((p, i) => {
         const q = S(p);
@@ -291,7 +296,7 @@ export function DesignEditor({
   const hitEdge = (X: number, Y: number): { s: number; i: number; t: number } | null => {
     const p = W(X, Y);
     let best: { s: number; i: number; t: number } | null = null;
-    let bd = 7 / v.ppm;
+    let bd = (7 * reach) / v.ppm;
     strokes.forEach((s, si) => {
       const pts = s.closed && s.points.length > 2 ? [...s.points, s.points[0]] : s.points;
       for (let i = 0; i < pts.length - 1; i++) {
@@ -331,7 +336,7 @@ export function DesignEditor({
       // Clicking the first point closes the shape.
       if (draft.length >= 3) {
         const q = S(draft[0]);
-        if (Math.hypot(q.X - X, q.Y - Y) < 10) return finishDraft(true);
+        if (Math.hypot(q.X - X, q.Y - Y) < 10 * reach) return finishDraft(true);
       }
       setDraft((d) => (d.length && Math.hypot(d.at(-1)!.x - p.x, d.at(-1)!.y - p.y) < 1e-6 ? d : [...d, p]));
       return;
@@ -387,6 +392,18 @@ export function DesignEditor({
       commit(strokes.map((s, si) => (si === he.s ? { ...s, points: [...s.points.slice(0, he.i + 1), p, ...s.points.slice(he.i + 1)] } : s)));
       setPick({ s: he.s, i: he.i + 1 });
     }
+  };
+  /** Zooms in (more than 1) or out about the middle of the view. */
+  const zoomBy = (k: number) => setView({ ...v, ppm: Math.min(5000, Math.max(20, v.ppm * k)) });
+  /** A point after the picked one, half way to the next (or a little past the end of an open stroke). */
+  const addAfter = (p: Pick) => {
+    const st = strokes[p.s];
+    const a = st.points[p.i];
+    const b = st.points[p.i + 1] ?? (st.closed && st.points.length > 2 ? st.points[0] : null);
+    const prev = st.points[p.i - 1];
+    const q = b ? { x: r3((a.x + b.x) / 2), y: r3((a.y + b.y) / 2) } : prev ? { x: r3(2 * a.x - prev.x), y: r3(2 * a.y - prev.y) } : { x: r3(a.x + major), y: a.y };
+    commit(strokes.map((s2, si) => (si === p.s ? { ...s2, points: [...s2.points.slice(0, p.i + 1), q, ...s2.points.slice(p.i + 1)] } : s2)));
+    setPick({ s: p.s, i: p.i + 1 });
   };
   const onWheel = (e: React.WheelEvent) => {
     const { X, Y } = svgPoint(e);
@@ -489,7 +506,7 @@ export function DesignEditor({
       onClick={() => (setTool(t), setDraft([]))}
       title={`${label} (${key})`}
       aria-pressed={tool === t}
-      className={cn('flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition [&_svg]:size-4', tool === t ? 'bg-sky-600 text-white' : 'text-stone-700 hover:bg-stone-200/70 dark:text-stone-300 dark:hover:bg-stone-800')}
+      className={cn('flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-sm [&_svg]:size-4', tool === t ? 'bg-sky-600 text-white' : 'text-stone-700 hover:bg-stone-200/70 dark:text-stone-300 dark:hover:bg-stone-800')}
     >
       <Icon /> {label}
     </button>
@@ -526,18 +543,29 @@ export function DesignEditor({
               type="button"
               onClick={() => setPhoto(true)}
               title="Light the object up, take a picture or scan it, and its LEDs become the shape"
-              className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sky-700 transition hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-500/10 [&_svg]:size-4"
+              className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-sky-700 transition pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-sm hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-500/10 [&_svg]:size-4"
             >
               <Camera /> Photo or scan
             </button>
-            <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
-            <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
+            <span className="mx-1 h-5 w-px bg-stone-200 pointer-coarse:hidden dark:bg-stone-700" />
+            <Button size="sm" variant="ghost" onClick={undo} disabled={!past.current.length} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2 pointer-coarse:h-11 pointer-coarse:px-3">
               <Undo2 />
             </Button>
-            <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2">
+            <Button size="sm" variant="ghost" onClick={redo} disabled={!future.current.length} title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo" className="px-2 pointer-coarse:h-11 pointer-coarse:px-3">
               <Redo2 />
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setView(null)} title="Zoom to fit" aria-label="Zoom to fit" className="px-2">
+            {coarse ? (
+              // No wheel on a touch screen.
+              <>
+                <Button size="sm" variant="ghost" onClick={() => zoomBy(1 / 1.5)} title="Zoom out" aria-label="Zoom out" className="h-11 px-3">
+                  <ZoomOut />
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => zoomBy(1.5)} title="Zoom in" aria-label="Zoom in" className="h-11 px-3">
+                  <ZoomIn />
+                </Button>
+              </>
+            ) : null}
+            <Button size="sm" variant="ghost" onClick={() => setView(null)} title="Zoom to fit" aria-label="Zoom to fit" className="px-2 pointer-coarse:h-11 pointer-coarse:px-3">
               <Maximize />
             </Button>
             <span className="ml-auto text-[11px] text-stone-500 tabular-nums">
@@ -611,10 +639,10 @@ export function DesignEditor({
                     s.points.map((p, i) => (
                       <rect
                         key={`${si}-${i}`}
-                        x={S(p).X - 4}
-                        y={S(p).Y - 4}
-                        width={8}
-                        height={8}
+                        x={S(p).X - 4 * (coarse ? 1.75 : 1)}
+                        y={S(p).Y - 4 * (coarse ? 1.75 : 1)}
+                        width={8 * (coarse ? 1.75 : 1)}
+                        height={8 * (coarse ? 1.75 : 1)}
                         fill={pick?.s === si && pick.i === i ? 'rgb(40,170,255)' : '#05070f'}
                         stroke={stroke === si ? 'rgb(40,170,255)' : '#fff'}
                         strokeOpacity={0.8}
@@ -630,21 +658,38 @@ export function DesignEditor({
               ))}
               {hover && tool === 'draw' ? <circle cx={S(hover).X} cy={S(hover).Y} r={3} fill="#fff" /> : null}
             </svg>
+            {coarse && tool === 'draw' && draft.length ? (
+              // On a touch screen, what Backspace and Enter do.
+              <div className="absolute top-2 right-2 flex gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
+                <button type="button" onClick={() => setDraft((d) => d.slice(0, -1))} className="flex h-11 items-center gap-1.5 rounded-lg bg-stone-900/85 px-3 text-sm font-medium text-white ring-1 ring-white/15 [&_svg]:size-4">
+                  <Undo2 /> Point
+                </button>
+                <button type="button" onClick={() => finishDraft()} disabled={draft.length < 2} className="flex h-11 items-center gap-1.5 rounded-lg bg-sky-600 px-3 text-sm font-medium text-white disabled:opacity-50 [&_svg]:size-4">
+                  <Check /> Done
+                </button>
+              </div>
+            ) : null}
             <p className="pointer-events-none absolute inset-x-3 bottom-2 text-[11px] text-white/60">
-              {tool === 'draw'
+              {coarse
+                ? tool === 'draw'
+                  ? draft.length
+                    ? 'Tap the next point. Tap the green first point to close the shape, or Done to end the wire here.'
+                    : 'Tap where the wire starts (LED 0), then each corner. Points snap to the grid.'
+                  : 'Drag a point to move it; tap one to pick it, then add or delete points under Stroke. Drag the background to pan.'
+                : tool === 'draw'
                 ? draft.length
                   ? 'Click the next point. Click the green first point to close the shape. Enter or double-click: done. Backspace: undo a point. Alt: no snapping.'
                   : 'Click where the wire starts (LED 0), then each corner. Points snap to the grid.'
-                : 'Drag a point to move it. Double-click the wire to add a point, a point to delete it. Drag the background to pan, wheel to zoom.'}
+                  : 'Drag a point to move it. Double-click the wire to add a point, a point to delete it. Drag the background to pan, wheel to zoom.'}
             </p>
           </div>
-          <div className="mt-2 flex flex-wrap gap-1">
+          <div className="mt-2 flex flex-wrap gap-1 pointer-coarse:gap-1.5">
             <span className="self-center pr-1 text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Start from</span>
             <button
               type="button"
               onClick={() => setPhoto(true)}
               title="Light the object up, take a picture, and its LEDs become the shape"
-              className="flex items-center gap-1.5 rounded-lg bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 transition hover:bg-sky-100 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20 [&_svg]:size-4"
+              className="flex items-center gap-1.5 rounded-lg bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 transition pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-sm hover:bg-sky-100 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20 [&_svg]:size-4"
             >
               <Camera /> A photo
             </button>
@@ -653,7 +698,7 @@ export function DesignEditor({
                 key={t.id}
                 type="button"
                 onClick={() => useTemplate(t.id)}
-                className="flex items-center gap-1.5 rounded-lg bg-stone-100 px-2 py-1 text-xs text-stone-700 transition hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                className="flex items-center gap-1.5 rounded-lg bg-stone-100 px-2 py-1 text-xs text-stone-700 transition pointer-coarse:h-11 pointer-coarse:px-3 pointer-coarse:text-sm hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
               >
                 <DesignThumb strokes={t.strokes()} pixels={0} className="size-5 text-stone-500" /> {t.name}
               </button>
@@ -725,6 +770,14 @@ export function DesignEditor({
                     value={show(sel.z ?? 0)}
                     onChange={(n) => commit(movePoint(strokes, pick, { x: sel.x, y: sel.y, z: r3(n * perUnit) }))}
                   />
+                  <div className="flex flex-wrap gap-1.5">
+                    <PropButton onClick={() => addAfter(pick)} title="A new point half way to the next one (or double-click the wire)">
+                      <Plus /> Add a point after
+                    </PropButton>
+                    <PropButton danger onClick={() => deletePoint(pick)} title="Delete this point (Delete, or double-click it)">
+                      <Trash2 /> Delete point
+                    </PropButton>
+                  </div>
                 </>
               ) : null}
               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -756,7 +809,7 @@ export function DesignEditor({
                   Later
                 </PropButton>
                 <PropButton danger onClick={() => deleteStroke(stroke)}>
-                  <Trash2 /> Delete
+                  <Trash2 /> Delete stroke
                 </PropButton>
               </div>
             </PropSection>

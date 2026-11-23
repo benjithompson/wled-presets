@@ -338,7 +338,32 @@ function TiltProp({ label, value, hint, onChange }: { label: string; value: numb
 /** The height a shape's size handles show: a tree's, or a semicircle's (its radius unless set). */
 const sizeHeight = (f: Fixture) => (f.kind === 'tree' ? treeSize(f).h : semicircleSize(f).h);
 
-function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure; locked: boolean; strung: boolean; onChange: (patch: Partial<Fixture>) => void }) {
+/** The parts of a shape's settings: its shape and size, how its LEDs run, and how it is turned. A phone shows each in a section of its own. */
+type ShapePart = 'size' | 'pattern' | 'turn';
+const SHAPE_PARTS: { part: ShapePart; title: string }[] = [
+  { part: 'size', title: 'Shape' },
+  { part: 'pattern', title: 'LED pattern' },
+  { part: 'turn', title: 'Turn and tilt' }
+];
+/** The parts this kind of object has (a bush cannot be turned). */
+const shapeParts = (f: Fixture): ShapePart[] => (f.kind === 'bush' ? ['size', 'pattern'] : ['size', 'pattern', 'turn']);
+
+function ShapeProps({
+  f,
+  m,
+  locked,
+  strung,
+  onChange,
+  part
+}: {
+  f: Fixture;
+  m: Measure;
+  locked: boolean;
+  strung: boolean;
+  onChange: (patch: Partial<Fixture>) => void;
+  /** Only this part (none: all of them, one after the other). */
+  part?: ShapePart;
+}) {
   /** Its size and turn: a locked object keeps them (its pattern and wiring can still change). */
   const place = (el: ReactNode) => (
     <fieldset disabled={locked} className="contents">
@@ -362,10 +387,28 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
     </PropNote>
   ) : null;
   const width = place(<PropDistance label="Width" value={radiusOf(f) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
-  if (f.kind === 'bush') {
-    return (
+  // The note on the setting that follows from the light string goes with that setting's part.
+  const sizeNote = free === 'radius' ? stringNote : null;
+  const patternNote = free === 'radius' ? null : stringNote;
+  const show = (parts: Partial<Record<ShapePart, ReactNode>>) =>
+    part ? (parts[part] ?? null) : (
       <>
-        {free === 'radius' ? fromString(width) : width}
+        {parts.size}
+        {parts.pattern}
+        {parts.turn}
+      </>
+    );
+  if (f.kind === 'bush') {
+    return show({
+      size: (
+        <>
+          {free === 'radius' ? fromString(width) : width}
+          {sizeNote}
+          <PropNote>The point is the middle of the bush, as seen from the front.</PropNote>
+        </>
+      ),
+      pattern: (
+      <>
         <PropSelect<NonNullable<Fixture['pattern']>>
           label="LED pattern"
           value={f.pattern ?? 'fill'}
@@ -377,15 +420,16 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
           onChange={(pattern) => onChange({ pattern })}
         />
         {free === 'turns' ? <PropNote>The spiral goes round {f.turns ?? BUSH_TURNS} times from the middle out.</PropNote> : null}
-        {stringNote}
-        <PropNote>The point is the middle of the bush, as seen from the front.</PropNote>
+        {patternNote}
       </>
-    );
+      )
+    });
   }
   if (f.kind === 'semicircle') {
     const way = f.zigzag ?? 'down';
     const across = way === 'down' || way === 'up';
-    return (
+    return show({
+      size: (
       <>
         {width}
         {place(
@@ -398,6 +442,12 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
             onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })}
           />
         )}
+        {sizeNote}
+        <PropNote>The point is the middle of the straight edge.</PropNote>
+      </>
+      ),
+      pattern: (
+      <>
         <PropSelect<Zigzag>
           label="Zigzag"
           hint={
@@ -415,7 +465,11 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
           onChange={(zigzag) => onChange({ zigzag })}
         />
         {fromString(<PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />)}
-        {stringNote}
+        {patternNote}
+      </>
+      ),
+      turn: (
+      <>
         {place(
           <PropNumber
             label="Turn"
@@ -431,9 +485,9 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
         )}
         {place(<FacingProp f={f} onChange={onChange} hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left" />)}
         {place(<TiltProp label="Tilt" value={f.tilt} onChange={(tilt) => onChange({ tilt })} hint="Tilted toward the street (more) or the house (less), as seen from the side view" />)}
-        <PropNote>The point is the middle of the straight edge.</PropNote>
       </>
-    );
+      )
+    });
   }
   const pattern = f.pattern === 'strands' || f.pattern === 'wave' ? f.pattern : 'spiral';
   const spiral = pattern === 'spiral';
@@ -445,7 +499,8 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
   const ball = f.shape === 'sphere';
   /** The height its LEDs climb: a ball's cap, when only its top has LEDs. */
   const climb = treeSize(f).h * (1 - capFloor(f));
-  return (
+  return show({
+    size: (
     <>
       {rows ? (
         <PropNote>
@@ -493,6 +548,12 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
           />
         </>
       ) : null}
+      {sizeNote}
+      <PropNote>{ball ? 'The point is the bottom of the ball, under the middle (below the LEDs when they cover only its top).' : 'The point is the middle of the base.'}</PropNote>
+    </>
+    ),
+    pattern: (
+    <>
       <PropSelect<NonNullable<Fixture['pattern']>>
         label="LED pattern"
         hint={
@@ -617,6 +678,11 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
           onChange={(spin) => onChange({ spin: spin === 'ccw' ? undefined : spin })}
         />
       )}
+      {patternNote}
+    </>
+    ),
+    turn: (
+    <>
       {place(
         <FacingProp
           f={f}
@@ -624,12 +690,11 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
           hint={`Turned as seen from above: ${wave ? 'the middle of the passes' : `where ${spiral ? 'the spiral' : 'the first strand'} starts`}. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`}
         />
       )}
-      {stringNote}
       {place(<TiltProp label="Leans right" value={f.rotation} onChange={(rotation) => onChange({ rotation })} hint="Tilted about its base, as seen from the front: more leans it to the right, less to the left" />)}
       {place(<TiltProp label="Leans to street" value={f.tilt} onChange={(tilt) => onChange({ tilt })} hint="Tilted about its base, as seen from the side view: more leans it toward the street, less toward the house" />)}
-      <PropNote>{ball ? 'The point is the bottom of the ball, under the middle (below the LEDs when they cover only its top).' : 'The point is the middle of the base.'}</PropNote>
     </>
-  );
+    )
+  });
 }
 
 const uid = () => (crypto.randomUUID?.() ?? String(Math.random())).slice(0, 8);
@@ -1030,6 +1095,8 @@ export function LayoutPage() {
     setCorner(null);
     setMatch(null);
     setShaping({ id: f.id, led: validMarks(f).at(-1)?.led ?? 0 });
+    // On a phone: the panel half way up, so the tree shows above it while you work.
+    if (phone) setSheet('half');
   };
   const setShapeLed = (led: number) => shapeSel && setShaping({ id: shapeSel.id, led: Math.max(0, Math.min(Math.floor(shapeSel.pixels) - 1, Math.round(led))) });
   /** Moves the tree's blinking LED to the first LED of the next (1) or the previous (-1) strand, counted from device LED 0. */
@@ -1064,6 +1131,7 @@ export function LayoutPage() {
     setSegment(null);
     setCorner(point);
     setMatch({ id: f.id, point, offset: pointOffsets(f)[point] });
+    if (phone) setSheet('half');
   };
   /** Moves the wizard to another point of its line, starting from that point's LED. */
   const matchGo = (point: number, f: Fixture | null = matching) => {
@@ -3158,6 +3226,7 @@ export function LayoutPage() {
               onGo={(point) => matchGo(point)}
               onFound={matchFound}
               onStop={() => setMatch(null)}
+              phone={phone}
             />
           </PropSection>
         ) : shapeSel && probe ? (
@@ -3175,6 +3244,7 @@ export function LayoutPage() {
               onStrand={shapeStrand}
               onMarks={(marks) => update(shapeSel.id, { marks })}
               onStop={() => setShaping(null)}
+              phone={phone}
             />
           </PropSection>
         ) : (
@@ -3188,7 +3258,7 @@ export function LayoutPage() {
                 <div className="flex">
                   <button
                     type="button"
-                    className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                    className="grid size-6 place-items-center rounded text-stone-500 pointer-coarse:size-11 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
                     onClick={() => setSegment(segment - 1)}
                     disabled={segment === 0}
                     aria-label="Previous segment"
@@ -3198,7 +3268,7 @@ export function LayoutPage() {
                   </button>
                   <button
                     type="button"
-                    className="grid size-6 place-items-center rounded text-stone-500 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
+                    className="grid size-6 place-items-center rounded text-stone-500 pointer-coarse:size-11 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 [&_svg]:size-3.5"
                     onClick={() => setSegment(segment + 1)}
                     disabled={segment >= sel.points.length - 2}
                     aria-label="Next segment"
@@ -3375,9 +3445,18 @@ export function LayoutPage() {
           </PropSection>
 
           {!isLine(sel) && sel.kind !== 'custom' ? (
-            <PropSection key="shape" id="shape" title="Shape">
-              <ShapeProps f={sel} m={m} locked={!!sel.locked} strung={stringGap(sel, layout) != null} onChange={(patch) => update(sel.id, patch)} />
-            </PropSection>
+            phone ? (
+              // On a phone, a section for each part, so no one of them is a long scroll.
+              SHAPE_PARTS.filter((p) => shapeParts(sel).includes(p.part)).map(({ part, title }) => (
+                <PropSection key={`shape-${part}`} id={part === 'size' ? 'shape' : `shape-${part}`} title={title}>
+                  <ShapeProps f={sel} m={m} locked={!!sel.locked} strung={stringGap(sel, layout) != null} onChange={(patch) => update(sel.id, patch)} part={part} />
+                </PropSection>
+              ))
+            ) : (
+              <PropSection key="shape" id="shape" title="Shape">
+                <ShapeProps f={sel} m={m} locked={!!sel.locked} strung={stringGap(sel, layout) != null} onChange={(patch) => update(sel.id, patch)} />
+              </PropSection>
+            )
           ) : null}
           </>
         )}
@@ -3517,8 +3596,8 @@ export function LayoutPage() {
         <PropSection key="multi-items" id="multi-items" title="Selection">
           <ul className="space-y-0.5">
             {multiItems.map((it) => (
-              <li key={it.key} className="group flex items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-stone-100 dark:hover:bg-stone-800">
-                <button type="button" className="min-w-0 flex-1 truncate text-left" title="Select only this" onClick={() => pickTargets([it.key])}>
+              <li key={it.key} className="group flex items-center gap-2 rounded px-1 py-0.5 text-xs pointer-coarse:min-h-11 pointer-coarse:text-sm hover:bg-stone-100 dark:hover:bg-stone-800">
+                <button type="button" className="min-w-0 flex-1 truncate text-left pointer-coarse:self-stretch" title="Select only this" onClick={() => pickTargets([it.key])}>
                   {it.name}
                 </button>
                 <span className="text-stone-500">{it.effect ? EFFECT_NAMES[it.effect.effect] : '—'}</span>
@@ -3527,7 +3606,7 @@ export function LayoutPage() {
                   aria-label={`Remove ${it.name} from the selection`}
                   title="Remove from the selection"
                   onClick={() => toggleTarget(it.key)}
-                  className="grid size-5 place-items-center rounded text-stone-400 opacity-0 group-hover:opacity-100 hover:text-stone-900 dark:hover:text-white [&_svg]:size-3"
+                  className="grid size-5 place-items-center rounded text-stone-400 opacity-0 group-hover:opacity-100 pointer-coarse:size-11 pointer-coarse:opacity-100 hover:text-stone-900 dark:hover:text-white [&_svg]:size-3"
                 >
                   <X />
                 </button>
@@ -4744,7 +4823,8 @@ function MatchWizard({
   onMove,
   onGo,
   onFound,
-  onStop
+  onStop,
+  phone = false
 }: {
   f: Fixture;
   probe: MatchProbe;
@@ -4762,6 +4842,8 @@ function MatchWizard({
   onGo: (point: number) => void;
   onFound: () => void;
   onStop: () => void;
+  /** A phone: no keys to list. */
+  phone?: boolean;
 }) {
   const L = f.points.length - 1;
   const n = Math.max(1, Math.floor(f.pixels));
@@ -4855,7 +4937,7 @@ function MatchWizard({
         step={1}
         value={offset}
         onChange={(e) => onSet(Number(e.target.value))}
-        className="h-7 w-full cursor-pointer accent-red-600 dark:accent-red-400"
+        className="h-7 w-full cursor-pointer accent-red-600 pointer-coarse:h-11 dark:accent-red-400"
       />
       <div className="flex items-center gap-1">
         <PropButton onClick={() => onGo(point - 1)} disabled={point === 0} title="The point before (Backspace)">
@@ -4865,7 +4947,7 @@ function MatchWizard({
           Skip
         </PropButton>
         <span className="flex-1" />
-        <Button size="sm" variant="primary" onClick={onFound} title="This LED is the spot (Enter)">
+        <Button size="sm" variant="primary" onClick={onFound} title="This LED is the spot (Enter)" className="pointer-coarse:h-11 pointer-coarse:px-5">
           {point === L ? 'Found it, done' : 'Found it'}
         </Button>
       </div>
@@ -4877,19 +4959,27 @@ function MatchWizard({
             onClick={() => onGo(i)}
             title={i === 0 ? 'The start' : i === L ? 'The end' : `Corner ${i}`}
             aria-current={i === point}
-            className={cn(
-              'size-2.5 rounded-full ring-1 ring-stone-400 dark:ring-stone-500',
-              i < point && 'bg-emerald-500 ring-emerald-500',
-              i === point && 'bg-red-500 ring-2 ring-red-500',
-              isPinned(f, i) && i > point && 'bg-amber-400 ring-amber-400'
-            )}
-          />
+            aria-label={i === 0 ? 'The start' : i === L ? 'The end' : `Corner ${i}`}
+            // A finger-sized target on a touch screen, around the same small dot.
+            className="grid place-items-center pointer-coarse:size-10"
+          >
+            <span
+              className={cn(
+                'size-2.5 rounded-full ring-1 ring-stone-400 pointer-coarse:size-3.5 dark:ring-stone-500',
+                i < point && 'bg-emerald-500 ring-emerald-500',
+                i === point && 'bg-red-500 ring-2 ring-red-500',
+                isPinned(f, i) && i > point && 'bg-amber-400 ring-amber-400'
+              )}
+            />
+          </button>
         ))}
       </div>
       {lights ? <PropNote tone="red">{lights}</PropNote> : null}
-      <PropNote>
-        Arrow keys move the LED (Shift: 10 at a time{perStrand ? '; Page Up and Page Down: a strand' : ''}), Enter takes it, Backspace goes back, Esc stops.
-      </PropNote>
+      {phone ? null : (
+        <PropNote>
+          Arrow keys move the LED (Shift: 10 at a time{perStrand ? '; Page Up and Page Down: a strand' : ''}), Enter takes it, Backspace goes back, Esc stops.
+        </PropNote>
+      )}
       <PropRow label="">
         <PropButton onClick={onStop}>
           <X /> Stop
