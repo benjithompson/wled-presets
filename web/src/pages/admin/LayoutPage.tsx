@@ -156,7 +156,7 @@ import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { useMedia } from '../../lib/useMedia.ts';
 import { ActionSheet, BottomSheet, type SheetSize } from '../../components/mobile.tsx';
 import { HoldRing } from '../../components/HoldRing.tsx';
-import { OVERVIEW, useOverview } from './AdminLayout.tsx';
+import { OVERVIEW, PageMenu, useOverview } from './AdminLayout.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
@@ -2477,7 +2477,7 @@ export function LayoutPage() {
                   ? 'Tap two points to measure the distance between them. Then type the real distance to set the scale.'
                   : tool === 'align'
                     ? ALIGN_STEPS[alignPts.length]
-                    : 'Hold your finger on an object for a second to select it (hold again for its actions). Drag to pan, pinch to zoom. On the selected object, drag the white square to move it, the arrows to move it along one axis, the ring to turn it and the yellow squares to resize it.';
+                    : 'Hold your finger on an object for half a second to select it (hold again for its actions). Drag to pan, pinch to zoom. On the selected object, drag the white square to move it, the arrows to move it along one axis, the ring to turn it and the yellow squares to resize it.';
   const deskHint = !has2d
     ? 'Show the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
     : panMode
@@ -3024,7 +3024,7 @@ export function LayoutPage() {
     const zoom = side ? Math.round((fitCam(contentBox(side), sizeOf(side), offOf(side)).k / camFor(side).k) * 100) : null;
     if (phone)
       return (
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-white/10 bg-stone-900 px-1.5 text-xs text-white/55 select-none">
+        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/10 bg-stone-900 px-1 text-xs text-white/55 select-none">
           <div role="group" aria-label="View" className="inline-flex rounded-lg bg-white/10 p-0.5">
             {(['front', 'top', 'side', '3d'] as ViewName[]).map((x) => (
               <button
@@ -3814,9 +3814,14 @@ export function LayoutPage() {
   const iconButton =
     'grid size-10 shrink-0 place-items-center rounded-lg text-stone-600 transition hover:bg-stone-200/70 active:bg-stone-200 disabled:opacity-35 dark:text-stone-300 dark:hover:bg-stone-800 dark:active:bg-stone-700 [&_svg]:size-[18px]';
 
-  /** The phone's command bar: one row, the menus under ⋯. */
+  /** The phone's command bar: one row, the menus under ⋯. The page has no header here, so it starts with the page menu. */
   const phoneBar = (
-    <div className="flex shrink-0 items-center gap-0.5 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
+    <div
+      className="relative z-30 flex shrink-0 items-center gap-0.5 border-b border-stone-200 bg-stone-50 px-1.5 py-0.5 dark:border-stone-800 dark:bg-stone-900"
+      style={{ paddingTop: 'calc(0.125rem + env(safe-area-inset-top, 0px))' }}
+    >
+      <PageMenu className={iconButton} />
+      {barSep}
       <button type="button" onClick={undo} disabled={!history.canUndo} aria-label="Undo" className={iconButton}>
         <Undo2 />
       </button>
@@ -3868,7 +3873,7 @@ export function LayoutPage() {
   const AddIcon = addTool ? addTool[1] : Plus;
   /** The phone's toolbar: select, edit and split; a drawer of objects to add; measure; snapping. Two fingers pan, so no Pan tool. */
   const phoneTools = (
-    <div role="toolbar" aria-label="Tools" className="relative z-20 flex shrink-0 items-center gap-1 border-b border-stone-200 bg-stone-50 px-1.5 py-1 dark:border-stone-800 dark:bg-stone-900">
+    <div role="toolbar" aria-label="Tools" className="relative z-20 flex shrink-0 items-center gap-1 border-b border-stone-200 bg-stone-50 px-1.5 py-0.5 dark:border-stone-800 dark:bg-stone-900">
       {toolButton('select', MousePointer2)}
       {toolButton('edit', PenTool)}
       {toolButton('split', Scissors)}
@@ -3911,15 +3916,15 @@ export function LayoutPage() {
     </div>
   );
 
-  /** The phone's status line: the tool and what it needs next. Tap it to read all of it. */
+  /** The phone's status line, over the bottom of the view so it takes none of its height: the tool and what it needs next. Tap it to read all of it. */
   const phoneStatus = (
     <button
       type="button"
       onClick={() => setHintOpen((v) => !v)}
       aria-expanded={hintOpen}
-      className="flex shrink-0 items-start gap-2 border-t border-stone-200 bg-stone-50 px-3 py-1.5 text-left text-[11px] text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400"
+      className="absolute inset-x-2 bottom-2 z-10 flex items-start gap-2 rounded-lg bg-stone-900/75 px-2.5 py-1 text-left text-[11px] text-white/70 shadow-lg ring-1 ring-white/10 backdrop-blur"
     >
-      <span className="font-semibold text-stone-700 dark:text-stone-200">{TOOL_LABELS[tool]}</span>
+      <span className="font-semibold text-white">{TOOL_LABELS[tool]}</span>
       <span className={cn('min-w-0 flex-1', !hintOpen && 'truncate')}>{hint}</span>
       <ChevronDown className={cn('mt-px size-3.5 shrink-0 transition', hintOpen && 'rotate-180')} />
     </button>
@@ -3965,6 +3970,8 @@ export function LayoutPage() {
   };
 
   const SelIcon = sel ? KIND_ICONS[sel.kind] : null;
+  /** The command line over the views is up: the line tool is drawing, or the measure or align tool is in use. */
+  const commandLine = drawing || (tool === 'measure' && tapeLength != null) || tool === 'align';
   /** The phone's bottom sheet: the object list and the inspector, in two tabs. */
   const phoneSheet = (
     <BottomSheet
@@ -4204,8 +4211,9 @@ export function LayoutPage() {
             ))}
           </div>
 
-          {/* The command line: what the line tool or the measure tool needs next. */}
-          {drawing || (tool === 'measure' && tapeLength != null) || tool === 'align' ? (
+          {/* The command line: what the line tool or the measure tool needs next. On a phone it takes the status line's place. */}
+          {phone && !commandLine ? phoneStatus : null}
+          {commandLine ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-3">
               <div className="pointer-events-auto">
                 {drawing && isLineTool(tool) ? (
@@ -4272,10 +4280,7 @@ export function LayoutPage() {
         </div>
 
         {phone ? (
-          <>
-            {sheet === 'full' ? null : phoneStatus}
-            {phoneSheet}
-          </>
+          phoneSheet
         ) : (
           <>
             {/* The side panel: the object list. The selected object opens in the list, with its properties right under it. */}
@@ -5616,7 +5621,7 @@ function ContextMenu({ menu, sheet, onClose }: { menu: { x: number; y: number; t
 /** How long a finger holds still on a handle for its right-click menu (a point's), in ms. */
 const LONG_PRESS_MS = 500;
 /** How long a finger holds still on an object to select it (or, on the selected one, for its menu), in ms. */
-const HOLD_SELECT_MS = 1000;
+const HOLD_SELECT_MS = 500;
 /** How far a finger moves before a touch is a pan, not a tap or a hold, in pixels. */
 const PAN_SLOP = 8;
 

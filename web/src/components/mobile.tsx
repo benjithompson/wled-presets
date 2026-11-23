@@ -147,7 +147,7 @@ export function BottomSheet<T extends string>({
       aria-label={label}
       className={cn(
         'flex min-h-0 shrink-0 flex-col border-t border-stone-200 bg-white text-sm shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.3)] dark:border-stone-800 dark:bg-stone-900',
-        size === 'half' && 'h-[45dvh]',
+        size === 'half' && 'h-[40dvh]',
         size === 'full' && 'flex-1'
       )}
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
@@ -155,7 +155,7 @@ export function BottomSheet<T extends string>({
       <button
         type="button"
         aria-label={size === 'peek' ? 'Open the panel' : 'Close the panel'}
-        className="flex h-6 w-full shrink-0 touch-none items-center justify-center"
+        className="flex h-5 w-full shrink-0 touch-none items-center justify-center"
         onPointerDown={(e) => {
           drag.current = e.clientY;
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -175,7 +175,7 @@ export function BottomSheet<T extends string>({
       >
         <span className="h-1 w-10 rounded-full bg-stone-300 dark:bg-stone-600" />
       </button>
-      <div className="flex shrink-0 items-center gap-1 px-2 pb-2">
+      <div className="flex shrink-0 items-center gap-1 px-2 pb-1.5">
         <div role="tablist" aria-label={label} className="flex min-w-0 flex-1 rounded-lg bg-stone-100 p-0.5 dark:bg-stone-800">
           {tabs.map((t) => (
             <button
