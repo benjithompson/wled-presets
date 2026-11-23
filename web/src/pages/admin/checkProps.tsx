@@ -89,7 +89,7 @@ function Choice<T extends string>({ value, options, onChange, label }: { value: 
           aria-checked={value === v}
           onClick={() => onChange(v)}
           className={cn(
-            'h-7 truncate rounded px-1.5 text-xs font-medium transition',
+            'h-7 truncate rounded px-1.5 text-xs font-medium transition pointer-coarse:h-11 pointer-coarse:text-sm',
             value === v ? 'bg-white text-stone-950 shadow-sm dark:bg-stone-600 dark:text-white' : 'text-stone-600 hover:text-stone-950 dark:text-stone-300 dark:hover:text-white'
           )}
         >
@@ -286,7 +286,7 @@ export function ObjectCheckProps({
           </PropNote>
           {guesses.length > 1 ? (
             <div className="flex items-center gap-1 rounded-md bg-stone-100 p-1 dark:bg-stone-800">
-              <button type="button" onClick={() => go(-1)} aria-label="The way before" title="The way before" className="grid size-7 shrink-0 place-items-center rounded hover:bg-white dark:hover:bg-stone-700 [&_svg]:size-4">
+              <button type="button" onClick={() => go(-1)} aria-label="The way before" title="The way before" className="grid size-7 shrink-0 place-items-center rounded pointer-coarse:size-11 hover:bg-white dark:hover:bg-stone-700 [&_svg]:size-4">
                 <ChevronLeft />
               </button>
               <div className="min-w-0 flex-1 text-center">
@@ -295,7 +295,7 @@ export function ObjectCheckProps({
                   {cur < 0 ? 'Set by hand' : guesses[cur].label}
                 </p>
               </div>
-              <button type="button" onClick={() => go(1)} aria-label="Try the next way" title="Try the next way" className="grid size-7 shrink-0 place-items-center rounded hover:bg-white dark:hover:bg-stone-700 [&_svg]:size-4">
+              <button type="button" onClick={() => go(1)} aria-label="Try the next way" title="Try the next way" className="grid size-7 shrink-0 place-items-center rounded pointer-coarse:size-11 hover:bg-white dark:hover:bg-stone-700 [&_svg]:size-4">
                 <ChevronRight />
               </button>
             </div>
@@ -336,7 +336,7 @@ function StringList({ f, perStrand, onPatch }: { f: Fixture; perStrand: number |
   const ranges = stringRanges(n, perStrand, f.stringBreaks);
   const first = f.startPixel;
   const apply = (next: { pixels: number; stringBreaks: number[] | undefined }) => onPatch({ pixels: Math.min(MAX_FIXTURE_PIXELS, Math.max(1, next.pixels)), stringBreaks: next.stringBreaks });
-  const cell = 'h-7 text-xs';
+  const cell = 'h-7 text-xs pointer-coarse:h-11';
   const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem] items-center gap-x-2';
   return (
     <>
@@ -578,12 +578,12 @@ export function CheckBar({ check, objectName, layout, m, onChange }: { check: Ed
             disabled={check.at == null}
             title="Sweep across the yard"
             aria-label="Sweep across the yard"
-            className="grid size-7 shrink-0 place-items-center rounded-full hover:bg-white/15 disabled:hidden [&_svg]:size-3.5"
+            className="grid size-7 shrink-0 place-items-center rounded-full pointer-coarse:size-10 hover:bg-white/15 disabled:hidden [&_svg]:size-3.5"
           >
             <Play />
           </button>
         ) : null}
-        <button type="button" onClick={() => onChange(null)} title="Stop the check" aria-label="Stop the check" className="grid size-7 shrink-0 place-items-center rounded-full hover:bg-white/15 [&_svg]:size-3.5">
+        <button type="button" onClick={() => onChange(null)} title="Stop the check" aria-label="Stop the check" className="grid size-7 shrink-0 place-items-center rounded-full pointer-coarse:size-10 hover:bg-white/15 [&_svg]:size-3.5">
           <X />
         </button>
       </div>

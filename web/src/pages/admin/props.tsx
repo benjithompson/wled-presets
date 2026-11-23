@@ -1,13 +1,15 @@
 // A property inspector, as in CAD and design programs: folding sections, with one property per
 // row (the label on the left, the value on the right). Drag a number's label left or right to
-// change the number (Shift: 10 times faster), or use the arrow keys in the field.
+// change the number (Shift: 10 times faster), or use the arrow keys in the field. On a touch
+// screen (pointer: coarse) every field and button is finger-sized (44 px) and the rows sit
+// further apart.
 import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { inputBase } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
 
 export const propInput =
-  'h-7 w-full min-w-0 rounded-md bg-white px-2 text-xs tabular-nums ring-1 ring-inset ring-stone-200 placeholder:text-stone-400 transition focus:ring-2 focus:ring-accent-500 focus:outline-none disabled:opacity-60 dark:bg-stone-950 dark:ring-stone-700 dark:placeholder:text-stone-600';
+  'h-7 w-full min-w-0 rounded-md bg-white px-2 text-xs pointer-coarse:h-11 pointer-coarse:px-3 tabular-nums ring-1 ring-inset ring-stone-200 placeholder:text-stone-400 transition focus:ring-2 focus:ring-accent-500 focus:outline-none disabled:opacity-60 dark:bg-stone-950 dark:ring-stone-700 dark:placeholder:text-stone-600';
 
 const SELECT_CHEVRON = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a8a29e' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`;
 
@@ -46,7 +48,7 @@ export function PropSection({ id, title, actions, children, defaultOpen = true }
   const toggle = acc ? () => acc.set(open ? null : id) : toggleOwn;
   return (
     <section className="border-b border-stone-200 dark:border-stone-800">
-      <div className={cn('flex items-center gap-1 pr-2', acc ? 'h-11' : 'h-8')}>
+      <div className={cn('flex items-center gap-1 pr-2', acc ? 'h-12' : 'h-8 pointer-coarse:h-12')}>
         <button
           type="button"
           onClick={toggle}
@@ -61,7 +63,8 @@ export function PropSection({ id, title, actions, children, defaultOpen = true }
         </button>
         {actions}
       </div>
-      {open ? <div className="space-y-1.5 px-3 pb-3">{children}</div> : null}
+      {/* Rows wrapped in a fieldset (display: contents, to lock them) get the same space as the others. */}
+      {open ? <div className="space-y-1.5 px-3 pb-3 pointer-coarse:space-y-3 pointer-coarse:pb-4 [&>fieldset>*]:mb-1.5 pointer-coarse:[&>fieldset>*]:mb-3">{children}</div> : null}
     </section>
   );
 }
@@ -78,12 +81,12 @@ export function PropAdvanced({ id, label = 'Advanced', children }: { id: string;
         type="button"
         onClick={toggle}
         aria-expanded={open}
-        className="flex items-center gap-1 text-[11px] font-medium text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white"
+        className="flex items-center gap-1 text-[11px] font-medium text-stone-500 hover:text-stone-900 pointer-coarse:h-10 pointer-coarse:text-xs dark:text-stone-400 dark:hover:text-white"
       >
         <ChevronDown className={cn('size-3 shrink-0 transition', !open && '-rotate-90')} />
         {label}
       </button>
-      {open ? <div className="mt-1.5 space-y-1.5 border-l-2 border-stone-200 pl-2 dark:border-stone-700">{children}</div> : null}
+      {open ? <div className="mt-1.5 space-y-1.5 pointer-coarse:space-y-3 border-l-2 border-stone-200 pl-2 dark:border-stone-700">{children}</div> : null}
     </div>
   );
 }
@@ -108,7 +111,7 @@ export function PropRow({
 }) {
   const drag = useRef<{ x: number; last: number } | null>(null);
   return (
-    <div className="grid min-h-7 grid-cols-[minmax(0,7rem)_minmax(0,1fr)] items-center gap-2">
+    <div className="grid min-h-7 grid-cols-[minmax(0,7rem)_minmax(0,1fr)] items-center gap-2 pointer-coarse:min-h-11 pointer-coarse:gap-3">
       <label
         htmlFor={htmlFor}
         title={hint ?? (onScrub ? 'Drag left or right to change (Shift: faster)' : undefined)}
@@ -268,10 +271,10 @@ export function PropNumber({
   const clamp = (n: number) => Math.min(max, Math.max(min, Math.round(n * 1000) / 1000));
   const bump = (d: number, big: boolean) => value != null && onChange(clamp(value + d * step * (big ? 10 : 1)));
   const btn =
-    'grid h-7 w-6 shrink-0 place-items-center rounded-md bg-stone-100 text-xs font-semibold text-stone-600 transition hover:bg-stone-200 active:scale-95 disabled:opacity-40 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700';
+    'grid h-7 w-6 shrink-0 place-items-center rounded-md bg-stone-100 text-xs font-semibold pointer-coarse:size-11 pointer-coarse:text-lg text-stone-600 transition hover:bg-stone-200 active:scale-95 disabled:opacity-40 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700';
   return (
     <PropRow label={label} hint={hint} htmlFor={id} onScrubStart={() => (start.current = value ?? 0)} onScrub={value == null ? undefined : (steps) => onChange(clamp(start.current + steps * step))}>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 pointer-coarse:gap-1.5">
         <div className="relative min-w-0 flex-1">
           {tone ? <span className={cn('pointer-events-none absolute top-1/2 left-2 size-2 -translate-y-1/2 rounded-full', tone === 'green' ? 'bg-green-500' : 'bg-red-500')} /> : null}
           <NumberInput id={id} compact decimal={decimal} value={value} min={min} max={max} step={step} placeholder={placeholder} onCommit={onChange} className={cn(tone && 'pl-6', unit && 'pr-7')} />
@@ -347,7 +350,22 @@ export function PropSelect<T extends string>({
 }
 
 /** A small button for the inspector. */
-export function PropButton({ children, onClick, disabled, title, danger }: { children: ReactNode; onClick: () => void; disabled?: boolean; title?: string; danger?: boolean }) {
+export function PropButton({
+  children,
+  onClick,
+  disabled,
+  title,
+  danger,
+  tight
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  danger?: boolean;
+  /** Little side padding, for a row of short buttons that share the width. */
+  tight?: boolean;
+}) {
   return (
     <button
       type="button"
@@ -355,7 +373,9 @@ export function PropButton({ children, onClick, disabled, title, danger }: { chi
       disabled={disabled}
       title={title}
       className={cn(
-        'inline-flex h-7 items-center gap-1.5 rounded-md bg-stone-100 px-2.5 text-xs font-medium transition hover:bg-stone-200 disabled:pointer-events-none disabled:opacity-50 dark:bg-stone-800 dark:hover:bg-stone-700 [&_svg]:size-3.5',
+        'inline-flex h-7 items-center gap-1.5 rounded-md bg-stone-100 text-xs font-medium pointer-coarse:h-11 pointer-coarse:text-sm',
+        tight ? 'min-w-0 justify-center px-1' : 'px-2.5 pointer-coarse:px-3.5',
+        'transition pointer-coarse:[&_svg]:size-4 hover:bg-stone-200 disabled:pointer-events-none disabled:opacity-50 dark:bg-stone-800 dark:hover:bg-stone-700 [&_svg]:size-3.5',
         danger ? 'text-red-600 dark:text-red-400' : 'text-stone-700 dark:text-stone-200'
       )}
     >
@@ -378,7 +398,7 @@ export function PropSlider({ label, value, onChange, hint }: { label: ReactNode;
           step={0.01}
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
-          className="h-7 min-w-0 flex-1 cursor-pointer accent-sky-600 dark:accent-sky-400"
+          className="h-7 min-w-0 flex-1 cursor-pointer accent-sky-600 pointer-coarse:h-11 dark:accent-sky-400"
         />
         <span className="w-7 shrink-0 text-right text-[11px] text-stone-500 tabular-nums">{Math.round(value * 100)}</span>
       </div>

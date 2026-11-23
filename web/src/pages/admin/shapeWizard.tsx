@@ -4,11 +4,12 @@
 // high. The tree's pattern, bent to go through those marks, places the rest (see
 // Fixture.marks, shared/layout.ts).
 
+import { useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronLeft, ChevronRight, Minus, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import { deviceLed, litFloor, shapePlaces, treeSize, validMarks, type Fixture, type Offset3, type ShapeMark } from '../../../../shared/layout.ts';
 import { Button } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
-import { PropButton, PropNote, PropNumber, PropRow } from './props.tsx';
+import { PropAdvanced, PropButton, PropNote, PropNumber, PropRow } from './props.tsx';
 
 /** Degrees in (-180, 180]. */
 export const wrapDeg = (d: number) => {
@@ -100,7 +101,8 @@ export function ShapeWizard({
   onSet,
   onStrand,
   onMarks,
-  onStop
+  onStop,
+  phone = false
 }: {
   f: Fixture;
   /** The blinking LED, counted from the object's LED 0. */
@@ -118,7 +120,13 @@ export function ShapeWizard({
   onStrand: (dir: 1 | -1) => void;
   onMarks: (marks: ShapeMark[] | undefined) => void;
   onStop: () => void;
+  /**
+   * A phone: the blinking LED stays on top and the rest is in tabs (mark it, move it, the marks),
+   * so the panel stays short and the tree shows above it. The help is folded away and the keys are left out.
+   */
+  phone?: boolean;
 }) {
+  const [tab, setTab] = useState<'mark' | 'move' | 'marks'>('mark');
   const n = Math.max(1, Math.floor(f.pixels));
   const wave = f.pattern === 'wave';
   const facing = f.facing ?? 0;
@@ -147,7 +155,7 @@ export function ShapeWizard({
     ]
       .filter(Boolean)
       .join(', ');
-  const pad = 'grid h-8 place-items-center rounded-md bg-stone-100 text-stone-700 transition hover:bg-stone-200 active:scale-95 disabled:opacity-40 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 [&_svg]:size-4';
+  const pad = 'grid h-8 pointer-coarse:h-12 place-items-center rounded-md bg-stone-100 text-stone-700 transition hover:bg-stone-200 active:scale-95 disabled:opacity-40 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 [&_svg]:size-4';
   const nudge = (m: ShapeMark, dir: 1 | -1) => onMarks(raiseMark(f, m.led, dir * du));
   const remove = (m: ShapeMark) => {
     const rest = marks.filter((x) => x.led !== m.led);
@@ -170,13 +178,35 @@ export function ShapeWizard({
       <span className={cn('w-full text-center', on(a) && 'font-semibold text-amber-600 dark:text-amber-400')}>{label}</span>
     </PropButton>
   );
-  return (
-    <>
+  const intro = (
       <p className="text-xs text-stone-600 dark:text-stone-400">
         {wave
           ? 'Move the blinking red LED along the string. Mark its first LED, each LED where the string turns at the left or the right side of the tree, and its last LED. Each row is as wide as its LEDs go (fewer LEDs: a narrower row), and the rows sit evenly apart up the tree: set the tree’s width and height after, or a turn’s height here.'
           : 'Move the blinking red LED along the string. Mark where it starts and ends, and each LED where it passes the front, the right, the back or the left of the tree (as seen from the street). Then set how high each mark is. The pattern, bent to go through the marks, places the LEDs in between.'}
       </p>
+  );
+  const ledCountNote = ledCount ? (
+    <p className="text-[11px] text-stone-500 tabular-nums">
+      {device ?? 'The device'} has {ledCount} LEDs in WLED (0–{ledCount - 1}).
+    </p>
+  ) : null;
+  const stepButtons = steps.map(([d, label]) => (
+    <PropButton key={d} tight={phone} onClick={() => onSet(led + d)} disabled={d < 0 ? led <= 0 : led >= n - 1} title={`${d < 0 ? 'Back toward the start' : 'On toward the end'} by ${Math.abs(d)}`}>
+      <span className="w-full text-center tabular-nums">{label}</span>
+    </PropButton>
+  ));
+  const startButton = (
+    <PropButton tight={phone} onClick={() => onSet(0)} disabled={led === 0} title="The first LED of the tree (Home)">
+      <span className="w-full text-center">Start</span>
+    </PropButton>
+  );
+  const endButton = (
+    <PropButton tight={phone} onClick={() => onSet(n - 1)} disabled={led === n - 1} title="The last LED of the tree (End)">
+      <span className="w-full text-center">End</span>
+    </PropButton>
+  );
+  const ledBlock = (
+    <>
       <div className="flex items-center justify-between gap-2 rounded-md bg-stone-100 px-2.5 py-2 dark:bg-stone-800">
         <span className="text-lg font-semibold text-red-600 tabular-nums dark:text-red-400">LED {dev}</span>
         <span className="text-right text-[11px] text-stone-500 tabular-nums">
@@ -190,22 +220,19 @@ export function ShapeWizard({
           {led === 0 ? 'the start' : led === n - 1 ? 'the end' : before ? `${led - before.led} LEDs after the last mark` : `${led} LEDs after the start`}
         </span>
       </div>
-      {ledCount ? (
-        <p className="text-[11px] text-stone-500 tabular-nums">
-          {device ?? 'The device'} has {ledCount} LEDs in WLED (0–{ledCount - 1}).
-        </p>
-      ) : null}
-      <div className="grid grid-cols-4 gap-1">
-        {steps.map(([d, label]) => (
-          <PropButton key={d} onClick={() => onSet(led + d)} disabled={d < 0 ? led <= 0 : led >= n - 1} title={`${d < 0 ? 'Back toward the start' : 'On toward the end'} by ${Math.abs(d)}`}>
-            <span className="w-full text-center tabular-nums">{label}</span>
-          </PropButton>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-1">
-        <PropButton onClick={() => onSet(0)} disabled={led === 0} title="The first LED of the tree (Home)">
-          Start
-        </PropButton>
+      {phone ? null : ledCountNote}
+      {phone ? (
+        // One row on a phone: the first LED, the steps back and on, the last LED.
+        <div className="grid grid-cols-6 gap-1">
+          {startButton}
+          {stepButtons}
+          {endButton}
+        </div>
+      ) : (
+        <div className="grid grid-cols-4 gap-1">{stepButtons}</div>
+      )}
+      <div className={cn('flex flex-wrap gap-1', phone && !perStrand && 'hidden')}>
+        {phone ? null : startButton}
         {perStrand ? (
           <>
             <PropButton onClick={() => onStrand(-1)} title="To the first bulb of this strand, or of the one before (Page Up)">
@@ -216,9 +243,7 @@ export function ShapeWizard({
             </PropButton>
           </>
         ) : null}
-        <PropButton onClick={() => onSet(n - 1)} disabled={led === n - 1} title="The last LED of the tree (End)">
-          End
-        </PropButton>
+        {phone ? null : endButton}
       </div>
       <input
         type="range"
@@ -228,9 +253,12 @@ export function ShapeWizard({
         step={1}
         value={led}
         onChange={(e) => onSet(Number(e.target.value))}
-        className="h-7 w-full cursor-pointer accent-red-600 dark:accent-red-400"
+        className="h-7 w-full cursor-pointer accent-red-600 pointer-coarse:h-11 dark:accent-red-400"
       />
-
+    </>
+  );
+  const markBlock = (
+    <>
       <div className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Where is it on the tree?</div>
       {wave ? (
         <div className="grid grid-cols-3 gap-1">
@@ -305,7 +333,10 @@ export function ShapeWizard({
           The drawing has it {wayText(wrapDeg(place.angle + facing)).toLowerCase()}, {heightText(place.height)} up. Mark it where you really see it.
         </PropNote>
       )}
-
+    </>
+  );
+  const moveBlock = (
+    <>
       <div className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Move it</div>
       <div className="flex items-start gap-2">
         {/* As seen from the street: left, right, up, down; then nearer or farther. */}
@@ -343,46 +374,96 @@ export function ShapeWizard({
         {moved ? `Moved ${movedText(moved)} from the shape. ` : ''}Each press moves it {lenText(stepLu)}; the LEDs between it and the marks on either side move along. A move marks the LED where it is,
         if it has no mark yet.
       </p>
-
-      {marks.length ? (
+    </>
+  );
+  const marksBlock = marks.length ? (
         <div className="space-y-0.5">
           <div className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Marks ({marks.length})</div>
-          <div className="max-h-48 overflow-y-auto">
+          <div className={cn('overflow-y-auto', !phone && 'max-h-48')}>
             {marks.map((m) => (
-              <div key={m.led} className={cn('flex items-center gap-1 rounded px-1 text-xs tabular-nums', m.led === led && 'bg-red-50 dark:bg-red-950/40')}>
-                <button type="button" className="min-w-0 flex-1 truncate py-0.5 text-left hover:underline" onClick={() => onSet(m.led)} title="Blink this LED">
+              <div key={m.led} className={cn('flex items-center gap-1 rounded px-1 text-xs tabular-nums pointer-coarse:text-sm', m.led === led && 'bg-red-50 dark:bg-red-950/40')}>
+                <button type="button" className="min-w-0 flex-1 truncate py-0.5 text-left hover:underline pointer-coarse:py-3" onClick={() => onSet(m.led)} title="Blink this LED">
                   LED {deviceLed(f, m.led)} · {wayText(street(m))} · {heightText(heightOf(m))}
                   {m.offset ? ' · moved' : ''}
                 </button>
-                <button type="button" className="grid size-6 place-items-center rounded hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => nudge(m, -1)} aria-label="Lower" title="Lower">
+                <button type="button" className="grid size-6 place-items-center rounded pointer-coarse:size-11 hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => nudge(m, -1)} aria-label="Lower" title="Lower">
                   <Minus />
                 </button>
-                <button type="button" className="grid size-6 place-items-center rounded hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => nudge(m, 1)} aria-label="Higher" title="Higher">
+                <button type="button" className="grid size-6 place-items-center rounded pointer-coarse:size-11 hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => nudge(m, 1)} aria-label="Higher" title="Higher">
                   <Plus />
                 </button>
-                <button type="button" className="grid size-6 place-items-center rounded hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => remove(m)} aria-label="Remove" title="Remove this mark">
+                <button type="button" className="grid size-6 place-items-center rounded pointer-coarse:size-11 hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => remove(m)} aria-label="Remove" title="Remove this mark">
                   <X />
                 </button>
               </div>
             ))}
           </div>
         </div>
-      ) : null}
-
-      {lights ? <PropNote tone="red">{lights}</PropNote> : null}
+  ) : null;
+  const keys = (
       <PropNote>
         Arrow keys move the LED (Shift: 10 at a time{perStrand ? '; Page Up and Page Down: a strand' : ''}; Home, End). {wave ? 'L, F, R' : 'F, R, B, L'} mark it; [ and ] lower or raise its
         mark on the shape; Alt and the arrows (Page Up, Page Down: nearer the house or the street) move it; Delete removes it; Esc stops.
       </PropNote>
+  );
+  const footer = (
       <div className="flex items-center gap-1">
         <PropButton onClick={() => onMarks(undefined)} disabled={!marks.length} danger title="Every LED goes back to where the pattern puts it">
           <Trash2 /> Clear marks
         </PropButton>
         <span className="flex-1" />
-        <Button size="sm" variant="primary" onClick={onStop}>
+        <Button size="sm" variant="primary" onClick={onStop} className="pointer-coarse:h-11 pointer-coarse:px-5">
           Done
         </Button>
       </div>
+  );
+  const lightsNote = lights ? <PropNote tone="red">{lights}</PropNote> : null;
+  if (phone) {
+    const tabs: ['mark' | 'move' | 'marks', string][] = [
+      ['mark', 'Mark it'],
+      ['move', 'Move it'],
+      ['marks', `Marks${marks.length ? ` (${marks.length})` : ''}`]
+    ];
+    return (
+      <>
+        {lightsNote}
+        {ledBlock}
+        <div role="tablist" aria-label="Shape to the lights" className="grid grid-cols-3 gap-0.5 rounded-md bg-stone-100 p-0.5 dark:bg-stone-800">
+          {tabs.map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              role="tab"
+              aria-selected={tab === k}
+              onClick={() => setTab(k)}
+              className={cn(
+                'h-11 truncate rounded px-1.5 text-sm font-medium transition',
+                tab === k ? 'bg-white text-stone-950 shadow-sm dark:bg-stone-600 dark:text-white' : 'text-stone-600 dark:text-stone-300'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {tab === 'mark' ? markBlock : tab === 'move' ? moveBlock : (marksBlock ?? <PropNote>No marks yet. Mark the blinking LED where you see it on the tree (Mark it).</PropNote>)}
+        {footer}
+        <PropAdvanced id="shape-help" label="How it works">
+          {intro}
+          {ledCountNote}
+        </PropAdvanced>
+      </>
+    );
+  }
+  return (
+    <>
+      {intro}
+      {ledBlock}
+      {markBlock}
+      {moveBlock}
+      {marksBlock}
+      {lightsNote}
+      {keys}
+      {footer}
     </>
   );
 }

@@ -102,7 +102,7 @@ export function EffectProps({
             />
           ) : (info.space === '1d' && !info.uniform) || info.reverse ? (
             <PropRow label="Direction" hint={info.space === '1d' ? 'The effect runs from the first point to the last, or back' : undefined}>
-              <label className="flex h-7 cursor-pointer items-center gap-2 text-xs text-stone-700 dark:text-stone-300">
+              <label className="flex h-7 cursor-pointer items-center gap-2 text-xs pointer-coarse:h-11 pointer-coarse:text-sm text-stone-700 dark:text-stone-300">
                 <input type="checkbox" checked={!!effect.reverse} onChange={(e) => set({ reverse: e.target.checked || undefined })} className="accent-sky-600" />
                 {info.space === '1d' ? 'Last point to first' : info.reverse}
               </label>
@@ -131,7 +131,7 @@ export function EffectProps({
 function CustomColors({ colors, onChange }: { colors: string[]; onChange: (c: string[]) => void }) {
   return (
     <PropRow label="My colors">
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1 pointer-coarse:gap-2.5 pointer-coarse:pt-1.5">
         {colors.map((c, i) => (
           <span key={i} className="group relative">
             <input
@@ -139,14 +139,14 @@ function CustomColors({ colors, onChange }: { colors: string[]; onChange: (c: st
               value={c}
               aria-label={`Color ${i + 1}`}
               onChange={(e) => onChange(colors.map((x, j) => (j === i ? e.target.value : x)))}
-              className="block size-7 cursor-pointer rounded-md border-0 bg-transparent p-0 [&::-moz-color-swatch]:rounded-md [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0.5"
+              className="block size-7 cursor-pointer rounded-md border-0 pointer-coarse:size-11 bg-transparent p-0 [&::-moz-color-swatch]:rounded-md [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0.5"
             />
             {colors.length > 1 ? (
               <button
                 type="button"
                 aria-label={`Remove color ${i + 1}`}
                 onClick={() => onChange(colors.filter((_, j) => j !== i))}
-                className="absolute -top-1 -right-1 hidden size-3.5 place-items-center rounded-full bg-stone-900 text-white group-hover:grid dark:bg-white dark:text-stone-900 [&_svg]:size-2.5"
+                className="absolute -top-1 -right-1 hidden size-3.5 place-items-center rounded-full bg-stone-900 text-white group-hover:grid pointer-coarse:-top-2 pointer-coarse:-right-2 pointer-coarse:grid pointer-coarse:size-6 pointer-coarse:[&_svg]:size-3.5 dark:bg-white dark:text-stone-900 [&_svg]:size-2.5"
               >
                 <X />
               </button>
@@ -159,7 +159,7 @@ function CustomColors({ colors, onChange }: { colors: string[]; onChange: (c: st
             aria-label="Add a color"
             title="Add a color"
             onClick={() => onChange([...colors, colors.at(-1) ?? '#ffffff'])}
-            className="grid size-7 place-items-center rounded-md bg-stone-100 text-stone-600 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 [&_svg]:size-3.5"
+            className="grid size-7 place-items-center rounded-md bg-stone-100 text-stone-600 pointer-coarse:size-11 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 [&_svg]:size-3.5"
           >
             <Plus />
           </button>
