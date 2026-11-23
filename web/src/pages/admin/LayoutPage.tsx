@@ -59,6 +59,9 @@ import {
   semicircleSize,
   treeSize,
   deviceLed,
+  shapePlaces,
+  takesMarks,
+  validMarks,
   FEET_PER_METER,
   FIXTURE_HUES,
   editorPulse,
@@ -132,6 +135,7 @@ import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
 import { autoScale, keepScale, roofScale } from '../../../../shared/yardScale.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
+import { setMark, ShapeWizard, wrapDeg } from './shapeWizard.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
@@ -284,6 +288,9 @@ interface Measure {
   show: (layoutUnits: number) => number;
   text: (layoutUnits: number) => string;
 }
+
+/** How far one press of − or + moves a mark of Shape to the lights up or down: 3 in, or 5 cm. */
+const shapeStep = (layout: Layout) => (layout.units === 'm' ? 0.05 : 0.0762) * layoutScale(layout);
 
 function measureOf(layout: Layout): Measure {
   const units = layout.units ?? 'ft';
@@ -638,6 +645,8 @@ export function LayoutPage() {
    * `offset` is that LED for `point`; another selected point starts from its own LED.
    */
   const [match, setMatch] = useState<{ id: string; point: number; offset: number } | null>(null);
+  /** Shape to the lights: the tree being shaped, and its blinking LED (counted from its LED 0). */
+  const [shaping, setShaping] = useState<{ id: string; led: number } | null>(null);
   /**
    * A check of the drawing against the yard, on the lights and in the views (see shared/check.ts):
    * a slice or a ruler over the whole yard, or the selected object's color test or chase.
@@ -759,10 +768,20 @@ export function LayoutPage() {
   const sel = layout?.fixtures.find((f) => f.id === selected) ?? null;
   // The wizard runs while its line is selected with one of its points, and no segment.
   const matching = match && sel && sel.id === match.id && isLine(sel) && segment == null && corner != null && corner < sel.points.length ? sel : null;
-  const probe: MatchProbe | null = matching && corner != null ? { point: corner, offset: match!.point === corner ? match!.offset : pointOffsets(matching)[corner] } : null;
+  // Shape to the lights runs while its tree is selected (and still takes marks).
+  const shapeSel = shaping && sel && sel.id === shaping.id && takesMarks(sel) && !matching ? sel : null;
+  const probe: MatchProbe | null =
+    matching && corner != null
+      ? { point: corner, offset: match!.point === corner ? match!.offset : pointOffsets(matching)[corner] }
+      : shapeSel
+        ? { point: 0, offset: Math.max(0, Math.min(Math.floor(shapeSel.pixels) - 1, shaping!.led)) }
+        : null;
   useEffect(() => {
-    if (match && !probe) setMatch(null);
-  }, [match, probe]);
+    if (match && !matching) setMatch(null);
+  }, [match, matching]);
+  useEffect(() => {
+    if (shaping && !shapeSel) setShaping(null);
+  }, [shaping, shapeSel]);
   // An object's check ends when no object is selected; another selected object takes it over.
   useEffect(() => {
     if (!selected && (check?.kind === 'picture' || check?.kind === 'chase')) setCheck(null);
@@ -992,6 +1011,42 @@ export function LayoutPage() {
       return;
     }
     update(f.id, unpinPoint(f, index));
+  };
+
+  /** Starts Shape to the lights on a tree, at its last mark (or its first LED). */
+  const startShape = (f: Fixture) => {
+    if (!showOnLights) toggleShow();
+    setPlaying(false);
+    setSelected(f.id);
+    setSegment(null);
+    setCorner(null);
+    setMatch(null);
+    setShaping({ id: f.id, led: validMarks(f).at(-1)?.led ?? 0 });
+  };
+  const setShapeLed = (led: number) => shapeSel && setShaping({ id: shapeSel.id, led: Math.max(0, Math.min(Math.floor(shapeSel.pixels) - 1, Math.round(led))) });
+  /** Moves the tree's blinking LED to the first LED of the next (1) or the previous (-1) strand, counted from device LED 0. */
+  const shapeStrand = (dir: 1 | -1) => {
+    const per = shapeSel ? lightsOf(layout ?? undefined, shapeSel.lights)?.perStrand : null;
+    if (!shapeSel || !probe || !per) return;
+    const led = deviceLed(shapeSel, probe.offset);
+    const target = dir > 0 ? (Math.floor(led / per) + 1) * per : led % per ? Math.floor(led / per) * per : led - per;
+    setShapeLed(probe.offset + (shapeSel.reversed ? led - target : target - led));
+  };
+  /** Marks the blinking LED at this angle round the tree, as seen from the street (its height: where it is now, or as marked). */
+  const shapeMark = (streetAngle: number) => {
+    if (!shapeSel || !probe) return;
+    const here = validMarks(shapeSel).find((m) => m.led === probe.offset);
+    const height = here?.height ?? shapePlaces(shapeSel)[probe.offset]?.height ?? 0;
+    update(shapeSel.id, { marks: setMark(shapeSel, { led: probe.offset, angle: wrapDeg(streetAngle - (shapeSel.facing ?? 0)), height }) });
+  };
+  /** Moves the blinking LED's mark up (1) or down (-1) by one step. */
+  const shapeNudge = (dir: 1 | -1) => {
+    if (!shapeSel || !probe || !layout) return;
+    const here = validMarks(shapeSel).find((m) => m.led === probe.offset);
+    if (!here) return;
+    const lit = Math.max(1e-6, treeSize(shapeSel).h * (1 - capFloor(shapeSel)));
+    const height = Math.max(0, Math.min(1, Math.round((here.height + (dir * shapeStep(layout)) / lit) * 1000) / 1000));
+    update(shapeSel.id, { marks: setMark(shapeSel, { ...here, height }) });
   };
 
   /** Starts the wizard on a line at one of its points (default: the start). */
@@ -1267,6 +1322,29 @@ export function LayoutPage() {
         return;
       }
       if (mod || e.altKey) return;
+      if (probe && shapeSel) {
+        // Shape to the lights: arrows move the blinking LED, letters mark where it is.
+        const step = e.shiftKey ? 10 : 1;
+        const k = e.key.toLowerCase();
+        const wave = shapeSel.pattern === 'wave';
+        if (e.key === 'ArrowRight' || e.key === 'ArrowUp') setShapeLed(probe.offset + step);
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') setShapeLed(probe.offset - step);
+        else if (e.key === 'Home') setShapeLed(0);
+        else if (e.key === 'End') setShapeLed(shapeSel.pixels - 1);
+        else if (e.key === 'PageUp' || e.key === 'PageDown') shapeStrand(e.key === 'PageDown' ? 1 : -1);
+        else if (k === 'f') shapeMark(0);
+        else if (k === 'r') shapeMark(90);
+        else if (k === 'l') shapeMark(-90);
+        else if (k === 'b' && !wave) shapeMark(180);
+        else if (e.key === '[' || e.key === ']') shapeNudge(e.key === ']' ? 1 : -1);
+        else if (e.key === 'Delete' || e.key === 'Backspace') {
+          const rest = validMarks(shapeSel).filter((m) => m.led !== probe.offset);
+          update(shapeSel.id, { marks: rest.length ? rest : undefined });
+        } else if (e.key === 'Escape' || e.key === 'Enter') setShaping(null);
+        else return;
+        e.preventDefault();
+        return;
+      }
       if (probe && matching) {
         // The wizard: arrows move the blinking LED along the line, Enter takes it.
         const step = e.shiftKey ? 10 : 1;
@@ -2887,6 +2965,23 @@ export function LayoutPage() {
               onStop={() => setMatch(null)}
             />
           </PropSection>
+        ) : shapeSel && probe ? (
+          <PropSection key="shape" id="shape" title="Shape to the lights">
+            <ShapeWizard
+              f={shapeSel}
+              led={probe.offset}
+              perStrand={lightsOf(layout, shapeSel.lights)?.perStrand ?? null}
+              ledCount={ledCountOf(shapeSel)}
+              device={devices.find((d) => d.id === shapeSel.deviceId)?.name ?? null}
+              lights={!showOnLights ? 'Lights are off: turn them on in the toolbar to see the blinking LED.' : !inFront ? 'Paused while this window is not in front.' : previewDevices.length ? null : 'Waiting for the device to answer…'}
+              lenText={m.text}
+              stepLu={shapeStep(layout)}
+              onSet={setShapeLed}
+              onStrand={shapeStrand}
+              onMarks={(marks) => update(shapeSel.id, { marks })}
+              onStop={() => setShaping(null)}
+            />
+          </PropSection>
         ) : (
           <>
           {isLine(sel) && segment != null && segment < sel.points.length - 1 ? (
@@ -3015,7 +3110,7 @@ export function LayoutPage() {
           </PropSection>
 
           <PropSection key="leds" id="leds" title="LEDs">
-            <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} />
+            <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} onShape={takesMarks(sel) ? () => startShape(sel) : undefined} onClearMarks={() => update(sel.id, { marks: undefined })} />
           </PropSection>
 
           <ObjectCheckProps
@@ -3591,7 +3686,7 @@ export function LayoutPage() {
         restPanel()
       );
     // The wizard that matches a line to the lights is one section, always open.
-    if (sel && matching && probe) return body;
+    if (sel && (matching || shapeSel) && probe) return body;
     return <PropAccordion.Provider value={{ open: accOpen[key], set: (id) => setAccOpen((a) => ({ ...a, [key]: id })) }}>{body}</PropAccordion.Provider>;
   };
 
@@ -4325,9 +4420,46 @@ function PositionProps({ f, point, m, ground, onChange }: { f: Fixture; point: n
  * wizard (`onMatch`); typing the numbers is folded away under Advanced. Other objects have
  * only the numbers.
  */
-function LedProps({ f, onRange, onMatch }: { f: Fixture; onRange: (first: number, last: number) => void; onMatch?: () => void }) {
+function LedProps({
+  f,
+  onRange,
+  onMatch,
+  onShape,
+  onClearMarks
+}: {
+  f: Fixture;
+  onRange: (first: number, last: number) => void;
+  onMatch?: () => void;
+  /** A tree: Shape to the lights. */
+  onShape?: () => void;
+  onClearMarks?: () => void;
+}) {
   const { first, last } = ledRange(f);
   const fields = <LedFields f={f} onRange={onRange} />;
+  if (onShape) {
+    const marks = validMarks(f).length;
+    return (
+      <>
+        {fields}
+        <PropRow
+          label="Shape"
+          hint="One LED blinks red on the tree. Move it along the string and mark where you see it: its start and end, and where it passes the front, the right, the back or the left. The drawing follows."
+        >
+          <div className="flex flex-wrap gap-1">
+            <PropButton onClick={onShape} disabled={!f.deviceId} title={f.deviceId ? 'Mark where the real LEDs are on the tree' : 'Pick the WLED device first'}>
+              <LocateFixed /> Shape to the lights
+            </PropButton>
+            {marks && onClearMarks ? (
+              <PropButton onClick={onClearMarks} title="Every LED goes back to where the pattern puts it">
+                Clear {marks} mark{marks === 1 ? '' : 's'}
+              </PropButton>
+            ) : null}
+          </div>
+        </PropRow>
+        {!f.deviceId ? <PropNote>Pick its WLED device (in Object) to shape it to the real lights.</PropNote> : null}
+      </>
+    );
+  }
   if (!onMatch) return fields;
   return (
     <>
@@ -4616,9 +4748,15 @@ function ProbeMarker({ f, probe, V, k, scale }: { f: Fixture; probe: MatchProbe;
   // Past either end of the line, it shows at that end.
   const at = V(px[Math.min(px.length - 1, Math.max(0, probe.offset))]);
   const point = V(f.points[probe.point]);
+  // A line: the point being matched. A tree being shaped: its marks, amber.
+  const marks = isLine(f) ? [] : validMarks(f);
   return (
     <g pointerEvents="none">
-      <circle cx={point.u} cy={point.v} r={11 * k} fill="none" stroke="#fff" strokeWidth={2 * k} strokeDasharray={`${3 * k} ${3 * k}`} />
+      {isLine(f) ? <circle cx={point.u} cy={point.v} r={11 * k} fill="none" stroke="#fff" strokeWidth={2 * k} strokeDasharray={`${3 * k} ${3 * k}`} /> : null}
+      {marks.map((m) => {
+        const q = V(px[m.led]);
+        return <circle key={m.led} cx={q.u} cy={q.v} r={5 * k} fill="#f59e0b" stroke="#0c0a09" strokeWidth={1.5 * k} />;
+      })}
       <circle cx={at.u} cy={at.v} r={8 * k} fill="none" stroke="#ef4444" strokeWidth={3 * k} className="animate-pulse" />
       <text
         x={at.u}

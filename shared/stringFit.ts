@@ -11,7 +11,7 @@
 //     definition: dragging it changes the scale instead.
 // Objects without a light type are not limited.
 
-import { BUSH_TURNS, capFloor, ledGap, layoutScale, treeSize, type Fixture, type Layout, type Point } from './layout.ts';
+import { BUSH_TURNS, capFloor, ledGap, layoutScale, markedTree, treeSize, type Fixture, type Layout, type Point } from './layout.ts';
 import { lightsOf } from './lights.ts';
 import { setsScale } from './yardScale.ts';
 
@@ -73,7 +73,8 @@ function solve(lo: number, hi: number, gapAt: (v: number) => number | null, want
 export function fitString(f: Fixture, layout: Pick<Layout, 'lightTypes' | 'scale'>): Fixture {
   const want = stringGap(f, layout);
   const free = freeSetting(f);
-  if (want == null || !free || Math.floor(f.pixels) < 2) return f;
+  // A tree shaped to the lights: its marks say where the wire goes, not its turns.
+  if (want == null || !free || Math.floor(f.pixels) < 2 || markedTree(f)) return f;
   const scale = layoutScale(layout);
   const gap = (g: Fixture) => ledGap(g, scale);
   let patch: Partial<Fixture>;
@@ -101,7 +102,7 @@ export function fitString(f: Fixture, layout: Pick<Layout, 'lightTypes' | 'scale
 }
 
 /** Settings that change how long the wire is, or how far apart its LEDs are. */
-const WIRE_KEYS = ['kind', 'pixels', 'lights', 'radius', 'height', 'pattern', 'shape', 'cover', 'bias', 'sweep', 'startSide', 'endSide', 'zigzag', 'start', 'size', 'design'] as const;
+const WIRE_KEYS = ['kind', 'pixels', 'lights', 'radius', 'height', 'pattern', 'shape', 'cover', 'bias', 'sweep', 'startSide', 'endSide', 'zigzag', 'start', 'size', 'design', 'marks'] as const;
 
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
