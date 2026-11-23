@@ -120,6 +120,17 @@ export const layoutShape = z.object({
         spin: z.enum(SPINS).optional(),
         start: z.enum(['base', 'top']).optional(),
         zigzag: z.enum(ZIGZAGS).optional(),
+        marks: z
+          .array(
+            z.object({
+              led: z.number().int().min(0).max(MAX_FIXTURE_PIXELS - 1),
+              angle: z.number().min(-360).max(360),
+              height: z.number().min(0).max(1),
+              offset: z.object({ x: coord, y: coord, z: coord }).optional()
+            })
+          )
+          .max(MAX_FIXTURE_PIXELS)
+          .optional(),
         pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
         lights: id.optional(),
         stringBreaks: z.array(z.number().int().min(1).max(MAX_FIXTURE_PIXELS)).max(MAX_FIXTURE_PIXELS).optional(),

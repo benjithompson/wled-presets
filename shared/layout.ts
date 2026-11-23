@@ -143,6 +143,13 @@ export interface Fixture {
   startSide?: Side;
   /** Tree with a wave: the side its last pass ends on. Not set: wherever the passes end. */
   endSide?: Side;
+  /**
+   * Tree with a spiral or a wave: LEDs seen on the tree, where they are on it (Shape to the
+   * lights). The wire runs over the tree from one to the next, round the way its spiral winds
+   * (as many times as the spiral would between them) or back and forth across a wave; before
+   * the first and after the last, the LEDs are where the pattern puts them.
+   */
+  marks?: ShapeMark[];
   /** Semicircle: how its zigzag runs (see Zigzag). Not set: down. */
   zigzag?: Zigzag;
   /** Number of LEDs. */
@@ -504,6 +511,7 @@ export function ledGap(f: Fixture, scale = DEFAULT_SCALE): number | null {
     const open = strokes.filter((st) => !(st.closed && st.points.length > 2)).length;
     return (designLength(strokes) * scale * (f.size ?? 1)) / Math.max(1, n - open);
   }
+  if (f.kind === 'tree' && markedTree(f)) return markedLength(f) / (n - 1);
   // The same wire with many LEDs on it: its length is the sum of their steps. A strand's LEDs
   // are cut in the same strands, so the top and bottom links count as wire too.
   const pts = f.kind === 'tree' && f.pattern !== 'strands' && f.pattern !== 'wave' ? spiralWire(f) : fixturePixels({ ...f, pixels: f.pattern === 'strands' ? Math.max(n, Math.round(f.strands ?? 12) * 64) : WIRE_SAMPLES }, scale);
@@ -689,16 +697,19 @@ export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'hei
  * The LEDs of a tree, from the base point up. Angles start at its front (the street, unless it
  * is turned: `facing`) and grow counterclockwise as seen from above (`spin`: or clockwise).
  */
-function treePixels(f: Fixture, n: number): Point3[] {
+/**
+ * Where a tree's LEDs can be: `at(u, a)` is the point at height u (0 at the base, 1 at the top;
+ * a ball with LEDs on its top only: over that cap, u0 to 1 of the ball's height) and angle a
+ * from the front, going round the way its spiral winds. Angle 0 is the front; going round
+ * counterclockwise as seen from above (the street at the bottom), the LEDs move to the right as
+ * seen from the street.
+ */
+function treeFrame(f: Fixture) {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
   const { r, h } = treeSize(f);
   const face = ((f.facing ?? 0) * Math.PI) / 180;
   const sign = f.spin === 'cw' ? -1 : 1;
-  const out: Point3[] = [];
-  // u: 0 at the base, 1 at the top. Angle 0 is the front; going round counterclockwise as
-  // seen from above (the street at the bottom), the LEDs move to the right as seen from the street.
-  // A ball with LEDs on its top only: u runs over that cap (u0 to 1 of the ball's height).
   const u0 = capFloor(f);
   const span = 1 - u0;
   const at = (u: number, a: number): Point3 => {
@@ -707,6 +718,13 @@ function treePixels(f: Fixture, n: number): Point3[] {
     return { x: b.x + Math.sin(face + sign * a) * rad, y: b.y - ub * h, z: bz + Math.cos(face + sign * a) * rad };
   };
   const widthAt = (u: number) => treeWidthAt(f.shape, u0 + span * u);
+  return { b, bz, r, h, face, sign, u0, span, at, widthAt };
+}
+
+function treePixels(f: Fixture, n: number): Point3[] {
+  if (markedTree(f)) return markedPixels(f, n);
+  const { h, sign, u0, span, at, widthAt } = treeFrame(f);
+  const out: Point3[] = [];
   if (f.pattern === 'strands') {
     const s = Math.max(1, Math.min(n, Math.round(f.strands ?? 12)));
     const per = Math.floor(n / s);
@@ -788,6 +806,156 @@ function spreadAlong(point: (s: number) => Point3, n: number, K: number): Point3
     out.push(point((k + (span > 0 ? Math.max(0, Math.min(1, (want - len[k]) / span)) : 0)) / K));
   }
   return out;
+}
+
+// ---------- Trees shaped to the lights ----------
+
+/** An LED seen on a tree: where it is on it (see Fixture.marks). */
+export interface ShapeMark {
+  /** The LED, counted from the object's LED 0 (0 to pixels - 1). */
+  led: number;
+  /**
+   * Round the tree, in degrees from its front (see facing): 90 its right as seen from the front
+   * (the street), -90 its left, 180 its back.
+   */
+  angle: number;
+  /** How high: 0 at the base (or the lowest LEDs of a ball's cap), 1 at the top. */
+  height: number;
+  /**
+   * Moved by hand from that spot on the tree's shape, in layout units: x to the tree's right
+   * (as seen from its front), y up, z toward its front. So the LEDs can be anywhere, not only on
+   * the cone, ball or cylinder. Between marks the move spreads evenly. Not set: none.
+   */
+  offset?: Offset3;
+}
+
+/** A move by hand in 3D (see ShapeMark.offset). */
+export type Offset3 = { x: number; y: number; z: number };
+
+/** Where an LED of a tree is: on its shape (height u, angle th from its front in radians), and moved by hand from there. */
+type TreePlace = { u: number; th: number; off: Offset3 };
+const NO_OFFSET: Offset3 = { x: 0, y: 0, z: 0 };
+
+/** Objects whose LEDs can be marked (see Fixture.marks): trees with a spiral or a wave. */
+export const takesMarks = (f: Pick<Fixture, 'kind' | 'pattern'>) => f.kind === 'tree' && f.pattern !== 'strands';
+
+/** The marks that count, in LED order: one per LED, within the object's LEDs. */
+export function validMarks(f: Pick<Fixture, 'marks' | 'pixels'>): ShapeMark[] {
+  const n = Math.floor(f.pixels);
+  const seen = new Set<number>();
+  const ok = (m: ShapeMark) => Number.isInteger(m.led) && m.led >= 0 && m.led < n && Number.isFinite(m.angle) && Number.isFinite(m.height) && !seen.has(m.led) && !!seen.add(m.led);
+  return (f.marks ?? []).filter(ok).sort((a, b) => a.led - b.led);
+}
+
+/** True when the tree's LEDs follow its marks. */
+export const markedTree = (f: Fixture) => takesMarks(f) && Math.floor(f.pixels) >= 2 && validMarks(f).length > 0;
+
+const TAU = Math.PI * 2;
+const wrapTau = (x: number) => x - TAU * Math.round(x / TAU);
+
+/**
+ * Each LED's place on the tree: its height u (0 to 1, see ShapeMark) and its angle from the
+ * front, in radians, followed from LED to LED (a spiral only goes on round the way it winds; a
+ * wave goes back and forth, the nearer way).
+ */
+function placesOf(f: Fixture, pts: Point3[]): Omit<TreePlace, 'off'>[] {
+  const { b, bz, r, h, face, sign, u0, span } = treeFrame(f);
+  const spiral = f.pattern !== 'wave';
+  const out: { u: number; th: number }[] = [];
+  let prev = 0;
+  pts.forEach((p, i) => {
+    const u = span > 0 && h > 0 ? ((b.y - p.y) / h - u0) / span : 0;
+    const dx = p.x - b.x;
+    const dz = p.z - bz;
+    // On the axis (the tip of a cone) the angle is the one before.
+    let th = i > 0 && Math.hypot(dx, dz) <= r * 1e-3 ? prev : Math.atan2(dx, dz) - face;
+    if (i === 0) th = wrapTau(th);
+    else {
+      const d = th - prev;
+      th = prev + (!spiral ? wrapTau(d) : sign > 0 ? d - TAU * Math.floor(d / TAU + 1e-6) : d - TAU * Math.ceil(d / TAU - 1e-6));
+    }
+    out.push({ u, th });
+    prev = th;
+  });
+  return out;
+}
+
+/** Where each LED of a tree is on it now (its marks too): height 0 to 1, and degrees from its front (-180 to 180). */
+export function shapePlaces(f: Fixture): { height: number; angle: number; offset: Offset3 }[] {
+  const n = Math.max(0, Math.floor(f.pixels));
+  if (f.kind !== 'tree' || !n) return [];
+  const r2 = (x: number) => Math.round(x * 100) / 100 || 0;
+  const places: TreePlace[] = markedTree(f) ? markedPlaces(f, n, n) : placesOf(f, treePixels(f, n)).map((p) => ({ ...p, off: NO_OFFSET }));
+  return places.map(({ u, th, off }) => ({
+    height: Math.round(u * 1000) / 1000,
+    angle: Math.round(((wrapTau(th) * 180) / Math.PI) * 10) / 10 || 0,
+    offset: { x: r2(off.x), y: r2(off.y), z: r2(off.z) }
+  }));
+}
+
+/**
+ * A marked tree's wire, in N places spread along it (LED i of n is at i / (n - 1) of the way):
+ * the pattern, bent to go through the marks. From one mark to the next (and from LED 0 and to
+ * the last LED where they are not marked) the wire keeps the pattern's shape, and what the
+ * marks change (round the tree, and up or down) spreads evenly over the LEDs between them.
+ * Round the tree: a spiral goes on round the way it winds, as many whole times as the pattern
+ * would between those LEDs (so a mark every quarter turn, or only a few, both work); a wave goes
+ * straight across from side to side.
+ */
+function markedPlaces(f: Fixture, n: number, N: number): TreePlace[] {
+  const base = placesOf(f, treePixels({ ...f, marks: undefined }, N));
+  const j = (led: number) => Math.round((led * (N - 1)) / (n - 1));
+  const anchors = validMarks(f).map((m) => ({ led: m.led, u: Math.max(0, Math.min(1, m.height)), th: (m.angle * Math.PI) / 180, off: m.offset ?? NO_OFFSET }));
+  if (anchors[0].led > 0) anchors.unshift({ led: 0, ...base[0], off: NO_OFFSET });
+  if (anchors[anchors.length - 1].led < n - 1) anchors.push({ led: n - 1, ...base[N - 1], off: NO_OFFSET });
+  const wave = f.pattern === 'wave';
+  const out: TreePlace[] = base.map((p) => ({ ...p, off: NO_OFFSET }));
+  anchors.slice(1).forEach((B, k) => {
+    const A = anchors[k];
+    const ja = j(A.led);
+    const jb = j(B.led);
+    const want = base[jb].th - base[ja].th;
+    let d: number;
+    if (wave) d = wrapTau(B.th) - wrapTau(A.th);
+    else {
+      const raw = B.th - A.th;
+      d = raw + TAU * Math.round((want - raw) / TAU);
+      if (want > 0) while (d < 0) d += TAU;
+      else if (want < 0) while (d > 0) d -= TAU;
+    }
+    const turn = d - want;
+    const lift = B.u - A.u - (base[jb].u - base[ja].u);
+    for (let i = ja; i <= jb; i++) {
+      const t = jb > ja ? (i - ja) / (jb - ja) : 0;
+      const off = { x: A.off.x + (B.off.x - A.off.x) * t, y: A.off.y + (B.off.y - A.off.y) * t, z: A.off.z + (B.off.z - A.off.z) * t };
+      out[i] = { th: A.th + base[i].th - base[ja].th + t * turn, u: Math.max(0, Math.min(1, A.u + base[i].u - base[ja].u + t * lift)), off };
+    }
+  });
+  return out;
+}
+
+/** The point of a place on a tree: on its shape, then moved by hand (turned the way the tree faces). */
+function placePoint(frame: ReturnType<typeof treeFrame>): (p: TreePlace) => Point3 {
+  const { at, sign, face } = frame;
+  const c = Math.cos(face);
+  const s = Math.sin(face);
+  return (p) => {
+    const q = at(p.u, sign * p.th);
+    return { x: q.x + p.off.x * c + p.off.z * s, y: q.y - p.off.y, z: q.z - p.off.x * s + p.off.z * c };
+  };
+}
+
+function markedPixels(f: Fixture, n: number): Point3[] {
+  return markedPlaces(f, n, n).map(placePoint(treeFrame(f)));
+}
+
+/** The length of a marked tree's wire, in layout units. */
+function markedLength(f: Fixture): number {
+  const n = Math.floor(f.pixels);
+  const pts = markedPlaces(f, n, Math.max(WIRE_SAMPLES, n * 4)).map(placePoint(treeFrame(f)));
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
+  return len;
 }
 
 /** Bends 0..1 so steps bunch toward 1 (bias 1), toward 0 (bias -1), or stay even (0). */
@@ -1406,10 +1574,13 @@ export function paintMatch(
       for (let i = 0; i < n; i++) put(fi, i, [0, 0, 0]);
       return;
     }
-    const from = probe.point > 0 ? pointOffsets(f)[probe.point - 1] : probe.offset;
+    // A tree being shaped: the stretch since the mark before (or LED 0) glows, its marks amber.
+    const marks = isLine(f) ? [] : validMarks(f);
+    const from = isLine(f) ? (probe.point > 0 ? pointOffsets(f)[probe.point - 1] : probe.offset) : (marks.filter((m) => m.led < probe.offset).at(-1)?.led ?? 0);
     const a = Math.min(from, probe.offset);
     const b = Math.max(from, probe.offset);
     for (let i = Math.min(0, a); i < Math.max(n, b + 1); i++) put(fi, i, i >= a && i <= b ? scale8(SELECTED_RGB, 0.45) : i >= 0 && i < n ? scale8(SELECTED_RGB, 0.08) : [0, 0, 0]);
+    for (const m of marks) put(fi, m.led, scale8(CORNER_RGB, 0.6));
     put(fi, probe.offset, pulse ? LAST_LED_RGB : [0, 0, 0]);
   });
 }
