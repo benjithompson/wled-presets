@@ -551,7 +551,7 @@ describe('sequences', () => {
   it('shows a check of the layout on the lights', async () => {
     await login();
     const base = { active: true, layout: sampleLayout(), selected: null, corner: null };
-    for (const check of [{ kind: 'slice', axis: 'x', at: null }, { kind: 'slice', axis: 'z', at: 120 }, { kind: 'bands', axis: 'y', step: 80 }, { kind: 'picture', id: 'roof' }, { kind: 'chase', id: 'roof' }])
+    for (const check of [{ kind: 'slice', axis: 'x', at: null }, { kind: 'slice', axis: 'z', at: 120 }, { kind: 'bands', axis: 'y', step: 80 }, { kind: 'picture', id: 'roof' }, { kind: 'picture', id: 'roof', split: 'z' }, { kind: 'chase', id: 'roof' }])
       expect((await t.call('POST', '/api/admin/layout/preview', { ...base, check })).status).toBe(200);
     expect((await t.call('POST', '/api/admin/layout/preview', { ...base, check: { kind: 'slice', axis: 'w', at: 0 } })).status).toBe(400);
     expect((await t.call('POST', '/api/admin/layout/preview', { ...base, check: { kind: 'bands', axis: 'x', step: 0 } })).status).toBe(400);
