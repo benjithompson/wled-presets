@@ -313,7 +313,7 @@ function PropDistance({ label, value, m, onChange, min = -100_000, hint }: { lab
 
 /** Which way an object faces, as seen from above (see Fixture.facing). */
 function FacingProp({ f, hint, onChange }: { f: Fixture; hint: string; onChange: (patch: Partial<Fixture>) => void }) {
-  return <PropNumber label="Faces" unit="°" decimal value={f.facing ?? 0} min={-360} max={360} step={15} steppers onChange={(n) => onChange({ facing: n || undefined })} hint={hint} />;
+  return <PropNumber label="Faces" unit="°" decimal value={f.facing ?? 0} min={-360} max={360} step={15} onChange={(n) => onChange({ facing: n || undefined })} hint={hint} />;
 }
 
 /** Shown with where an object sits, while it is locked. */
@@ -331,7 +331,7 @@ function LockedNote({ onUnlock }: { onUnlock: () => void }) {
 
 /** An angle an object leans by (0: upright). */
 function TiltProp({ label, value, hint, onChange }: { label: string; value: number | undefined; hint: string; onChange: (deg: number | undefined) => void }) {
-  return <PropNumber label={label} unit="°" decimal value={value ?? 0} min={-180} max={180} step={5} steppers onChange={(n) => onChange(n || undefined)} hint={hint} />;
+  return <PropNumber label={label} unit="°" decimal value={value ?? 0} min={-180} max={180} step={5} onChange={(n) => onChange(n || undefined)} hint={hint} />;
 }
 
 /** The shape of a bush, a tree or a semicircle, and how its LEDs run over it. */
@@ -414,7 +414,7 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
           ]}
           onChange={(zigzag) => onChange({ zigzag })}
         />
-        {fromString(<PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />)}
+        {fromString(<PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />)}
         {stringNote}
         {place(
           <PropNumber
@@ -425,7 +425,6 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
             min={-360}
             max={360}
             step={15}
-            steppers
             onChange={(n) => onChange({ rotation: n || undefined })}
             hint="Clockwise, as seen from the front: 90 puts the round side to the right, 180 turns it upside down"
           />
@@ -479,7 +478,6 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
               min={5}
               max={400}
               step={5}
-              steppers
               onChange={(n) => onChange({ height: Math.max(5, Math.round((2 * treeSize(f).r * n) / 100)) })}
             />
           )}
@@ -491,7 +489,6 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
             min={10}
             max={180}
             step={5}
-            steppers
             onChange={(n) => onChange({ cover: Math.round(n) >= 180 ? undefined : Math.round(n) })}
           />
         </>
@@ -536,7 +533,6 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
                 min={-100}
                 max={100}
                 step={10}
-                steppers
                 onChange={(n) => onChange({ bias: Math.round(n) ? Math.max(-1, Math.min(1, n / 100)) : undefined })}
               />
             </>
@@ -572,7 +568,6 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
             min={10}
             max={360}
             step={15}
-            steppers
             onChange={(n) => onChange({ sweep: Math.round(n) === WAVE_SWEEP ? undefined : Math.round(n) })}
           />
           {fromString(
@@ -4697,7 +4692,6 @@ function LedFields({ f, onRange }: { f: Fixture; onRange: (first: number, last: 
       <PropNumber
         label="First LED"
         tone="green"
-        steppers
         value={first}
         onChange={(n) => (fixed ? onRange(Math.round(n), Math.max(0, Math.round(n) + last - first)) : onRange(Math.round(n), last))}
         hint="The device LED number at the start (the first point you drew)"
@@ -4710,7 +4704,7 @@ function LedFields({ f, onRange }: { f: Fixture; onRange: (first: number, last: 
         </PropRow>
       ) : (
         <>
-          <PropNumber label="Last LED" tone="red" steppers value={last} onChange={(n) => onRange(first, Math.round(n))} hint="The device LED number at the end" />
+          <PropNumber label="Last LED" tone="red" value={last} onChange={(n) => onRange(first, Math.round(n))} hint="The device LED number at the end" />
           <PropNumber
             label="Number of LEDs"
             value={f.pixels}
@@ -4930,7 +4924,7 @@ function CornerProps({ f, index, onPin, onSplit, onFind }: { f: Fixture; index: 
       </PropRow>
       {ignored ? <PropNote tone="red">The pinned number is not between the numbers of the points on each side, so it is not used.</PropNote> : null}
       <PropAdvanced id="corner" label="Advanced: type the LED number">
-        <PropNumber label="LED after it" steppers value={led} onChange={(n) => onPin(Math.round(n))} />
+        <PropNumber label="LED after it" value={led} onChange={(n) => onPin(Math.round(n))} />
         <PropRow label="">
           {pinned || ignored ? (
             <PropButton onClick={() => onPin(null)}>
@@ -5183,11 +5177,10 @@ function SegmentProps({
       </PropRow>
       <PropNote>Only this segment glows on the lights: green at its start, red at its end. To move its ends, match the line to the lights (in LEDs).</PropNote>
       <PropAdvanced id="segment" label="Advanced: type the LED numbers">
-        <PropNumber label="Start LED" tone="green" steppers value={start} onChange={(n) => onPoint(index, limit(index, Math.round(n)))} />
+        <PropNumber label="Start LED" tone="green" value={start} onChange={(n) => onPoint(index, limit(index, Math.round(n)))} />
         <PropNumber
           label="End LED"
           tone="red"
-          steppers
           value={end}
           onChange={(n) => (isLast ? onPoint(index + 1, limit(index + 1, Math.round(n))) : onPoint(index + 1, limit(index + 1, Math.round(n) + dir)))}
         />

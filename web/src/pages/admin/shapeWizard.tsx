@@ -264,7 +264,6 @@ export function ShapeWizard({
               max={180}
               step={wave ? 5 : 15}
               decimal
-              steppers
               unit="°"
               onChange={(a) => mark(a)}
             />
