@@ -62,6 +62,15 @@
 }
 .led-pulse { animation: led-pulse 1s linear infinite; }
 
+/* The layout editor's touch hold (select an object): a ring fills around the finger. It shows
+   after a short wait, so a quick pan does not flash it. The page sets the duration. */
+@keyframes hold-ring {
+  0% { stroke-dashoffset: 100; opacity: 0; }
+  1% { opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 1; }
+}
+.hold-ring { animation: hold-ring var(--hold, 1s) linear 150ms both; }
+
 /* Beat Drop's arcade cabinet around the yard (pages/ArcadeHud.tsx). */
 @keyframes hud-pop {
   0% { transform: scale(0.4); opacity: 0; }

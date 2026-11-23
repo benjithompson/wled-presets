@@ -95,3 +95,22 @@ export function clampCam(cam: Cam, px: PaneSize, far: Cam, bounds: Box, closest:
   const clamp = (c: number, lo: number, size: number, view: number) => (view >= size ? lo + size / 2 : Math.min(lo + size - view / 2, Math.max(lo + view / 2, c)));
   return { k, cx: clamp(cam.cx, bounds.x, bounds.w, w), cy: clamp(cam.cy, bounds.y, bounds.h, h) };
 }
+
+/**
+ * A camera that centers `box` and fills the view with it, leaving `padPx` pixels on every side
+ * (for the handles around it). A box smaller than `minSize` (view units) is framed as that big,
+ * so a small object is not blown up past all sense.
+ */
+export function frameCam(box: Box, px: PaneSize, off = 0, padPx = 48, minSize = 0): Cam {
+  const w = Math.max(box.w, minSize);
+  const h = Math.max(box.h, minSize);
+  const pad = Math.min(padPx, Math.max(1, px.w) / 4, Math.max(1, px.h) / 4);
+  const k = clampK(Math.max(w / Math.max(1, px.w - 2 * pad), h / Math.max(1, px.h - 2 * pad)));
+  return { cx: box.x + box.w / 2, cy: box.y + box.h / 2 - off, k };
+}
+
+/** Part way (t from 0 to 1) from one camera to another: the zoom changes evenly in steps of scale. */
+export function lerpCam(a: Cam, b: Cam, t: number): Cam {
+  const k = Math.exp(Math.log(a.k) + (Math.log(b.k) - Math.log(a.k)) * t);
+  return { cx: a.cx + (b.cx - a.cx) * t, cy: a.cy + (b.cy - a.cy) * t, k };
+}
