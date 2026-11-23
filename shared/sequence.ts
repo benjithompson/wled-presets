@@ -39,6 +39,12 @@ export interface SeqClip {
   /** How it comes in (also over an overlapping clip before it on the layer), and how it goes out. "random": a different one each time round. */
   transitionIn?: TransitionChoice;
   transitionOut?: TransitionChoice;
+  /**
+   * Its fade in and out cross each of its targets on its own (each object, or each segment):
+   * a wipe sweeps over every bush at once instead of across them all as one. Crossing over
+   * another clip still goes across them all.
+   */
+  eachObject?: boolean;
   /** A label of your own. */
   name?: string;
 }
@@ -209,6 +215,9 @@ interface ClipState {
   /** For each run: where its LEDs are in `leds`. */
   slots: Map<string, Int32Array>;
   box: Box;
+  /** With eachObject: each target's box, and for each LED in `leds` the box it fades in (-1: the clip's). */
+  boxes: Box[];
+  boxOf: Int32Array | null;
   fixtures: string[];
 }
 
@@ -330,7 +339,7 @@ export class SequencePlayer {
   }
 
   private state(clip: SeqClip): ClipState | null {
-    const sig = `${clip.effect.effect}|${isSpatial(clip.effect.effect) ? '' : clip.effect.reverse ? 'r' : ''}|${[...clip.targets].sort().join(',')}`;
+    const sig = `${clip.effect.effect}|${isSpatial(clip.effect.effect) ? '' : clip.effect.reverse ? 'r' : ''}|${clip.eachObject ? 'each|' : ''}${[...clip.targets].sort().join(',')}`;
     let st = this.clips.get(clip.id);
     if (st && st.sig === sig) return st;
     const groups = targetLeds(this.stage, this.layout, clip.targets);
@@ -359,7 +368,23 @@ export class SequencePlayer {
     let box: Box = [Infinity, -Infinity, Infinity, -Infinity];
     const { ux, uy } = this.places!;
     for (const i of leds) box = [Math.min(box[0], ux[i]), Math.max(box[1], ux[i]), Math.min(box[2], uy[i]), Math.max(box[3], uy[i])];
-    st = { sig, runs, leds: Int32Array.from(leds), col: new Float32Array(leds.length * 3), slots, box, fixtures: groups.map((g) => g.fixture) };
+    // Each target on its own: the whole yard is each object.
+    const boxes: Box[] = [];
+    let boxOf: Int32Array | null = null;
+    if (clip.eachObject) {
+      const which = new Map<number, number>();
+      const keys = clip.targets.includes(YARD) ? groups.map((g) => g.fixture) : clip.targets;
+      for (const key of keys) {
+        const own = targetLeds(this.stage, this.layout, [key]).flatMap((g) => g.leds);
+        if (!own.length) continue;
+        let b: Box = [Infinity, -Infinity, Infinity, -Infinity];
+        for (const i of own) b = [Math.min(b[0], ux[i]), Math.max(b[1], ux[i]), Math.min(b[2], uy[i]), Math.max(b[3], uy[i])];
+        for (const i of own) which.set(i, boxes.length);
+        boxes.push(b);
+      }
+      boxOf = Int32Array.from(leds.map((i) => which.get(i) ?? -1));
+    }
+    st = { sig, runs, leds: Int32Array.from(leds), col: new Float32Array(leds.length * 3), slots, box, boxes, boxOf, fixtures: groups.map((g) => g.fixture) };
     this.clips.set(clip.id, st);
     for (const k of fresh) this.needsWarm.add(`${clip.id}\n${k}`);
     return st;
@@ -456,20 +481,24 @@ export class SequencePlayer {
     const leds = st.leds;
     const col = st.col;
     const places = this.places!;
+    // Fades from and to nothing cross each target on its own (eachObject); crossovers go across them all.
+    const ownIn = !(prev && t < clipEnd(prev)) && st.boxOf;
+    const ownOut = fadeOut && st.boxOf;
     for (let j = 0; j < leds.length; j++) {
       const i = leds[j];
       let c = 1;
       let a = 1;
       // A flash's white: the incoming clip adds it, over a crossover too; the outgoing one only when it fades out to nothing.
       let white = 0;
+      const own = st.boxOf && st.boxOf[j] >= 0 ? st.boxes[st.boxOf[j]] : null;
       if (inType) {
-        transitionWeights(inType, clamp01(inP), transitionCoord(inType, places, i, inBox), w);
+        transitionWeights(inType, clamp01(inP), transitionCoord(inType, places, i, ownIn && own ? own : inBox), w);
         c = w[2];
         a = w[3];
         white = w[4];
       }
       if (outType) {
-        transitionWeights(outType, clamp01(outP), transitionCoord(outType, places, i, outBox), w2);
+        transitionWeights(outType, clamp01(outP), transitionCoord(outType, places, i, ownOut && own ? own : outBox), w2);
         c *= w2[0];
         a *= w2[1];
         if (fadeOut) white += w2[4];

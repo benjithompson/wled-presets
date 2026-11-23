@@ -149,3 +149,32 @@ describe('sequences', () => {
     }
   });
 });
+
+describe('a clip that fades each object on its own', () => {
+  it('wipes every bush from its own left edge at once, instead of across the bushes as one', () => {
+    const ids = ['bush-1', 'bush-2', 'bush-3'];
+    const lit = (eachObject: boolean) => {
+      const seq: Sequence = { ...emptySequence('Each'), tracks: [{ id: 'l', name: 'L', opacity: 1, blend: 'normal', clips: [{ id: 'c', start: 0, duration: 4, targets: ids, effect: { ...defaultSettings('solid'), palette: 'custom', colors: ['#ffffff'], brightness: 1 }, fadeIn: 2, transitionIn: 'wipeRight', ...(eachObject ? { eachObject: true } : {}) }] }] };
+      expect(sequenceInput.safeParse(seq).success).toBe(true);
+      const p = new SequencePlayer(stage, layout, seq);
+      const out = new Float32Array(stage.pixelCount * 3);
+      p.update(1, out);
+      // The share of each bush lit, halfway through the wipe.
+      return ids.map((id) => {
+        const f = stage.fixtures.find((x) => x.id === id)!;
+        let on = 0;
+        for (let i = f.offset; i < f.offset + f.count; i++) if (out[i * 3] > 0.5) on++;
+        return on / f.count;
+      });
+    };
+    // Across all three as one: the left bush is lit, the right one not yet.
+    const one = lit(false);
+    expect(one[0]).toBeGreaterThan(0.9);
+    expect(one[2]).toBeLessThan(0.1);
+    // Each on its own: every bush is lit on its left half.
+    for (const share of lit(true)) {
+      expect(share).toBeGreaterThan(0.25);
+      expect(share).toBeLessThan(0.75);
+    }
+  });
+});

@@ -94,15 +94,15 @@ describe('the showcase', () => {
     expect(onBeat).toBeGreaterThan(between + 0.2);
   });
 
-  it('gives the roof a color of its own every bar, and sweeps a new one across it on every beat of the drops', () => {
+  it('sweeps a new color across the roof on every beat of the drops, and gives it its own color only in the rise and the second drop', () => {
     const layout = yard();
     const { sequence } = showcase(layout);
     const roof = sequence.tracks.find((t) => t.name === 'Roof (color)')!.clips;
-    for (let bar = 0; bar < 30; bar++) {
-      const mid = (bar + 0.5) * 4 * BEAT;
-      expect(roof.filter((c) => c.start <= mid && c.start + c.duration > mid).length, `bar ${bar}`).toBe(1);
+    const bars = (c: { start: number; duration: number }) => [Math.round(c.start / (4 * BEAT)), (c.start + c.duration) / (4 * BEAT)];
+    for (const c of roof) {
+      const [from, to] = bars(c);
+      expect((from >= 8 && to <= 12) || (from >= 24 && to <= 30.01), `${from}–${to}`).toBe(true);
     }
-    expect(new Set(roof.map((c) => c.effect.colors!.join())).size).toBeGreaterThanOrEqual(4);
 
     const drop = 12 * 4 * BEAT;
     const { stage, frames } = play(layout, drop + 9 * BEAT);
@@ -121,16 +121,83 @@ describe('the showcase', () => {
     expect(changes).toBeGreaterThanOrEqual(5);
   });
 
-  it('sweeps light across the whole yard to the beat, and plays a big new picture every few bars', () => {
+  it('shows every quarter note as motion: a light that walks, each object side to side or up and down, lasers', () => {
     const { sequence } = showcase(yard());
-    const sweeps = sequence.tracks.find((t) => t.name.startsWith('Yard sweeps'))!.clips;
-    expect(sweeps.every((c) => c.targets.join() === '*')).toBe(true);
-    // A wave on every beat of bars 16 to 19, coming in and going out left to right.
-    const waves = sweeps.filter((c) => c.effect.effect === 'solid' && c.duration < BEAT + 0.01);
-    expect(waves.map((c) => c.start)).toEqual(Array.from({ length: 16 }, (_, k) => Math.round((64 + k) * BEAT * 10000) / 10000));
-    for (const c of waves) expect([c.transitionIn, c.transitionOut, c.fadeIn! + c.fadeOut! <= c.duration]).toEqual(['wipeRight', 'wipeRight', true]);
-    expect(sweeps.filter((c) => c.effect.effect === 'scanner').map((c) => c.effect.direction)).toEqual(['right', 'right']);
-    const pictures = new Set(sequence.tracks.find((t) => t.name === 'Yard 3-D')!.clips.map((c) => c.effect.effect));
-    expect(pictures.size).toBeGreaterThanOrEqual(14);
+    const beatTracks = sequence.tracks.filter((t) => t.name.startsWith('Beat:'));
+    const starts = new Set(beatTracks.flatMap((t) => t.clips.flatMap((c) => (c.effect.effect === 'scanner' ? [0, 1, 2, 3].map((k) => c.start + k * BEAT) : [c.start]))).map((x) => Math.round(x * 100)));
+    // Every beat up to the finale moves, but the beat of silence before each drop.
+    for (let k = 0; k < 120; k++) {
+      if (k === 47 || k === 95) continue;
+      expect(starts.has(Math.round(k * BEAT * 100)), `beat ${k}`).toBe(true);
+    }
+    const clips = beatTracks.flatMap((t) => t.clips);
+    // Each object crosses on its own, both ways, both side to side and up and down.
+    const each = clips.filter((c) => c.eachObject);
+    expect(new Set(each.map((c) => c.transitionIn))).toEqual(new Set(['wipeRight', 'wipeLeft', 'wipeUp', 'wipeDown']));
+    for (const c of each) expect(c.transitionOut).toBe(c.transitionIn);
+    // Lasers across the bushes and up the trees, a pass a beat, from a downbeat.
+    const lasers = clips.filter((c) => c.effect.effect === 'scanner');
+    expect(new Set(lasers.map((c) => c.effect.direction))).toEqual(new Set(['right', 'up']));
+    expect(lasers.some((c) => c.targets.join() === 'bush-1,bush-2,bush-3')).toBe(true);
+    for (const c of lasers) expect(Math.round(c.start / (4 * BEAT)) * 4 * BEAT).toBeCloseTo(c.start, 3);
+  });
+
+  it('moves each bush on its own: on a beat that wipes right, the left of every bush lights first', () => {
+    const layout = yard();
+    // Bar 14: every object on the ground side to side; beat 0 wipes right.
+    const t = 14 * 4 * BEAT + 0.2 * BEAT;
+    const { stage, frames } = play(layout, t);
+    const out = frames[frames.length - 1].out;
+    for (const id of ['bush-1', 'bush-2', 'bush-3']) {
+      const f = stage.fixtures.find((x) => x.id === id)!;
+      const xs = Array.from({ length: f.count }, (_, j) => stage.positions3[(f.offset + j) * 3]);
+      const mid = (Math.min(...xs) + Math.max(...xs)) / 2;
+      let left = 0;
+      let right = 0;
+      for (let j = 0; j < f.count; j++) {
+        const i = f.offset + j;
+        const v = Math.max(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]);
+        if (xs[j] < mid) left += v;
+        else right += v;
+      }
+      expect(left, id).toBeGreaterThan(right * 1.5);
+    }
+  });
+
+  it('keeps most of the yard dark in the quiet parts and lights more of it as the music grows', () => {
+    const layout = yard();
+    const { sequence } = showcase(layout);
+    const stage = buildStage(layout);
+    const p = new SequencePlayer(stage, layout, sequence);
+    const out = new Float32Array(stage.pixelCount * 3);
+    const lit: number[] = [];
+    // The share of LEDs lit, sampled through each bar.
+    const perBar = Array.from({ length: 32 }, () => [] as number[]);
+    while (p.time < sequence.duration - 0.05) {
+      p.update(1 / 20, out);
+      let on = 0;
+      for (let i = 0; i < stage.pixelCount; i++) if (Math.max(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]) > 0.08) on++;
+      perBar[Math.min(31, Math.floor(p.time / (4 * BEAT)))].push(on / stage.pixelCount);
+      lit.push(on / stage.pixelCount);
+    }
+    const mean = (from: number, to: number) => {
+      const v = perBar.slice(from, to).flat();
+      return v.reduce((a, b) => a + b, 0) / v.length;
+    };
+    const intro = mean(0, 4);
+    const build = mean(4, 8);
+    const drop = mean(12, 18);
+    const breakdown = mean(20, 22);
+    const drop2 = mean(26, 30);
+    expect(intro).toBeLessThan(0.2);
+    expect(build).toBeGreaterThan(intro);
+    expect(drop).toBeGreaterThan(build);
+    expect(breakdown).toBeLessThan(drop / 2);
+    expect(drop2).toBeGreaterThan(drop);
+    // Even the first drop leaves dark between its moving lights.
+    expect(drop).toBeLessThan(0.75);
+    // The yard's 3-D pictures play in under half of the show.
+    const bed = sequence.tracks.find((t) => t.name === 'Yard 3-D')!.clips.reduce((a, c) => a + c.duration, 0);
+    expect(bed / sequence.duration).toBeLessThan(0.5);
   });
 });

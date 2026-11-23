@@ -9,6 +9,7 @@ import { KIND_ICONS } from '../../../lib/kinds.ts';
 import { cn } from '../../../lib/utils.ts';
 import { EffectProps, PaletteSwatch } from '../effectProps.tsx';
 import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from '../props.tsx';
+import { Switch } from '../../../components/ui.tsx';
 import { EFFECT_MIME, TRANSITION_MIME } from './Timeline.tsx';
 import { allTargets, findAudioClip, findClip, fmtTime, MIN_CLIP, round, targetName, targetsLabel, updateClips, updateTrack, type Selection } from './model.ts';
 
@@ -486,6 +487,9 @@ function ClipInspector({
         ) : (
           <PropNumber label="Fade out" unit="s" decimal step={0.1} min={0} max={clip.duration} value={round(clip.fadeOut ?? 0)} onChange={(fadeOut) => set({ fadeOut })} />
         )}
+        <PropRow label="Each object" hint="A wipe or a circle crosses every object (or segment) of the clip on its own, all at once, instead of across them all as one">
+          <Switch checked={!!clip.eachObject} onChange={(on) => set({ eachObject: on || undefined })} label="Fade each object on its own" />
+        </PropRow>
       </PropSection>
       <PropSection id="seq-clip-actions" title="Clip">
         <div className="flex flex-wrap gap-1.5">
