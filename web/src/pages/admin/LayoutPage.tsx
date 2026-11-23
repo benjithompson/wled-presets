@@ -54,6 +54,7 @@ import { toast } from 'sonner';
 import {
   buildStage,
   BUSH_TALL,
+  drawnByPaths,
   BUSH_TURNS,
   radiusOf,
   semicircleSize,
@@ -139,10 +140,11 @@ import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } f
 import { markAt, moveMark, raiseMark, ShapeWizard } from './shapeWizard.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
-import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
+import { fromView, LayoutInView, toView, viewPositions, type PointRef, type ViewSide } from '../../yard/views.ts';
+import { ellipsePolygon, pickAt, type Picked, type PickShape } from '../../yard/pick.ts';
 import { acrossOf, frontCamera } from '../../yard/frontCamera.ts';
 import { draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
-import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
+import { fitCam, frameCam, lerpCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
 import { api } from '../../lib/api.ts';
@@ -153,6 +155,7 @@ import { useInFront } from '../../lib/useInFront.ts';
 import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { useMedia } from '../../lib/useMedia.ts';
 import { ActionSheet, BottomSheet, type SheetSize } from '../../components/mobile.tsx';
+import { HoldRing } from '../../components/HoldRing.tsx';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
@@ -1527,20 +1530,46 @@ export function LayoutPage() {
   }
   const viewBoxFor = (side: ViewSide) => viewBoxOf(camFor(side), sizeOf(side), offOf(side));
 
-  /** F: zoom every 2D view to the selected object, or to the whole yard when nothing is selected. */
+  // A camera change that glides (framing an object), stopped by anything that moves a camera by hand.
+  const glide = useRef(0);
+  const stopGlide = () => cancelAnimationFrame(glide.current);
+  useEffect(() => stopGlide, []);
+  function glideTo(next: Partial<Record<ViewSide, Cam>>) {
+    stopGlide();
+    let still = false;
+    try {
+      still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {}
+    const from: Partial<Record<ViewSide, Cam>> = {};
+    for (const side of SIDES) from[side] = camFor(side);
+    if (still) return setCams(next);
+    const t0 = performance.now();
+    const step = () => {
+      const t = Math.min(1, (performance.now() - t0) / 320);
+      const e = 1 - (1 - t) ** 3;
+      const c: Partial<Record<ViewSide, Cam>> = {};
+      for (const side of SIDES) c[side] = next[side] && from[side] ? lerpCam(from[side], next[side], e) : next[side];
+      setCams(c);
+      if (t < 1) glide.current = requestAnimationFrame(step);
+    };
+    glide.current = requestAnimationFrame(step);
+  }
+
+  /**
+   * F: zoom every 2D view to the selected object (centered, filling the view, with room for its
+   * handles), or to the whole yard when nothing is selected.
+   */
   function frameSelection(id = selected) {
     const f = layout?.fixtures.find((x) => x.id === id);
-    if (!f || !layout) return setCams({});
-    const pad = layoutScale(layout) * 0.75;
+    if (!f || !layout) return (stopGlide(), setCams({}));
     const next: Partial<Record<ViewSide, Cam>> = {};
-    for (const side of SIDES) {
-      const b = inView(side).box(f);
-      next[side] = fitCam({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad }, sizeOf(side), offOf(side), 1);
-    }
-    setCams(next);
+    for (const side of SIDES) next[side] = frameCam(inView(side).box(f), sizeOf(side), offOf(side), coarse ? 64 : 48, layoutScale(layout));
+    glideTo(next);
+    setFocus3d((n) => ({ id: f.id, n: (n?.n ?? 0) + 1 }));
   }
   /** + and −: zoom the view under the pointer (or every 2D view) about its middle. */
   function zoomViews(factor: number) {
+    stopGlide();
     const sides = cursor ? [cursor.side] : SIDES;
     setCams((c) => {
       const next = { ...c };
@@ -1550,6 +1579,7 @@ export function LayoutPage() {
   }
   /** The wheel zooms at the pointer (as in CAD programs); a pinch on a trackpad too. A sideways swipe pans. */
   function onWheel(side: ViewSide, e: WheelEvent, rect: DOMRect) {
+    stopGlide();
     setCams((c) => {
       const cam = c[side] ?? camFor(side);
       if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) return { ...c, [side]: panBy(cam, -e.deltaX, 0) };
@@ -1601,11 +1631,21 @@ export function LayoutPage() {
       setTape(s.tape);
       setAlignPts(s.alignPts);
     }
+    stopGlide();
     pinchCam.current = camFor(side);
   };
   const onPinch = (side: ViewSide, from: Pair, to: Pair) => {
     const start = pinchCam.current;
     if (start) setCams((c) => ({ ...c, [side]: pinch(start, sizeOf(side), from, to) }));
+  };
+  // One finger pans (with the Select tool, away from the handles), as in maps.
+  const onTouchPanStart = (side: ViewSide) => {
+    stopGlide();
+    pinchCam.current = camFor(side);
+  };
+  const onTouchPan = (side: ViewSide, dx: number, dy: number) => {
+    const start = pinchCam.current;
+    if (start) setCams((c) => ({ ...c, [side]: panBy(start, dx, dy) }));
   };
 
   /** The pointer position in one view, in layout units. */
@@ -1615,6 +1655,100 @@ export function LayoutPage() {
     const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
     return { u: Math.round(p.x), v: Math.round(p.y) };
   }
+
+  // Picking: what a click, a tap or a hold in a view selects. The object nearest the pointer
+  // (its wire or its LEDs), else the smallest one it is inside (see yard/pick.ts).
+  const pickCache = useRef<{ stage: unknown; zMin: number; sides: Partial<Record<ViewSide, PickShape[]>> } | null>(null);
+  const pickShapes = (side: ViewSide): PickShape[] => {
+    if (!layout || !stage) return [];
+    if (pickCache.current?.stage !== stage || pickCache.current.zMin !== zMin) pickCache.current = { stage, zMin, sides: {} };
+    const cached = pickCache.current.sides[side];
+    if (cached) return cached;
+    const view = inView(side);
+    const V = (p: Point) => view.at(p);
+    const pos = viewPositions(stage.positions3, side, zMin, view.cam);
+    const leds = new Map(stage.fixtures.map((x) => [x.id, pos.subarray(x.offset * 2, (x.offset + x.count) * 2)]));
+    const upright = side !== 'top';
+    const shapes = layout.fixtures.map((f): PickShape => {
+      if (isLine(f)) return { id: f.id, line: true, wire: [f.points.map(V)] };
+      let area: UV[];
+      if (f.kind === 'custom' || f.kind === 'semicircle') {
+        const b = view.box(f);
+        area = [{ u: b.x, v: b.y }, { u: b.x + b.w, v: b.y }, { u: b.x + b.w, v: b.y + b.h }, { u: b.x, v: b.y + b.h }];
+      } else if (f.kind === 'tree' && upright) area = treeOutline(f, side === 'side' ? 'side' : view.cam ? acrossOf(view.cam) : 'front').map(V);
+      else area = ellipsePolygon(V(f.points[0]), radiusOf(f), upright ? radiusOf(f) * BUSH_TALL : radiusOf(f));
+      return { id: f.id, wire: drawnByPaths(f) ? objectPaths(f, layoutScale(layout)).map((path) => path.map(V)) : [], leds: leds.get(f.id), area };
+    });
+    pickCache.current.sides[side] = shapes;
+    return shapes;
+  };
+  /** How near (screen pixels) the pointer must be to an object to pick it: a finger is less exact than a mouse. */
+  const PICK_PX = { mouse: 12, touch: 24 };
+  /** The object at a spot in a view; `only` limits what can be picked. */
+  const pickIn = (side: ViewSide, e: { clientX: number; clientY: number }, px: number, only?: (f: Fixture) => boolean): (Picked & { f: Fixture }) | null => {
+    const ctm = svgs.current[side]?.getScreenCTM();
+    if (!ctm || !layout) return null;
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+    const byId = new Map(layout.fixtures.map((f) => [f.id, f]));
+    const shapes = only ? pickShapes(side).filter((s) => only(byId.get(s.id)!)) : pickShapes(side);
+    const hit = pickAt(shapes, { u: p.x, v: p.y }, px / (ctm.a || 1));
+    const f = hit && byId.get(hit.id);
+    return f ? { ...hit, f } : null;
+  };
+  /** The object under the mouse (Select and Edit tools): outlined, so you see what a click picks. */
+  const [hover, setHover] = useState<{ side: ViewSide; id: string } | null>(null);
+
+  // Picking an object (in a view, the list or the 3D view) frames it in the views: centered and
+  // filling them. Not while it is being dragged (the view would move under the pointer), and not
+  // when the drag moved it; nor for objects selected in other ways (one just drawn, an undo).
+  const framePending = useRef<string | null>(null);
+  const dragFrom = useRef<Layout | null>(null);
+  /** The 3D view flies to this object (n: each time). */
+  const [focus3d, setFocus3d] = useState<{ id: string; n: number } | null>(null);
+  const choose = (id: string | null) => {
+    if (id && id !== selected) framePending.current = id;
+    setSelected(id);
+  };
+  /** A click in a view frames a moment later, so the second click of a double-click (which adds a point) lands where it was aimed: it calls the framing off. */
+  const frameTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const frameLater = useRef(false);
+  useEffect(() => {
+    const id = framePending.current;
+    if (!id || drag) return;
+    framePending.current = null;
+    if (id !== selected) return;
+    clearTimeout(frameTimer.current);
+    if (frameLater.current) frameTimer.current = setTimeout(() => frameSelection(id), 300);
+    else frameSelection(id);
+    frameLater.current = false;
+  }, [selected, drag]);
+  useEffect(() => () => clearTimeout(frameTimer.current), []);
+
+  // Touch: one finger pans the view, and holding it still on an object selects that object (on
+  // the selected one, it opens its menu). A tap selects nothing, so panning never picks by mistake.
+  /** Whether one finger on this element pans: with the Select tool everywhere but the handles; with Edit and Split, away from the lines too. */
+  const touchPans = (target: Element) =>
+    !panMode && (tool === 'select' ? !target.closest('[data-handle]') : (tool === 'edit' || tool === 'split') && !target.closest('[data-handle],[data-hit]'));
+  const fingerPick = (side: ViewSide, x: number, y: number) => pickIn(side, { clientX: x, clientY: y }, PICK_PX.touch);
+  const onHold = (side: ViewSide, x: number, y: number): HoldResult => {
+    const hit = fingerPick(side, x, y);
+    if (!hit) return null;
+    if (!multi.length && hit.f.id === selected && (!isLine(hit.f) || hit.seg === segment)) return 'menu';
+    if (tool !== 'select') setTool('select');
+    setMulti([]);
+    choose(hit.f.id);
+    if (isLine(hit.f)) selectSegment(hit.f.id, hit.seg);
+    return 'selected';
+  };
+  const onTap = (side: ViewSide, x: number, y: number) => {
+    const hit = fingerPick(side, x, y);
+    if (!hit) {
+      setSelected(null);
+      setMulti([]);
+    } else if (hit.f.id === selected) {
+      if (isLine(hit.f) && tool === 'select') selectSegment(hit.f.id, hit.seg);
+    } else toast(`Hold your finger on ${hit.f.name} to select it.`, { id: 'hold-to-select' });
+  };
 
   /** The snap distance: 10 screen pixels, in layout units. */
   const tolFor = (side: ViewSide) => {
@@ -1730,9 +1864,11 @@ export function LayoutPage() {
   };
 
   function onPointerDown(e: RPointerEvent<SVGSVGElement>, side: ViewSide) {
+    clearTimeout(frameTimer.current);
     // Pan: the middle button, Space-drag, or the Hand tool.
     if (e.button === 1 || (e.button === 0 && panMode)) {
       e.preventDefault();
+      stopGlide();
       svgs.current[side]?.setPointerCapture(e.pointerId);
       setDrag({ kind: 'pan', side, x: e.clientX, y: e.clientY, cam: camFor(side) });
       return;
@@ -1774,6 +1910,25 @@ export function LayoutPage() {
       setTape((t) => (!t || t.b || t.side !== side ? { side, a: p } : { ...t, b: p }));
       return;
     }
+    // Select (and Edit, for objects that are not lines): what is nearest the pointer. A press
+    // picks it and starts moving it; Ctrl/⌘ adds it to the selection or takes it out.
+    if ((tool === 'select' || tool === 'edit') && !panMode) {
+      const hit = pickIn(side, e, e.pointerType === 'touch' ? PICK_PX.touch : PICK_PX.mouse, tool === 'edit' ? (f) => !isLine(f) : undefined);
+      if (hit) {
+        const { f } = hit;
+        if (tool === 'select' && (e.ctrlKey || e.metaKey)) {
+          skipMenu(e);
+          return toggleTarget(isLine(f) ? effectKey(f.id, hit.seg) : f.id);
+        }
+        if (f.id !== selected) {
+          framePending.current = f.id;
+          frameLater.current = e.pointerType !== 'touch';
+        }
+        startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
+        if (isLine(f) && tool === 'select') selectSegment(f.id, hit.seg);
+        return;
+      }
+    }
     // Select, edit and split: a press on empty space clears the selection (not with Ctrl/⌘: that adds to it).
     if (e.target === e.currentTarget && !e.ctrlKey && !e.metaKey) {
       setSelected(null);
@@ -1785,6 +1940,9 @@ export function LayoutPage() {
     if ((tool !== 'select' && tool !== 'edit') || panMode || e.button !== 0) return;
     e.stopPropagation();
     if (id) setSelected(id);
+    stopGlide();
+    clearTimeout(frameTimer.current);
+    dragFrom.current = layoutRef.current;
     // A locked object is selected, but stays where it is.
     const target = 'id' in d ? d.id : null;
     if (target && layout?.fixtures.find((f) => f.id === target)?.locked) d = { kind: 'locked', id: target, from: viewPoint(e, side), warned: false };
@@ -1803,8 +1961,14 @@ export function LayoutPage() {
     if (!drag || !layout) {
       if (panMode) {
         setSnapHint(null);
+        setHover(null);
         setCursor({ ...p, side });
         return;
+      }
+      // Outline what a click would pick.
+      if ((tool === 'select' || tool === 'edit') && e.pointerType !== 'touch') {
+        const h = pickIn(side, e, PICK_PX.mouse, tool === 'edit' ? (f) => !isLine(f) : undefined);
+        setHover((o) => (!h ? null : o?.id === h.f.id && o.side === side ? o : { side, id: h.f.id }));
       }
       // Show what a click would snap to.
       let hint: (Snapped & { label?: string }) | null = null;
@@ -1889,6 +2053,8 @@ export function LayoutPage() {
 
   function onPointerUp() {
     setSnapHint(null);
+    // Picked and moved: it stays where it was put, in the same view.
+    if (drag && layoutRef.current !== dragFrom.current) framePending.current = null;
     if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid(), drag.side === 'front' ? frontCam : null));
     setDrag(null);
   }
@@ -2227,7 +2393,7 @@ export function LayoutPage() {
 
   /** What the tool needs next, for a finger. */
   const touchHint = !has2d
-    ? 'Switch to the front or the top view to draw and move objects. In the 3D view, tap an LED to select its object.'
+    ? 'Switch to the front or the top view to draw and move objects. In the 3D view, hold your finger on an LED to select its object.'
     : panMode
       ? 'Drag to pan the view. Pinch to zoom.'
       : isLineTool(tool)
@@ -2235,7 +2401,7 @@ export function LayoutPage() {
           ? 'Tap the next corner. Tap Finish line (or double-tap) when it is done. Pinch to zoom.'
           : `Tap the first point of the ${tool === 'roof' ? 'roofline' : 'line'}, or tap the end of a line to continue it.`
         : tool === 'edit'
-          ? 'Tap a line to add a point, then drag it into place. Drag a point to move it. Long-press a point to delete it.'
+          ? 'Tap a line to add a point, then drag it into place. Drag a point to move it. Long-press a point to delete it. Drag anywhere else to pan.'
           : tool === 'split'
             ? 'Tap a corner, or a spot on a line, to cut the line in two there.'
             : tool === 'bush'
@@ -2248,7 +2414,7 @@ export function LayoutPage() {
                   ? 'Tap two points to measure the distance between them. Then type the real distance to set the scale.'
                   : tool === 'align'
                     ? ALIGN_STEPS[alignPts.length]
-                    : 'Tap to select; drag an object or a point to move it. On the selected object, the arrows move it along one axis, the ring turns it and the yellow squares resize it. Long-press for actions. Pinch to zoom; drag with two fingers to pan.';
+                    : 'Hold your finger on an object for a second to select it (hold again for its actions). Drag to pan, pinch to zoom. On the selected object, drag the white square to move it, the arrows to move it along one axis, the ring to turn it and the yellow squares to resize it.';
   const deskHint = !has2d
     ? 'Show the front or the top view to draw and move objects. In the 3D view, click an LED to select its object.'
     : panMode
@@ -2351,7 +2517,7 @@ export function LayoutPage() {
                 : { kind: 'treeHeight', side, id: f.id };
       startDrag(e, d, f.id, side);
     };
-    return <Gizmo side={side} anchor={anchor} box={box} k={k} turn={turn} width={width} height={height} scale={scalable} active={part ? { part, label } : null} onStart={start} />;
+    return <Gizmo side={side} anchor={anchor} box={box} k={k} turn={turn} width={width} height={height} scale={scalable} active={part ? { part, label } : null} touch={coarse} onStart={start} />;
   };
 
   /** One editable view: the drawing (YardView) and the handles over it, seen through the view's camera. */
@@ -2362,6 +2528,7 @@ export function LayoutPage() {
     // Handles and labels keep the same size on the screen at every zoom.
     const k = camFor(side).k / BASE_K;
     const dash = (a: number, b: number) => `${a * k} ${b * k}`;
+    const hovered = hover?.side === side && !drag ? (layout.fixtures.find((f) => f.id === hover.id) ?? null) : null;
     const handle = (key: string | number, at: UV, className: string, onDown: (e: RPointerEvent<SVGCircleElement>) => void, onDouble?: (e: RMouseEvent) => void) => (
       <circle key={key} cx={at.u} cy={at.v} r={9 * k} className={cn('stroke-stone-950', className)} strokeWidth={3 * k} onPointerDown={onDown} onDoubleClick={onDouble} />
     );
@@ -2373,14 +2540,37 @@ export function LayoutPage() {
           preserveAspectRatio="none"
           className={cn(
             'absolute inset-0 h-full w-full touch-none select-none',
-            drag?.kind === 'pan' ? 'cursor-grabbing' : panMode ? 'cursor-grab' : tool !== 'select' && tool !== 'edit' ? 'cursor-crosshair' : ''
+            drag?.kind === 'pan'
+              ? 'cursor-grabbing'
+              : panMode
+                ? 'cursor-grab'
+                : tool !== 'select' && tool !== 'edit'
+                  ? 'cursor-crosshair'
+                  : hovered
+                    ? hovered.locked
+                      ? 'cursor-pointer'
+                      : 'cursor-move'
+                    : ''
           )}
           onPointerDown={(e) => onPointerDown(e, side)}
           onPointerMove={(e) => onPointerMove(e, side)}
           onPointerUp={onPointerUp}
-          onPointerLeave={() => (setCursor(null), drag == null && setSnapHint(null))}
+          onPointerLeave={() => (setCursor(null), setHover(null), drag == null && setSnapHint(null))}
           onMouseDown={(e) => e.button === 1 && e.preventDefault()}
-          onDoubleClick={() => isLineTool(tool) && draft.side === side && finishLine(tool)}
+          onDoubleClick={(e) => {
+            if (isLineTool(tool)) return void (draft.side === side && finishLine(tool));
+            // Select: a double-click on a line adds a point there.
+            const hit = tool === 'select' && !panMode ? pickIn(side, e, PICK_PX.mouse, isLine) : null;
+            if (hit) insertVertex(hit.f, hit.seg ?? 0, e, side);
+          }}
+          // The right-click menu (a hold, on a touch screen) of the object there. The handles have their own.
+          onContextMenu={(e) => {
+            if (e.target instanceof Element && e.target.closest('[data-gizmo]')) return;
+            const hit = pickIn(side, e, e.nativeEvent.isTrusted ? PICK_PX.mouse : PICK_PX.touch);
+            if (!hit) return;
+            if (isLine(hit.f)) segmentMenu(e, hit.f, hit.seg ?? 0, side);
+            else objectMenu(e, hit.f);
+          }}
         >
           {side === 'side' ? (
             <>
@@ -2407,7 +2597,7 @@ export function LayoutPage() {
           {front ? (
             <g>
               <line x1={vb.x} x2={vb.x + vb.w} y1={ground} y2={ground} stroke="rgba(52,211,153,0.6)" strokeWidth={2 * k} strokeDasharray={dash(12, 10)} pointerEvents="none" />
-              <g className={tool === 'select' && !panMode ? 'cursor-ns-resize' : ''} onPointerDown={(e) => startDrag(e, { kind: 'ground' }, null, side)}>
+              <g data-handle className={tool === 'select' && !panMode ? 'cursor-ns-resize' : ''} onPointerDown={(e) => startDrag(e, { kind: 'ground' }, null, side)}>
                 <rect x={vb.x + 8 * k} y={ground - 30 * k} width={70 * k} height={24 * k} rx={6 * k} fill="rgba(6,78,59,0.85)" stroke="rgba(52,211,153,0.8)" strokeWidth={1.5 * k} />
                 <text x={vb.x + 43 * k} y={ground - 13 * k} textAnchor="middle" fontSize={14 * k} fontWeight={600} fill="#a7f3d0" pointerEvents="none">
                   Ground
@@ -2471,71 +2661,46 @@ export function LayoutPage() {
                       />
                     ) : null
                   )}
-                  {/* One hit area per segment: a click selects that segment. */}
-                  {pts.slice(1).map((b, s) => {
-                    const a = pts[s];
-                    return (
-                      <line
-                        key={s}
-                        x1={a.u}
-                        y1={a.v}
-                        x2={b.u}
-                        y2={b.v}
-                        stroke="transparent"
-                        strokeWidth={26 * k}
-                        strokeLinecap="round"
-                        className={panMode ? '' : tool === 'select' ? 'cursor-pointer' : tool === 'edit' ? 'cursor-copy' : ''}
-                        onPointerDown={(e) => {
-                          if (e.button !== 0 || panMode) return;
-                          if (tool === 'select' && (e.ctrlKey || e.metaKey)) {
-                            e.stopPropagation();
-                            skipMenu(e);
-                            toggleTarget(effectKey(f.id, s));
-                            return;
-                          }
-                          if (tool === 'select') {
-                            startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
-                            selectSegment(f.id, s);
-                          } else if (tool === 'edit') {
-                            history.newStep();
-                            addPointOn(f, s, snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side), side, e);
-                          } else if (tool === 'split') {
-                            e.stopPropagation();
-                            splitOn(f, s, snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side), side);
-                          }
-                        }}
-                        onContextMenu={(e) => segmentMenu(e, f, s, side)}
-                        onDoubleClick={(e) => {
-                          e.stopPropagation();
-                          if (tool === 'select') insertVertex(f, s, e, side);
-                        }}
-                      />
-                    );
-                  })}
+                  {/* Edit and Split: one hit area per segment, to add a point or cut the line there. (Select picks by distance: see pickIn.) */}
+                  {(tool === 'edit' || tool === 'split') && !panMode
+                    ? pts.slice(1).map((b, s) => {
+                        const a = pts[s];
+                        return (
+                          <line
+                            key={s}
+                            data-hit
+                            x1={a.u}
+                            y1={a.v}
+                            x2={b.u}
+                            y2={b.v}
+                            stroke="transparent"
+                            strokeWidth={(coarse ? 44 : 26) * k}
+                            strokeLinecap="round"
+                            className={tool === 'edit' ? 'cursor-copy' : ''}
+                            onPointerDown={(e) => {
+                              if (e.button !== 0) return;
+                              const at = snapHint?.side === side && drafting.snap !== e.altKey ? snapHint.at : viewPoint(e, side);
+                              if (tool === 'edit') {
+                                history.newStep();
+                                addPointOn(f, s, at, side, e);
+                              } else {
+                                e.stopPropagation();
+                                splitOn(f, s, at, side);
+                              }
+                            }}
+                            onContextMenu={(e) => segmentMenu(e, f, s, side)}
+                          />
+                        );
+                      })
+                    : null}
                   {isSel || tool === 'edit' || tool === 'split'
                     ? pts.map((p, i) => {
                         const end = i === 0 ? 'first' : i === f.points.length - 1 ? 'last' : null;
                         return (
-                          <circle
+                          <g
                             key={i}
-                            cx={p.u}
-                            cy={p.v}
-                            r={(isSel ? 9 : 7) * k}
-                            strokeWidth={3 * k}
-                            className={cn(
-                              'stroke-stone-950',
-                              panMode ? '' : tool === 'split' ? (end ? '' : 'cursor-crosshair') : 'cursor-grab',
-                              tool === 'split' && (end ? 'fill-stone-500' : 'fill-rose-400'),
-                              tool !== 'split' &&
-                                (!isSel
-                                  ? 'fill-amber-400/80'
-                                  : i === (segment ?? 0)
-                                    ? 'fill-green-500'
-                                    : i === (segment != null ? segment + 1 : f.points.length - 1)
-                                      ? 'fill-red-500'
-                                      : 'fill-amber-400'),
-                              isSel && corner === i && 'stroke-white'
-                            )}
+                            data-handle
+                            className={panMode ? '' : tool === 'split' ? (end ? '' : 'cursor-crosshair') : 'cursor-grab'}
                             onPointerDown={(e) => {
                               if (e.button !== 0 || panMode) return;
                               // Ctrl-click (⌘-click) on an end: draw on from there.
@@ -2564,7 +2729,30 @@ export function LayoutPage() {
                               e.stopPropagation();
                               if (tool === 'select' || tool === 'edit') deletePoint(f, i);
                             }}
+                          >
+                          {/* A finger needs a bigger target than the dot. */}
+                          <circle cx={p.u} cy={p.v} r={(coarse ? 22 : 11) * k} fill="transparent" />
+                          <circle
+                            cx={p.u}
+                            cy={p.v}
+                            r={(isSel ? 9 : 7) * (coarse ? 1.35 : 1) * k}
+                            strokeWidth={3 * k}
+                            className={cn(
+                              'stroke-stone-950',
+                              tool === 'split' && (end ? 'fill-stone-500' : 'fill-rose-400'),
+                              tool !== 'split' &&
+                                (!isSel
+                                  ? 'fill-amber-400/80'
+                                  : i === (segment ?? 0)
+                                    ? 'fill-green-500'
+                                    : i === (segment != null ? segment + 1 : f.points.length - 1)
+                                      ? 'fill-red-500'
+                                      : 'fill-amber-400'),
+                              isSel && corner === i && 'stroke-white'
+                            )}
+                            pointerEvents="none"
                           />
+                          </g>
                         );
                       })
                     : null}
@@ -2583,25 +2771,15 @@ export function LayoutPage() {
                 </g>
               );
             }
-            // Bush, tree, custom object or semicircle.
+            // Bush, tree, custom object or semicircle. (No hit areas: Select picks by distance, see pickIn.)
             const c = V(f.points[0]);
             const r = radiusOf(f);
-            const move = (e: RPointerEvent) => {
-              if (tool === 'select' && !panMode && e.button === 0 && (e.ctrlKey || e.metaKey)) {
-                e.stopPropagation();
-                skipMenu(e);
-                return toggleTarget(f.id);
-              }
-              startDrag(e, { kind: 'move', side, id: f.id, from: viewPoint(e, side), original: f.points }, f.id, side);
-            };
-            const hitClass = tool === 'select' && !panMode ? (f.locked ? 'cursor-pointer' : 'cursor-move') : '';
             if (f.kind === 'custom' || f.kind === 'semicircle') {
               const paths = objectPaths(f, scale).map((path) => path.map(V));
               const b = inView(side).box(f);
               const pad = 10 * k;
               return (
                 <g key={f.id}>
-                  <rect x={b.x - pad} y={b.y - pad} width={b.w + 2 * pad} height={b.h + 2 * pad} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
                   {isSel || multi.includes(f.id)
                     ? paths.map((path, j) => (
                         <polyline key={j} points={path.map((q) => `${q.u},${q.v}`).join(' ')} fill="none" stroke="rgb(40,170,255)" strokeOpacity={0.85} strokeWidth={2.5 * k} strokeLinejoin="round" pointerEvents="none" />
@@ -2619,11 +2797,6 @@ export function LayoutPage() {
             const outline = f.kind === 'tree' && upright ? treeOutline(f, side === 'side' ? 'side' : side === 'front' && frontCam ? acrossOf(frontCam) : 'front').map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
             return (
               <g key={f.id}>
-                {f.kind === 'tree' && upright ? (
-                  <polygon points={outline} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
-                ) : (
-                  <ellipse cx={c.u} cy={c.v} rx={r} ry={upright ? r * BUSH_TALL : r} fill="transparent" className={hitClass} onPointerDown={move} onContextMenu={(e) => objectMenu(e, f)} />
-                )}
                 {multi.includes(f.id) ? (
                   f.kind === 'tree' && upright ? (
                     <polygon points={outline} fill="rgba(40,170,255,0.08)" stroke="rgb(40,170,255)" strokeWidth={2.5 * k} strokeDasharray={dash(8, 6)} pointerEvents="none" />
@@ -2636,6 +2809,22 @@ export function LayoutPage() {
               </g>
             );
           })}
+
+          {/* What a click would pick, outlined. */}
+          {hovered && hovered.id !== selected && !multi.includes(hovered.id)
+            ? (() => {
+                const h = pickShapes(side).find((x) => x.id === hovered.id);
+                if (!h) return null;
+                const paths = h.wire.length ? h.wire : h.area ? [[...h.area, h.area[0]]] : [];
+                return (
+                  <g pointerEvents="none">
+                    {paths.map((path, j) => (
+                      <polyline key={j} points={path.map((q) => `${q.u},${q.v}`).join(' ')} fill="none" stroke="rgb(40,170,255)" strokeOpacity={0.55} strokeWidth={2 * k} strokeLinejoin="round" strokeLinecap="round" />
+                    ))}
+                  </g>
+                );
+              })()
+            : null}
 
           {/* Where each new strand of the selected object starts */}
           {sel && !playing ? <StrandMarks f={sel} perStrand={lightsOf(layout, sel.lights)?.perStrand ?? null} scale={scale} V={V} k={k} labels={front} /> : null}
@@ -3239,7 +3428,7 @@ export function LayoutPage() {
                       // A click on the open object's header closes it: nothing is selected.
                       setSelected(null);
                       return;
-                    } else setSelected(f.id);
+                    } else choose(f.id);
                     listAnchor.current = f.id;
                     // On a phone, the list hands over to the object's properties.
                     if (!inline) setSheetTab('details');
@@ -3439,7 +3628,7 @@ export function LayoutPage() {
                   <li key={r.key}>
                     <button
                       type="button"
-                      onClick={(e) => (e.ctrlKey || e.metaKey ? toggleTarget(r.key) : r.seg == null ? setSelected(f.id) : selectSegment(f.id, r.seg))}
+                      onClick={(e) => (e.ctrlKey || e.metaKey ? toggleTarget(r.key) : r.seg == null ? choose(f.id) : (choose(f.id), selectSegment(f.id, r.seg)))}
                       className={cn('flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-xs hover:bg-stone-100 dark:hover:bg-stone-800', r.seg != null && 'pl-4')}
                     >
                       <span className="min-w-0 flex-1 truncate">{r.name}</span>
@@ -3534,7 +3723,7 @@ export function LayoutPage() {
                   overlaps={r.overlaps}
                   fixtures={layout.fixtures}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={choose}
                 />
               ))}
             </div>
@@ -3911,10 +4100,11 @@ export function LayoutPage() {
                         layout={layout}
                         getFrame={getFrame}
                         selected={playing || probe || layoutCheck ? null : selected}
+                        focus={focus3d}
                         onSelect={(id, add) => {
                           setTool('select');
                           if (add) return void (id && toggleTarget(id));
-                          setSelected(id);
+                          choose(id);
                         }}
                       />
                     </Suspense>
@@ -3926,6 +4116,12 @@ export function LayoutPage() {
                     onTouchFirst={onTouchFirst}
                     onPinchStart={() => onPinchStart(v)}
                     onPinch={(from, to) => onPinch(v, from, to)}
+                    touchPans={touchPans}
+                    canHold={(x, y) => fingerPick(v, x, y) != null}
+                    onHold={(x, y) => onHold(v, x, y)}
+                    onTap={(x, y) => onTap(v, x, y)}
+                    onPanStart={() => onTouchPanStart(v)}
+                    onPan={(dx, dy) => onTouchPan(v, dx, dy)}
                   >
                     {renderView(v)}
                   </PaneBody>
@@ -5334,14 +5530,22 @@ function ContextMenu({ menu, sheet, onClose }: { menu: { x: number; y: number; t
   );
 }
 
-/** How long a finger holds still for a long press (the touch screen's right-click), in ms. */
+/** How long a finger holds still on a handle for its right-click menu (a point's), in ms. */
 const LONG_PRESS_MS = 500;
+/** How long a finger holds still on an object to select it (or, on the selected one, for its menu), in ms. */
+const HOLD_SELECT_MS = 1000;
+/** How far a finger moves before a touch is a pan, not a tap or a hold, in pixels. */
+const PAN_SLOP = 8;
+
+/** What a hold did: selected what was under the finger, or asks for its menu. */
+type HoldResult = 'selected' | 'menu' | null;
 
 /**
  * The drawing area of a 2D viewport: reports its size, and passes wheel events (which must not
  * scroll the page) to the camera. On a touch screen it also takes the gestures the drawing never
- * sees: two fingers pinch to zoom and drag to pan, and a long press opens the right-click menu
- * of what is under the finger.
+ * sees: one finger pans (where `touchPans` says so: everywhere but the handles, with the Select
+ * tool), holding still on an object selects it, two fingers pinch to zoom and drag to pan, and
+ * a long press on a handle opens its right-click menu.
  */
 function PaneBody({
   onSize,
@@ -5349,6 +5553,12 @@ function PaneBody({
   onTouchFirst,
   onPinchStart,
   onPinch,
+  touchPans,
+  canHold,
+  onHold,
+  onTap,
+  onPanStart,
+  onPan,
   children
 }: {
   onSize: (w: number, h: number) => void;
@@ -5359,11 +5569,23 @@ function PaneBody({
   onPinchStart: () => void;
   /** The two fingers moved: from where they came down, to where they are (pixels in the pane). */
   onPinch: (from: Pair, to: Pair) => void;
+  /** Whether one finger coming down on this element pans the view (and holds to select) instead of reaching the drawing. */
+  touchPans: (target: Element) => boolean;
+  /** Whether a hold here would select something (a ring then fills around the finger). */
+  canHold: (clientX: number, clientY: number) => boolean;
+  onHold: (clientX: number, clientY: number) => HoldResult;
+  /** A finger came down and lifted without moving, before the hold. */
+  onTap: (clientX: number, clientY: number) => void;
+  onPanStart: () => void;
+  /** One finger moved by (dx, dy) pixels since the pan started. */
+  onPan: (dx: number, dy: number) => void;
   children: ReactNode;
 }) {
   const el = useRef<HTMLDivElement>(null);
-  const cb = useRef({ onSize, onWheel, onTouchFirst, onPinchStart, onPinch });
-  cb.current = { onSize, onWheel, onTouchFirst, onPinchStart, onPinch };
+  const cb = useRef({ onSize, onWheel, onTouchFirst, onPinchStart, onPinch, touchPans, canHold, onHold, onTap, onPanStart, onPan });
+  cb.current = { onSize, onWheel, onTouchFirst, onPinchStart, onPinch, touchPans, canHold, onHold, onTap, onPanStart, onPan };
+  /** The ring that fills while a finger holds still, in pane pixels. */
+  const [ring, setRing] = useState<{ x: number; y: number; n: number } | null>(null);
   useEffect(() => {
     const d = el.current;
     if (!d) return;
@@ -5377,11 +5599,16 @@ function PaneBody({
     // Touch. These listen in the capture phase, so they see every finger before the drawing does.
     const fingers = new Map<number, { x: number; y: number }>();
     let pair: { ids: [number, number]; from: Pair } | null = null;
-    /** After a pinch or a long press, the fingers left down do nothing until all of them lift. */
+    /** After a pinch, a hold or a long press, the fingers left down do nothing until all of them lift. */
     let locked = false;
     let press: { id: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
+    /** One finger that pans, taps or holds (it never reaches the drawing). */
+    let grab: { id: number; x: number; y: number; panning: boolean; timer: ReturnType<typeof setTimeout> } | null = null;
     /** Until when the browser's own menu (a long press on Android) is kept away. */
     let touchUntil = 0;
+    /** Until when the click a browser sends after a finger lifts is dropped (after a hold, it would close the menu it opened). */
+    let clickUntil = 0;
+    let rings = 0;
     const at = (e: PointerEvent) => {
       const r = d.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -5395,6 +5622,19 @@ function PaneBody({
       if (press) clearTimeout(press.timer);
       press = null;
     };
+    const endGrab = () => {
+      if (grab) clearTimeout(grab.timer);
+      grab = null;
+      setRing(null);
+    };
+    /** Opens the right-click menu of what is at (x, y); true when something opened one. */
+    const menuAt = (x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
+      if (!target || !d.contains(target)) return false;
+      const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 });
+      target.dispatchEvent(menu);
+      return menu.defaultPrevented;
+    };
     const down = (e: PointerEvent) => {
       if (e.pointerType !== 'touch') return;
       fingers.set(e.pointerId, at(e));
@@ -5404,18 +5644,44 @@ function PaneBody({
         cb.current.onTouchFirst();
         const { clientX: x, clientY: y } = e;
         endPress();
+        endGrab();
+        const target = e.target instanceof Element ? e.target : null;
+        if (target && cb.current.touchPans(target)) {
+          // The drawing never sees this finger: it pans the view, taps, or holds to select.
+          e.stopPropagation();
+          grab = {
+            id: e.pointerId,
+            x,
+            y,
+            panning: false,
+            timer: setTimeout(() => {
+              const g = grab;
+              grab = null;
+              setRing(null);
+              if (!g) return;
+              const did = cb.current.onHold(x, y);
+              if (did === 'menu' ? menuAt(x, y) : did === 'selected') {
+                locked = true;
+                navigator.vibrate?.(15);
+              }
+            }, HOLD_SELECT_MS)
+          };
+          if (cb.current.canHold(x, y)) {
+            const p = at(e);
+            setRing({ ...p, n: ++rings });
+          }
+          return;
+        }
+        // A handle: the drawing takes the finger; holding still on it opens its menu (a point's).
+        if (target?.closest('[data-gizmo]')) return;
         press = {
           id: e.pointerId,
           x,
           y,
           timer: setTimeout(() => {
             press = null;
-            const target = document.elementFromPoint(x, y);
-            if (!target || !d.contains(target)) return;
-            const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 });
-            target.dispatchEvent(menu);
             // Something opened a menu: this finger is done.
-            if (menu.defaultPrevented) {
+            if (menuAt(x, y)) {
               locked = true;
               navigator.vibrate?.(15);
             }
@@ -5425,6 +5691,7 @@ function PaneBody({
       }
       // A second finger neither draws nor selects.
       endPress();
+      endGrab();
       e.stopPropagation();
       d.setPointerCapture(e.pointerId);
       if (fingers.size === 2 && !pair) {
@@ -5438,6 +5705,19 @@ function PaneBody({
       if (e.pointerType !== 'touch' || !fingers.has(e.pointerId)) return;
       fingers.set(e.pointerId, at(e));
       if (press?.id === e.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) endPress();
+      if (grab?.id === e.pointerId) {
+        const dx = e.clientX - grab.x;
+        const dy = e.clientY - grab.y;
+        if (!grab.panning && Math.hypot(dx, dy) > PAN_SLOP) {
+          clearTimeout(grab.timer);
+          setRing(null);
+          grab.panning = true;
+          cb.current.onPanStart();
+        }
+        if (grab.panning) cb.current.onPan(dx, dy);
+        e.stopPropagation();
+        return;
+      }
       if (pair) {
         const to = pairOf(pair.ids);
         if (to) cb.current.onPinch(pair.from, to);
@@ -5448,14 +5728,27 @@ function PaneBody({
       if (e.pointerType !== 'touch' || !fingers.has(e.pointerId)) return;
       fingers.delete(e.pointerId);
       if (press?.id === e.pointerId) endPress();
+      if (grab?.id === e.pointerId) {
+        const tap = !grab.panning && e.type === 'pointerup';
+        endGrab();
+        e.stopPropagation();
+        if (tap && !locked) cb.current.onTap(e.clientX, e.clientY);
+      }
       if (pair?.ids.includes(e.pointerId)) pair = null;
       if (!fingers.size) {
+        if (locked) clickUntil = performance.now() + 500;
         locked = false;
         touchUntil = performance.now() + 800;
       }
     };
+    const click = (e: MouseEvent) => {
+      if (performance.now() >= clickUntil) return;
+      clickUntil = 0;
+      e.preventDefault();
+      e.stopPropagation();
+    };
     const nativeMenu = (e: MouseEvent) => {
-      // The browser's own long-press menu: the long press above opens ours instead.
+      // The browser's own long-press menu: the holds above open ours instead.
       if (e.isTrusted && (fingers.size || performance.now() < touchUntil)) {
         e.preventDefault();
         e.stopPropagation();
@@ -5472,9 +5765,13 @@ function PaneBody({
     d.addEventListener('contextmenu', nativeMenu, opts);
     d.addEventListener('gesturestart', gesture);
     d.addEventListener('gesturechange', gesture);
+    // On the window: the menu that click would close is on the body.
+    window.addEventListener('click', click, opts);
     return () => {
+      window.removeEventListener('click', click, opts);
       ro.disconnect();
       endPress();
+      endGrab();
       d.removeEventListener('wheel', wheel);
       d.removeEventListener('pointerdown', down, opts);
       d.removeEventListener('pointermove', move, opts);
@@ -5488,6 +5785,9 @@ function PaneBody({
   return (
     <div ref={el} className="relative min-h-0 flex-1 overflow-hidden [-webkit-touch-callout:none]">
       {children}
+      {ring ? (
+        <HoldRing key={ring.n} x={ring.x} y={ring.y} ms={HOLD_SELECT_MS} />
+      ) : null}
     </div>
   );
 }

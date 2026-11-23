@@ -3,6 +3,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { AERIAL_OPACITY, buildStage, FEET_PER_METER, layoutGround, layoutScale, objectPaths, type Layout, type Stage } from '../../../shared/layout.ts';
 import { cn } from '../lib/utils.ts';
+import { HoldRing } from '../components/HoldRing.tsx';
+
+/** How long a finger holds still on an LED to select its object, in ms. */
+const HOLD_MS = 1000;
+/** How near an LED (screen pixels) a click or a finger must be to pick its object. */
+const PICK_PX = { mouse: 12, touch: 28 };
 
 type CameraPreset = 'street' | 'front' | 'top' | 'side';
 
@@ -47,13 +53,16 @@ interface Ctx {
 /**
  * The yard in 3D, in meters: the house front is at depth 0, the ground at height 0. Every LED
  * glows in the color of the current frame (`getFrame`, as in YardView). Drag to turn, scroll
- * to zoom, right-drag (or two fingers) to pan. A click on an LED selects its object.
+ * to zoom, right-drag (or two fingers) to pan. A click on an LED selects its object; on a touch
+ * screen, a finger held still on one (a one-finger drag turns the view). `focus`: fly to that
+ * object, filling the view with it (again each time `n` changes).
  */
 export function Scene3D({
   layout,
   getFrame,
   selected,
   onSelect,
+  focus,
   className,
   fill = false
 }: {
@@ -62,6 +71,7 @@ export function Scene3D({
   selected: string | string[] | null;
   /** `add`: Ctrl, ⌘ or Shift was down: add to (or remove from) the selection. */
   onSelect: (id: string | null, add?: boolean) => void;
+  focus?: { id: string; n: number } | null;
   className?: string;
   /** Fill the parent (which must be positioned) instead of a 16:9 box. */
   fill?: boolean;
@@ -74,6 +84,8 @@ export function Scene3D({
   onSelectRef.current = onSelect;
   const [showPicture, setShowPicture] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [ring, setRing] = useState<{ x: number; y: number; n: number } | null>(null);
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 
   // The renderer, camera, controls and the drawing loop: once.
   useEffect(() => {
@@ -117,23 +129,72 @@ export function Scene3D({
     resize();
 
     // A click (not a drag) on an LED selects its object; on empty space it clears the selection.
-    const ray = new THREE.Raycaster();
-    let down: { x: number; y: number } | null = null;
-    const onDown = (e: PointerEvent) => (down = { x: e.clientX, y: e.clientY });
-    const onUp = (e: PointerEvent) => {
-      if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5 || !c.bulbs || !c.stage) return;
-      down = null;
+    // The LED nearest the pointer on the screen, within a few pixels: a finger gets more room.
+    const nearest = (x: number, y: number, tolPx: number): string | null => {
+      if (!c.bulbs || !c.stage) return null;
       const r = renderer.domElement.getBoundingClientRect();
-      const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-      ray.setFromCamera(ndc, camera);
-      ray.params.Points = { threshold: Math.max(0.08, camera.position.distanceTo(controls.target) * 0.012) };
-      const hit = ray.intersectObject(c.bulbs).sort((a, b) => (a.distanceToRay ?? 0) - (b.distanceToRay ?? 0))[0];
-      const i = hit?.index;
-      const f = i == null ? undefined : c.stage.fixtures.find((s) => i >= s.offset && i < s.offset + s.count);
-      onSelectRef.current(f?.id ?? null, e.ctrlKey || e.metaKey || e.shiftKey);
+      const pos = c.bulbs.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const v = new THREE.Vector3();
+      let best = tolPx * tolPx;
+      let hit = -1;
+      for (let i = 0; i < pos.count; i++) {
+        if (!c.stage.active[i]) continue;
+        v.fromBufferAttribute(pos, i).project(camera);
+        if (v.z < -1 || v.z > 1) continue;
+        const d = (r.left + ((v.x + 1) / 2) * r.width - x) ** 2 + (r.top + ((1 - v.y) / 2) * r.height - y) ** 2;
+        if (d < best) [best, hit] = [d, i];
+      }
+      return hit < 0 ? null : (c.stage.fixtures.find((s) => hit >= s.offset && hit < s.offset + s.count)?.id ?? null);
+    };
+    const fingers = new Set<number>();
+    let down: { x: number; y: number; touch: boolean; timer: ReturnType<typeof setTimeout> | null } | null = null;
+    let rings = 0;
+    const cancel = () => {
+      if (down?.timer) clearTimeout(down.timer);
+      down = null;
+      setRing(null);
+    };
+    const onDown = (e: PointerEvent) => {
+      fingers.add(e.pointerId);
+      cancel();
+      // Two fingers pan and zoom.
+      if (fingers.size > 1) return;
+      const { clientX: x, clientY: y } = e;
+      const touch = e.pointerType === 'touch';
+      down = { x, y, touch, timer: null };
+      if (!touch) return;
+      down.timer = setTimeout(() => {
+        down = null;
+        setRing(null);
+        const id = nearest(x, y, PICK_PX.touch);
+        if (!id) return;
+        navigator.vibrate?.(15);
+        onSelectRef.current(id);
+      }, HOLD_MS);
+      if (nearest(x, y, PICK_PX.touch)) {
+        const r = el.getBoundingClientRect();
+        setRing({ x: x - r.left, y: y - r.top, n: ++rings });
+      }
+    };
+    const onMove = (e: PointerEvent) => {
+      if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > (down.touch ? 8 : 5)) cancel();
+    };
+    const onUp = (e: PointerEvent) => {
+      fingers.delete(e.pointerId);
+      const d = down;
+      cancel();
+      if (!d || e.type !== 'pointerup') return;
+      if (d.touch) {
+        // A tap selects nothing (a hold does), but a tap away from the LEDs clears the selection.
+        if (!nearest(e.clientX, e.clientY, PICK_PX.touch)) onSelectRef.current(null);
+        return;
+      }
+      onSelectRef.current(nearest(e.clientX, e.clientY, PICK_PX.mouse), e.ctrlKey || e.metaKey || e.shiftKey);
     };
     renderer.domElement.addEventListener('pointerdown', onDown);
+    renderer.domElement.addEventListener('pointermove', onMove);
     renderer.domElement.addEventListener('pointerup', onUp);
+    renderer.domElement.addEventListener('pointercancel', onUp);
 
     let raf = 0;
     const t0 = performance.now();
@@ -155,8 +216,11 @@ export function Scene3D({
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
+      cancel();
       renderer.domElement.removeEventListener('pointerdown', onDown);
+      renderer.domElement.removeEventListener('pointermove', onMove);
       renderer.domElement.removeEventListener('pointerup', onUp);
+      renderer.domElement.removeEventListener('pointercancel', onUp);
       controls.dispose();
       disposeGroup(content);
       scene.traverse((o) => disposeObject(o));
@@ -264,6 +328,24 @@ export function Scene3D({
     }
   }, [layout, Array.isArray(selected) ? selected.join('\n') : selected, showPicture]);
 
+  // Fly to the focused object: the same way round, near enough that it fills the view.
+  useEffect(() => {
+    const c = ctx.current;
+    const f = focus && c?.stage?.fixtures.find((x) => x.id === focus.id);
+    const pos = c?.bulbs?.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!c || !f || !f.count || !pos) return;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (let i = f.offset; i < f.offset + f.count && i < pos.count; i++) box.expandByPoint(v.fromBufferAttribute(pos, i));
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(0.6, box.getSize(new THREE.Vector3()).length() / 2);
+    const vfov = (c.camera.fov * Math.PI) / 180;
+    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * c.camera.aspect);
+    const dist = (radius / Math.sin(Math.min(vfov, hfov) / 2)) * 1.2;
+    const dir = c.camera.position.clone().sub(c.controls.target).normalize();
+    c.fly = { from: c.camera.position.clone(), to: center.clone().add(dir.multiplyScalar(dist)), fromT: c.controls.target.clone(), toT: center, start: performance.now() };
+  }, [focus?.n]);
+
   if (failed) {
     return (
       <div className={cn('grid place-items-center bg-[#05070f] p-6 text-center text-sm text-white/60', fill ? 'absolute inset-0' : 'aspect-video rounded-2xl ring-1 ring-white/10', className)}>
@@ -297,7 +379,10 @@ export function Scene3D({
           </button>
         ) : null}
       </div>
-      <p className="pointer-events-none absolute bottom-2 left-3 text-xs text-white/45">Drag to turn · scroll to zoom · right-drag to pan · click an LED to select its object</p>
+      {ring ? <HoldRing key={ring.n} x={ring.x} y={ring.y} ms={HOLD_MS} /> : null}
+      <p className="pointer-events-none absolute bottom-2 left-3 text-xs text-white/45">
+        {coarse ? 'Drag to turn · pinch to zoom · two fingers to pan · hold on an LED to select its object' : 'Drag to turn · scroll to zoom · right-drag to pan · click an LED to select its object'}
+      </p>
     </div>
   );
 }
