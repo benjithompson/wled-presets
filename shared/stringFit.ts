@@ -134,7 +134,8 @@ export function keepStrings(prev: Layout, next: Layout): { layout: Layout; limit
     if (want == null) return g;
     const rewired = !f || WIRE_KEYS.some((k) => !same(f[k], g[k])) || stringGap(f, prev) !== want;
     if (!rewired && (f === g || same(f.points, g.points))) return g;
-    const fit = (x: Fixture) => (freeSetting(x) ? fitString(x, next) : x);
+    // A locked object keeps its size (see keepLocked): a ring then stays as big as it is.
+    const fit = (x: Fixture) => (freeSetting(x) && !(x.locked && freeSetting(x) === 'radius') ? fitString(x, next) : x);
     const out = rewired ? fit(g) : g;
     if (!f || fitsString(out, next)) return out;
     // Drawn too long: the edit goes only part of the way, as far as the string reaches (or,

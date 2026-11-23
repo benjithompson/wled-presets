@@ -233,7 +233,29 @@ export interface Layout {
   designs?: Design[];
   /** A picture of the yard from above, under the top view. */
   aerial?: AerialPicture | null;
+  /** Where the front view looks at the yard from (see FrontView). Not set: straight on, from far away. */
+  frontView?: FrontView;
 }
+
+/**
+ * Where the front view looks at the yard from: the place the picture of the house was taken
+ * from. The yard turns about the middle of the front wall at the ground, under the picture, so
+ * a picture taken from off to one side, from up high or from close by lines up with the
+ * objects. Points on the front wall stay where they are on the picture when it is only closer.
+ */
+export interface FrontView {
+  /** Turned about the upright axis, in degrees: more looks from farther to the right (as seen from the street), less from the left. */
+  yaw?: number;
+  /** Looking down from above, in degrees (0: level). */
+  pitch?: number;
+  /** How far the camera is from the front wall, in layout units. Not set: far away (no perspective). */
+  distance?: number;
+}
+
+/** The front view turns at most this far either way (degrees); farther, the front wall is seen edge on. */
+export const MAX_YAW = 75;
+/** And looks down at most this steeply. */
+export const MAX_PITCH = 60;
 
 /**
  * A picture of the yard from above: a satellite or drone photo, or a screenshot of a map. It
@@ -624,15 +646,18 @@ export function treeWidthAt(shape: TreeShape | undefined, u: number): number {
 export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 'sphere' && f.cover != null && f.cover < 180 ? (1 + Math.cos((Math.max(1, f.cover) * Math.PI) / 180)) / 2 : 0);
 
 /**
- * The outline of a tree from the front, at its base: a triangle, a rectangle or an ellipse (for
- * a ball with LEDs on its top part only, that cap of it).
+ * The outline of a tree from the front (or the side, or across the direction `plane`), at its
+ * base: a triangle, a rectangle or an ellipse (for a ball with LEDs on its top part only, that
+ * cap of it).
  */
-export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' = 'front'): Point3[] {
+export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' | XZ = 'front'): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
   const { r, h } = treeSize(f);
-  // Across: x in the front view, z (the depth) in the side view.
-  const pt = (d: number, y: number): Point3 => (plane === 'side' ? { x: b.x, y, z: bz + d } : { x: b.x + d, y, z: bz });
+  // Across: x in the front view, z (the depth) in the side view, or a direction in the ground
+  // plane (a turned front view's).
+  const across: XZ = plane === 'side' ? { x: 0, z: 1 } : plane === 'front' ? { x: 1, z: 0 } : plane;
+  const pt = (d: number, y: number): Point3 => ({ x: b.x + d * across.x, y, z: bz + d * across.z });
   let flat: Point3[];
   if (f.shape === 'sphere') {
     // Round from the top: the cap's edge, over the top, to its other edge.

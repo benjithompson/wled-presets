@@ -92,12 +92,12 @@ describe('the string sets how a shape winds', () => {
 });
 
 describe('keeping wires within their strings', () => {
-  it('works the turns out again when the tree changes size, not when only its effect changes', () => {
+  it('works the turns out again when the tree changes size, not when only its name changes', () => {
     const prev = withF(tree());
     const bigger = keepStrings(prev, withF(tree({ height: 400 }))).layout.fixtures[0];
     close(ledGap(bigger), GAP);
     expect(bigger.turns).not.toBe(6);
-    const fx = tree({ effect: { id: 'solid' } as Fixture['effect'] });
+    const fx = tree({ name: 'Maple' });
     expect(keepStrings(prev, withF(fx)).layout.fixtures[0]).toBe(fx);
   });
 

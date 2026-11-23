@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { DIRECTIONS, EFFECTS, PALETTES, VIEWS, type Direction, type EffectId, type PaletteId, type View } from '../../shared/effects.ts';
-import { deviceRuns, FIXTURE_KINDS, FIXTURE_PATTERNS, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, SIDES, SPINS, sampleLayout, TREE_SHAPES, UNITS, ZIGZAGS, type AerialPicture, type Design, type Fixture, type Layout } from '../../shared/layout.ts';
+import { deviceRuns, FIXTURE_KINDS, FIXTURE_PATTERNS, LAYOUT_WIDTH, MAX_FIXTURE_PIXELS, MAX_PITCH, MAX_YAW, SIDES, SPINS, sampleLayout, TREE_SHAPES, UNITS, ZIGZAGS, type AerialPicture, type Design, type Fixture, type FrontView, type Layout } from '../../shared/layout.ts';
 import type { EffectSettings } from '../../shared/effects.ts';
 import type { LightType } from '../../shared/lights.ts';
 import type { Db } from './db.ts';
@@ -89,6 +89,13 @@ export const layoutShape = z.object({
       opacity: unit.optional()
     } satisfies SchemaOf<AerialPicture>)
     .nullable()
+    .optional(),
+  frontView: z
+    .object({
+      yaw: z.number().min(-MAX_YAW).max(MAX_YAW).optional(),
+      pitch: z.number().min(0).max(MAX_PITCH).optional(),
+      distance: z.number().min(10).max(200_000).optional()
+    } satisfies SchemaOf<FrontView>)
     .optional(),
   fixtures: z
     .array(

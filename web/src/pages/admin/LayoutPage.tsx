@@ -98,6 +98,9 @@ import {
   type Design,
   type Fixture,
   type FixtureKind,
+  type FrontView,
+  MAX_PITCH,
+  MAX_YAW,
   type Layout,
   type MatchProbe,
   type Point,
@@ -131,6 +134,7 @@ import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } f
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
+import { acrossOf, frontCamera } from '../../yard/frontCamera.ts';
 import { draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
 import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
@@ -805,6 +809,8 @@ export function LayoutPage() {
     return zRangeRef.current;
   }, [layout, stage, dragging]);
   const zMin = zRange[0];
+  /** The front view's camera, when it is turned to where the picture was taken from (see frontCamera). */
+  const frontCam = frontCamera(layout);
 
   useEffect(() => {
     if (keepPart.current) {
@@ -1146,7 +1152,7 @@ export function LayoutPage() {
       let prev = start;
       return uv.map((p) => {
         const hit = inView(d.side).pointAt(p);
-        prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev);
+        prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev, frontCam);
         return prev;
       });
     };
@@ -1204,7 +1210,7 @@ export function LayoutPage() {
     setTape(null);
     setMenu(null);
     setSelected(f.id);
-    setDraft({ side, pts: [toView(end, side, zMin)], cont: { id: f.id, at } });
+    setDraft({ side, pts: [toView(end, side, zMin, frontCam)], cont: { id: f.id, at } });
   };
 
   // Keyboard, as in CAD and drawing programs. V A C R L B T M: tools. Enter, Esc or a
@@ -1555,7 +1561,7 @@ export function LayoutPage() {
     if (drag) {
       drag.stopPropagation();
       svgs.current[side]?.setPointerCapture(drag.pointerId);
-      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1, start: toView(pointOnLine(f, k, raw, side), side, zMin) });
+      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1, start: toView(pointOnLine(f, k, raw, side), side, zMin, frontCam) });
     }
   };
 
@@ -1720,7 +1726,7 @@ export function LayoutPage() {
       }
     } else if (drag.kind === 'vertex' && f) {
       const i = drag.index;
-      const V = (q: Point) => toView(q, side, zMin);
+      const V = (q: Point) => toView(q, side, zMin, frontCam);
       // Shift: move the point straight across or straight up and down from where it was (to
       // raise the middle of a roofline into a peak, say). Ortho: keep the segment to the point
       // before (or after, for the first point) level or upright.
@@ -1729,7 +1735,7 @@ export function LayoutPage() {
       setSnapHint({ ...s, side });
       // On another point: take that point's position in 3D, so the two points join.
       const hit = s.kind === 'point' ? inView(side).pointAt(s.at, { id: f.id, index: i }) : undefined;
-      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q)) : q)) });
+      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q, frontCam)) : q)) });
     } else if (drag.kind === 'move') {
       let du = p.u - drag.from.u;
       let dv = p.v - drag.from.v;
@@ -1741,7 +1747,7 @@ export function LayoutPage() {
       // Grid snap: the first point of the object (the middle of a bush, the base of a tree) goes to the grid.
       const grid = gridFor(side, e);
       if (grid && drag.original[0]) {
-        const a = toView(drag.original[0], side, zMin);
+        const a = toView(drag.original[0], side, zMin, frontCam);
         if (axis !== 'v') du = onGrid(a.u + du, grid, 'u') - a.u;
         if (axis !== 'u') dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
@@ -1761,9 +1767,9 @@ export function LayoutPage() {
         ...(o.size != null ? { size: Math.max(0.01, Math.round(o.size * t * 100) / 100) } : {})
       });
     } else if (drag.kind === 'radius' && f) {
-      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - toView(f.points[0], side, zMin).u))) });
+      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - toView(f.points[0], side, zMin, frontCam).u))) });
     } else if (drag.kind === 'treeHeight' && f) {
-      update(drag.id, { height: Math.max(20, Math.round(f.points[0].y - p.v)) });
+      update(drag.id, { height: Math.max(20, Math.round(toView(f.points[0], side, zMin, frontCam).v - p.v)) });
     } else if (drag.kind === 'ground') {
       updateLayout({ groundY: Math.max(0, Math.min(layout.height, p.v)) });
     } else if (drag.kind === 'newShape') {
@@ -1773,7 +1779,7 @@ export function LayoutPage() {
 
   function onPointerUp() {
     setSnapHint(null);
-    if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid()));
+    if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid(), drag.side === 'front' ? frontCam : null));
     setDrag(null);
   }
 
@@ -2239,7 +2245,7 @@ export function LayoutPage() {
 
   /** One editable view: the drawing (YardView) and the handles over it, seen through the view's camera. */
   const renderView = (side: ViewSide) => {
-    const V = (p: Point) => toView(p, side, zMin);
+    const V = (p: Point) => toView(p, side, zMin, frontCam);
     const front = side === 'front';
     const vb = viewBoxFor(side);
     // Handles and labels keep the same size on the screen at every zoom.
@@ -2435,7 +2441,7 @@ export function LayoutPage() {
                                 else splitAt(f, i);
                                 return;
                               }
-                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i, start: toView(f.points[i], side, zMin) }, f.id, side);
+                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i, start: toView(f.points[i], side, zMin, frontCam) }, f.id, side);
                               if (tool === 'select' || tool === 'edit') {
                                 if (f.id !== selected) keepPart.current = true;
                                 setCorner(i);
@@ -2499,7 +2505,7 @@ export function LayoutPage() {
               );
             }
             const upright = side !== 'top';
-            const outline = f.kind === 'tree' && upright ? treeOutline(f, side === 'side' ? 'side' : 'front').map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
+            const outline = f.kind === 'tree' && upright ? treeOutline(f, side === 'side' ? 'side' : side === 'front' && frontCam ? acrossOf(frontCam) : 'front').map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
             return (
               <g key={f.id}>
                 {f.kind === 'tree' && upright ? (
@@ -2625,7 +2631,7 @@ export function LayoutPage() {
           ) : null}
 
           {/* A check's slice (drag it) or the ruler's band edges. */}
-          {layoutCheck && stage ? (
+          {layoutCheck && stage && !(front && frontCam) ? (
             <CheckOverlay
               check={layoutCheck}
               stage={stage}
@@ -2715,6 +2721,23 @@ export function LayoutPage() {
             </option>
           ))}
         </select>
+        {v === 'front' ? (
+          <label className="flex shrink-0 items-center gap-1" title="Turn the yard to where the picture was taken from (more in the properties, with nothing selected: Front view angle)">
+            <input
+              type="range"
+              aria-label="Front view turned"
+              min={-MAX_YAW}
+              max={MAX_YAW}
+              step={1}
+              value={layout.frontView?.yaw ?? 0}
+              onPointerDown={() => history.newStep()}
+              onChange={(e) => updateLayout({ frontView: tidyFrontView({ ...layout.frontView, yaw: Number(e.target.value) }) })}
+              onDoubleClick={() => updateLayout({ frontView: tidyFrontView({ ...layout.frontView, yaw: 0 }) })}
+              className="h-3 w-20 cursor-pointer accent-sky-400"
+            />
+            <span className="w-7 text-right tabular-nums">{layout.frontView?.yaw ?? 0}°</span>
+          </label>
+        ) : null}
         <span className="pointer-events-none truncate">
           {VIEW_NOTES[v]}
           {side && (drafting.grid || drafting.gridSnap) ? ` · grid ${gridOf(drafting, layout).text}${drafting.gridSnap ? ', snap' : ''}` : ''}
@@ -3315,6 +3338,7 @@ export function LayoutPage() {
           <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
         </PropSection>
         <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+        <FrontViewProps layout={layout} m={m} onChange={(frontView) => updateLayout({ frontView })} />
         <YardCheckProps check={check} onChange={setCheck} layout={layout} stage={stage} m={m} lights={checkLights} />
         {layout.aerial ? (
           <AerialProps
@@ -4126,6 +4150,71 @@ function YardProps({ layout, m, onChange, onMeasure }: { layout: Layout; m: Meas
       <PropNote>
         Real distances make the top and 3D views true to life, and let animations move at real speeds. For the best scale, measure something you know at the front wall, for example a garage door. Then
         drag the dashed ground line in the front view to the bottom of the front wall: heights count from there.
+      </PropNote>
+    </PropSection>
+  );
+}
+
+/** A turn in degrees, set with a slider. */
+function AngleSlider({ label, value, min, max, hint, onChange }: { label: string; value: number; min: number; max: number; hint?: string; onChange: (deg: number) => void }) {
+  return (
+    <PropRow label={label} hint={hint}>
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          aria-label={label}
+          min={min}
+          max={max}
+          step={1}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="h-7 min-w-0 flex-1 cursor-pointer accent-sky-600 dark:accent-sky-400"
+        />
+        <span className="w-8 shrink-0 text-right text-[11px] text-stone-500 tabular-nums">{value}°</span>
+      </div>
+    </PropRow>
+  );
+}
+
+/** A front view angle with its unset settings left out, or undefined for straight on from far away. */
+function tidyFrontView(v: FrontView): FrontView | undefined {
+  const out: FrontView = {};
+  if (v.yaw) out.yaw = Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.round(v.yaw)));
+  if (v.pitch) out.pitch = Math.max(0, Math.min(MAX_PITCH, Math.round(v.pitch)));
+  if (v.distance && v.distance >= 10) out.distance = Math.round(v.distance);
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Where the front view looks at the yard from: the place the picture of the house was taken
+ * from. The yard turns under the picture, so the objects line up with it.
+ */
+function FrontViewProps({ layout, m, onChange }: { layout: Layout; m: Measure; onChange: (v: FrontView | undefined) => void }) {
+  const v = layout.frontView ?? {};
+  const set = (patch: Partial<FrontView>) => onChange(tidyFrontView({ ...v, ...patch }));
+  return (
+    <PropSection key="frontview" id="frontview" title="Front view angle">
+      <AngleSlider label="Turned" value={v.yaw ?? 0} min={-MAX_YAW} max={MAX_YAW} onChange={(yaw) => set({ yaw })} hint="Seen from farther to the right (more) or the left (less), as from the street" />
+      <AngleSlider label="From above" value={v.pitch ?? 0} min={0} max={MAX_PITCH} onChange={(pitch) => set({ pitch })} hint="Looking down on the yard, as from a window upstairs or a ladder" />
+      <PropNumber
+        label="Distance"
+        hint="How far from the front wall the picture was taken: closer makes what is nearer look bigger. Empty or 0: far away (no perspective)."
+        decimal
+        value={v.distance ? m.show(v.distance) : null}
+        placeholder="far away"
+        min={0}
+        step={m.units === 'm' ? 0.5 : 1}
+        unit={m.units}
+        onChange={(n) => set({ distance: n > 0 ? n * m.per : undefined })}
+      />
+      <PropRow label="">
+        <PropButton onClick={() => onChange(undefined)} disabled={!layout.frontView}>
+          <RotateCcw /> Straight on
+        </PropButton>
+      </PropRow>
+      <PropNote>
+        Set where the picture of the house was taken from, and the whole yard turns under it so the objects line up with the picture: a roofline down the side of the house, the trees in front of it. The
+        yard turns about the middle of the front wall at the ground. It only changes how the front view (and the yard on the public page) looks: effects and games are the same.
       </PropNote>
     </PropSection>
   );
