@@ -59,6 +59,7 @@ import {
   semicircleSize,
   treeSize,
   deviceLed,
+  markedTree,
   takesMarks,
   validMarks,
   FEET_PER_METER,
@@ -114,6 +115,7 @@ import {
   wavePasses,
   WAVE_SWEEP,
   capFloor,
+  litFloor,
   treeSurfaceLength,
   keepLocked,
   changeKind,
@@ -134,7 +136,7 @@ import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
 import { autoScale, keepScale, roofScale } from '../../../../shared/yardScale.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
-import { markAt, moveMark, setMark, ShapeWizard } from './shapeWizard.tsx';
+import { markAt, moveMark, raiseMark, ShapeWizard } from './shapeWizard.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
@@ -436,25 +438,34 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
   const wave = pattern === 'wave';
   const fromTop = (spiral || wave) && f.start === 'top';
   const passes = wave ? wavePasses(f) : null;
+  // A wave shaped to the lights: its rows make its shape, each as wide as its LEDs (see waveRows).
+  const rows = wave && markedTree(f) ? validMarks(f).filter((x) => x.led > 0 && x.led < f.pixels - 1).length + 1 : null;
   const ball = f.shape === 'sphere';
   /** The height its LEDs climb: a ball's cap, when only its top has LEDs. */
   const climb = treeSize(f).h * (1 - capFloor(f));
   return (
     <>
-      <PropSelect<TreeShape>
-        label="Shape"
-        hint="How wide it is going up. A sphere fits in its width and height: make them the same for a round ball."
-        value={f.shape ?? 'cone'}
-        options={[
-          ['cone', 'Cone (a tree)'],
-          ['cylinder', 'Cylinder (a post, a column)'],
-          ['sphere', 'Sphere (a ball)']
-        ]}
-        onChange={(shape) => onChange({ shape: shape === 'cone' ? undefined : shape })}
-      />
+      {rows ? (
+        <PropNote>
+          Shaped to the lights: {rows} row{rows === 1 ? '' : 's'}, each as wide as its LEDs go round, the widest as wide as the tree. Its width comes from the light string when the marks change;
+          Width and Height then stretch it, and the rows sit evenly apart up its height unless a turn’s height is set.
+        </PropNote>
+      ) : (
+        <PropSelect<TreeShape>
+          label="Shape"
+          hint="How wide it is going up. A sphere fits in its width and height: make them the same for a round ball."
+          value={f.shape ?? 'cone'}
+          options={[
+            ['cone', 'Cone (a tree)'],
+            ['cylinder', 'Cylinder (a post, a column)'],
+            ['sphere', 'Sphere (a ball)']
+          ]}
+          onChange={(shape) => onChange({ shape: shape === 'cone' ? undefined : shape })}
+        />
+      )}
       {width}
       {place(<PropDistance label="Height" value={treeSize(f).h} m={m} min={0.1} onChange={(lu) => onChange({ height: Math.max(5, Math.round(lu)) })} />)}
-      {ball ? (
+      {ball && !rows ? (
         <>
           {place(
             <PropNumber
@@ -548,7 +559,7 @@ function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure
       ) : (
         fromString(<PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />)
       )}
-      {wave && passes ? (
+      {wave && passes && !rows ? (
         <>
           <PropNumber
             label="Goes around"
@@ -1042,11 +1053,9 @@ export function LayoutPage() {
   /** Moves the blinking LED's mark up (1) or down (-1) by one step. */
   const shapeNudge = (dir: 1 | -1) => {
     if (!shapeSel || !probe || !layout) return;
-    const here = validMarks(shapeSel).find((m) => m.led === probe.offset);
-    if (!here) return;
-    const lit = Math.max(1e-6, treeSize(shapeSel).h * (1 - capFloor(shapeSel)));
-    const height = Math.max(0, Math.min(1, Math.round((here.height + (dir * shapeStep(layout)) / lit) * 1000) / 1000));
-    update(shapeSel.id, { marks: setMark(shapeSel, { ...here, height }) });
+    if (!validMarks(shapeSel).some((m) => m.led === probe.offset)) return;
+    const lit = Math.max(1e-6, treeSize(shapeSel).h * (1 - litFloor(shapeSel)));
+    update(shapeSel.id, { marks: raiseMark(shapeSel, probe.offset, (dir * shapeStep(layout)) / lit) });
   };
 
   /** Starts the wizard on a line at one of its points (default: the start). */

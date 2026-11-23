@@ -5,7 +5,7 @@
 // Fixture.marks, shared/layout.ts).
 
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronLeft, ChevronRight, Minus, Plus, RotateCcw, Trash2, X } from 'lucide-react';
-import { capFloor, deviceLed, shapePlaces, treeSize, validMarks, type Fixture, type Offset3, type ShapeMark } from '../../../../shared/layout.ts';
+import { deviceLed, litFloor, shapePlaces, treeSize, validMarks, type Fixture, type Offset3, type ShapeMark } from '../../../../shared/layout.ts';
 import { Button } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
 import { PropButton, PropNote, PropNumber, PropRow } from './props.tsx';
@@ -59,7 +59,15 @@ function markOf(f: Fixture, led: number): ShapeMark {
   const here = validMarks(f).find((m) => m.led === led);
   if (here) return here;
   const p = shapePlaces(f)[led] ?? { height: 0, angle: 0, offset: { x: 0, y: 0, z: 0 } };
-  return { led, angle: p.angle, height: p.height, offset: p.offset };
+  // A wave's turns sit evenly up the tree until a height is set.
+  return { led, angle: p.angle, height: f.pattern === 'wave' ? undefined : p.height, offset: p.offset };
+}
+
+/** Moves the LED's mark (made where the LED is now, if it has none) up or down its shape by `du` (a share of its lit height). */
+export function raiseMark(f: Fixture, led: number, du: number): ShapeMark[] {
+  const m = markOf(f, led);
+  const now = m.height ?? shapePlaces(f)[led]?.height ?? 0;
+  return setMark(f, { ...m, height: Math.max(0, Math.min(1, Math.round((now + du) * 1000) / 1000)) });
 }
 
 /**
@@ -116,10 +124,13 @@ export function ShapeWizard({
   const facing = f.facing ?? 0;
   const marks = validMarks(f);
   const here = marks.find((m) => m.led === led) ?? null;
-  const place = shapePlaces(f)[led] ?? { height: 0, angle: 0 };
+  const places = shapePlaces(f);
+  const place = places[led] ?? { height: 0, angle: 0 };
+  /** A mark's height as drawn (a wave's, worked out, when not set). */
+  const heightOf = (m: ShapeMark) => m.height ?? places[m.led]?.height ?? 0;
   // Heights in real units, above the base (a ball's cap starts part way up).
   const { h } = treeSize(f);
-  const u0 = capFloor(f);
+  const u0 = litFloor(f);
   const lit = Math.max(1e-6, h * (1 - u0));
   const heightText = (u: number) => lenText((u0 + (1 - u0) * u) * h);
   const du = stepLu / lit;
@@ -137,7 +148,7 @@ export function ShapeWizard({
       .filter(Boolean)
       .join(', ');
   const pad = 'grid h-8 place-items-center rounded-md bg-stone-100 text-stone-700 transition hover:bg-stone-200 active:scale-95 disabled:opacity-40 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 [&_svg]:size-4';
-  const nudge = (m: ShapeMark, dir: 1 | -1) => onMarks(setMark(f, { ...m, height: Math.max(0, Math.min(1, Math.round((m.height + dir * du) * 1000) / 1000)) }));
+  const nudge = (m: ShapeMark, dir: 1 | -1) => onMarks(raiseMark(f, m.led, dir * du));
   const remove = (m: ShapeMark) => {
     const rest = marks.filter((x) => x.led !== m.led);
     onMarks(rest.length ? rest : undefined);
@@ -163,9 +174,8 @@ export function ShapeWizard({
     <>
       <p className="text-xs text-stone-600 dark:text-stone-400">
         {wave
-          ? 'Move the blinking red LED along the string. Mark where it starts and ends, and each LED where the string turns at the left or the right side of the tree, with how far round it is.'
-          : 'Move the blinking red LED along the string. Mark where it starts and ends, and each LED where it passes the front, the right, the back or the left of the tree (as seen from the street).'}{' '}
-        Then set how high each mark is. The pattern, bent to go through the marks, places the LEDs in between.
+          ? 'Move the blinking red LED along the string. Mark its first LED, each LED where the string turns at the left or the right side of the tree, and its last LED. Each row is as wide as its LEDs go (fewer LEDs: a narrower row), and the rows sit evenly apart up the tree: set the tree’s width and height after, or a turn’s height here.'
+          : 'Move the blinking red LED along the string. Mark where it starts and ends, and each LED where it passes the front, the right, the back or the left of the tree (as seen from the street). Then set how high each mark is. The pattern, bent to go through the marks, places the LEDs in between.'}
       </p>
       <div className="flex items-center justify-between gap-2 rounded-md bg-stone-100 px-2.5 py-2 dark:bg-stone-800">
         <span className="text-lg font-semibold text-red-600 tabular-nums dark:text-red-400">LED {dev}</span>
@@ -259,15 +269,30 @@ export function ShapeWizard({
               onChange={(a) => mark(a)}
             />
           ) : null}
-          <PropRow label="Height" hint="How high this LED is, above the base of the tree. − and + (or [ and ]) pull the string down or up.">
+          <PropRow
+            label="Height"
+            hint={
+              wave
+                ? 'How high this turn is, above the base of the tree. Not set: the rows sit evenly apart up the tree (change the tree’s height to stretch them). − and + (or [ and ]) set it.'
+                : 'How high this LED is, above the base of the tree. − and + (or [ and ]) pull the string down or up.'
+            }
+          >
             <div className="flex items-center gap-1">
-              <PropButton onClick={() => nudge(here, -1)} disabled={here.height <= 0} title="Lower ([)">
+              <PropButton onClick={() => nudge(here, -1)} disabled={heightOf(here) <= 0} title="Lower ([)">
                 <Minus />
               </PropButton>
-              <span className="min-w-16 text-center text-xs tabular-nums">{heightText(here.height)}</span>
-              <PropButton onClick={() => nudge(here, 1)} disabled={here.height >= 1} title="Higher (])">
+              <span className="min-w-16 text-center text-xs tabular-nums">
+                {heightText(heightOf(here))}
+                {here.height == null ? ' (auto)' : ''}
+              </span>
+              <PropButton onClick={() => nudge(here, 1)} disabled={heightOf(here) >= 1} title="Higher (])">
                 <Plus />
               </PropButton>
+              {wave && here.height != null ? (
+                <PropButton onClick={() => onMarks(setMark(f, { ...here, height: undefined }))} title="The rows evenly apart up the tree again">
+                  Auto
+                </PropButton>
+              ) : null}
             </div>
           </PropRow>
           <PropRow label="">
@@ -327,7 +352,7 @@ export function ShapeWizard({
             {marks.map((m) => (
               <div key={m.led} className={cn('flex items-center gap-1 rounded px-1 text-xs tabular-nums', m.led === led && 'bg-red-50 dark:bg-red-950/40')}>
                 <button type="button" className="min-w-0 flex-1 truncate py-0.5 text-left hover:underline" onClick={() => onSet(m.led)} title="Blink this LED">
-                  LED {deviceLed(f, m.led)} · {wayText(street(m))} · {heightText(m.height)}
+                  LED {deviceLed(f, m.led)} · {wayText(street(m))} · {heightText(heightOf(m))}
                   {m.offset ? ' · moved' : ''}
                 </button>
                 <button type="button" className="grid size-6 place-items-center rounded hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => nudge(m, -1)} aria-label="Lower" title="Lower">

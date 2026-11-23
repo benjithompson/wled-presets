@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixturePixels, ledGap, shapePlaces, validMarks, type Fixture, type ShapeMark } from '../../shared/layout.ts';
-import { fitString } from '../../shared/stringFit.ts';
+import { fitString, keepStrings } from '../../shared/stringFit.ts';
 import { layoutShape } from '../../server/src/layoutStore.ts';
 import { sampleLayout } from '../../shared/layout.ts';
 
@@ -35,9 +35,9 @@ describe('a tree shaped to the lights', () => {
     ];
     const places = shapePlaces(tree({ marks }));
     for (const m of marks) {
-      expect(places[m.led].height).toBeCloseTo(m.height, 2);
+      expect(places[m.led].height).toBeCloseTo(m.height!, 2);
       // The very top of a ball has no angle to speak of.
-      if (m.height < 1) expect(Math.abs(turn(places[m.led].angle, m.angle))).toBeLessThan(0.5);
+      if (m.height! < 1) expect(Math.abs(turn(places[m.led].angle, m.angle))).toBeLessThan(0.5);
     }
   });
 
@@ -128,6 +128,60 @@ describe('a tree shaped to the lights', () => {
     const moved = fixturePixels(tree({ facing: 90, marks }))[50];
     expect(moved.x - plain.x).toBeCloseTo(0, 6);
     expect(moved.z - plain.z).toBeCloseTo(-10, 6);
+  });
+
+  describe('a wave in rows', () => {
+    // Starts at the left, turns at the right after 30 LEDs, at the left after 20 more, ends at the right.
+    const wave = (patch: Partial<Fixture> = {}) =>
+      tree({
+        pattern: 'wave',
+        shape: undefined,
+        cover: undefined,
+        pixels: 100,
+        radius: 100,
+        height: 300,
+        marks: [
+          { led: 0, angle: -90 },
+          { led: 30, angle: 90 },
+          { led: 50, angle: -90 },
+          { led: 99, angle: 90 }
+        ],
+        ...patch
+      });
+    /** How far the LED is from the tree's axis. */
+    const out = (f: Fixture, led: number) => {
+      const p = fixturePixels(f)[led];
+      return Math.hypot(p.x - 800, p.z - 200);
+    };
+
+    it('makes each row as wide as its LEDs: fewer LEDs, a narrower row; the widest at the radius', () => {
+      const f = wave();
+      // The middle of each row, away from the bends.
+      expect(out(f, 75)).toBeCloseTo(100, 3);
+      expect(out(f, 40)).toBeCloseTo((100 * 20) / 49, 3);
+      expect(out(f, 15)).toBeCloseTo((100 * 30) / 49, 3);
+    });
+
+    it('puts the rows evenly apart up the tree, unless a turn has its height set', () => {
+      const at = shapePlaces(wave());
+      // Three rows: at the base, halfway, at the top; the turns between them.
+      expect(at[15].height).toBeCloseTo(0, 2);
+      expect(at[40].height).toBeCloseTo(0.5, 2);
+      expect(at[75].height).toBeCloseTo(1, 2);
+      expect(at[30].height).toBeCloseTo(0.25, 2);
+      const set = shapePlaces(wave({ marks: [{ led: 0, angle: -90 }, { led: 30, angle: 90, height: 0.5 }, { led: 50, angle: -90 }, { led: 99, angle: 90 }] }));
+      expect(set[30].height).toBeCloseTo(0.5, 2);
+    });
+
+    it('gets its size from the string when its marks change, and keeps a size set by hand', () => {
+      const layout = (f: Fixture) => ({ ...sampleLayout(), scale: 80, fixtures: [f] });
+      const f = wave({ lights: 'novabright-bullet-12v-4in' });
+      const fitted = keepStrings(layout(wave({ lights: 'novabright-bullet-12v-4in', marks: undefined })), layout(f)).layout.fixtures[0];
+      // 49 LEDs 4 in apart round half the tree: radius about 49 * 0.1016 m / pi.
+      expect(fitted.radius! / 80).toBeCloseTo((49 * 0.1016) / Math.PI, 0);
+      const bigger = { ...fitted, radius: fitted.radius! + 40 };
+      expect(keepStrings(layout(fitted), layout(bigger)).layout.fixtures[0].radius).toBe(bigger.radius);
+    });
   });
 
   it('saves with the layout', () => {

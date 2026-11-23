@@ -125,7 +125,7 @@ export const layoutShape = z.object({
             z.object({
               led: z.number().int().min(0).max(MAX_FIXTURE_PIXELS - 1),
               angle: z.number().min(-360).max(360),
-              height: z.number().min(0).max(1),
+              height: z.number().min(0).max(1).optional(),
               offset: z.object({ x: coord, y: coord, z: coord }).optional()
             })
           )

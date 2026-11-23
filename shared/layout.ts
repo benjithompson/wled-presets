@@ -663,6 +663,12 @@ export function treeWidthAt(shape: TreeShape | undefined, u: number): number {
 }
 
 /** The share of a ball's height (0 at its bottom) where the LEDs of its cap stop (see Fixture.cover). */
+/**
+ * Where a tree's lit height starts, as a share of its height: a ball's cap (see capFloor), but
+ * the base for a wave shaped to the lights, whose rows make its shape (see waveRows).
+ */
+export const litFloor = (f: Fixture) => (f.kind === 'tree' && f.pattern === 'wave' && markedTree(f) ? 0 : capFloor(f));
+
 export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 'sphere' && f.cover != null && f.cover < 180 ? (1 + Math.cos((Math.max(1, f.cover) * Math.PI) / 180)) / 2 : 0);
 
 /**
@@ -670,10 +676,15 @@ export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 's
  * base: a triangle, a rectangle or an ellipse (for a ball with LEDs on its top part only, that
  * cap of it).
  */
-export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' | XZ = 'front'): Point3[] {
+export function treeOutline(
+  f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'> & Partial<Pick<Fixture, 'pattern' | 'marks'>>,
+  plane: 'front' | 'side' | XZ = 'front'
+): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
   const { r, h } = treeSize(f);
+  // A wave shaped to the lights: its rows make its shape, as wide as the tree at most.
+  if (f.pattern === 'wave' && f.marks?.length) f = { ...f, shape: 'cylinder', cover: undefined };
   // Across: x in the front view, z (the depth) in the side view, or a direction in the ground
   // plane (a turned front view's).
   const across: XZ = plane === 'side' ? { x: 0, z: 1 } : plane === 'front' ? { x: 1, z: 0 } : plane;
@@ -710,7 +721,7 @@ function treeFrame(f: Fixture) {
   const { r, h } = treeSize(f);
   const face = ((f.facing ?? 0) * Math.PI) / 180;
   const sign = f.spin === 'cw' ? -1 : 1;
-  const u0 = capFloor(f);
+  const u0 = litFloor(f);
   const span = 1 - u0;
   const at = (u: number, a: number): Point3 => {
     const ub = u0 + span * u;
@@ -819,8 +830,11 @@ export interface ShapeMark {
    * (the street), -90 its left, 180 its back.
    */
   angle: number;
-  /** How high: 0 at the base (or the lowest LEDs of a ball's cap), 1 at the top. */
-  height: number;
+  /**
+   * How high: 0 at the base (or the lowest LEDs of a ball's cap), 1 at the top. Not set (a
+   * wave's marks): worked out, the rows evenly apart up the tree.
+   */
+  height?: number;
   /**
    * Moved by hand from that spot on the tree's shape, in layout units: x to the tree's right
    * (as seen from its front), y up, z toward its front. So the LEDs can be anywhere, not only on
@@ -832,8 +846,11 @@ export interface ShapeMark {
 /** A move by hand in 3D (see ShapeMark.offset). */
 export type Offset3 = { x: number; y: number; z: number };
 
-/** Where an LED of a tree is: on its shape (height u, angle th from its front in radians), and moved by hand from there. */
-type TreePlace = { u: number; th: number; off: Offset3 };
+/**
+ * Where an LED of a tree is: on its shape (height u, angle th from its front in radians), and
+ * moved by hand from there. `rad`: this far from the tree's axis (layout units) instead of on its shape.
+ */
+type TreePlace = { u: number; th: number; off: Offset3; rad?: number };
 const NO_OFFSET: Offset3 = { x: 0, y: 0, z: 0 };
 
 /** Objects whose LEDs can be marked (see Fixture.marks): trees with a spiral or a wave. */
@@ -843,7 +860,7 @@ export const takesMarks = (f: Pick<Fixture, 'kind' | 'pattern'>) => f.kind === '
 export function validMarks(f: Pick<Fixture, 'marks' | 'pixels'>): ShapeMark[] {
   const n = Math.floor(f.pixels);
   const seen = new Set<number>();
-  const ok = (m: ShapeMark) => Number.isInteger(m.led) && m.led >= 0 && m.led < n && Number.isFinite(m.angle) && Number.isFinite(m.height) && !seen.has(m.led) && !!seen.add(m.led);
+  const ok = (m: ShapeMark) => Number.isInteger(m.led) && m.led >= 0 && m.led < n && Number.isFinite(m.angle) && (m.height == null || Number.isFinite(m.height)) && !seen.has(m.led) && !!seen.add(m.led);
   return (f.marks ?? []).filter(ok).sort((a, b) => a.led - b.led);
 }
 
@@ -894,35 +911,31 @@ export function shapePlaces(f: Fixture): { height: number; angle: number; offset
 }
 
 /**
- * A marked tree's wire, in N places spread along it (LED i of n is at i / (n - 1) of the way):
- * the pattern, bent to go through the marks. From one mark to the next (and from LED 0 and to
+ * A marked tree's wire, in N places spread along it (LED i of n is at i / (n - 1) of the way).
+ * A wave: see waveRows. A spiral: the pattern, bent to go through the marks. From one mark to the next (and from LED 0 and to
  * the last LED where they are not marked) the wire keeps the pattern's shape, and what the
  * marks change (round the tree, and up or down) spreads evenly over the LEDs between them.
- * Round the tree: a spiral goes on round the way it winds, as many whole times as the pattern
- * would between those LEDs (so a mark every quarter turn, or only a few, both work); a wave goes
- * straight across from side to side.
+ * Round the tree, the spiral goes on the way it winds, as many whole times as the pattern would
+ * between those LEDs (so a mark every quarter turn, or only a few, both work). A mark without a
+ * height is as high as the pattern has its LED.
  */
 function markedPlaces(f: Fixture, n: number, N: number): TreePlace[] {
+  if (f.pattern === 'wave') return waveRows(f, n, N);
   const base = placesOf(f, treePixels({ ...f, marks: undefined }, N));
   const j = (led: number) => Math.round((led * (N - 1)) / (n - 1));
-  const anchors = validMarks(f).map((m) => ({ led: m.led, u: Math.max(0, Math.min(1, m.height)), th: (m.angle * Math.PI) / 180, off: m.offset ?? NO_OFFSET }));
+  const anchors = validMarks(f).map((m) => ({ led: m.led, u: Math.max(0, Math.min(1, m.height ?? base[j(m.led)].u)), th: (m.angle * Math.PI) / 180, off: m.offset ?? NO_OFFSET }));
   if (anchors[0].led > 0) anchors.unshift({ led: 0, ...base[0], off: NO_OFFSET });
   if (anchors[anchors.length - 1].led < n - 1) anchors.push({ led: n - 1, ...base[N - 1], off: NO_OFFSET });
-  const wave = f.pattern === 'wave';
   const out: TreePlace[] = base.map((p) => ({ ...p, off: NO_OFFSET }));
   anchors.slice(1).forEach((B, k) => {
     const A = anchors[k];
     const ja = j(A.led);
     const jb = j(B.led);
     const want = base[jb].th - base[ja].th;
-    let d: number;
-    if (wave) d = wrapTau(B.th) - wrapTau(A.th);
-    else {
-      const raw = B.th - A.th;
-      d = raw + TAU * Math.round((want - raw) / TAU);
-      if (want > 0) while (d < 0) d += TAU;
-      else if (want < 0) while (d > 0) d -= TAU;
-    }
+    const raw = B.th - A.th;
+    let d = raw + TAU * Math.round((want - raw) / TAU);
+    if (want > 0) while (d < 0) d += TAU;
+    else if (want < 0) while (d > 0) d -= TAU;
     const turn = d - want;
     const lift = B.u - A.u - (base[jb].u - base[ja].u);
     for (let i = ja; i <= jb; i++) {
@@ -934,13 +947,81 @@ function markedPlaces(f: Fixture, n: number, N: number): TreePlace[] {
   return out;
 }
 
+/** The narrowest a row of a marked wave is taken to go round, so a row with both ends on one side does not get huge. */
+const MIN_ROW = (30 * Math.PI) / 180;
+
+/**
+ * A marked wave, in rows. Its marks other than the first and the last LED are where the string
+ * turns, at the left or the right (the middle of a bend); between two turns the string runs
+ * level across the front of the tree. Each row is as long as its LEDs: a row with fewer LEDs
+ * than the one before, between turns as far round, is narrower (no shape needed: the rows make
+ * it). The widest row is as wide as the tree (its radius, worked out from the string, see
+ * stringFit); the rows sit evenly apart up its height, unless a mark's height is set. The
+ * string climbs in the bends: half the way to the next row on each side of a turn.
+ */
+function waveRows(f: Fixture, n: number, N: number): TreePlace[] {
+  const { r } = treeFrame(f);
+  const top = f.start === 'top';
+  const marks = validMarks(f);
+  type Anchor = { led: number; th: number; h?: number; off: Offset3 };
+  const anchors: Anchor[] = marks.map((m) => ({ led: m.led, th: wrapTau((m.angle * Math.PI) / 180), h: m.height, off: m.offset ?? NO_OFFSET }));
+  // An end that is not marked is on the other side from the turn next to it.
+  const across = (a: Anchor | undefined) => (a ? (Math.abs(a.th) < 1e-6 ? 0 : -Math.sign(a.th) * (Math.PI / 2)) : -Math.PI / 2);
+  if (anchors[0].led > 0) anchors.unshift({ led: 0, th: across(anchors[0]), off: NO_OFFSET });
+  if (anchors[anchors.length - 1].led < n - 1) anchors.push({ led: n - 1, th: across(anchors[anchors.length - 1]), off: NO_OFFSET });
+  const R = anchors.length - 2;
+  // Row levels, evenly from the start's height to the end's; a turn is halfway between two rows.
+  const uS = anchors[0].h ?? (top ? 1 : 0);
+  const uE = anchors[R + 1].h ?? (top ? 0 : 1);
+  const level = (k: number) => uS + ((uE - uS) * k) / Math.max(1, R);
+  const hs = anchors.map((a, k) => (k === 0 ? uS : k === R + 1 ? uE : (a.h ?? (level(k - 1) + level(k)) / 2)));
+  // Each row's radius: its LEDs over how far round it goes, the widest at the tree's radius.
+  const rows = anchors.slice(1).map((B, k) => {
+    const A = anchors[k];
+    const d = B.th - A.th;
+    return { d, w: (B.led - A.led) / Math.max(MIN_ROW, Math.abs(d)) };
+  });
+  const wMax = Math.max(...rows.map((x) => x.w)) || 1;
+  const rads = rows.map((x) => (r * x.w) / wMax);
+  // At a turn, the radius goes from one row's to the next's.
+  const turnRad = (k: number) => (k === 0 ? rads[0] : k === R + 1 ? rads[R] : (rads[k - 1] + rads[k]) / 2);
+  const out: TreePlace[] = [];
+  let k = 0;
+  for (let i = 0; i < N; i++) {
+    const x = N > 1 ? (i * (n - 1)) / (N - 1) : 0;
+    while (k < R && x > anchors[k + 1].led) k++;
+    const A = anchors[k];
+    const B = anchors[k + 1];
+    const t = B.led > A.led ? Math.max(0, Math.min(1, (x - A.led) / (B.led - A.led))) : 0;
+    const bendA = k > 0;
+    const bendB = k < R;
+    const rise = bendA && bendB ? waveRise(t) : bendB ? smooth01((t - (1 - WAVE_BEND)) / WAVE_BEND) : bendA ? smooth01(t / WAVE_BEND) : t;
+    const near = (s: number) => 1 - smooth01(s / WAVE_BEND);
+    const rad = rads[k] + (bendA ? (turnRad(k) - rads[k]) * near(t) : 0) + (bendB ? (turnRad(k + 1) - rads[k]) * near(1 - t) : 0);
+    const off = { x: A.off.x + (B.off.x - A.off.x) * t, y: A.off.y + (B.off.y - A.off.y) * t, z: A.off.z + (B.off.z - A.off.z) * t };
+    out.push({ u: hs[k] + (hs[k + 1] - hs[k]) * rise, th: A.th + rows[k].d * t, off, rad });
+  }
+  return out;
+}
+
+/** Half of a wave's climb comes in the bend at each end of a row (a turn is the middle of a bend). */
+const WAVE_BEND = 0.2;
+const smooth01 = (x: number) => {
+  const c = Math.max(0, Math.min(1, x));
+  return c * c * (3 - 2 * c);
+};
+const waveRise = (t: number) => 0.5 * smooth01(t / WAVE_BEND) + 0.5 * smooth01((t - (1 - WAVE_BEND)) / WAVE_BEND);
+
 /** The point of a place on a tree: on its shape, then moved by hand (turned the way the tree faces). */
 function placePoint(frame: ReturnType<typeof treeFrame>): (p: TreePlace) => Point3 {
-  const { at, sign, face } = frame;
+  const { at, sign, face, b, bz, h, u0, span } = frame;
   const c = Math.cos(face);
   const s = Math.sin(face);
   return (p) => {
-    const q = at(p.u, sign * p.th);
+    const q =
+      p.rad != null
+        ? { x: b.x + Math.sin(face + p.th) * p.rad, y: b.y - (u0 + span * p.u) * h, z: bz + Math.cos(face + p.th) * p.rad }
+        : at(p.u, sign * p.th);
     return { x: q.x + p.off.x * c + p.off.z * s, y: q.y - p.off.y, z: q.z - p.off.x * s + p.off.z * c };
   };
 }
