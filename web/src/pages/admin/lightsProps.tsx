@@ -362,7 +362,7 @@ function IconButton({ title, onClick, disabled, children }: { title: string; onC
       aria-label={title}
       disabled={disabled}
       onClick={onClick}
-      className="grid size-7 place-items-center rounded-md text-stone-600 transition hover:bg-stone-100 hover:text-stone-950 disabled:opacity-30 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-3.5"
+      className="grid size-7 place-items-center rounded-md text-stone-600 transition pointer-coarse:size-11 hover:bg-stone-100 hover:text-stone-950 disabled:opacity-30 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white [&_svg]:size-3.5"
     >
       {children}
     </button>

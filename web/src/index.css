@@ -48,6 +48,11 @@
   .touch-ui :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea) {
     font-size: 16px;
   }
+  /* Check boxes and radio buttons big enough for a finger. */
+  .touch-ui :is(input[type='checkbox'], input[type='radio']) {
+    width: 1.375rem;
+    height: 1.375rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
