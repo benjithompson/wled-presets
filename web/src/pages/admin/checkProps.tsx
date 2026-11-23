@@ -8,7 +8,10 @@ import {
   bandOrigin,
   BAND_RGB,
   currentGuess,
+  HALF_NAMES,
+  HALF_RGB,
   PICTURE_RGB,
+  pictureCut,
   slicePosition,
   STRING_RGB,
   SLICE_HALF_M,
@@ -16,7 +19,8 @@ import {
   SLICE_LOW_RGB,
   wiringGuesses,
   type CheckAxis,
-  type LayoutCheck
+  type LayoutCheck,
+  type PictureSplit
 } from '../../../../shared/check.ts';
 import { setStringEnd, setStringStart, stringRanges } from '../../../../shared/lights.ts';
 import { isLine, layoutGround, MAX_FIXTURE_PIXELS, type Fixture, type Layout, type Stage, type Units } from '../../../../shared/layout.ts';
@@ -28,7 +32,8 @@ import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, Pr
 export type EditorCheck =
   | { kind: 'slice'; axis: CheckAxis; at: number | null }
   | { kind: 'bands'; axis: CheckAxis; step: number }
-  | { kind: 'picture' }
+  /** In two halves along one axis, or all: up to eight blocks. */
+  | { kind: 'picture'; split: PictureSplit }
   | { kind: 'chase' }
   /** The strings of the selected object, or (all) of every object. */
   | { kind: 'strings'; all: boolean };
@@ -45,9 +50,11 @@ export const toLayoutCheck = (c: EditorCheck | null, selected: string | null): L
           : selected
             ? { kind: 'strings', id: selected }
             : null
-        : selected
-          ? { kind: c.kind, id: selected }
-          : null;
+        : !selected
+          ? null
+          : c.kind === 'picture'
+            ? { kind: 'picture', id: selected, split: c.split }
+            : { kind: 'chase', id: selected };
 
 interface Measure {
   units: Units;
@@ -78,18 +85,34 @@ const fromShown = (layout: Layout, m: Measure, axis: CheckAxis, n: number) => (a
 const BAND_STEPS: Record<Units, number[]> = { ft: [1, 2, 5, 10], m: [0.5, 1, 2, 3] };
 export const defaultBandStep = (m: Measure) => (m.units === 'm' ? 1 : 2) * m.per;
 
-function Choice<T extends string>({ value, options, onChange, label }: { value: T; options: [T, string][]; onChange: (v: T) => void; label: string }) {
+function Choice<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  disabled,
+  twoByTwo
+}: {
+  value: T;
+  options: [T, string][];
+  onChange: (v: T) => void;
+  label: string;
+  disabled?: (v: T) => boolean;
+  /** In two columns, for longer labels. */
+  twoByTwo?: boolean;
+}) {
   return (
-    <div role="radiogroup" aria-label={label} className="grid auto-cols-fr grid-flow-col gap-0.5 rounded-md bg-stone-100 p-0.5 dark:bg-stone-800">
+    <div role="radiogroup" aria-label={label} className={cn('grid gap-0.5 rounded-md bg-stone-100 p-0.5 dark:bg-stone-800', twoByTwo ? 'grid-cols-2' : 'auto-cols-fr grid-flow-col')}>
       {options.map(([v, l]) => (
         <button
           key={v}
           type="button"
           role="radio"
           aria-checked={value === v}
+          disabled={disabled?.(v)}
           onClick={() => onChange(v)}
           className={cn(
-            'h-7 truncate rounded px-1.5 text-xs font-medium transition',
+            'h-7 truncate rounded px-1.5 text-xs font-medium transition disabled:opacity-40 disabled:hover:text-stone-600',
             value === v ? 'bg-white text-stone-950 shadow-sm dark:bg-stone-600 dark:text-white' : 'text-stone-600 hover:text-stone-950 dark:text-stone-300 dark:hover:text-white'
           )}
         >
@@ -243,6 +266,8 @@ export function ObjectCheckProps({
     onPatch(guesses[(from + d + guesses.length) % guesses.length].patch);
   };
   const tree = f.kind === 'tree';
+  /** The halves (or blocks) the color test shows on this object. */
+  const cut = check?.kind === 'picture' && blocks ? pictureCut(blocks, check.split) : 'all';
   return (
     <PropSection key="wiring" id="wiring" title="Check the wiring">
       <Choice<'off' | 'picture' | 'chase' | 'strings'>
@@ -254,8 +279,23 @@ export function ObjectCheckProps({
           ['chase', 'Chase'],
           ['strings', 'Strings']
         ]}
-        onChange={(k) => onChange(k === 'off' ? null : k === 'strings' ? { kind: 'strings', all: false } : { kind: k })}
+        onChange={(k) => onChange(k === 'off' ? null : k === 'strings' ? { kind: 'strings', all: false } : k === 'picture' ? { kind: 'picture', split: 'y' } : { kind: k })}
       />
+      {check?.kind === 'picture' && blocks ? (
+        <Choice<PictureSplit>
+          label="Halves"
+          value={cut}
+          options={[
+            ['y', 'Top · bottom'],
+            ['x', 'Left · right'],
+            ['z', 'Front · back'],
+            ['all', 'All eight']
+          ]}
+          twoByTwo
+          disabled={(v) => v !== 'all' && pictureCut(blocks, v) !== v}
+          onChange={(split) => onChange({ kind: 'picture', split })}
+        />
+      ) : null}
       {mode === 'off' ? (
         <PropNote>Lights this object on the house by where the drawing puts each LED, to see if its shape and the way its string runs are right. Turn on Lights in the toolbar to see it on the house.</PropNote>
       ) : mode === 'strings' ? (
@@ -265,7 +305,12 @@ export function ObjectCheckProps({
         </>
       ) : (
         <>
-          {mode === 'picture' && blocks ? (
+          {mode === 'picture' && blocks && cut !== 'all' ? (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 pt-0.5">
+              <Swatch c={HALF_RGB[0]}>{HALF_NAMES[cut][0]}</Swatch>
+              <Swatch c={HALF_RGB[1]}>{HALF_NAMES[cut][1]}</Swatch>
+            </div>
+          ) : mode === 'picture' && blocks ? (
             <div className="grid gap-1 pt-0.5">
               {(blocks.deep ? (['front', 'back'] as const) : (['front'] as const)).map((side) => (
                 <div key={side}>
@@ -282,7 +327,9 @@ export function ObjectCheckProps({
           ) : null}
           <PropNote>
             {mode === 'picture'
-              ? 'Each LED is colored by where the drawing puts it: left or right and top or bottom as seen from the street, and, for an object with depth, the half toward the street or toward the house (the top view shows those). LED 0 blinks white. The drawing always shows clean blocks; when it is right, the house shows the same. Swapped or mixed-up colors on the house: the string runs another way. Try the next way below until the house matches.'
+              ? cut !== 'all'
+                ? `Each LED is colored by which half of the object the drawing puts it in: the ${HALF_NAMES[cut][0]} red, the ${HALF_NAMES[cut][1]} blue${cut === 'z' ? ' (the top view shows them)' : ', as seen from the street'}. LED 0 blinks white. The drawing always shows two clean halves; when it is right, the house shows the same. Swapped or mixed-up colors on the house: the string runs another way. Try the next way below until the house matches, then check the other halves.`
+                : 'Each LED is colored by where the drawing puts it: left or right and top or bottom as seen from the street, and, for an object with depth, the half toward the street or toward the house (the top view shows those). LED 0 blinks white. The drawing always shows clean blocks; when it is right, the house shows the same. Swapped or mixed-up colors on the house: the string runs another way. Try the next way below until the house matches.'
               : 'A light runs along the wire from LED 0 to the last LED, in the drawing and on the house at the same time. Where it starts and which way it goes on the house should match the drawing. If not, try the next way below.'}
           </PropNote>
           {guesses.length > 1 ? (

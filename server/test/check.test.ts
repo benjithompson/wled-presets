@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BAND_RGB, STRING_RGB, checkMoves, currentGuess, paintCheck, PICTURE_RGB, slicePosition, SLICE_HIGH_RGB, SLICE_LOW_RGB, wiringGuesses, type LayoutCheck } from '../../shared/check.ts';
+import { BAND_RGB, HALF_RGB, STRING_RGB, checkMoves, currentGuess, paintCheck, pictureBlocks, pictureCut, PICTURE_RGB, slicePosition, SLICE_HIGH_RGB, SLICE_LOW_RGB, wiringGuesses, type LayoutCheck } from '../../shared/check.ts';
 import { buildStage, fromLedRange, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
 
@@ -109,6 +109,38 @@ describe('color test', () => {
     // Everything else is dark.
     for (let i = 0; i < sf.offset; i++) expect(rgb(out, i)).toEqual([0, 0, 0]);
     expect(rgb(paint(layout, { kind: 'picture', id: 'tree' }, 0, false).out, sf.offset)).not.toEqual(WHITE);
+  });
+
+  it('colors one object in two halves along the axis asked for: left and right, top and bottom, or street side and house side', () => {
+    const layout: Layout = { ...sampleLayout(), fixtures: [...sampleLayout().fixtures, tree()] };
+    for (const [split, a] of [['x', 0], ['y', 1], ['z', 2]] as const) {
+      const { stage, out } = paint(layout, { kind: 'picture', id: 'tree', split });
+      const sf = stage.fixtures.find((f) => f.id === 'tree')!;
+      const vs = Array.from({ length: sf.count }, (_, j) => stage.positions3[(sf.offset + j) * 3 + a]);
+      const mid = (Math.min(...vs) + Math.max(...vs)) / 2;
+      const seen = new Set<string>();
+      for (let j = 1; j < sf.count; j++) {
+        // The second half: the right, the bottom (y counts down), the house side (z toward the street).
+        const second = a === 2 ? vs[j] < mid : vs[j] > mid;
+        expect(rgb(out, sf.offset + j)).toEqual(HALF_RGB[second ? 1 : 0]);
+        seen.add(String(rgb(out, sf.offset + j)));
+      }
+      expect(seen.size).toBe(2);
+      expect(rgb(out, sf.offset)).toEqual(WHITE);
+    }
+  });
+
+  it('cuts a long low line left and right when asked for halves it does not have', () => {
+    const layout = sampleLayout();
+    const flat: Layout = { ...layout, fixtures: [{ ...layout.fixtures[0], points: [{ x: 100, y: 400 }, { x: 900, y: 410 }] }] };
+    const stage = buildStage(flat);
+    const blocks = pictureBlocks(stage, 'roof')!;
+    expect(pictureCut(blocks, 'y')).toBe('x');
+    expect(pictureCut(blocks, 'z')).toBe('x');
+    expect(pictureCut(blocks, 'all')).toBe('all');
+    const { out } = paint(flat, { kind: 'picture', id: 'roof', split: 'y' });
+    expect(rgb(out, 5)).toEqual(HALF_RGB[0]);
+    expect(rgb(out, stage.pixelCount - 5)).toEqual(HALF_RGB[1]);
   });
 
   it('has eight different colors', () => {

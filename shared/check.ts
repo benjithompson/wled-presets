@@ -6,10 +6,11 @@
 //     white: on the house, the white should line up (straight across, or level) on every object.
 //   - a ruler: the yard in bands of color, a band every so many feet or meters along one axis.
 //     Every real object should sit in the same bands as in the drawing.
-//   - a color test of one object: its LEDs colored by where the drawing puts them, in up to
-//     eight blocks: left or right, top or bottom, and the street side or the house side. On the
-//     house, the object shows the same clean blocks (from the street, and from above) when its
-//     shape and wiring are right, and swapped or scrambled colors when they are not.
+//   - a color test of one object: its LEDs colored by where the drawing puts them, in two
+//     halves (left and right, top and bottom, or the street side and the house side), or in up
+//     to eight blocks, all three at once. On the house, the object shows the same clean halves
+//     or blocks (from the street, and from above) when its shape and wiring are right, and
+//     swapped or scrambled colors when they are not.
 //   - a chase: one light runs along the object's wire from LED 0, so you can follow where the
 //     real string starts and which way it goes.
 //   - strings: each string (strand) of one object, or of every object, in a color of its own,
@@ -28,12 +29,15 @@ export type LayoutCheck =
   | { kind: 'slice'; axis: CheckAxis; at: number | null }
   /** Bands of color along the axis, `step` layout units wide, from the left edge, the ground or the front wall. */
   | { kind: 'bands'; axis: CheckAxis; step: number }
-  /** The color test of one object. */
-  | { kind: 'picture'; id: string }
+  /** The color test of one object, in two halves along one axis, or (all, or none given) in up to eight blocks. */
+  | { kind: 'picture'; id: string; split?: PictureSplit }
   /** A light running along one object's wire. */
   | { kind: 'chase'; id: string }
   /** The strings of one object, or of every object (id null), each in a color of its own. */
   | { kind: 'strings'; id: string | null };
+
+/** How the color test cuts an object: in two halves along one axis, or along all three at once. */
+export type PictureSplit = CheckAxis | 'all';
 
 /** Half the thickness of the slice, in meters. */
 export const SLICE_HALF_M = 0.15;
@@ -68,6 +72,16 @@ export const PICTURE_RGB: { front: PictureSide; back: PictureSide } = {
   front: { topLeft: [255, 0, 0], topRight: [0, 70, 255], bottomLeft: [255, 170, 0], bottomRight: [0, 210, 0] },
   back: { topLeft: [255, 0, 170], topRight: [0, 210, 210], bottomLeft: [255, 255, 255], bottomRight: [255, 70, 0] }
 };
+/**
+ * The color test's two halves: the left, the top or the street side in the first color, the
+ * right, the bottom or the house side in the second.
+ */
+export const HALF_RGB: [Rgb8, Rgb8] = [
+  [255, 0, 0],
+  [0, 70, 255]
+];
+/** The two halves of each axis, in words, in the order of HALF_RGB. */
+export const HALF_NAMES: Record<CheckAxis, [string, string]> = { x: ['left', 'right'], y: ['top', 'bottom'], z: ['front (street side)', 'back (house side)'] };
 /** The strings' colors, in turn along the wire (and from one object to the next). */
 export const STRING_RGB: Rgb8[] = [
   [255, 0, 0],
@@ -189,10 +203,11 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
     return;
   }
   const split = pictureSplit(stage, sf.offset, sf.count);
+  const cut = pictureCut(split, check.split);
   for (let j = 0; j < sf.count; j++) {
     if (!on(j)) continue;
     const i = sf.offset + j;
-    out.set(pictureColor(split, P[i * 3], P[i * 3 + 1], P[i * 3 + 2]), i * 3);
+    out.set(pictureColor(split, cut, P[i * 3], P[i * 3 + 1], P[i * 3 + 2]), i * 3);
   }
   // Where the wire starts: blinking white.
   if (on(0)) out.set(pulse ? SLICE_RGB : scale8(SLICE_RGB, 0.15), sf.offset * 3);
@@ -228,7 +243,24 @@ function pictureSplit(stage: Stage, offset: number, count: number): Split {
   return { cx: (lo[0] + hi[0]) / 2, cy: (lo[1] + hi[1]) / 2, cz: (lo[2] + hi[2]) / 2, across: cut(0), up: cut(1), deep: cut(2) };
 }
 
-function pictureColor(s: Split, x: number, y: number, z: number): Rgb8 {
+const SPLIT_FLAG: Record<CheckAxis, 'across' | 'up' | 'deep'> = { x: 'across', y: 'up', z: 'deep' };
+
+/**
+ * The cut the color test of an object makes: the one asked for, or, when the object is too thin
+ * along that axis to have two halves there, the first it has (top and bottom, then left and
+ * right, then front and back). All: every way it can be cut.
+ */
+export function pictureCut(blocks: { across: boolean; up: boolean; deep: boolean }, split: PictureSplit | undefined): PictureSplit {
+  if (split == null || split === 'all') return 'all';
+  if (blocks[SPLIT_FLAG[split]]) return split;
+  return (['y', 'x', 'z'] as const).find((a) => blocks[SPLIT_FLAG[a]]) ?? split;
+}
+
+function pictureColor(s: Split, cut: PictureSplit, x: number, y: number, z: number): Rgb8 {
+  // One half (pictureCut picks one the object has; with none it is all the first half).
+  if (cut === 'x') return HALF_RGB[s.across && x > s.cx ? 1 : 0];
+  if (cut === 'y') return HALF_RGB[s.up && y > s.cy ? 1 : 0];
+  if (cut === 'z') return HALF_RGB[s.deep && z < s.cz ? 1 : 0];
   const side = s.deep && z < s.cz ? PICTURE_RGB.back : PICTURE_RGB.front;
   const right = s.across && x > s.cx;
   const bottom = s.up && y > s.cy;
