@@ -59,7 +59,6 @@ import {
   semicircleSize,
   treeSize,
   deviceLed,
-  shapePlaces,
   takesMarks,
   validMarks,
   FEET_PER_METER,
@@ -135,7 +134,7 @@ import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
 import { autoScale, keepScale, roofScale } from '../../../../shared/yardScale.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
-import { setMark, ShapeWizard, wrapDeg } from './shapeWizard.tsx';
+import { markAt, moveMark, setMark, ShapeWizard } from './shapeWizard.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
@@ -1033,11 +1032,12 @@ export function LayoutPage() {
     setShapeLed(probe.offset + (shapeSel.reversed ? led - target : target - led));
   };
   /** Marks the blinking LED at this angle round the tree, as seen from the street (its height: where it is now, or as marked). */
-  const shapeMark = (streetAngle: number) => {
-    if (!shapeSel || !probe) return;
-    const here = validMarks(shapeSel).find((m) => m.led === probe.offset);
-    const height = here?.height ?? shapePlaces(shapeSel)[probe.offset]?.height ?? 0;
-    update(shapeSel.id, { marks: setMark(shapeSel, { led: probe.offset, angle: wrapDeg(streetAngle - (shapeSel.facing ?? 0)), height }) });
+  const shapeMark = (streetAngle: number) => shapeSel && probe && update(shapeSel.id, { marks: markAt(shapeSel, probe.offset, streetAngle) });
+  /** Moves the blinking LED's mark by steps, as seen from the street: right, up, toward the street. */
+  const shapeMove = (x: number, y: number, z: number) => {
+    if (!shapeSel || !probe || !layout) return;
+    const d = shapeStep(layout);
+    update(shapeSel.id, { marks: moveMark(shapeSel, probe.offset, { x: x * d, y: y * d, z: z * d }) });
   };
   /** Moves the blinking LED's mark up (1) or down (-1) by one step. */
   const shapeNudge = (dir: 1 | -1) => {
@@ -1327,7 +1327,9 @@ export function LayoutPage() {
         const step = e.shiftKey ? 10 : 1;
         const k = e.key.toLowerCase();
         const wave = shapeSel.pattern === 'wave';
-        if (e.key === 'ArrowRight' || e.key === 'ArrowUp') setShapeLed(probe.offset + step);
+        if (e.altKey && e.key.startsWith('Arrow')) shapeMove(e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0, e.key === 'ArrowUp' ? 1 : e.key === 'ArrowDown' ? -1 : 0, 0);
+        else if (e.altKey && (e.key === 'PageUp' || e.key === 'PageDown')) shapeMove(0, 0, e.key === 'PageDown' ? 1 : -1);
+        else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') setShapeLed(probe.offset + step);
         else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') setShapeLed(probe.offset - step);
         else if (e.key === 'Home') setShapeLed(0);
         else if (e.key === 'End') setShapeLed(shapeSel.pixels - 1);

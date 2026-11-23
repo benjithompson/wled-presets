@@ -821,7 +821,20 @@ export interface ShapeMark {
   angle: number;
   /** How high: 0 at the base (or the lowest LEDs of a ball's cap), 1 at the top. */
   height: number;
+  /**
+   * Moved by hand from that spot on the tree's shape, in layout units: x to the tree's right
+   * (as seen from its front), y up, z toward its front. So the LEDs can be anywhere, not only on
+   * the cone, ball or cylinder. Between marks the move spreads evenly. Not set: none.
+   */
+  offset?: Offset3;
 }
+
+/** A move by hand in 3D (see ShapeMark.offset). */
+export type Offset3 = { x: number; y: number; z: number };
+
+/** Where an LED of a tree is: on its shape (height u, angle th from its front in radians), and moved by hand from there. */
+type TreePlace = { u: number; th: number; off: Offset3 };
+const NO_OFFSET: Offset3 = { x: 0, y: 0, z: 0 };
 
 /** Objects whose LEDs can be marked (see Fixture.marks): trees with a spiral or a wave. */
 export const takesMarks = (f: Pick<Fixture, 'kind' | 'pattern'>) => f.kind === 'tree' && f.pattern !== 'strands';
@@ -845,7 +858,7 @@ const wrapTau = (x: number) => x - TAU * Math.round(x / TAU);
  * front, in radians, followed from LED to LED (a spiral only goes on round the way it winds; a
  * wave goes back and forth, the nearer way).
  */
-function placesOf(f: Fixture, pts: Point3[]): { u: number; th: number }[] {
+function placesOf(f: Fixture, pts: Point3[]): Omit<TreePlace, 'off'>[] {
   const { b, bz, r, h, face, sign, u0, span } = treeFrame(f);
   const spiral = f.pattern !== 'wave';
   const out: { u: number; th: number }[] = [];
@@ -868,10 +881,16 @@ function placesOf(f: Fixture, pts: Point3[]): { u: number; th: number }[] {
 }
 
 /** Where each LED of a tree is on it now (its marks too): height 0 to 1, and degrees from its front (-180 to 180). */
-export function shapePlaces(f: Fixture): { height: number; angle: number }[] {
+export function shapePlaces(f: Fixture): { height: number; angle: number; offset: Offset3 }[] {
   const n = Math.max(0, Math.floor(f.pixels));
   if (f.kind !== 'tree' || !n) return [];
-  return placesOf(f, treePixels(f, n)).map(({ u, th }) => ({ height: Math.round(u * 1000) / 1000, angle: Math.round((wrapTau(th) * 180) / Math.PI * 10) / 10 || 0 }));
+  const r2 = (x: number) => Math.round(x * 100) / 100 || 0;
+  const places: TreePlace[] = markedTree(f) ? markedPlaces(f, n, n) : placesOf(f, treePixels(f, n)).map((p) => ({ ...p, off: NO_OFFSET }));
+  return places.map(({ u, th, off }) => ({
+    height: Math.round(u * 1000) / 1000,
+    angle: Math.round(((wrapTau(th) * 180) / Math.PI) * 10) / 10 || 0,
+    offset: { x: r2(off.x), y: r2(off.y), z: r2(off.z) }
+  }));
 }
 
 /**
@@ -883,14 +902,14 @@ export function shapePlaces(f: Fixture): { height: number; angle: number }[] {
  * would between those LEDs (so a mark every quarter turn, or only a few, both work); a wave goes
  * straight across from side to side.
  */
-function markedPlaces(f: Fixture, n: number, N: number): { u: number; th: number }[] {
+function markedPlaces(f: Fixture, n: number, N: number): TreePlace[] {
   const base = placesOf(f, treePixels({ ...f, marks: undefined }, N));
   const j = (led: number) => Math.round((led * (N - 1)) / (n - 1));
-  const anchors = validMarks(f).map((m) => ({ led: m.led, u: Math.max(0, Math.min(1, m.height)), th: (m.angle * Math.PI) / 180 }));
-  if (anchors[0].led > 0) anchors.unshift({ led: 0, ...base[0] });
-  if (anchors[anchors.length - 1].led < n - 1) anchors.push({ led: n - 1, ...base[N - 1] });
+  const anchors = validMarks(f).map((m) => ({ led: m.led, u: Math.max(0, Math.min(1, m.height)), th: (m.angle * Math.PI) / 180, off: m.offset ?? NO_OFFSET }));
+  if (anchors[0].led > 0) anchors.unshift({ led: 0, ...base[0], off: NO_OFFSET });
+  if (anchors[anchors.length - 1].led < n - 1) anchors.push({ led: n - 1, ...base[N - 1], off: NO_OFFSET });
   const wave = f.pattern === 'wave';
-  const out = base.map((p) => ({ ...p }));
+  const out: TreePlace[] = base.map((p) => ({ ...p, off: NO_OFFSET }));
   anchors.slice(1).forEach((B, k) => {
     const A = anchors[k];
     const ja = j(A.led);
@@ -908,22 +927,32 @@ function markedPlaces(f: Fixture, n: number, N: number): { u: number; th: number
     const lift = B.u - A.u - (base[jb].u - base[ja].u);
     for (let i = ja; i <= jb; i++) {
       const t = jb > ja ? (i - ja) / (jb - ja) : 0;
-      out[i] = { th: A.th + base[i].th - base[ja].th + t * turn, u: Math.max(0, Math.min(1, A.u + base[i].u - base[ja].u + t * lift)) };
+      const off = { x: A.off.x + (B.off.x - A.off.x) * t, y: A.off.y + (B.off.y - A.off.y) * t, z: A.off.z + (B.off.z - A.off.z) * t };
+      out[i] = { th: A.th + base[i].th - base[ja].th + t * turn, u: Math.max(0, Math.min(1, A.u + base[i].u - base[ja].u + t * lift)), off };
     }
   });
   return out;
 }
 
+/** The point of a place on a tree: on its shape, then moved by hand (turned the way the tree faces). */
+function placePoint(frame: ReturnType<typeof treeFrame>): (p: TreePlace) => Point3 {
+  const { at, sign, face } = frame;
+  const c = Math.cos(face);
+  const s = Math.sin(face);
+  return (p) => {
+    const q = at(p.u, sign * p.th);
+    return { x: q.x + p.off.x * c + p.off.z * s, y: q.y - p.off.y, z: q.z - p.off.x * s + p.off.z * c };
+  };
+}
+
 function markedPixels(f: Fixture, n: number): Point3[] {
-  const { at, sign } = treeFrame(f);
-  return markedPlaces(f, n, n).map((p) => at(p.u, sign * p.th));
+  return markedPlaces(f, n, n).map(placePoint(treeFrame(f)));
 }
 
 /** The length of a marked tree's wire, in layout units. */
 function markedLength(f: Fixture): number {
-  const { at, sign } = treeFrame(f);
   const n = Math.floor(f.pixels);
-  const pts = markedPlaces(f, n, Math.max(WIRE_SAMPLES, n * 4)).map((p) => at(p.u, sign * p.th));
+  const pts = markedPlaces(f, n, Math.max(WIRE_SAMPLES, n * 4)).map(placePoint(treeFrame(f)));
   let len = 0;
   for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
   return len;

@@ -4,8 +4,8 @@
 // high. The tree's pattern, bent to go through those marks, places the rest (see
 // Fixture.marks, shared/layout.ts).
 
-import { ChevronLeft, ChevronRight, Minus, Plus, Trash2, X } from 'lucide-react';
-import { capFloor, deviceLed, shapePlaces, treeSize, validMarks, type Fixture, type ShapeMark } from '../../../../shared/layout.ts';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronLeft, ChevronRight, Minus, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { capFloor, deviceLed, shapePlaces, treeSize, validMarks, type Fixture, type Offset3, type ShapeMark } from '../../../../shared/layout.ts';
 import { Button } from '../../components/ui.tsx';
 import { cn } from '../../lib/utils.ts';
 import { PropButton, PropNote, PropNumber, PropRow } from './props.tsx';
@@ -35,9 +35,49 @@ export function wayText(angle: number): string {
   return Math.abs(wrapDeg(a - deg)) < 3 ? name : `${name} (${Math.round(a)}°)`;
 }
 
-/** The marks as the page changes them: the tree's angle is the street's less its facing. */
+/** The marks with this one put in (in place of one on the same LED). A move of nothing is not kept. */
 export function setMark(f: Fixture, mark: ShapeMark): ShapeMark[] {
-  return [...validMarks(f).filter((m) => m.led !== mark.led), mark].sort((a, b) => a.led - b.led);
+  const { offset, ...rest } = mark;
+  const moved = offset && (offset.x || offset.y || offset.z) ? { ...rest, offset } : rest;
+  return [...validMarks(f).filter((m) => m.led !== mark.led), moved].sort((a, b) => a.led - b.led);
+}
+
+const r2 = (x: number) => Math.round(x * 100) / 100 || 0;
+
+/** A move as seen from the street (x right, y up, z toward the street) as the tree has it (turned the way it faces), and back. */
+function turned(d: Offset3, facing: number, back = false): Offset3 {
+  const t = ((back ? -facing : facing) * Math.PI) / 180;
+  const c = Math.cos(t);
+  const s = Math.sin(t);
+  return { x: r2(d.x * c - d.z * s), y: r2(d.y), z: r2(d.x * s + d.z * c) };
+}
+const toTree = (d: Offset3, facing: number) => turned(d, facing);
+const toStreet = (d: Offset3, facing: number) => turned(d, facing, true);
+
+/** The LED's mark, or a new one where the LED is drawn now (on the shape, and moved as its neighbours are). */
+function markOf(f: Fixture, led: number): ShapeMark {
+  const here = validMarks(f).find((m) => m.led === led);
+  if (here) return here;
+  const p = shapePlaces(f)[led] ?? { height: 0, angle: 0, offset: { x: 0, y: 0, z: 0 } };
+  return { led, angle: p.angle, height: p.height, offset: p.offset };
+}
+
+/**
+ * Marks the LED at this angle round the tree, as seen from the street. A new mark sits on the
+ * shape at the height the LED is drawn at; a mark it had keeps its height and its move.
+ */
+export function markAt(f: Fixture, led: number, streetAngle: number): ShapeMark[] {
+  const had = validMarks(f).some((m) => m.led === led);
+  const m = markOf(f, led);
+  return setMark(f, { ...m, angle: wrapDeg(streetAngle - (f.facing ?? 0)), offset: had ? m.offset : undefined });
+}
+
+/** Moves the LED's mark (made where the LED is now, if it has none) by `d`, as seen from the street, in layout units. */
+export function moveMark(f: Fixture, led: number, d: Offset3): ShapeMark[] {
+  const m = markOf(f, led);
+  const by = toTree(d, f.facing ?? 0);
+  const o = m.offset ?? { x: 0, y: 0, z: 0 };
+  return setMark(f, { ...m, offset: { x: r2(o.x + by.x), y: r2(o.y + by.y), z: r2(o.z + by.z) } });
 }
 
 export function ShapeWizard({
@@ -84,8 +124,19 @@ export function ShapeWizard({
   const heightText = (u: number) => lenText((u0 + (1 - u0) * u) * h);
   const du = stepLu / lit;
   const street = (m: Pick<ShapeMark, 'angle'>) => wrapDeg(m.angle + facing);
-  const mark = (streetAngle: number, m: Partial<ShapeMark> = {}) =>
-    onMarks(setMark(f, { led, angle: wrapDeg(streetAngle - facing), height: here?.height ?? place.height, ...m }));
+  const mark = (streetAngle: number) => onMarks(markAt(f, led, streetAngle));
+  const move = (x: number, y: number, z: number) => onMarks(moveMark(f, led, { x: x * stepLu, y: y * stepLu, z: z * stepLu }));
+  // The move by hand, as seen from the street.
+  const moved = here?.offset ? toStreet(here.offset, facing) : null;
+  const movedText = (o: Offset3) =>
+    [
+      o.x ? `${lenText(Math.abs(o.x))} ${o.x > 0 ? 'right' : 'left'}` : '',
+      o.y ? `${lenText(Math.abs(o.y))} ${o.y > 0 ? 'up' : 'down'}` : '',
+      o.z ? `${lenText(Math.abs(o.z))} toward the ${o.z > 0 ? 'street' : 'house'}` : ''
+    ]
+      .filter(Boolean)
+      .join(', ');
+  const pad = 'grid h-8 place-items-center rounded-md bg-stone-100 text-stone-700 transition hover:bg-stone-200 active:scale-95 disabled:opacity-40 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 [&_svg]:size-4';
   const nudge = (m: ShapeMark, dir: 1 | -1) => onMarks(setMark(f, { ...m, height: Math.max(0, Math.min(1, Math.round((m.height + dir * du) * 1000) / 1000)) }));
   const remove = (m: ShapeMark) => {
     const rest = marks.filter((x) => x.led !== m.led);
@@ -231,6 +282,44 @@ export function ShapeWizard({
         </PropNote>
       )}
 
+      <div className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Move it</div>
+      <div className="flex items-start gap-2">
+        {/* As seen from the street: left, right, up, down; then nearer or farther. */}
+        <div className="grid w-32 shrink-0 grid-cols-3 gap-1">
+          <span />
+          <button type="button" className={pad} onClick={() => move(0, 1, 0)} title="Up (Alt+↑)" aria-label="Up">
+            <ArrowUp />
+          </button>
+          <span />
+          <button type="button" className={pad} onClick={() => move(-1, 0, 0)} title="Left, as seen from the street (Alt+←)" aria-label="Left">
+            <ArrowLeft />
+          </button>
+          <button type="button" className={pad} onClick={() => here && onMarks(setMark(f, { ...here, offset: undefined }))} disabled={!moved} title="Back onto the shape" aria-label="Undo the move">
+            <RotateCcw />
+          </button>
+          <button type="button" className={pad} onClick={() => move(1, 0, 0)} title="Right, as seen from the street (Alt+→)" aria-label="Right">
+            <ArrowRight />
+          </button>
+          <span />
+          <button type="button" className={pad} onClick={() => move(0, -1, 0)} title="Down (Alt+↓)" aria-label="Down">
+            <ArrowDown />
+          </button>
+          <span />
+        </div>
+        <div className="grid flex-1 gap-1">
+          <button type="button" className={cn(pad, 'px-2 text-xs')} onClick={() => move(0, 0, 1)} title="Toward the street (Alt+Page Down)">
+            Toward the street
+          </button>
+          <button type="button" className={cn(pad, 'px-2 text-xs')} onClick={() => move(0, 0, -1)} title="Toward the house (Alt+Page Up)">
+            Toward the house
+          </button>
+        </div>
+      </div>
+      <p className="text-[11px] text-stone-500">
+        {moved ? `Moved ${movedText(moved)} from the shape. ` : ''}Each press moves it {lenText(stepLu)}; the LEDs between it and the marks on either side move along. A move marks the LED where it is,
+        if it has no mark yet.
+      </p>
+
       {marks.length ? (
         <div className="space-y-0.5">
           <div className="text-[11px] font-semibold tracking-wide text-stone-500 uppercase">Marks ({marks.length})</div>
@@ -239,6 +328,7 @@ export function ShapeWizard({
               <div key={m.led} className={cn('flex items-center gap-1 rounded px-1 text-xs tabular-nums', m.led === led && 'bg-red-50 dark:bg-red-950/40')}>
                 <button type="button" className="min-w-0 flex-1 truncate py-0.5 text-left hover:underline" onClick={() => onSet(m.led)} title="Blink this LED">
                   LED {deviceLed(f, m.led)} · {wayText(street(m))} · {heightText(m.height)}
+                  {m.offset ? ' · moved' : ''}
                 </button>
                 <button type="button" className="grid size-6 place-items-center rounded hover:bg-stone-200 dark:hover:bg-stone-700 [&_svg]:size-3.5" onClick={() => nudge(m, -1)} aria-label="Lower" title="Lower">
                   <Minus />
@@ -258,7 +348,7 @@ export function ShapeWizard({
       {lights ? <PropNote tone="red">{lights}</PropNote> : null}
       <PropNote>
         Arrow keys move the LED (Shift: 10 at a time{perStrand ? '; Page Up and Page Down: a strand' : ''}; Home, End). {wave ? 'L, F, R' : 'F, R, B, L'} mark it; [ and ] lower or raise its
-        mark; Delete removes it; Esc stops.
+        mark on the shape; Alt and the arrows (Page Up, Page Down: nearer the house or the street) move it; Delete removes it; Esc stops.
       </PropNote>
       <div className="flex items-center gap-1">
         <PropButton onClick={() => onMarks(undefined)} disabled={!marks.length} danger title="Every LED goes back to where the pattern puts it">

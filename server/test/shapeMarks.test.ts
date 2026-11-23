@@ -102,9 +102,38 @@ describe('a tree shaped to the lights', () => {
     expect(fixturePixels(strands)).toEqual(fixturePixels(tree({ pattern: 'strands' })));
   });
 
+  it('moves a marked LED by hand anywhere, off the shape, and the LEDs between move along', () => {
+    const marks: ShapeMark[] = [
+      { led: 40, angle: 90, height: 0.2 },
+      { led: 80, angle: 180, height: 0.4, offset: { x: 0, y: 10, z: -20 } }
+    ];
+    const on = fixturePixels(tree({ marks: marks.map(({ offset: _o, ...m }) => m) }));
+    const off = fixturePixels(tree({ marks }));
+    // Up 10 (y counts down on the picture) and 20 toward the house, as the tree faces the street.
+    expect(off[80].x - on[80].x).toBeCloseTo(0, 6);
+    expect(off[80].y - on[80].y).toBeCloseTo(-10, 6);
+    expect(off[80].z - on[80].z).toBeCloseTo(-20, 6);
+    // Halfway from the unmoved mark: half the move.
+    expect(off[60].z - on[60].z).toBeCloseTo(-10, 6);
+    expect(off[40]).toEqual(on[40]);
+    // After the last mark the pattern takes over again, unmoved, by the end.
+    expect(off[199]).toEqual(on[199]);
+    expect(shapePlaces(tree({ marks }))[60].offset).toEqual({ x: 0, y: 5, z: -10 });
+  });
+
+  it('turns the move with the tree', () => {
+    // Facing right (90): its own right is toward the house.
+    const marks: ShapeMark[] = [{ led: 50, angle: 0, height: 0.3, offset: { x: 10, y: 0, z: 0 } }];
+    const plain = fixturePixels(tree({ facing: 90, marks: [{ led: 50, angle: 0, height: 0.3 }] }))[50];
+    const moved = fixturePixels(tree({ facing: 90, marks }))[50];
+    expect(moved.x - plain.x).toBeCloseTo(0, 6);
+    expect(moved.z - plain.z).toBeCloseTo(-10, 6);
+  });
+
   it('saves with the layout', () => {
     const l = { ...sampleLayout(), fixtures: [tree({ marks: [{ led: 3, angle: -90, height: 0.4 }] })] };
     expect(layoutShape.safeParse(l).success).toBe(true);
+    expect(layoutShape.safeParse({ ...l, fixtures: [tree({ marks: [{ led: 3, angle: -90, height: 0.4, offset: { x: 1, y: -2, z: 30 } }] })] }).success).toBe(true);
     expect(layoutShape.safeParse({ ...l, fixtures: [tree({ marks: [{ led: 3, angle: -90, height: 2 }] })] }).success).toBe(false);
   });
 });
