@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BAND_RGB, checkMoves, currentGuess, paintCheck, PICTURE_RGB, slicePosition, SLICE_HIGH_RGB, SLICE_LOW_RGB, wiringGuesses, type LayoutCheck } from '../../shared/check.ts';
+import { BAND_RGB, STRING_RGB, checkMoves, currentGuess, paintCheck, PICTURE_RGB, slicePosition, SLICE_HIGH_RGB, SLICE_LOW_RGB, wiringGuesses, type LayoutCheck } from '../../shared/check.ts';
 import { buildStage, fromLedRange, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
 
@@ -133,6 +133,50 @@ describe('color test', () => {
     let differ = 0;
     for (let i = 0; i < 200; i++) if (String(rgb(wrong, i)) !== String(rgb(right, i))) differ++;
     expect(differ).toBeGreaterThan(50);
+  });
+});
+
+describe('strings', () => {
+  const lineOf = (patch: Partial<Fixture> = {}): Fixture => ({
+    id: 'l',
+    name: 'Fence',
+    kind: 'line',
+    points: [
+      { x: 100, y: 800 },
+      { x: 900, y: 800 }
+    ],
+    pixels: 120,
+    lights: 'novabright-bullet-12v-4in',
+    deviceId: 'd',
+    startPixel: 0,
+    reversed: false,
+    ...patch
+  });
+
+  it('colors each string of 50, its first LED blinking white and its last LED white', () => {
+    const layout: Layout = { ...sampleLayout(), fixtures: [lineOf()] };
+    const { out } = paint(layout, { kind: 'strings', id: 'l' });
+    expect(rgb(out, 0)).toEqual(WHITE);
+    expect(rgb(paint(layout, { kind: 'strings', id: 'l' }, 0, false).out, 0)).toEqual([0, 0, 0]);
+    expect(rgb(out, 10)).toEqual(STRING_RGB[0]);
+    expect(rgb(out, 49)).toEqual(WHITE);
+    expect(rgb(out, 50)).toEqual(WHITE);
+    expect(rgb(out, 60)).toEqual(STRING_RGB[1]);
+    expect(rgb(out, 110)).toEqual(STRING_RGB[2]);
+  });
+
+  it('follows the strings set by hand, in the order of the device LEDs, across every object', () => {
+    const layout: Layout = {
+      ...sampleLayout(),
+      fixtures: [lineOf({ reversed: true, stringBreaks: [30] }), { ...lineOf(), id: 'm', name: 'Path', pixels: 20, startPixel: 120 }]
+    };
+    const { stage, out } = paint(layout, { kind: 'strings', id: null });
+    // Counting down: the first string (device LEDs 0–29) is at the end of the drawn line.
+    expect(rgb(out, 100)).toEqual(STRING_RGB[0]);
+    expect(rgb(out, 50)).toEqual(STRING_RGB[1]);
+    // The next object goes on with the next color.
+    const m = stage.fixtures.find((f) => f.id === 'm')!;
+    expect(rgb(out, m.offset + 5)).toEqual(STRING_RGB[2]);
   });
 });
 

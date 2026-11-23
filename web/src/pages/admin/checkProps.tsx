@@ -10,6 +10,7 @@ import {
   currentGuess,
   PICTURE_RGB,
   slicePosition,
+  STRING_RGB,
   SLICE_HALF_M,
   SLICE_HIGH_RGB,
   SLICE_LOW_RGB,
@@ -17,17 +18,36 @@ import {
   type CheckAxis,
   type LayoutCheck
 } from '../../../../shared/check.ts';
-import { isLine, layoutGround, type Fixture, type Layout, type Stage, type Units } from '../../../../shared/layout.ts';
+import { setStringEnd, setStringStart, stringRanges } from '../../../../shared/lights.ts';
+import { isLine, layoutGround, MAX_FIXTURE_PIXELS, type Fixture, type Layout, type Stage, type Units } from '../../../../shared/layout.ts';
 import { cn } from '../../lib/utils.ts';
 import type { ViewSide } from '../../yard/views.ts';
-import { PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.tsx';
+import { NumberInput, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect } from './props.tsx';
 
 /** The check the editor runs. An object's check is of the selected object. */
-export type EditorCheck = { kind: 'slice'; axis: CheckAxis; at: number | null } | { kind: 'bands'; axis: CheckAxis; step: number } | { kind: 'picture' } | { kind: 'chase' };
+export type EditorCheck =
+  | { kind: 'slice'; axis: CheckAxis; at: number | null }
+  | { kind: 'bands'; axis: CheckAxis; step: number }
+  | { kind: 'picture' }
+  | { kind: 'chase' }
+  /** The strings of the selected object, or (all) of every object. */
+  | { kind: 'strings'; all: boolean };
 
 /** The check to paint, for the selected object (none: an object's check shows nothing). */
 export const toLayoutCheck = (c: EditorCheck | null, selected: string | null): LayoutCheck | null =>
-  !c ? null : c.kind === 'slice' || c.kind === 'bands' ? c : selected ? { kind: c.kind, id: selected } : null;
+  !c
+    ? null
+    : c.kind === 'slice' || c.kind === 'bands'
+      ? c
+      : c.kind === 'strings'
+        ? c.all
+          ? { kind: 'strings', id: null }
+          : selected
+            ? { kind: 'strings', id: selected }
+            : null
+        : selected
+          ? { kind: c.kind, id: selected }
+          : null;
 
 interface Measure {
   units: Units;
@@ -90,6 +110,7 @@ const Swatch = ({ c, children }: { c: readonly number[]; children: string }) => 
 /** The whole yard's checks: a slice or a ruler along one axis. */
 export function YardCheckProps({ check, onChange, layout, stage, m, lights }: { check: EditorCheck | null; onChange: (c: EditorCheck | null) => void; layout: Layout; stage: Stage | null; m: Measure; lights: string | null }) {
   const yard = check && (check.kind === 'slice' || check.kind === 'bands') ? check : null;
+  const strings = check?.kind === 'strings' && check.all;
   const axis = yard?.axis ?? 'x';
   const middle = (a: CheckAxis) => {
     if (!stage) return 0;
@@ -98,17 +119,27 @@ export function YardCheckProps({ check, onChange, layout, stage, m, lights }: { 
   };
   return (
     <PropSection key="check" id="check" title="Check alignment">
-      <Choice<'off' | 'slice' | 'bands'>
+      <Choice<'off' | 'slice' | 'bands' | 'strings'>
         label="Check"
-        value={yard?.kind ?? 'off'}
+        value={strings ? 'strings' : (yard?.kind ?? 'off')}
         options={[
           ['off', 'Off'],
           ['slice', 'Slice'],
-          ['bands', 'Ruler']
+          ['bands', 'Ruler'],
+          ['strings', 'Strings']
         ]}
-        onChange={(k) => onChange(k === 'off' ? null : k === 'slice' ? { kind: 'slice', axis, at: null } : { kind: 'bands', axis, step: defaultBandStep(m) })}
+        onChange={(k) => onChange(k === 'off' ? null : k === 'strings' ? { kind: 'strings', all: true } : k === 'slice' ? { kind: 'slice', axis, at: null } : { kind: 'bands', axis, step: defaultBandStep(m) })}
       />
-      {yard ? (
+      {strings ? (
+        <>
+          <StringSwatches />
+          <PropNote>
+            Every string of lights in a color of its own, one after the other along each object and on to the next object: its first LED blinks white and its last LED is white. On the house, each string
+            should start and end where the drawing shows it. Set where an object’s strings start and end with its own Strings check.
+          </PropNote>
+          {lights ? <PropNote>{lights}</PropNote> : null}
+        </>
+      ) : yard ? (
         <>
           <PropSelect<CheckAxis>
             label="Along"
@@ -189,7 +220,8 @@ export function ObjectCheckProps({
   onPatch,
   blocks,
   lights,
-  scale
+  scale,
+  perStrand
 }: {
   f: Fixture;
   scale: number;
@@ -198,9 +230,11 @@ export function ObjectCheckProps({
   onPatch: (patch: Partial<Fixture>) => void;
   blocks: { across: boolean; up: boolean; deep: boolean } | null;
   lights: string | null;
+  /** LEDs in one string of its light type, or null (one string, or not known). */
+  perStrand: number | null;
 }) {
-  const mode = check?.kind === 'picture' || check?.kind === 'chase' ? check.kind : 'off';
-  const on = mode !== 'off';
+  const mode = check?.kind === 'picture' || check?.kind === 'chase' ? check.kind : check?.kind === 'strings' && !check.all ? 'strings' : 'off';
+  const on = mode === 'picture' || mode === 'chase';
   const guesses = useMemo(() => (on ? wiringGuesses(f, scale) : []), [on, f, scale]);
   const cur = useMemo(() => (on ? currentGuess(f, guesses, scale) : -1), [on, f, guesses, scale]);
   /** The next (d = 1) or the one before (d = -1); from none, the first or the last. */
@@ -211,18 +245,24 @@ export function ObjectCheckProps({
   const tree = f.kind === 'tree';
   return (
     <PropSection key="wiring" id="wiring" title="Check the wiring">
-      <Choice<'off' | 'picture' | 'chase'>
+      <Choice<'off' | 'picture' | 'chase' | 'strings'>
         label="Check"
         value={mode}
         options={[
           ['off', 'Off'],
           ['picture', 'Color test'],
-          ['chase', 'Chase']
+          ['chase', 'Chase'],
+          ['strings', 'Strings']
         ]}
-        onChange={(k) => onChange(k === 'off' ? null : { kind: k })}
+        onChange={(k) => onChange(k === 'off' ? null : k === 'strings' ? { kind: 'strings', all: false } : { kind: k })}
       />
       {mode === 'off' ? (
         <PropNote>Lights this object on the house by where the drawing puts each LED, to see if its shape and the way its string runs are right. Turn on Lights in the toolbar to see it on the house.</PropNote>
+      ) : mode === 'strings' ? (
+        <>
+          <StringList f={f} perStrand={perStrand} onPatch={onPatch} />
+          {lights ? <PropNote>{lights}</PropNote> : null}
+        </>
       ) : (
         <>
           {mode === 'picture' && blocks ? (
@@ -273,6 +313,77 @@ export function ObjectCheckProps({
         </>
       )}
     </PropSection>
+  );
+}
+
+/** The strings' colors, in turn. */
+function StringSwatches() {
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-1 pt-0.5">
+      {STRING_RGB.map((c, i) => (
+        <Swatch key={i} c={c}>{`string ${i + 1}${i === STRING_RGB.length - 1 ? '…' : ''}`}</Swatch>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The strings of one object, each in its color, with its first and last LED (device LED
+ * numbers): change them where a real string starts or ends somewhere else (it was cut, or a few
+ * of its LEDs hide). The next string starts right after one ends; the last one ends the object.
+ */
+function StringList({ f, perStrand, onPatch }: { f: Fixture; perStrand: number | null; onPatch: (patch: Partial<Fixture>) => void }) {
+  const n = Math.max(0, Math.floor(f.pixels));
+  const ranges = stringRanges(n, perStrand, f.stringBreaks);
+  const first = f.startPixel;
+  const apply = (next: { pixels: number; stringBreaks: number[] | undefined }) => onPatch({ pixels: Math.min(MAX_FIXTURE_PIXELS, Math.max(1, next.pixels)), stringBreaks: next.stringBreaks });
+  const cell = 'h-7 text-xs';
+  const cols = 'grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem] items-center gap-x-2';
+  return (
+    <>
+      <div className="grid gap-1">
+        <div className={cn(cols, 'text-[11px] text-stone-500')}>
+          <span>String · LEDs</span>
+          <span className="text-center">First LED</span>
+          <span className="text-center">Last LED</span>
+        </div>
+        {ranges.slice(0, 64).map((r, k) => (
+          <div key={k} className={cols}>
+            <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-stone-600 dark:text-stone-300" title={`${r.hi - r.lo + 1} LEDs`}>
+              <span className="size-3 shrink-0 rounded-full ring-1 ring-black/10" style={{ background: shown(STRING_RGB[k % STRING_RGB.length]) }} />
+              <span className="truncate">
+                {k + 1}
+                <span className="text-stone-400"> · {r.hi - r.lo + 1}</span>
+              </span>
+            </span>
+            {k === 0 ? (
+              <span className={cn(cell, 'grid place-items-center text-stone-500 tabular-nums')} title="The object’s first LED: change it in LEDs">
+                {first + r.lo}
+              </span>
+            ) : (
+              <NumberInput compact className={cell} value={first + r.lo} min={first + ranges[k - 1].lo + 1} max={first + r.hi} onCommit={(v) => apply(setStringStart(n, perStrand, f.stringBreaks, k, v - first))} />
+            )}
+            <NumberInput
+              compact
+              className={cell}
+              value={first + r.hi}
+              min={first + r.lo}
+              max={k === ranges.length - 1 ? first + MAX_FIXTURE_PIXELS - 1 : first + ranges[k + 1].hi - 1}
+              onCommit={(v) => apply(setStringEnd(n, perStrand, f.stringBreaks, k, v - first))}
+            />
+          </div>
+        ))}
+      </div>
+      {f.stringBreaks?.length ? (
+        <PropRow label="">
+          <PropButton onClick={() => onPatch({ stringBreaks: undefined })}>{perStrand ? `Every ${perStrand} LEDs again` : 'One string again'}</PropButton>
+        </PropRow>
+      ) : null}
+      <PropNote>
+        Each string in a color of its own, in the order of the LED numbers: its first LED blinks white and its last LED is white. Where a real string starts or ends somewhere else (it was cut, or a few of its
+        LEDs hide), type its first or last LED: the string next to it gets longer or shorter. The last string’s last LED is the object’s last LED.{perStrand ? '' : ' This object’s lights are not set to come in strings: pick its light string in Made of, or end the first string to cut it in two.'}
+      </PropNote>
+    </>
   );
 }
 
@@ -454,7 +565,9 @@ export function CheckBar({ check, objectName, layout, m, onChange }: { check: Ed
       ? `Slice · ${AXIS_LABELS[check.axis].split(' (')[0]}${check.at == null ? ' · sweeping' : ` · ${showAt(layout, m, check.axis, check.at)} ${m.units}`}`
       : check.kind === 'bands'
         ? `Ruler · ${AXIS_LABELS[check.axis].split(' (')[0]} · every ${m.text(check.step)}`
-        : `${check.kind === 'picture' ? 'Color test' : 'Chase'} · ${objectName ?? 'select an object'}`;
+        : check.kind === 'strings' && check.all
+          ? 'Strings · every object'
+          : `${check.kind === 'picture' ? 'Color test' : check.kind === 'chase' ? 'Chase' : 'Strings'} · ${objectName ?? 'select an object'}`;
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
       <div className="pointer-events-auto flex max-w-full items-center gap-1 rounded-full bg-stone-900/90 py-1 pr-1 pl-3 text-xs font-medium text-white shadow-lg ring-1 ring-white/10 backdrop-blur">

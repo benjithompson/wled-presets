@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildStage, designCounts, designLeds, designPaths, fixturePixels, ledRange, resizeSegment, sampleLayout, segmentLeds, type Fixture, type Layout } from '../../shared/layout.ts';
-import { BUILT_IN_LIGHTS, ledsForLength, lightsOf, maxAmps, spacingText, strandStarts, strandText, stringLength } from '../../shared/lights.ts';
+import { BUILT_IN_LIGHTS, ledsForLength, lightsOf, maxAmps, spacingText, strandStarts, setStringCount, setStringEnd, setStringStart, strandText, stringLength, stringRanges, wholeStrands } from '../../shared/lights.ts';
 import { layoutSchema } from '../src/layoutStore.ts';
 
 const nova = BUILT_IN_LIGHTS.find((l) => l.id === 'novabright-bullet-12v-4in')!;
@@ -22,6 +22,11 @@ describe('light strings', () => {
     expect(strandText(113, 50)).toBe('2 strands of 50 + 13 LEDs');
     expect(strandText(20, 50)).toBe('20 of a strand of 50');
     expect(strandText(300, null)).toBeNull();
+    // An object is made of whole strings: enough of them to hold its LEDs.
+    expect(wholeStrands(113, 50)).toBe(150);
+    expect(wholeStrands(100, 50)).toBe(100);
+    expect(wholeStrands(3, 50)).toBe(50);
+    expect(wholeStrands(113, null)).toBe(113);
     expect(strandStarts(120, 50)).toEqual([50, 100]);
     expect(maxAmps(100, nova)).toBeCloseTo(2.5);
   });
@@ -133,5 +138,39 @@ describe('custom objects', () => {
     const stage = buildStage(parsed.data as Layout);
     expect(stage.fixtures.at(-1)?.count).toBe(40);
     expect(layoutSchema.safeParse({ ...withCustom, lightTypes: [{ ...lightTypes[0], spacing: 0 }] }).success).toBe(false);
+  });
+});
+
+describe('the strings an object is made of', () => {
+  it('cuts the LEDs in strings, every strand or where they are set', () => {
+    expect(stringRanges(120, 50)).toEqual([
+      { lo: 0, hi: 49 },
+      { lo: 50, hi: 99 },
+      { lo: 100, hi: 119 }
+    ]);
+    expect(stringRanges(120, null)).toEqual([{ lo: 0, hi: 119 }]);
+    // Set by hand: the valid ones, in order.
+    expect(stringRanges(120, 50, [70, 47, 500, 47])).toEqual([
+      { lo: 0, hi: 46 },
+      { lo: 47, hi: 69 },
+      { lo: 70, hi: 119 }
+    ]);
+  });
+
+  it('moves where a string ends, and the next one starts', () => {
+    // The first string was cut to 47 LEDs: the second starts at 47 and keeps its end.
+    expect(setStringEnd(150, 50, undefined, 0, 46)).toEqual({ pixels: 150, stringBreaks: [47, 100] });
+    // The next string keeps at least one LED.
+    expect(setStringEnd(150, 50, undefined, 0, 400).stringBreaks).toEqual([99, 100]);
+    // The last string's end is the object's end.
+    expect(setStringEnd(150, 50, undefined, 2, 139)).toEqual({ pixels: 140, stringBreaks: undefined });
+    // Its start: the string before ends just before it. Back where they were: nothing set.
+    expect(setStringStart(150, 50, [47, 100], 1, 50)).toEqual({ pixels: 150, stringBreaks: undefined });
+  });
+
+  it('adds and takes away whole strings, keeping the ones set by hand', () => {
+    expect(setStringCount(150, 50, undefined, 4)).toEqual({ pixels: 200, stringBreaks: undefined });
+    expect(setStringCount(147, 50, [47, 97], 4)).toEqual({ pixels: 197, stringBreaks: [47, 97, 147] });
+    expect(setStringCount(147, 50, [47, 97], 2)).toEqual({ pixels: 97, stringBreaks: [47] });
   });
 });

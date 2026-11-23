@@ -131,7 +131,7 @@ import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps
 import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
 import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
-import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
+import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
 import { acrossOf, frontCamera } from '../../yard/frontCamera.ts';
@@ -919,7 +919,7 @@ export function LayoutPage() {
     const f = l.fixtures.find((x) => x.name === names[0]);
     const lt = f ? lightsOf(l, f.lights) : null;
     const reach = f && lt ? ` (${f.pixels} LEDs, ${spacingText(lt.spacing, l.units ?? 'ft')} apart)` : '';
-    toast(`${names.length > 1 ? `${names.length} objects reach` : `${names[0]} reaches`} as far as ${names.length > 1 ? 'their strings go' : `its string goes${reach}`}. Give it more LEDs to make it bigger.`, { id: 'string' });
+    toast(`${names.length > 1 ? `${names.length} objects reach` : `${names[0]} reaches`} as far as ${names.length > 1 ? 'their strings go' : `its string goes${reach}`}. Give it more LEDs (another string) to make it bigger.`, { id: 'string' });
   };
   /** Says (one toast at a time) why a locked object did not move. */
   const lockedNote = (names: string[]) =>
@@ -1185,7 +1185,9 @@ export function LayoutPage() {
         const lt = lightsOf(layout, layout.lights);
         const pts = to3d(base);
         const len = lineLengths({ points: pts }).reduce((a, b) => a + b, 0);
-        return { pixels: lt ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(len / layoutScale(layout), lt.spacing)) : kind === 'roof' && !roofs.length ? 450 : 100, ...(lt ? { lights: lt.id } : {}) };
+        // Whole strings, enough to reach along the line.
+        const fits = lt ? wholeStrands(ledsForLength(len / layoutScale(layout), lt.spacing), lt.perStrand) : 0;
+        return { pixels: lt ? Math.min(lt.perStrand ? Math.floor(MAX_FIXTURE_PIXELS / lt.perStrand) * lt.perStrand : MAX_FIXTURE_PIXELS, fits) : kind === 'roof' && !roofs.length ? 450 : 100, ...(lt ? { lights: lt.id } : {}) };
       })(),
       deviceId,
       startPixel: nextFree(deviceId),
@@ -3004,6 +3006,7 @@ export function LayoutPage() {
             blocks={stage ? pictureBlocks(stage, sel.id) : null}
             lights={checkLights}
             scale={scale}
+            perStrand={lightsOf(layout, sel.lights)?.perStrand ?? null}
           />
 
           <PropSection
@@ -3050,6 +3053,7 @@ export function LayoutPage() {
               onNew={() => setLightEdit({ type: null, forObject: sel.id })}
               onEdit={(lt) => setLightEdit({ type: lt })}
               onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
+              onStrings={(patch) => update(sel.id, patch)}
             />
           </PropSection>
 
@@ -3361,7 +3365,7 @@ export function LayoutPage() {
           />
           {newLights ? (
             <PropNote>
-              New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart; while you draw, each segment shows its length and LEDs.
+              New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart{newLights.perStrand ? `, in whole strings of ${newLights.perStrand}` : ''}; while you draw, each segment shows its length and LEDs.
             </PropNote>
           ) : (
             <PropNote>Pick the light string you use most. New objects are made of it, and lines you draw get the right number of LEDs.</PropNote>
@@ -4834,12 +4838,15 @@ function SegmentProps({
 
 /** Orange marks where each new strand of lights starts on the selected object, with the device LED number there. */
 function StrandMarks({ f, perStrand, scale, V, k, labels }: { f: Fixture; perStrand: number | null; scale: number; V: (p: Point) => { u: number; v: number }; k: number; labels: boolean }) {
-  const starts = strandStarts(f.pixels, perStrand);
+  // Strings run in the order of the device's LEDs (see stringStarts).
+  const count = Math.floor(f.pixels);
+  const starts = stringStarts(count, perStrand, f.stringBreaks);
   if (!starts.length) return null;
   const px = fixturePixels(f, scale);
   return (
     <g pointerEvents="none">
-      {starts.map((i, n) => {
+      {starts.map((d, n) => {
+        const i = f.reversed ? count - 1 - d : d;
         const p = px[i];
         if (!p) return null;
         const q = V(p);
@@ -4848,7 +4855,7 @@ function StrandMarks({ f, perStrand, scale, V, k, labels }: { f: Fixture; perStr
             <rect x={q.u - 6 * k} y={q.v - 6 * k} width={12 * k} height={12 * k} transform={`rotate(45 ${q.u} ${q.v})`} fill="#fb923c" stroke="#0c0a09" strokeWidth={2 * k} />
             {labels ? (
               <text x={q.u} y={q.v + 24 * k} textAnchor="middle" fontSize={12 * k} fontWeight={600} fill="#fdba74" stroke="#0c0a09" strokeWidth={3.5 * k} paintOrder="stroke" className="tabular-nums">
-                strand {n + 2} · #{deviceLed(f, i)}
+                string {n + 2} · #{f.startPixel + d}
               </text>
             ) : null}
           </g>

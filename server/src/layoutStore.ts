@@ -121,6 +121,7 @@ export const layoutShape = z.object({
         zigzag: z.enum(ZIGZAGS).optional(),
         pixels: z.number().int().min(1).max(MAX_FIXTURE_PIXELS),
         lights: id.optional(),
+        stringBreaks: z.array(z.number().int().min(1).max(MAX_FIXTURE_PIXELS)).max(MAX_FIXTURE_PIXELS).optional(),
         design: strokesSchema.optional(),
         designId: id.optional(),
         size: z.number().min(0.01).max(100).optional(),

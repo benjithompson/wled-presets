@@ -149,6 +149,12 @@ export interface Fixture {
   pixels: number;
   /** What the LEDs are: a LightType id (see shared/lights.ts). Not set: unknown. */
   lights?: string;
+  /**
+   * Where each string (strand) after the first starts, as LEDs counted from the object's lowest
+   * device LED number (strings run in the order of the device's LEDs). Not set: every
+   * perStrand LEDs of its light type (see stringRanges).
+   */
+  stringBreaks?: number[];
   /** Custom: its design, a copy of the library's (designId) so the object draws on its own. */
   design?: DesignStroke[];
   /** Custom: the library design it was placed from. Editing that design changes this object too. */

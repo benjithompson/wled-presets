@@ -81,6 +81,15 @@ export function strandText(leds: number, perStrand: number | null): string | nul
   return rest ? `${head} + ${rest} LED${rest === 1 ? '' : 's'}` : head;
 }
 
+/**
+ * The LEDs of the fewest whole strands (strings) that hold `leds`: an object is made of whole
+ * strings. A strip that is cut to length (no strands): `leds` as it is.
+ */
+export function wholeStrands(leds: number, perStrand: number | null): number {
+  if (!perStrand || perStrand < 1) return leds;
+  return Math.max(1, Math.ceil(leds / perStrand - 1e-9)) * perStrand;
+}
+
 /** The LEDs (counted from the object's first LED) where a new strand begins: 50, 100… */
 export function strandStarts(leds: number, perStrand: number | null): number[] {
   if (!perStrand || perStrand < 1) return [];
@@ -88,6 +97,79 @@ export function strandStarts(leds: number, perStrand: number | null): number[] {
   for (let i = perStrand; i < leds; i += perStrand) out.push(i);
   return out;
 }
+
+// ---------- The strings an object is made of ----------
+// An object's LEDs are one or more strings (strands) one after the other along the data wire, in
+// the order of the device's LED numbers. Each string has perStrand LEDs unless its start and end
+// are set (Fixture.stringBreaks: a string that was cut, or that hides a few LEDs). Positions here
+// count from the object's lowest device LED number (its first LED on the wire).
+
+/** Where each string after the first starts. `breaks`: as set (the valid ones, in order); none: every perStrand LEDs. */
+export function stringStarts(leds: number, perStrand: number | null, breaks?: number[]): number[] {
+  if (!breaks?.length) return strandStarts(leds, perStrand);
+  const out: number[] = [];
+  let prev = 0;
+  for (const b of [...breaks].sort((a, c) => a - c)) {
+    if (Number.isInteger(b) && b > prev && b < leds) {
+      out.push(b);
+      prev = b;
+    }
+  }
+  return out;
+}
+
+/** Each string's first and last LED (inclusive). One string for lights that do not come in strings. */
+export function stringRanges(leds: number, perStrand: number | null, breaks?: number[]): { lo: number; hi: number }[] {
+  if (leds < 1) return [];
+  const starts = [0, ...stringStarts(leds, perStrand, breaks)];
+  return starts.map((lo, i) => ({ lo, hi: (starts[i + 1] ?? leds) - 1 }));
+}
+
+/** Breaks as they are stored: none when they are where the strings start anyway. */
+function tidyBreaks(leds: number, perStrand: number | null, starts: number[]): number[] | undefined {
+  const plain = strandStarts(leds, perStrand);
+  return plain.length === starts.length && plain.every((b, i) => b === starts[i]) ? undefined : starts;
+}
+
+/**
+ * An object made of `n` strings: whole strings of perStrand LEDs. Strings whose start and end
+ * are set keep them; strings added after them are whole, and strings taken away go from the end.
+ */
+export function setStringCount(leds: number, perStrand: number, breaks: number[] | undefined, n: number): { pixels: number; stringBreaks: number[] | undefined } {
+  const count = Math.max(1, Math.round(n));
+  if (!breaks?.length) return { pixels: count * perStrand, stringBreaks: undefined };
+  const starts = stringStarts(leds, perStrand, breaks);
+  const now = starts.length + 1;
+  if (count >= now) {
+    const added = Array.from({ length: count - now }, (_, i) => leds + i * perStrand);
+    const pixels = leds + (count - now) * perStrand;
+    return { pixels, stringBreaks: tidyBreaks(pixels, perStrand, [...starts, ...added]) };
+  }
+  const pixels = starts[count - 1];
+  return { pixels, stringBreaks: tidyBreaks(pixels, perStrand, starts.slice(0, count - 1)) };
+}
+
+/**
+ * Moves the last LED of string k (0 the first) to `end`: the next string starts just after it,
+ * and keeps at least one LED. The last string's end is the object's last LED, so the object
+ * gets longer or shorter.
+ */
+export function setStringEnd(leds: number, perStrand: number | null, breaks: number[] | undefined, k: number, end: number): { pixels: number; stringBreaks: number[] | undefined } {
+  const ranges = stringRanges(leds, perStrand, breaks);
+  const r = ranges[k];
+  if (!r) return { pixels: leds, stringBreaks: breaks };
+  const starts = ranges.slice(1).map((x) => x.lo);
+  const at = Math.max(r.lo, Math.round(end));
+  if (k === ranges.length - 1) {
+    const pixels = at + 1;
+    return { pixels, stringBreaks: tidyBreaks(pixels, perStrand, starts) };
+  }
+  starts[k] = Math.min(at, ranges[k + 1].hi - 1) + 1;
+  return { pixels: leds, stringBreaks: tidyBreaks(leds, perStrand, starts) };
+}
+
+/** Moves the first LED of string k (1 or later) to `start`: the string before ends just before it. */
+export const setStringStart = (leds: number, perStrand: number | null, breaks: number[] | undefined, k: number, start: number) => setStringEnd(leds, perStrand, breaks, k - 1, start - 1);
 
 /** The most current the LEDs draw, in amps (all white, full brightness). */
 export const maxAmps = (leds: number, l: Pick<LightType, 'milliamps'>) => (leds * l.milliamps) / 1000;

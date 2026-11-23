@@ -852,7 +852,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       .discriminatedUnion('kind', [
         z.object({ kind: z.literal('slice'), axis: checkAxis, at: z.number().min(-100_000).max(100_000).nullable() }),
         z.object({ kind: z.literal('bands'), axis: checkAxis, step: z.number().min(1).max(100_000) }),
-        z.object({ kind: z.enum(['picture', 'chase']), id: z.string().min(1).max(64) })
+        z.object({ kind: z.enum(['picture', 'chase']), id: z.string().min(1).max(64) }),
+        z.object({ kind: z.literal('strings'), id: z.string().min(1).max(64).nullable() })
       ])
       .nullable()
       .optional(),
