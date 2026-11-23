@@ -196,7 +196,7 @@ export function ObjectCheckProps({
   check: EditorCheck | null;
   onChange: (c: EditorCheck | null) => void;
   onPatch: (patch: Partial<Fixture>) => void;
-  blocks: { across: boolean; up: boolean } | null;
+  blocks: { across: boolean; up: boolean; deep: boolean } | null;
   lights: string | null;
 }) {
   const mode = check?.kind === 'picture' || check?.kind === 'chase' ? check.kind : 'off';
@@ -226,16 +226,23 @@ export function ObjectCheckProps({
       ) : (
         <>
           {mode === 'picture' && blocks ? (
-            <div className={cn('grid gap-x-3 gap-y-1 pt-0.5', blocks.across ? 'grid-cols-2' : 'grid-cols-1')}>
-              <Swatch c={PICTURE_RGB.topLeft}>{blocks.across ? (blocks.up ? 'top left' : 'left') : blocks.up ? 'top' : 'all of it'}</Swatch>
-              {blocks.across ? <Swatch c={PICTURE_RGB.topRight}>{blocks.up ? 'top right' : 'right'}</Swatch> : null}
-              {blocks.up ? <Swatch c={PICTURE_RGB.bottomLeft}>{blocks.across ? 'bottom left' : 'bottom'}</Swatch> : null}
-              {blocks.up && blocks.across ? <Swatch c={PICTURE_RGB.bottomRight}>bottom right</Swatch> : null}
+            <div className="grid gap-1 pt-0.5">
+              {(blocks.deep ? (['front', 'back'] as const) : (['front'] as const)).map((side) => (
+                <div key={side}>
+                  {blocks.deep ? <p className="text-[11px] text-stone-500">{side === 'front' ? 'Street side' : 'House side'}</p> : null}
+                  <div className={cn('grid gap-x-3 gap-y-1', blocks.across ? 'grid-cols-2' : 'grid-cols-1')}>
+                    <Swatch c={PICTURE_RGB[side].topLeft}>{blocks.across ? (blocks.up ? 'top left' : 'left') : blocks.up ? 'top' : 'all of it'}</Swatch>
+                    {blocks.across ? <Swatch c={PICTURE_RGB[side].topRight}>{blocks.up ? 'top right' : 'right'}</Swatch> : null}
+                    {blocks.up ? <Swatch c={PICTURE_RGB[side].bottomLeft}>{blocks.across ? 'bottom left' : 'bottom'}</Swatch> : null}
+                    {blocks.up && blocks.across ? <Swatch c={PICTURE_RGB[side].bottomRight}>bottom right</Swatch> : null}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
           <PropNote>
             {mode === 'picture'
-              ? 'Each LED is colored by where the drawing puts it, as seen from the street, and LED 0 blinks white. The drawing always shows clean blocks; when it is right, the house shows the same. Swapped or mixed-up colors on the house: the string runs another way. Try the next way below until the house matches.'
+              ? 'Each LED is colored by where the drawing puts it: left or right and top or bottom as seen from the street, and, for an object with depth, the half toward the street or toward the house (the top view shows those). LED 0 blinks white. The drawing always shows clean blocks; when it is right, the house shows the same. Swapped or mixed-up colors on the house: the string runs another way. Try the next way below until the house matches.'
               : 'A light runs along the wire from LED 0 to the last LED, in the drawing and on the house at the same time. Where it starts and which way it goes on the house should match the drawing. If not, try the next way below.'}
           </PropNote>
           {guesses.length > 1 ? (

@@ -6,10 +6,10 @@
 //     white: on the house, the white should line up (straight across, or level) on every object.
 //   - a ruler: the yard in bands of color, a band every so many feet or meters along one axis.
 //     Every real object should sit in the same bands as in the drawing.
-//   - a color test of one object: its LEDs colored by where the drawing puts them (four blocks:
-//     top left, top right, bottom left, bottom right). On the house, the object shows the same
-//     four clean blocks when its shape and wiring are right, and swapped or scrambled colors
-//     when they are not.
+//   - a color test of one object: its LEDs colored by where the drawing puts them, in up to
+//     eight blocks: left or right, top or bottom, and the street side or the house side. On the
+//     house, the object shows the same clean blocks (from the street, and from above) when its
+//     shape and wiring are right, and swapped or scrambled colors when they are not.
 //   - a chase: one light runs along the object's wire from LED 0, so you can follow where the
 //     real string starts and which way it goes.
 
@@ -46,8 +46,22 @@ export const BAND_RGB: Rgb8[] = [
   [0, 70, 255],
   [230, 160, 0]
 ];
-/** The color test's four blocks, as seen from the street. */
-export const PICTURE_RGB = { topLeft: [255, 0, 0] as Rgb8, topRight: [0, 70, 255] as Rgb8, bottomLeft: [255, 170, 0] as Rgb8, bottomRight: [0, 210, 0] as Rgb8 };
+/** The color test's four blocks on one side, as seen from the street. */
+export interface PictureSide {
+  topLeft: Rgb8;
+  topRight: Rgb8;
+  bottomLeft: Rgb8;
+  bottomRight: Rgb8;
+}
+/**
+ * The color test's eight blocks: the half toward the street (front) and the half toward the
+ * house (back), each in four as seen from the street. An object with no depth to speak of is
+ * all front.
+ */
+export const PICTURE_RGB: { front: PictureSide; back: PictureSide } = {
+  front: { topLeft: [255, 0, 0], topRight: [0, 70, 255], bottomLeft: [255, 170, 0], bottomRight: [0, 210, 0] },
+  back: { topLeft: [255, 0, 170], topRight: [0, 210, 210], bottomLeft: [255, 255, 255], bottomRight: [255, 70, 0] }
+};
 const CHASE_BASE: Rgb8 = [0, 10, 26];
 const CHASE_TAIL: Rgb8 = [0, 160, 255];
 
@@ -145,52 +159,55 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
   for (let j = 0; j < sf.count; j++) {
     if (!on(j)) continue;
     const i = sf.offset + j;
-    out.set(pictureColor(split, P[i * 3], P[i * 3 + 1]), i * 3);
+    out.set(pictureColor(split, P[i * 3], P[i * 3 + 1], P[i * 3 + 2]), i * 3);
   }
   // Where the wire starts: blinking white.
   if (on(0)) out.set(pulse ? SLICE_RGB : scale8(SLICE_RGB, 0.15), sf.offset * 3);
 }
 
-/** How the color test cuts an object in blocks: at its middle, across and up, when it is wide (or tall) enough for that. */
+/**
+ * How the color test cuts an object in blocks: at its middle, across, up and in depth, along
+ * each way it is big enough for that (a quarter of its biggest size).
+ */
 interface Split {
   cx: number;
   cy: number;
+  cz: number;
   across: boolean;
   up: boolean;
+  deep: boolean;
 }
 
 function pictureSplit(stage: Stage, offset: number, count: number): Split {
-  let x0 = Infinity;
-  let x1 = -Infinity;
-  let y0 = Infinity;
-  let y1 = -Infinity;
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
   for (let i = offset; i < offset + count; i++) {
-    const x = stage.positions3[i * 3];
-    const y = stage.positions3[i * 3 + 1];
-    x0 = Math.min(x0, x);
-    x1 = Math.max(x1, x);
-    y0 = Math.min(y0, y);
-    y1 = Math.max(y1, y);
+    for (let a = 0; a < 3; a++) {
+      const v = stage.positions3[i * 3 + a];
+      lo[a] = Math.min(lo[a], v);
+      hi[a] = Math.max(hi[a], v);
+    }
   }
-  const w = x1 - x0;
-  const h = y1 - y0;
-  const big = Math.max(w, h);
-  // A long low line is cut only across; a tall thin one only up.
-  return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, across: w >= big * 0.25, up: h >= big * 0.25 };
+  const size = hi.map((h, a) => h - lo[a]);
+  const big = Math.max(...size);
+  // A long low line is cut only across; a tall thin one only up; a flat one not in depth.
+  const cut = (a: number) => big > 0 && size[a] >= big * 0.25;
+  return { cx: (lo[0] + hi[0]) / 2, cy: (lo[1] + hi[1]) / 2, cz: (lo[2] + hi[2]) / 2, across: cut(0), up: cut(1), deep: cut(2) };
 }
 
-function pictureColor(s: Split, x: number, y: number): Rgb8 {
+function pictureColor(s: Split, x: number, y: number, z: number): Rgb8 {
+  const side = s.deep && z < s.cz ? PICTURE_RGB.back : PICTURE_RGB.front;
   const right = s.across && x > s.cx;
   const bottom = s.up && y > s.cy;
-  return bottom ? (right ? PICTURE_RGB.bottomRight : PICTURE_RGB.bottomLeft) : right ? PICTURE_RGB.topRight : PICTURE_RGB.topLeft;
+  return bottom ? (right ? side.bottomRight : side.bottomLeft) : right ? side.topRight : side.topLeft;
 }
 
 /** Which blocks the color test of this object shows (see pictureSplit). */
-export function pictureBlocks(stage: Stage, id: string): { across: boolean; up: boolean } | null {
+export function pictureBlocks(stage: Stage, id: string): { across: boolean; up: boolean; deep: boolean } | null {
   const sf = stage.fixtures.find((f) => f.id === id);
   if (!sf?.count) return null;
-  const { across, up } = pictureSplit(stage, sf.offset, sf.count);
-  return { across, up };
+  const { across, up, deep } = pictureSplit(stage, sf.offset, sf.count);
+  return { across, up, deep };
 }
 
 // ---------- The ways an object's string can run ----------

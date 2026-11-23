@@ -54,6 +54,7 @@ import { toast } from 'sonner';
 import {
   buildStage,
   BUSH_TALL,
+  BUSH_TURNS,
   radiusOf,
   semicircleSize,
   treeSize,
@@ -125,6 +126,7 @@ import { DesignEditor } from './DesignEditor.tsx';
 import { Gizmo, screenAngle, wrapAngle, type GizmoPart } from './gizmo.tsx';
 import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
 import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
+import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
 import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
@@ -320,18 +322,34 @@ function TiltProp({ label, value, hint, onChange }: { label: string; value: numb
 /** The height a shape's size handles show: a tree's, or a semicircle's (its radius unless set). */
 const sizeHeight = (f: Fixture) => (f.kind === 'tree' ? treeSize(f).h : semicircleSize(f).h);
 
-function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked: boolean; onChange: (patch: Partial<Fixture>) => void }) {
+function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure; locked: boolean; strung: boolean; onChange: (patch: Partial<Fixture>) => void }) {
   /** Its size and turn: a locked object keeps them (its pattern and wiring can still change). */
   const place = (el: ReactNode) => (
     <fieldset disabled={locked} className="contents">
       {el}
     </fieldset>
   );
+  /** The setting that follows from its light string (see freeSetting): it cannot be set by hand. */
+  const free = strung ? freeSetting(f) : null;
+  const fromString = (el: ReactNode) =>
+    free ? (
+      <fieldset disabled className="contents">
+        {el}
+      </fieldset>
+    ) : (
+      el
+    );
+  const stringNote = free ? (
+    <PropNote>
+      {free === 'radius' ? 'Its size' : free === 'turns' ? 'Its turns' : free === 'strands' ? 'Its strands' : free === 'rows' ? 'Its rows' : 'Its passes'} follow from the light string, so the LEDs sit as far apart as on the real string. More LEDs
+      {free === 'radius' ? ' make it bigger' : `, or a ${f.kind === 'tree' ? 'smaller tree' : 'smaller shape'}, give it more`}.
+    </PropNote>
+  ) : null;
   const width = place(<PropDistance label="Width" value={radiusOf(f) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
   if (f.kind === 'bush') {
     return (
       <>
-        {width}
+        {free === 'radius' ? fromString(width) : width}
         <PropSelect<NonNullable<Fixture['pattern']>>
           label="LED pattern"
           value={f.pattern ?? 'fill'}
@@ -342,6 +360,8 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           ]}
           onChange={(pattern) => onChange({ pattern })}
         />
+        {free === 'turns' ? <PropNote>The spiral goes round {f.turns ?? BUSH_TURNS} times from the middle out.</PropNote> : null}
+        {stringNote}
         <PropNote>The point is the middle of the bush, as seen from the front.</PropNote>
       </>
     );
@@ -378,7 +398,8 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           ]}
           onChange={(zigzag) => onChange({ zigzag })}
         />
-        <PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />
+        {fromString(<PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />)}
+        {stringNote}
         {place(
           <PropNumber
             label="Turn"
@@ -473,15 +494,15 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
         <>
           {spiral ? (
             <>
-              <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
-              <PropDistance
+              {fromString(<PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />)}
+              {fromString(<PropDistance
                 label="Loops apart"
                 hint={`How far one loop is from the next, measured over the ${ball ? 'ball' : 'tree'} from the ${ball ? 'edge to the middle' : 'base to the top'} (on average, when they bunch). Sets the turns.`}
                 value={treeSurfaceLength(f) / (f.turns ?? 8)}
                 m={m}
                 min={0.01}
                 onChange={(lu) => onChange({ turns: Math.max(0.5, Math.min(100, Math.round((treeSurfaceLength(f) / Math.max(1, lu)) * 10) / 10)) })}
-              />
+              />)}
               <PropNumber
                 label="Loops bunch"
                 unit="%"
@@ -514,7 +535,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           />
         </>
       ) : (
-        <PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />
+        fromString(<PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />)
       )}
       {wave && passes ? (
         <>
@@ -529,14 +550,16 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
             steppers
             onChange={(n) => onChange({ sweep: Math.round(n) === WAVE_SWEEP ? undefined : Math.round(n) })}
           />
-          <PropDistance
-            label="Rows apart"
-            hint="The height from one pass to the next. The passes fit the tree's height, as close to this as they can."
-            value={f.spacing ?? climb / (passes.passes - 1)}
-            m={m}
-            min={0.05}
-            onChange={(lu) => onChange({ spacing: Math.max(1, Math.round(lu * 10) / 10) })}
-          />
+          {fromString(
+            <PropDistance
+              label="Rows apart"
+              hint="The height from one pass to the next. The passes fit the tree's height, as close to this as they can."
+              value={f.spacing ?? climb / (passes.passes - 1)}
+              m={m}
+              min={0.05}
+              onChange={(lu) => onChange({ spacing: Math.max(1, Math.round(lu * 10) / 10) })}
+            />
+          )}
           <PropSelect<Side>
             label="First LED on"
             hint="The side of the tree its first pass starts on, as seen from its front"
@@ -581,6 +604,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           hint={`Turned as seen from above: ${wave ? 'the middle of the passes' : `where ${spiral ? 'the spiral' : 'the first strand'} starts`}. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`}
         />
       )}
+      {stringNote}
       {place(<TiltProp label="Leans right" value={f.rotation} onChange={(rotation) => onChange({ rotation })} hint="Tilted about its base, as seen from the front: more leans it to the right, less to the left" />)}
       {place(<TiltProp label="Leans to street" value={f.tilt} onChange={(tilt) => onChange({ tilt })} hint="Tilted about its base, as seen from the side view: more leans it toward the street, less toward the house" />)}
       <PropNote>{ball ? 'The point is the bottom of the ball, under the middle (below the LEDs when they cover only its top).' : 'The point is the middle of the base.'}</PropNote>
@@ -876,10 +900,20 @@ export function LayoutPage() {
       if (!l) return l;
       const next = fn(l);
       if (force) return next;
-      const kept = keepLocked(l, next);
+      // Wires stay within their strings (see keepStrings), then locked objects stay put.
+      const strung = keepStrings(l, next);
+      if (strung.limited.length) stringNote(strung.limited, strung.layout);
+      const kept = keepLocked(l, strung.layout);
       if (kept.blocked.length) lockedNote(kept.blocked);
       return kept.layout;
     });
+  };
+  /** Says (one toast at a time) why an object did not stretch any farther. */
+  const stringNote = (names: string[], l: Layout) => {
+    const f = l.fixtures.find((x) => x.name === names[0]);
+    const lt = f ? lightsOf(l, f.lights) : null;
+    const reach = f && lt ? ` (${f.pixels} LEDs, ${spacingText(lt.spacing, l.units ?? 'ft')} apart)` : '';
+    toast(`${names.length > 1 ? `${names.length} objects reach` : `${names[0]} reaches`} as far as ${names.length > 1 ? 'their strings go' : `its string goes${reach}`}. Give it more LEDs to make it bigger.`, { id: 'string' });
   };
   /** Says (one toast at a time) why a locked object did not move. */
   const lockedNote = (names: string[]) =>
@@ -3005,7 +3039,7 @@ export function LayoutPage() {
 
           {!isLine(sel) && sel.kind !== 'custom' ? (
             <PropSection key="shape" id="shape" title="Shape">
-              <ShapeProps f={sel} m={m} locked={!!sel.locked} onChange={(patch) => update(sel.id, patch)} />
+              <ShapeProps f={sel} m={m} locked={!!sel.locked} strung={stringGap(sel, layout) != null} onChange={(patch) => update(sel.id, patch)} />
             </PropSection>
           ) : null}
           </>

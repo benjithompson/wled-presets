@@ -2,7 +2,8 @@
 // custom objects and their library.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
-import { designLength, isLine, layoutScale, MAX_FIXTURE_PIXELS, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
+import { designLength, isLine, layoutScale, ledGap, MAX_FIXTURE_PIXELS, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
+import { fitsString, freeSetting } from '../../../../shared/stringFit.ts';
 import {
   BUILT_IN_LIGHTS,
   isBuiltInLight,
@@ -75,6 +76,9 @@ export function LightsProps({
   const drawn = isLine(f) ? lineLengths(f).reduce((a, b) => a + b, 0) : custom ? designLength(f.design ?? []) * scale * (f.size ?? 1) : zigzag ? designLength([{ points: zigzagPath(f) }]) : 0;
   const fit = lt && (isLine(f) || zigzag) ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(drawn / scale, lt.spacing)) : null;
   const pins = f.pointLeds?.filter((p) => p != null).length ?? 0;
+  // How far apart the LEDs are on the drawing, along its wire (none for a net over a bush).
+  const gap = lt ? ledGap(f, scale) : null;
+  const tooLong = lt ? !fitsString(f, layout) : false;
   return (
     <>
       {custom ? (
@@ -103,6 +107,18 @@ export function LightsProps({
                 {lenText(drawn)} drawn · {lenText(stringLength(f.pixels, lt.spacing) * scale)} of string
               </span>
             </PropRow>
+          ) : null}
+          {gap != null ? (
+            <PropRow label="Spacing" hint="How far apart the LEDs are along the wire as drawn, and on the string. The wire cannot be drawn longer than the string.">
+              <span className={tooLong ? 'block text-xs text-red-600 tabular-nums dark:text-red-400' : 'block text-xs tabular-nums'}>
+                {spacingText(gap / scale, units)} drawn · {spacingText(lt.spacing, units)} on the string
+              </span>
+            </PropRow>
+          ) : null}
+          {tooLong && fit == null ? (
+            <PropNote>
+              The wire as drawn is longer than the string: {f.pixels} LEDs {spacingText(lt.spacing, units)} apart do not reach that far. {custom ? 'Make it smaller, or give its design more LEDs.' : freeSetting(f) ? 'Give it more LEDs, or make it smaller.' : 'Give it more LEDs.'}
+            </PropNote>
           ) : null}
           {fit != null && fit !== f.pixels ? (
             <>
