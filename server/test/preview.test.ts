@@ -453,6 +453,42 @@ describe('how fast a device can show frames', () => {
     expect(maxFps(null)).toBe(60);
   });
 
+  it('sends a device that cannot keep up with 60 an even share of the clock’s frames', async () => {
+    const { sendFps } = await import('../src/ledTiming.ts');
+    // Short outputs keep up: every frame.
+    expect(sendFps({ outputs: [{ len: 300, type: 22 }] })).toBe(60);
+    expect(sendFps(null)).toBe(60);
+    // 600 LEDs on one output can show about 54: every other frame, not 54 of 60 at uneven gaps.
+    expect(sendFps({ outputs: [{ len: 600, type: 22 }, { len: 350, type: 22 }] })).toBe(30);
+    expect(sendFps({ leds: { count: 1000 } })).toBe(30);
+    // 1,500 LEDs (about 22): every third frame.
+    expect(sendFps({ outputs: [{ len: 1500, type: 22 }] })).toBe(20);
+  });
+
+  it('sends a 600-LED output every other frame of the clock', async () => {
+    const mock = await startMockWled(0, 'Quad', 950);
+    await new Promise((r) => setTimeout(r, 50));
+    const sender = new LightSender();
+    const outputs = [{ len: 600, type: 22 }, { len: 350, type: 22 }];
+    const device = { id: 'd', name: 'Quad', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 950 }, outputs, udpport: mock.port, ddpport: mock.ddpPort() } };
+    const { FrameLoop } = await import('../src/frameLoop.ts');
+    let i = 0;
+    const loop = new FrameLoop(() => sender.send(device, new Uint8Array(950 * 3).fill(10 + (i++ % 200))), 60);
+    try {
+      loop.start();
+      await new Promise((r) => setTimeout(r, 1000));
+      loop.stop();
+      await new Promise((r) => setTimeout(r, 60));
+      // About 30 of the clock's 60.
+      expect(mock.realtime.ddpFrames).toBeGreaterThanOrEqual(27);
+      expect(mock.realtime.ddpFrames).toBeLessThanOrEqual(33);
+    } finally {
+      loop.stop();
+      sender.close();
+      await mock.close();
+    }
+  });
+
   it('reads the outputs from the device’s settings', async () => {
     const { wled } = await import('../src/wled.ts');
     const mock = await startMockWled(0, 'Roof', 600);
