@@ -166,7 +166,6 @@ export function YardCheckProps({ check, onChange, layout, stage, m, lights }: { 
                 max={1000}
                 step={m.units === 'm' ? 0.05 : 0.25}
                 unit={m.units}
-                steppers
                 onChange={(n) => onChange({ ...yard, at: Math.round(fromShown(layout, m, axis, n) * 10) / 10 })}
               />
               <div className="flex flex-wrap gap-x-3 gap-y-1 pt-0.5">

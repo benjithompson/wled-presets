@@ -172,7 +172,6 @@ export function LightsProps({
                 value={whole ? strings : Math.round(strings! * 100) / 100}
                 min={1}
                 max={Math.floor(MAX_FIXTURE_PIXELS / per)}
-                steppers
                 onChange={(n) => setCount(Math.max(1, Math.round(n)))}
               />
               {!whole ? (
@@ -411,8 +410,8 @@ export function CustomProps({ layout, f, lenText, onChange, onEditDesign }: { la
           {lenText(w)} × {lenText(h)}
         </span>
       </PropRow>
-      <PropNumber label="Scale" unit="%" value={Math.round((f.size ?? 1) * 100)} min={5} max={1000} steppers step={5} onChange={(n) => onChange({ size: n === 100 ? undefined : n / 100 })} hint="100%: as designed. The LEDs stay the same; they spread over the new size." />
-      <PropNumber label="Turn" unit="°" decimal value={f.rotation ?? 0} min={-360} max={360} step={5} steppers onChange={(n) => onChange({ rotation: n || undefined })} hint="Clockwise, as seen from the front" />
+      <PropNumber label="Scale" unit="%" value={Math.round((f.size ?? 1) * 100)} min={5} max={1000} step={5} onChange={(n) => onChange({ size: n === 100 ? undefined : n / 100 })} hint="100%: as designed. The LEDs stay the same; they spread over the new size." />
+      <PropNumber label="Turn" unit="°" decimal value={f.rotation ?? 0} min={-360} max={360} step={5} onChange={(n) => onChange({ rotation: n || undefined })} hint="Clockwise, as seen from the front" />
       <PropNumber
         label="Faces"
         unit="°"
@@ -421,7 +420,6 @@ export function CustomProps({ layout, f, lenText, onChange, onEditDesign }: { la
         min={-360}
         max={360}
         step={15}
-        steppers
         onChange={(n) => onChange({ facing: n || undefined })}
         hint="Turned as seen from above: 0 faces the street, 90 faces right (as seen from the street), -90 left"
       />
@@ -433,7 +431,6 @@ export function CustomProps({ layout, f, lenText, onChange, onEditDesign }: { la
         min={-180}
         max={180}
         step={5}
-        steppers
         onChange={(n) => onChange({ tilt: n || undefined })}
         hint="Tilted toward the street (more) or the house (less), as seen from the side view"
       />

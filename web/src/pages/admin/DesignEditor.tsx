@@ -675,7 +675,7 @@ export function DesignEditor({
               }}
             />
             {lt ? <PropNote>{lightSummary(lt, units)}</PropNote> : <PropNote>Pick the light string to space the LEDs as they are on the real wire.</PropNote>}
-            <PropNumber label="LEDs" value={pixels} min={1} max={2000} steppers onChange={(n) => setPixels(Math.round(n))} />
+            <PropNumber label="LEDs" value={pixels} min={1} max={2000} onChange={(n) => setPixels(Math.round(n))} />
             {lt && fit != null && fit !== pixels ? (
               <PropRow label="">
                 <PropButton onClick={() => setPixels(fit)} title={`The wire is ${text(length)}: at ${spacingText(lt.spacing, units)} apart that is ${fit} LEDs`}>

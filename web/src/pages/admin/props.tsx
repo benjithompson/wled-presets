@@ -232,8 +232,9 @@ export function NumberInput({
 }
 
 /**
- * A number property. `unit` shows inside the field. `steppers` adds − and + buttons (Shift-click:
- * 10 steps), for adjusting while you look at the lights. `tone` puts a green or red dot in the field.
+ * A number property. `unit` shows inside the field. − and + buttons beside it step the number
+ * by `step` (Shift-click: 10 steps), for adjusting while you look at the lights; `steppers={false}`
+ * leaves them out. `tone` puts a green or red dot in the field.
  */
 export function PropNumber({
   label,
@@ -245,7 +246,7 @@ export function PropNumber({
   decimal = false,
   unit,
   tone,
-  steppers = false,
+  steppers = true,
   hint,
   placeholder = 'varies'
 }: {

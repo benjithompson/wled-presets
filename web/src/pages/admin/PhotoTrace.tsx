@@ -1067,8 +1067,8 @@ export function PhotoTrace({
             {devices.length ? (
               <>
                 <PropSelect label="Device" value={deviceId} options={devices.map((d): [string, string] => [d.id, d.name])} onChange={setDeviceId} />
-                <PropNumber label="First LED" hint="The device's LED where the wire starts" value={from} min={0} max={10_000} steppers onChange={(n) => setFrom(Math.round(n))} />
-                <PropNumber label="Last LED" hint="The device's LED where the wire ends" value={to} min={0} max={10_000} steppers onChange={(n) => setTo(Math.round(n))} />
+                <PropNumber label="First LED" hint="The device's LED where the wire starts" value={from} min={0} max={10_000} onChange={(n) => setFrom(Math.round(n))} />
+                <PropNumber label="Last LED" hint="The device's LED where the wire ends" value={to} min={0} max={10_000} onChange={(n) => setTo(Math.round(n))} />
                 <PropRow label="Color">
                   <div className="flex gap-1">
                     {PHOTO_COLORS.map((c) => (
