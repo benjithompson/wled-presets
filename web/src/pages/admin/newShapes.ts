@@ -1,5 +1,6 @@
 // Drawing a new bush, tree or semicircle in the layout editor: press where it goes, drag to
 // size it, let go. What it looks like while it is drawn, and the object it makes.
+import { unproject, type FrontCam } from '../../yard/frontCamera.ts';
 import { lightsOf } from '../../../../shared/lights.ts';
 import { BUSH_TALL, layoutGround, layoutScale, type Fixture, type Layout, type Point, type ShapeKind } from '../../../../shared/layout.ts';
 import type { UV } from '../../yard/snap.ts';
@@ -46,7 +47,7 @@ export function draftOutline(d: ShapeDraft): string {
  * click without a drag makes one of a usual size. With the yard's light string set, a bush and
  * a semicircle get one strand of LEDs and a tree four.
  */
-export function shapeFrom(d: ShapeDraft, layout: Layout, zMin: number, id: string): Fixture {
+export function shapeFrom(d: ShapeDraft, layout: Layout, zMin: number, id: string, cam?: FrontCam | null): Fixture {
   const s = layoutScale(layout);
   const ground = layoutGround(layout);
   const front = d.side === 'front';
@@ -54,21 +55,26 @@ export function shapeFrom(d: ShapeDraft, layout: Layout, zMin: number, id: strin
   const lt = lightsOf(layout, layout.lights);
   const count = layout.fixtures.filter((f) => f.kind === d.shape).length;
   const common = { id, ...(lt ? { lights: lt.id } : {}), deviceId: null, startPixel: 0, reversed: false };
+  /** At depth z under the spot, seen from the front (turned: where the line of sight meets that depth). */
+  const atDepth = (z: number): Point => {
+    const p = cam ? unproject(cam, u, v, z) : { x: u, y: v };
+    return { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(z) };
+  };
   /** On the ground, seen from above. */
   const onGround = (y: number): Point => ({ x: u, y: Math.round(y), z: Math.round(v + zMin) });
   if (d.shape === 'bush') {
     const r = Math.max(30, d.size || 70);
-    const center = front ? { x: u, y: v, z: r } : onGround(ground - r * BUSH_TALL);
+    const center = front ? atDepth(r) : onGround(ground - r * BUSH_TALL);
     return { ...common, name: `Bush ${count + 1}`, kind: 'bush', points: [center], radius: r, pattern: 'fill', pixels: lt?.perStrand ?? 60 };
   }
   if (d.shape === 'tree') {
     // From the front you drag the height; from above, the radius of the base.
     const height = front ? Math.max(40, d.size || 2.5 * s) : Math.max(40, (d.size || 0.6 * s) * 3);
     const r = Math.round(front ? height * TREE_WIDTH : Math.max(15, d.size || 0.6 * s));
-    const base = front ? { x: u, y: v, z: Math.round(r + 0.5 * s) } : onGround(ground);
+    const base = front ? atDepth(r + 0.5 * s) : onGround(ground);
     return { ...common, name: `Tree ${count + 1}`, kind: 'tree', points: [base], radius: r, height: Math.round(height), pattern: 'spiral', turns: 8, pixels: lt?.perStrand ? lt.perStrand * 4 : 200 };
   }
   const r = Math.max(15, d.size || Math.round(0.6 * s));
-  const base = front ? { x: u, y: v, z: Math.round(0.5 * s) } : onGround(ground);
+  const base = front ? atDepth(0.5 * s) : onGround(ground);
   return { ...common, name: `Semicircle ${count + 1}`, kind: 'semicircle', points: [base], radius: r, strands: 8, zigzag: 'down', pixels: lt?.perStrand ?? 100 };
 }

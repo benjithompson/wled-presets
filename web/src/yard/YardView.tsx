@@ -3,6 +3,7 @@ import type React from 'react';
 import { AERIAL_OPACITY, buildStage, BUSH_TALL, drawnByPaths, FEET_PER_METER, layoutGround, layoutScale, objectPaths, radiusOf, treeOutline, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
 import { fitBox, toView, viewPositions, viewSize, type ViewSide } from './views.ts';
+import { acrossOf, frontCamera } from './frontCamera.ts';
 import { cn } from '../lib/utils.ts';
 
 /** True when the first `n` bytes of two arrays are the same. */
@@ -103,8 +104,10 @@ export function YardView({
     const top = side === 'top';
     const sideView = side === 'side';
     // LED positions in view coordinates.
-    const pos = viewPositions(stage.positions3, side, zMin);
-    const view = (p: Point) => toView(p, side, zMin);
+    // The front view, turned to where its picture was taken from (Layout.frontView).
+    const cam = side === 'front' ? frontCamera(layout) : null;
+    const pos = viewPositions(stage.positions3, side, zMin, cam);
+    const view = (p: Point) => toView(p, side, zMin, cam);
     const scale = layoutScale(layout);
     const defaultGridStep = layout.units === 'm' ? scale : (scale * 5) / FEET_PER_METER;
     // Grid lines count from the left edge, and from the ground (front) or the front wall (top).
@@ -288,7 +291,7 @@ export function YardView({
             // From above, bushes and trees are circles.
             ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);
           } else if (f.kind === 'tree') {
-            treeOutline(f, sideView ? 'side' : 'front').forEach((p, i) => {
+            treeOutline(f, sideView ? 'side' : cam ? acrossOf(cam) : 'front').forEach((p, i) => {
               const q = view(p);
               if (i) ctx.lineTo(X(q.u), Y(q.v));
               else ctx.moveTo(X(q.u), Y(q.v));

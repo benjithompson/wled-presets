@@ -2,7 +2,8 @@
 // custom objects and their library.
 import { useEffect, useState, type ReactNode } from 'react';
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react';
-import { designLength, isLine, layoutScale, MAX_FIXTURE_PIXELS, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
+import { designLength, isLine, layoutScale, ledGap, MAX_FIXTURE_PIXELS, lineLengths, zigzagPath, type Design, type Fixture, type Layout } from '../../../../shared/layout.ts';
+import { fitsString, freeSetting } from '../../../../shared/stringFit.ts';
 import {
   BUILT_IN_LIGHTS,
   isBuiltInLight,
@@ -13,8 +14,11 @@ import {
   lightSummary,
   maxAmps,
   spacingText,
+  setStringCount,
   strandText,
   stringLength,
+  stringRanges,
+  wholeStrands,
   type LightStyle,
   type LightType
 } from '../../../../shared/lights.ts';
@@ -54,7 +58,8 @@ export function LightsProps({
   onPick,
   onNew,
   onEdit,
-  onFit
+  onFit,
+  onStrings
 }: {
   layout: Layout;
   f: Fixture;
@@ -65,6 +70,8 @@ export function LightsProps({
   onEdit: (l: LightType) => void;
   /** Sets the LED count of a line to fit its drawn length. */
   onFit: (pixels: number) => void;
+  /** Sets the number of strings: the LED count, and where strings whose ends are set start. */
+  onStrings: (patch: Pick<Fixture, 'pixels' | 'stringBreaks'>) => void;
 }) {
   const units = layout.units ?? 'ft';
   const scale = layoutScale(layout);
@@ -73,8 +80,22 @@ export function LightsProps({
   // A semicircle's zigzag is drawn for you: its length is known, so the LEDs that fit it are too.
   const zigzag = f.kind === 'semicircle';
   const drawn = isLine(f) ? lineLengths(f).reduce((a, b) => a + b, 0) : custom ? designLength(f.design ?? []) * scale * (f.size ?? 1) : zigzag ? designLength([{ points: zigzagPath(f) }]) : 0;
-  const fit = lt && (isLine(f) || zigzag) ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(drawn / scale, lt.spacing)) : null;
+  // The LEDs that fit the drawing, as whole strings when the lights come in strings.
+  const fitLeds = lt && (isLine(f) || zigzag) ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(drawn / scale, lt.spacing)) : null;
+  const per = lt?.perStrand && lt.perStrand > 0 ? lt.perStrand : null;
+  const fit = fitLeds != null && per ? Math.min(Math.floor(MAX_FIXTURE_PIXELS / per) * per, wholeStrands(fitLeds, per)) : fitLeds;
+  // Strings whose start and end are set are whole strings, whatever their length.
+  const setByHand = !!f.stringBreaks?.length;
+  const strings = per ? (setByHand ? stringRanges(f.pixels, per, f.stringBreaks).length : f.pixels / per) : null;
+  const whole = strings != null && (setByHand || Number.isInteger(strings));
+  const setCount = (n: number) => {
+    const next = setStringCount(f.pixels, per!, f.stringBreaks, Math.min(n, Math.floor(MAX_FIXTURE_PIXELS / per!)));
+    onStrings({ pixels: Math.min(MAX_FIXTURE_PIXELS, next.pixels), stringBreaks: next.stringBreaks });
+  };
   const pins = f.pointLeds?.filter((p) => p != null).length ?? 0;
+  // How far apart the LEDs are on the drawing, along its wire (none for a net over a bush).
+  const gap = lt ? ledGap(f, scale) : null;
+  const tooLong = lt ? !fitsString(f, layout) : false;
   return (
     <>
       {custom ? (
@@ -104,23 +125,62 @@ export function LightsProps({
               </span>
             </PropRow>
           ) : null}
+          {gap != null ? (
+            <PropRow label="Spacing" hint="How far apart the LEDs are along the wire as drawn, and on the string. The wire cannot be drawn longer than the string.">
+              <span className={tooLong ? 'block text-xs text-red-600 tabular-nums dark:text-red-400' : 'block text-xs tabular-nums'}>
+                {spacingText(gap / scale, units)} drawn · {spacingText(lt.spacing, units)} on the string
+              </span>
+            </PropRow>
+          ) : null}
+          {tooLong && fit == null ? (
+            <PropNote>
+              The wire as drawn is longer than the string: {f.pixels} LEDs {spacingText(lt.spacing, units)} apart do not reach that far. {custom ? 'Make it smaller, or give its design more LEDs.' : freeSetting(f) ? 'Give it more LEDs, or make it smaller.' : 'Give it more LEDs.'}
+            </PropNote>
+          ) : null}
           {fit != null && fit !== f.pixels ? (
             <>
               <PropNote>
-                At {spacingText(lt.spacing, units)} apart, {fit} LEDs fit the line as drawn; it has {f.pixels}. {fit < f.pixels ? 'The string is longer than the line: check the drawing, or the extra LEDs hang somewhere.' : 'The string is shorter than the line.'}
+                At {spacingText(lt.spacing, units)} apart, {fitLeds} LEDs fit the line as drawn{per ? ` (${fit / per} string${fit === per ? '' : 's'} of ${per})` : ''}; it has {f.pixels}.{' '}
+                {fit < f.pixels ? 'The string is longer than the line: check the drawing, or the extra LEDs hang somewhere.' : 'The string is shorter than the line.'}
               </PropNote>
               <PropRow label="">
                 <PropButton onClick={() => onFit(fit)} title={pins ? `Unpins ${pins} corner(s): the LEDs spread evenly again` : 'The LEDs spread evenly along the line'}>
-                  Use {fit} LEDs
+                  {per ? `Use ${fit / per} string${fit === per ? '' : 's'}` : `Use ${fit} LEDs`}
                 </PropButton>
               </PropRow>
             </>
           ) : null}
           {custom ? <PropNote>Set in the object’s design: Edit design, above.</PropNote> : null}
-          {lt.perStrand ? (
-            <PropRow label="Strands">
-              <span className="block text-xs">{strandText(f.pixels, lt.perStrand)}</span>
+          {per && custom ? (
+            <PropRow label="Strings">
+              <span className="block text-xs">{strandText(f.pixels, per)}</span>
             </PropRow>
+          ) : per ? (
+            <>
+              <PropNumber
+                label="Strings"
+                hint={`How many strings of ${per} LEDs make up this object, one after the other. Sets its number of LEDs. Where each one starts and ends: Check the wiring, Strings.`}
+                decimal={!whole}
+                value={whole ? strings : Math.round(strings! * 100) / 100}
+                min={1}
+                max={Math.floor(MAX_FIXTURE_PIXELS / per)}
+                steppers
+                onChange={(n) => setCount(Math.max(1, Math.round(n)))}
+              />
+              {!whole ? (
+                <>
+                  <PropNote>
+                    {f.pixels} LEDs is {Math.floor(strings!) ? `${Math.floor(strings!)} string${Math.floor(strings!) === 1 ? '' : 's'} of ${per} and ` : ''}
+                    {f.pixels % per} LED{f.pixels % per === 1 ? '' : 's'}{Math.floor(strings!) ? ' more' : ` of a string of ${per}`}: an object is made of whole strings.
+                  </PropNote>
+                  <PropRow label="">
+                    <PropButton onClick={() => onStrings({ pixels: Math.min(Math.floor(MAX_FIXTURE_PIXELS / per) * per, wholeStrands(f.pixels, per)), stringBreaks: undefined })}>
+                      Use {Math.ceil(strings! - 1e-9)} strings
+                    </PropButton>
+                  </PropRow>
+                </>
+              ) : null}
+            </>
           ) : null}
           <PropRow label="Power" hint="All LEDs white at full brightness. WLED's brightness limiter keeps it lower.">
             <span className="block text-xs tabular-nums">

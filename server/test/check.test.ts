@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BAND_RGB, checkMoves, currentGuess, paintCheck, PICTURE_RGB, slicePosition, SLICE_HIGH_RGB, SLICE_LOW_RGB, wiringGuesses, type LayoutCheck } from '../../shared/check.ts';
+import { BAND_RGB, STRING_RGB, checkMoves, currentGuess, paintCheck, PICTURE_RGB, slicePosition, SLICE_HIGH_RGB, SLICE_LOW_RGB, wiringGuesses, type LayoutCheck } from '../../shared/check.ts';
 import { buildStage, fromLedRange, sampleLayout, type Fixture, type Layout } from '../../shared/layout.ts';
 import { previewFrame } from '../src/layoutPreview.ts';
 
@@ -86,36 +86,41 @@ describe('ruler', () => {
 });
 
 describe('color test', () => {
-  it('colors one object in four blocks as seen from the street, LED 0 blinking white, the rest dark', () => {
+  it('colors one object in eight blocks: left and right, top and bottom, street side and house side, LED 0 blinking white, the rest dark', () => {
     const layout: Layout = { ...sampleLayout(), fixtures: [...sampleLayout().fixtures, tree()] };
     const { stage, out } = paint(layout, { kind: 'picture', id: 'tree' });
     const sf = stage.fixtures.find((f) => f.id === 'tree')!;
     expect(rgb(out, sf.offset)).toEqual(WHITE);
-    // Cut at the middle of the LEDs, as seen from the street.
-    const xs = Array.from({ length: sf.count }, (_, j) => stage.positions3[(sf.offset + j) * 3]);
-    const ys = Array.from({ length: sf.count }, (_, j) => stage.positions3[(sf.offset + j) * 3 + 1]);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    // Cut at the middle of the LEDs along each axis.
+    const axis = (a: number) => Array.from({ length: sf.count }, (_, j) => stage.positions3[(sf.offset + j) * 3 + a]);
+    const mid = (v: number[]) => (Math.min(...v) + Math.max(...v)) / 2;
+    const [xs, ys, zs] = [axis(0), axis(1), axis(2)];
+    const [cx, cy, cz] = [mid(xs), mid(ys), mid(zs)];
     const seen = new Set<string>();
     for (let j = 1; j < sf.count; j++) {
-      const i = sf.offset + j;
+      const side = zs[j] < cz ? PICTURE_RGB.back : PICTURE_RGB.front;
       const right = xs[j] > cx;
       const bottom = ys[j] > cy;
-      const want = bottom ? (right ? PICTURE_RGB.bottomRight : PICTURE_RGB.bottomLeft) : right ? PICTURE_RGB.topRight : PICTURE_RGB.topLeft;
-      expect(rgb(out, i)).toEqual(want);
+      const want = bottom ? (right ? side.bottomRight : side.bottomLeft) : right ? side.topRight : side.topLeft;
+      expect(rgb(out, sf.offset + j)).toEqual(want);
       seen.add(String(want));
     }
-    expect(seen.size).toBe(4);
+    expect(seen.size).toBe(8);
     // Everything else is dark.
     for (let i = 0; i < sf.offset; i++) expect(rgb(out, i)).toEqual([0, 0, 0]);
     expect(rgb(paint(layout, { kind: 'picture', id: 'tree' }, 0, false).out, sf.offset)).not.toEqual(WHITE);
   });
 
+  it('has eight different colors', () => {
+    const all = [PICTURE_RGB.front, PICTURE_RGB.back].flatMap((s) => [s.topLeft, s.topRight, s.bottomLeft, s.bottomRight]).map(String);
+    expect(new Set(all).size).toBe(8);
+  });
+
   it('cuts a long low line only left and right', () => {
     const layout = sampleLayout();
     const { stage, out } = paint({ ...layout, fixtures: [{ ...layout.fixtures[0], points: [{ x: 100, y: 400 }, { x: 900, y: 410 }] }] }, { kind: 'picture', id: 'roof' });
-    expect(rgb(out, 5)).toEqual(PICTURE_RGB.topLeft);
-    expect(rgb(out, stage.pixelCount - 5)).toEqual(PICTURE_RGB.topRight);
+    expect(rgb(out, 5)).toEqual(PICTURE_RGB.front.topLeft);
+    expect(rgb(out, stage.pixelCount - 5)).toEqual(PICTURE_RGB.front.topRight);
   });
 
   it('shows on the house in the order of the device: the wrong wiring shows other colors', () => {
@@ -128,6 +133,50 @@ describe('color test', () => {
     let differ = 0;
     for (let i = 0; i < 200; i++) if (String(rgb(wrong, i)) !== String(rgb(right, i))) differ++;
     expect(differ).toBeGreaterThan(50);
+  });
+});
+
+describe('strings', () => {
+  const lineOf = (patch: Partial<Fixture> = {}): Fixture => ({
+    id: 'l',
+    name: 'Fence',
+    kind: 'line',
+    points: [
+      { x: 100, y: 800 },
+      { x: 900, y: 800 }
+    ],
+    pixels: 120,
+    lights: 'novabright-bullet-12v-4in',
+    deviceId: 'd',
+    startPixel: 0,
+    reversed: false,
+    ...patch
+  });
+
+  it('colors each string of 50, its first LED blinking white and its last LED white', () => {
+    const layout: Layout = { ...sampleLayout(), fixtures: [lineOf()] };
+    const { out } = paint(layout, { kind: 'strings', id: 'l' });
+    expect(rgb(out, 0)).toEqual(WHITE);
+    expect(rgb(paint(layout, { kind: 'strings', id: 'l' }, 0, false).out, 0)).toEqual([0, 0, 0]);
+    expect(rgb(out, 10)).toEqual(STRING_RGB[0]);
+    expect(rgb(out, 49)).toEqual(WHITE);
+    expect(rgb(out, 50)).toEqual(WHITE);
+    expect(rgb(out, 60)).toEqual(STRING_RGB[1]);
+    expect(rgb(out, 110)).toEqual(STRING_RGB[2]);
+  });
+
+  it('follows the strings set by hand, in the order of the device LEDs, across every object', () => {
+    const layout: Layout = {
+      ...sampleLayout(),
+      fixtures: [lineOf({ reversed: true, stringBreaks: [30] }), { ...lineOf(), id: 'm', name: 'Path', pixels: 20, startPixel: 120 }]
+    };
+    const { stage, out } = paint(layout, { kind: 'strings', id: null });
+    // Counting down: the first string (device LEDs 0–29) is at the end of the drawn line.
+    expect(rgb(out, 100)).toEqual(STRING_RGB[0]);
+    expect(rgb(out, 50)).toEqual(STRING_RGB[1]);
+    // The next object goes on with the next color.
+    const m = stage.fixtures.find((f) => f.id === 'm')!;
+    expect(rgb(out, m.offset + 5)).toEqual(STRING_RGB[2]);
   });
 });
 

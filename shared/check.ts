@@ -6,14 +6,18 @@
 //     white: on the house, the white should line up (straight across, or level) on every object.
 //   - a ruler: the yard in bands of color, a band every so many feet or meters along one axis.
 //     Every real object should sit in the same bands as in the drawing.
-//   - a color test of one object: its LEDs colored by where the drawing puts them (four blocks:
-//     top left, top right, bottom left, bottom right). On the house, the object shows the same
-//     four clean blocks when its shape and wiring are right, and swapped or scrambled colors
-//     when they are not.
+//   - a color test of one object: its LEDs colored by where the drawing puts them, in up to
+//     eight blocks: left or right, top or bottom, and the street side or the house side. On the
+//     house, the object shows the same clean blocks (from the street, and from above) when its
+//     shape and wiring are right, and swapped or scrambled colors when they are not.
 //   - a chase: one light runs along the object's wire from LED 0, so you can follow where the
 //     real string starts and which way it goes.
+//   - strings: each string (strand) of one object, or of every object, in a color of its own,
+//     its first LED blinking white and its last LED white, so you see where each one starts and
+//     ends on the house.
 
 import { mix8, scale8, type Rgb8 } from './color.ts';
+import { lightsOf, stringRanges } from './lights.ts';
 import { DEFAULT_SCALE, fixturePixels, isLine, layoutGround, wavePasses, type Fixture, type Layout, type Stage } from './layout.ts';
 
 /** x: across (left to right), y: height, z: depth (from the house toward the street). */
@@ -27,7 +31,9 @@ export type LayoutCheck =
   /** The color test of one object. */
   | { kind: 'picture'; id: string }
   /** A light running along one object's wire. */
-  | { kind: 'chase'; id: string };
+  | { kind: 'chase'; id: string }
+  /** The strings of one object, or of every object (id null), each in a color of its own. */
+  | { kind: 'strings'; id: string | null };
 
 /** Half the thickness of the slice, in meters. */
 export const SLICE_HALF_M = 0.15;
@@ -46,8 +52,31 @@ export const BAND_RGB: Rgb8[] = [
   [0, 70, 255],
   [230, 160, 0]
 ];
-/** The color test's four blocks, as seen from the street. */
-export const PICTURE_RGB = { topLeft: [255, 0, 0] as Rgb8, topRight: [0, 70, 255] as Rgb8, bottomLeft: [255, 170, 0] as Rgb8, bottomRight: [0, 210, 0] as Rgb8 };
+/** The color test's four blocks on one side, as seen from the street. */
+export interface PictureSide {
+  topLeft: Rgb8;
+  topRight: Rgb8;
+  bottomLeft: Rgb8;
+  bottomRight: Rgb8;
+}
+/**
+ * The color test's eight blocks: the half toward the street (front) and the half toward the
+ * house (back), each in four as seen from the street. An object with no depth to speak of is
+ * all front.
+ */
+export const PICTURE_RGB: { front: PictureSide; back: PictureSide } = {
+  front: { topLeft: [255, 0, 0], topRight: [0, 70, 255], bottomLeft: [255, 170, 0], bottomRight: [0, 210, 0] },
+  back: { topLeft: [255, 0, 170], topRight: [0, 210, 210], bottomLeft: [255, 255, 255], bottomRight: [255, 70, 0] }
+};
+/** The strings' colors, in turn along the wire (and from one object to the next). */
+export const STRING_RGB: Rgb8[] = [
+  [255, 0, 0],
+  [0, 200, 0],
+  [0, 70, 255],
+  [255, 170, 0],
+  [190, 0, 255],
+  [0, 210, 210]
+];
 const CHASE_BASE: Rgb8 = [0, 10, 26];
 const CHASE_TAIL: Rgb8 = [0, 160, 255];
 
@@ -125,6 +154,24 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
     }
     return;
   }
+  if (check.kind === 'strings') {
+    let color = 0;
+    for (const f of layout.fixtures) {
+      if (check.id != null && f.id !== check.id) continue;
+      const sf = stage.fixtures.find((x) => x.id === f.id);
+      if (!sf?.count) continue;
+      for (const r of stringRanges(sf.count, lightsOf(layout, f.lights)?.perStrand ?? null, f.stringBreaks)) {
+        const c = STRING_RGB[color++ % STRING_RGB.length];
+        // Strings run in the order of the device's LEDs: from the object's last point when it counts down.
+        for (let d = r.lo; d <= r.hi; d++) {
+          const i = sf.offset + (f.reversed ? sf.count - 1 - d : d);
+          if (!stage.active[i]) continue;
+          out.set(d === r.lo ? (pulse ? SLICE_RGB : [0, 0, 0]) : d === r.hi ? SLICE_RGB : c, i * 3);
+        }
+      }
+    }
+    return;
+  }
   const fi = layout.fixtures.findIndex((f) => f.id === check.id);
   const sf = stage.fixtures.find((f) => f.id === check.id);
   if (fi < 0 || !sf || !sf.count) return;
@@ -145,52 +192,55 @@ export function paintCheck(layout: Layout, stage: Stage, check: LayoutCheck, now
   for (let j = 0; j < sf.count; j++) {
     if (!on(j)) continue;
     const i = sf.offset + j;
-    out.set(pictureColor(split, P[i * 3], P[i * 3 + 1]), i * 3);
+    out.set(pictureColor(split, P[i * 3], P[i * 3 + 1], P[i * 3 + 2]), i * 3);
   }
   // Where the wire starts: blinking white.
   if (on(0)) out.set(pulse ? SLICE_RGB : scale8(SLICE_RGB, 0.15), sf.offset * 3);
 }
 
-/** How the color test cuts an object in blocks: at its middle, across and up, when it is wide (or tall) enough for that. */
+/**
+ * How the color test cuts an object in blocks: at its middle, across, up and in depth, along
+ * each way it is big enough for that (a quarter of its biggest size).
+ */
 interface Split {
   cx: number;
   cy: number;
+  cz: number;
   across: boolean;
   up: boolean;
+  deep: boolean;
 }
 
 function pictureSplit(stage: Stage, offset: number, count: number): Split {
-  let x0 = Infinity;
-  let x1 = -Infinity;
-  let y0 = Infinity;
-  let y1 = -Infinity;
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
   for (let i = offset; i < offset + count; i++) {
-    const x = stage.positions3[i * 3];
-    const y = stage.positions3[i * 3 + 1];
-    x0 = Math.min(x0, x);
-    x1 = Math.max(x1, x);
-    y0 = Math.min(y0, y);
-    y1 = Math.max(y1, y);
+    for (let a = 0; a < 3; a++) {
+      const v = stage.positions3[i * 3 + a];
+      lo[a] = Math.min(lo[a], v);
+      hi[a] = Math.max(hi[a], v);
+    }
   }
-  const w = x1 - x0;
-  const h = y1 - y0;
-  const big = Math.max(w, h);
-  // A long low line is cut only across; a tall thin one only up.
-  return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, across: w >= big * 0.25, up: h >= big * 0.25 };
+  const size = hi.map((h, a) => h - lo[a]);
+  const big = Math.max(...size);
+  // A long low line is cut only across; a tall thin one only up; a flat one not in depth.
+  const cut = (a: number) => big > 0 && size[a] >= big * 0.25;
+  return { cx: (lo[0] + hi[0]) / 2, cy: (lo[1] + hi[1]) / 2, cz: (lo[2] + hi[2]) / 2, across: cut(0), up: cut(1), deep: cut(2) };
 }
 
-function pictureColor(s: Split, x: number, y: number): Rgb8 {
+function pictureColor(s: Split, x: number, y: number, z: number): Rgb8 {
+  const side = s.deep && z < s.cz ? PICTURE_RGB.back : PICTURE_RGB.front;
   const right = s.across && x > s.cx;
   const bottom = s.up && y > s.cy;
-  return bottom ? (right ? PICTURE_RGB.bottomRight : PICTURE_RGB.bottomLeft) : right ? PICTURE_RGB.topRight : PICTURE_RGB.topLeft;
+  return bottom ? (right ? side.bottomRight : side.bottomLeft) : right ? side.topRight : side.topLeft;
 }
 
 /** Which blocks the color test of this object shows (see pictureSplit). */
-export function pictureBlocks(stage: Stage, id: string): { across: boolean; up: boolean } | null {
+export function pictureBlocks(stage: Stage, id: string): { across: boolean; up: boolean; deep: boolean } | null {
   const sf = stage.fixtures.find((f) => f.id === id);
   if (!sf?.count) return null;
-  const { across, up } = pictureSplit(stage, sf.offset, sf.count);
-  return { across, up };
+  const { across, up, deep } = pictureSplit(stage, sf.offset, sf.count);
+  return { across, up, deep };
 }
 
 // ---------- The ways an object's string can run ----------
@@ -299,4 +349,4 @@ export function currentGuess(f: Fixture, guesses: WiringGuess[], scale = DEFAULT
 
 /** The check, if it can be shown on this layout (an object check needs its object). */
 export const validCheck = (c: LayoutCheck | null | undefined, layout: Layout): LayoutCheck | null =>
-  !c ? null : c.kind === 'slice' || c.kind === 'bands' || layout.fixtures.some((f) => f.id === c.id) ? c : null;
+  !c ? null : c.kind === 'slice' || c.kind === 'bands' || (c.kind === 'strings' && c.id == null) || layout.fixtures.some((f) => f.id === c.id) ? c : null;

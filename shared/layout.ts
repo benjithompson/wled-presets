@@ -107,7 +107,7 @@ export interface Fixture {
   height?: number;
   /** Bush and tree: how the LEDs are spread over the object. */
   pattern?: FixturePattern;
-  /** Tree with a spiral: how many times the LEDs go around from the base to the top. */
+  /** Tree with a spiral: how many times the LEDs go around from the base to the top. Bush with a spiral: from the middle out (not set: BUSH_TURNS). */
   turns?: number;
   /**
    * Tree with a spiral: where its loops sit closer together, from -1 (toward the base, or the
@@ -149,6 +149,12 @@ export interface Fixture {
   pixels: number;
   /** What the LEDs are: a LightType id (see shared/lights.ts). Not set: unknown. */
   lights?: string;
+  /**
+   * Where each string (strand) after the first starts, as LEDs counted from the object's lowest
+   * device LED number (strings run in the order of the device's LEDs). Not set: every
+   * perStrand LEDs of its light type (see stringRanges).
+   */
+  stringBreaks?: number[];
   /** Custom: its design, a copy of the library's (designId) so the object draws on its own. */
   design?: DesignStroke[];
   /** Custom: the library design it was placed from. Editing that design changes this object too. */
@@ -233,7 +239,29 @@ export interface Layout {
   designs?: Design[];
   /** A picture of the yard from above, under the top view. */
   aerial?: AerialPicture | null;
+  /** Where the front view looks at the yard from (see FrontView). Not set: straight on, from far away. */
+  frontView?: FrontView;
 }
+
+/**
+ * Where the front view looks at the yard from: the place the picture of the house was taken
+ * from. The yard turns about the middle of the front wall at the ground, under the picture, so
+ * a picture taken from off to one side, from up high or from close by lines up with the
+ * objects. Points on the front wall stay where they are on the picture when it is only closer.
+ */
+export interface FrontView {
+  /** Turned about the upright axis, in degrees: more looks from farther to the right (as seen from the street), less from the left. */
+  yaw?: number;
+  /** Looking down from above, in degrees (0: level). */
+  pitch?: number;
+  /** How far the camera is from the front wall, in layout units. Not set: far away (no perspective). */
+  distance?: number;
+}
+
+/** The front view turns at most this far either way (degrees); farther, the front wall is seen edge on. */
+export const MAX_YAW = 75;
+/** And looks down at most this steeply. */
+export const MAX_PITCH = 60;
 
 /**
  * A picture of the yard from above: a satellite or drone photo, or a screenshot of a map. It
@@ -402,7 +430,7 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
         d = r;
       } else if (f.pattern === 'spiral') {
         const t = n === 1 ? 0 : i / (n - 1);
-        a = t * Math.PI * 2 * 3;
+        a = t * Math.PI * 2 * (f.turns ?? BUSH_TURNS);
         d = r * (0.15 + 0.85 * t);
       } else {
         // Sunflower spread: even coverage, like a net of lights over the bush.
@@ -437,6 +465,53 @@ export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
 }
 
 const p3 = (p: Point): Point3 => ({ x: p.x, y: p.y, z: pz(p) });
+
+/** LEDs the wire of a shape is measured with (see ledGap): enough that the length is close. */
+const WIRE_SAMPLES = 1024;
+
+/**
+ * How far apart neighbouring LEDs are along the wire as the object is drawn, in layout units:
+ * the wire's length over the gaps between its LEDs. A line with pinned corners: the widest of
+ * its stretches between pins. Null: fewer than two LEDs, or no wire to measure (a net over a
+ * bush is not one run of wire).
+ */
+export function ledGap(f: Fixture, scale = DEFAULT_SCALE): number | null {
+  const n = Math.floor(f.pixels);
+  if (n < 2) return null;
+  if (f.kind === 'bush' && (f.pattern ?? 'fill') === 'fill') return null;
+  if (isLine(f)) {
+    if (f.points.length < 2) return null;
+    const seg = segLengths(f.points);
+    const offs = pointOffsets(f);
+    const anchors = anchorIndexes(f);
+    let widest = 0;
+    for (let k = 0; k < anchors.length - 1; k++) {
+      const len = seg.slice(anchors[k], anchors[k + 1]).reduce((a, b) => a + b, 0);
+      const gaps = offs[anchors[k + 1]] - offs[anchors[k]];
+      widest = Math.max(widest, gaps > 0 ? len / gaps : len > 0 ? Infinity : 0);
+    }
+    return widest;
+  }
+  if (f.kind === 'custom') {
+    // Each open stroke has an LED at both ends; a closed one goes back to its first LED.
+    const strokes = f.design ?? [];
+    const open = strokes.filter((st) => !(st.closed && st.points.length > 2)).length;
+    return (designLength(strokes) * scale * (f.size ?? 1)) / Math.max(1, n - open);
+  }
+  // The same wire with many LEDs on it: its length is the sum of their steps. A strand's LEDs
+  // are cut in the same strands, so the top and bottom links count as wire too.
+  const pts = f.kind === 'tree' && f.pattern !== 'strands' && f.pattern !== 'wave' ? spiralWire(f) : fixturePixels({ ...f, pixels: f.pattern === 'strands' ? Math.max(n, Math.round(f.strands ?? 12) * 64) : WIRE_SAMPLES }, scale);
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
+  // A ring closes: its last LED is one step from its first.
+  const ring = f.kind === 'bush' && f.pattern === 'ring';
+  if (ring) {
+    const a = pts[0];
+    const b = pts[pts.length - 1];
+    len += Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  }
+  return len / (ring ? n : n - 1);
+}
 
 /**
  * Tilts a point of an object about the object's point: first as seen from the side view (`tilt`,
@@ -503,6 +578,8 @@ export const isShapeKind = (k: FixtureKind): k is ShapeKind => (SHAPE_KINDS as r
 
 /** How tall a bush looks from the front, as a share of its radius (its LEDs spread 0.72 r up and down). */
 export const BUSH_TALL = 0.72;
+/** A bush's spiral: its turns from the middle out, unless set. */
+export const BUSH_TURNS = 3;
 
 // A shape's size when its layout does not say (objects saved before the setting came).
 /** A tree's radius at its base. */
@@ -575,15 +652,18 @@ export function treeWidthAt(shape: TreeShape | undefined, u: number): number {
 export const capFloor = (f: Pick<Fixture, 'shape' | 'cover'>) => (f.shape === 'sphere' && f.cover != null && f.cover < 180 ? (1 + Math.cos((Math.max(1, f.cover) * Math.PI) / 180)) / 2 : 0);
 
 /**
- * The outline of a tree from the front, at its base: a triangle, a rectangle or an ellipse (for
- * a ball with LEDs on its top part only, that cap of it).
+ * The outline of a tree from the front (or the side, or across the direction `plane`), at its
+ * base: a triangle, a rectangle or an ellipse (for a ball with LEDs on its top part only, that
+ * cap of it).
  */
-export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' = 'front'): Point3[] {
+export function treeOutline(f: Pick<Fixture, 'kind' | 'points' | 'radius' | 'height' | 'shape' | 'cover' | 'rotation' | 'tilt'>, plane: 'front' | 'side' | XZ = 'front'): Point3[] {
   const b = f.points[0] ?? { x: 0, y: 0 };
   const bz = pz(b);
   const { r, h } = treeSize(f);
-  // Across: x in the front view, z (the depth) in the side view.
-  const pt = (d: number, y: number): Point3 => (plane === 'side' ? { x: b.x, y, z: bz + d } : { x: b.x + d, y, z: bz });
+  // Across: x in the front view, z (the depth) in the side view, or a direction in the ground
+  // plane (a turned front view's).
+  const across: XZ = plane === 'side' ? { x: 0, z: 1 } : plane === 'front' ? { x: 1, z: 0 } : plane;
+  const pt = (d: number, y: number): Point3 => ({ x: b.x + d * across.x, y, z: bz + d * across.z });
   let flat: Point3[];
   if (f.shape === 'sphere') {
     // Round from the top: the cap's edge, over the top, to its other edge.
@@ -638,14 +718,7 @@ function treePixels(f: Fixture, n: number): Point3[] {
   if (f.pattern === 'wave') return wavePixels(f, n, (u, a) => at(u, sign * a), widthAt, h * span);
   const turns = f.turns ?? 8;
   const fromTop = f.start === 'top';
-  // The loops sit evenly apart over the surface (up the side of a cone, over the curve of a
-  // ball), or closer toward one end (bias): t (0 at the base, 1 at the top) is how far along the
-  // loops, m how far up the surface, u the height.
-  const up = surfaceToHeight(widthAt, r, h * span);
-  const bend = biasCurve(f.bias ?? 0);
-  // s: how far along the wire from LED 0. The angle grows along the wire from the front, so a
-  // spiral from the top starts at the front too, and winds the way it is set as it comes down.
-  const point = (s: number) => at(up(bend(fromTop ? 1 - s : s)), s * turns * Math.PI * 2);
+  const point = spiralPoint(f, at, widthAt, h * span);
   // A plain cone or cylinder: the wire's length is about proportional to its width there, and
   // these LEDs stay exactly where they always were.
   const plain = !u0 && !f.bias && (!f.shape || f.shape === 'cone' || f.shape === 'cylinder');
@@ -657,6 +730,37 @@ function treePixels(f: Fixture, n: number): Point3[] {
     });
   }
   return spreadAlong(point, n, Math.max(1024, Math.ceil(turns * 256)));
+}
+
+/**
+ * The wire of a tree's spiral: the point at s (0 at LED 0, 1 at the last LED) of the way along
+ * it. The loops sit evenly apart over the surface (up the side of a cone, over the curve of a
+ * ball), or closer toward one end (bias): t (0 at the base, 1 at the top) is how far along the
+ * loops, m how far up the surface, u the height. The angle grows along the wire from the front,
+ * so a spiral from the top starts at the front too, and winds the way it is set as it comes down.
+ */
+function spiralPoint(f: Fixture, at: (u: number, a: number) => Point3, widthAt: (u: number) => number, h: number): (s: number) => Point3 {
+  const turns = f.turns ?? 8;
+  const fromTop = f.start === 'top';
+  const up = surfaceToHeight(widthAt, treeSize(f).r, h);
+  const bend = biasCurve(f.bias ?? 0);
+  return (s) => at(up(bend(fromTop ? 1 - s : s)), s * turns * Math.PI * 2);
+}
+
+/** Close points along a tree's spiral, from LED 0 to the last LED, to measure its wire by. */
+function spiralWire(f: Fixture): Point3[] {
+  const b = f.points[0] ?? { x: 0, y: 0 };
+  const { r, h } = treeSize(f);
+  const u0 = capFloor(f);
+  const span = 1 - u0;
+  const at = (u: number, a: number): Point3 => {
+    const ub = u0 + span * u;
+    const rad = r * treeWidthAt(f.shape, ub);
+    return { x: b.x + Math.sin(a) * rad, y: b.y - ub * h, z: pz(b) + Math.cos(a) * rad };
+  };
+  const point = spiralPoint(f, at, (u) => treeWidthAt(f.shape, u0 + span * u), h * span);
+  const K = Math.max(WIRE_SAMPLES, Math.ceil((f.turns ?? 8) * 48));
+  return Array.from({ length: K + 1 }, (_, k) => point(k / K));
 }
 
 /** n points spread evenly by length along a curve point(s), s from 0 to 1, measured in K steps. */

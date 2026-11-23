@@ -54,6 +54,7 @@ import { toast } from 'sonner';
 import {
   buildStage,
   BUSH_TALL,
+  BUSH_TURNS,
   radiusOf,
   semicircleSize,
   treeSize,
@@ -97,6 +98,9 @@ import {
   type Design,
   type Fixture,
   type FixtureKind,
+  type FrontView,
+  MAX_PITCH,
+  MAX_YAW,
   type Layout,
   type MatchProbe,
   type Point,
@@ -125,10 +129,12 @@ import { DesignEditor } from './DesignEditor.tsx';
 import { Gizmo, screenAngle, wrapAngle, type GizmoPart } from './gizmo.tsx';
 import { CheckBar, CheckOverlay, ObjectCheckProps, toLayoutCheck, YardCheckProps, type EditorCheck } from './checkProps.tsx';
 import { pictureBlocks, validCheck } from '../../../../shared/check.ts';
+import { freeSetting, keepStrings, stringGap } from '../../../../shared/stringFit.ts';
 import { CustomProps, LibraryList, LightSelect, LightsProps, LightTypeDialog } from './lightsProps.tsx';
-import { ledsForLength, lightsOf, spacingText, strandStarts, type LightType } from '../../../../shared/lights.ts';
+import { ledsForLength, lightsOf, spacingText, strandStarts, stringStarts, wholeStrands, type LightType } from '../../../../shared/lights.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, type PointRef, type ViewSide } from '../../yard/views.ts';
+import { acrossOf, frontCamera } from '../../yard/frontCamera.ts';
 import { draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
 import { fitCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
@@ -320,18 +326,34 @@ function TiltProp({ label, value, hint, onChange }: { label: string; value: numb
 /** The height a shape's size handles show: a tree's, or a semicircle's (its radius unless set). */
 const sizeHeight = (f: Fixture) => (f.kind === 'tree' ? treeSize(f).h : semicircleSize(f).h);
 
-function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked: boolean; onChange: (patch: Partial<Fixture>) => void }) {
+function ShapeProps({ f, m, locked, strung, onChange }: { f: Fixture; m: Measure; locked: boolean; strung: boolean; onChange: (patch: Partial<Fixture>) => void }) {
   /** Its size and turn: a locked object keeps them (its pattern and wiring can still change). */
   const place = (el: ReactNode) => (
     <fieldset disabled={locked} className="contents">
       {el}
     </fieldset>
   );
+  /** The setting that follows from its light string (see freeSetting): it cannot be set by hand. */
+  const free = strung ? freeSetting(f) : null;
+  const fromString = (el: ReactNode) =>
+    free ? (
+      <fieldset disabled className="contents">
+        {el}
+      </fieldset>
+    ) : (
+      el
+    );
+  const stringNote = free ? (
+    <PropNote>
+      {free === 'radius' ? 'Its size' : free === 'turns' ? 'Its turns' : free === 'strands' ? 'Its strands' : free === 'rows' ? 'Its rows' : 'Its passes'} follow from the light string, so the LEDs sit as far apart as on the real string. More LEDs
+      {free === 'radius' ? ' make it bigger' : `, or a ${f.kind === 'tree' ? 'smaller tree' : 'smaller shape'}, give it more`}.
+    </PropNote>
+  ) : null;
   const width = place(<PropDistance label="Width" value={radiusOf(f) * 2} m={m} min={0.1} onChange={(lu) => onChange({ radius: Math.max(5, Math.round(lu / 2)) })} />);
   if (f.kind === 'bush') {
     return (
       <>
-        {width}
+        {free === 'radius' ? fromString(width) : width}
         <PropSelect<NonNullable<Fixture['pattern']>>
           label="LED pattern"
           value={f.pattern ?? 'fill'}
@@ -342,6 +364,8 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           ]}
           onChange={(pattern) => onChange({ pattern })}
         />
+        {free === 'turns' ? <PropNote>The spiral goes round {f.turns ?? BUSH_TURNS} times from the middle out.</PropNote> : null}
+        {stringNote}
         <PropNote>The point is the middle of the bush, as seen from the front.</PropNote>
       </>
     );
@@ -378,7 +402,8 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           ]}
           onChange={(zigzag) => onChange({ zigzag })}
         />
-        <PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />
+        {fromString(<PropNumber label={across ? 'Rows' : 'Columns'} hint="How many times the wire crosses the semicircle" value={f.strands ?? 8} min={1} max={64} steppers onChange={(n) => onChange({ strands: Math.round(n) })} />)}
+        {stringNote}
         {place(
           <PropNumber
             label="Turn"
@@ -473,15 +498,15 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
         <>
           {spiral ? (
             <>
-              <PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />
-              <PropDistance
+              {fromString(<PropNumber label="Turns" hint="Turns of the spiral from the base to the top" decimal value={f.turns ?? 8} min={0.5} max={100} step={0.5} onChange={(n) => onChange({ turns: n })} />)}
+              {fromString(<PropDistance
                 label="Loops apart"
                 hint={`How far one loop is from the next, measured over the ${ball ? 'ball' : 'tree'} from the ${ball ? 'edge to the middle' : 'base to the top'} (on average, when they bunch). Sets the turns.`}
                 value={treeSurfaceLength(f) / (f.turns ?? 8)}
                 m={m}
                 min={0.01}
                 onChange={(lu) => onChange({ turns: Math.max(0.5, Math.min(100, Math.round((treeSurfaceLength(f) / Math.max(1, lu)) * 10) / 10)) })}
-              />
+              />)}
               <PropNumber
                 label="Loops bunch"
                 unit="%"
@@ -514,7 +539,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           />
         </>
       ) : (
-        <PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />
+        fromString(<PropNumber label="Strands" value={f.strands ?? 12} min={1} max={64} onChange={(n) => onChange({ strands: Math.round(n) })} />)
       )}
       {wave && passes ? (
         <>
@@ -529,14 +554,16 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
             steppers
             onChange={(n) => onChange({ sweep: Math.round(n) === WAVE_SWEEP ? undefined : Math.round(n) })}
           />
-          <PropDistance
-            label="Rows apart"
-            hint="The height from one pass to the next. The passes fit the tree's height, as close to this as they can."
-            value={f.spacing ?? climb / (passes.passes - 1)}
-            m={m}
-            min={0.05}
-            onChange={(lu) => onChange({ spacing: Math.max(1, Math.round(lu * 10) / 10) })}
-          />
+          {fromString(
+            <PropDistance
+              label="Rows apart"
+              hint="The height from one pass to the next. The passes fit the tree's height, as close to this as they can."
+              value={f.spacing ?? climb / (passes.passes - 1)}
+              m={m}
+              min={0.05}
+              onChange={(lu) => onChange({ spacing: Math.max(1, Math.round(lu * 10) / 10) })}
+            />
+          )}
           <PropSelect<Side>
             label="First LED on"
             hint="The side of the tree its first pass starts on, as seen from its front"
@@ -581,6 +608,7 @@ function ShapeProps({ f, m, locked, onChange }: { f: Fixture; m: Measure; locked
           hint={`Turned as seen from above: ${wave ? 'the middle of the passes' : `where ${spiral ? 'the spiral' : 'the first strand'} starts`}. 0: the front (toward the street), 90: the right, -90: the left, 180: the back.`}
         />
       )}
+      {stringNote}
       {place(<TiltProp label="Leans right" value={f.rotation} onChange={(rotation) => onChange({ rotation })} hint="Tilted about its base, as seen from the front: more leans it to the right, less to the left" />)}
       {place(<TiltProp label="Leans to street" value={f.tilt} onChange={(tilt) => onChange({ tilt })} hint="Tilted about its base, as seen from the side view: more leans it toward the street, less toward the house" />)}
       <PropNote>{ball ? 'The point is the bottom of the ball, under the middle (below the LEDs when they cover only its top).' : 'The point is the middle of the base.'}</PropNote>
@@ -781,6 +809,8 @@ export function LayoutPage() {
     return zRangeRef.current;
   }, [layout, stage, dragging]);
   const zMin = zRange[0];
+  /** The front view's camera, when it is turned to where the picture was taken from (see frontCamera). */
+  const frontCam = frontCamera(layout);
 
   useEffect(() => {
     if (keepPart.current) {
@@ -876,10 +906,20 @@ export function LayoutPage() {
       if (!l) return l;
       const next = fn(l);
       if (force) return next;
-      const kept = keepLocked(l, next);
+      // Wires stay within their strings (see keepStrings), then locked objects stay put.
+      const strung = keepStrings(l, next);
+      if (strung.limited.length) stringNote(strung.limited, strung.layout);
+      const kept = keepLocked(l, strung.layout);
       if (kept.blocked.length) lockedNote(kept.blocked);
       return kept.layout;
     });
+  };
+  /** Says (one toast at a time) why an object did not stretch any farther. */
+  const stringNote = (names: string[], l: Layout) => {
+    const f = l.fixtures.find((x) => x.name === names[0]);
+    const lt = f ? lightsOf(l, f.lights) : null;
+    const reach = f && lt ? ` (${f.pixels} LEDs, ${spacingText(lt.spacing, l.units ?? 'ft')} apart)` : '';
+    toast(`${names.length > 1 ? `${names.length} objects reach` : `${names[0]} reaches`} as far as ${names.length > 1 ? 'their strings go' : `its string goes${reach}`}. Give it more LEDs (another string) to make it bigger.`, { id: 'string' });
   };
   /** Says (one toast at a time) why a locked object did not move. */
   const lockedNote = (names: string[]) =>
@@ -1112,7 +1152,7 @@ export function LayoutPage() {
       let prev = start;
       return uv.map((p) => {
         const hit = inView(d.side).pointAt(p);
-        prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev);
+        prev = hit ? { ...hit } : fromView(p, d.side, zMin, prev, frontCam);
         return prev;
       });
     };
@@ -1145,7 +1185,9 @@ export function LayoutPage() {
         const lt = lightsOf(layout, layout.lights);
         const pts = to3d(base);
         const len = lineLengths({ points: pts }).reduce((a, b) => a + b, 0);
-        return { pixels: lt ? Math.min(MAX_FIXTURE_PIXELS, ledsForLength(len / layoutScale(layout), lt.spacing)) : kind === 'roof' && !roofs.length ? 450 : 100, ...(lt ? { lights: lt.id } : {}) };
+        // Whole strings, enough to reach along the line.
+        const fits = lt ? wholeStrands(ledsForLength(len / layoutScale(layout), lt.spacing), lt.perStrand) : 0;
+        return { pixels: lt ? Math.min(lt.perStrand ? Math.floor(MAX_FIXTURE_PIXELS / lt.perStrand) * lt.perStrand : MAX_FIXTURE_PIXELS, fits) : kind === 'roof' && !roofs.length ? 450 : 100, ...(lt ? { lights: lt.id } : {}) };
       })(),
       deviceId,
       startPixel: nextFree(deviceId),
@@ -1170,7 +1212,7 @@ export function LayoutPage() {
     setTape(null);
     setMenu(null);
     setSelected(f.id);
-    setDraft({ side, pts: [toView(end, side, zMin)], cont: { id: f.id, at } });
+    setDraft({ side, pts: [toView(end, side, zMin, frontCam)], cont: { id: f.id, at } });
   };
 
   // Keyboard, as in CAD and drawing programs. V A C R L B T M: tools. Enter, Esc or a
@@ -1521,7 +1563,7 @@ export function LayoutPage() {
     if (drag) {
       drag.stopPropagation();
       svgs.current[side]?.setPointerCapture(drag.pointerId);
-      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1, start: toView(pointOnLine(f, k, raw, side), side, zMin) });
+      setDrag({ kind: 'vertex', side, id: f.id, index: k + 1, start: toView(pointOnLine(f, k, raw, side), side, zMin, frontCam) });
     }
   };
 
@@ -1686,7 +1728,7 @@ export function LayoutPage() {
       }
     } else if (drag.kind === 'vertex' && f) {
       const i = drag.index;
-      const V = (q: Point) => toView(q, side, zMin);
+      const V = (q: Point) => toView(q, side, zMin, frontCam);
       // Shift: move the point straight across or straight up and down from where it was (to
       // raise the middle of a roofline into a peak, say). Ortho: keep the segment to the point
       // before (or after, for the first point) level or upright.
@@ -1695,7 +1737,7 @@ export function LayoutPage() {
       setSnapHint({ ...s, side });
       // On another point: take that point's position in 3D, so the two points join.
       const hit = s.kind === 'point' ? inView(side).pointAt(s.at, { id: f.id, index: i }) : undefined;
-      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q)) : q)) });
+      update(drag.id, { points: f.points.map((q, j) => (j === i ? (hit ? { ...hit } : fromView(s.at, side, zMin, q, frontCam)) : q)) });
     } else if (drag.kind === 'move') {
       let du = p.u - drag.from.u;
       let dv = p.v - drag.from.v;
@@ -1707,7 +1749,7 @@ export function LayoutPage() {
       // Grid snap: the first point of the object (the middle of a bush, the base of a tree) goes to the grid.
       const grid = gridFor(side, e);
       if (grid && drag.original[0]) {
-        const a = toView(drag.original[0], side, zMin);
+        const a = toView(drag.original[0], side, zMin, frontCam);
         if (axis !== 'v') du = onGrid(a.u + du, grid, 'u') - a.u;
         if (axis !== 'u') dv = onGrid(a.v + dv, grid, 'v') - a.v;
       }
@@ -1727,9 +1769,9 @@ export function LayoutPage() {
         ...(o.size != null ? { size: Math.max(0.01, Math.round(o.size * t * 100) / 100) } : {})
       });
     } else if (drag.kind === 'radius' && f) {
-      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - toView(f.points[0], side, zMin).u))) });
+      update(drag.id, { radius: Math.max(15, Math.round(Math.abs(p.u - toView(f.points[0], side, zMin, frontCam).u))) });
     } else if (drag.kind === 'treeHeight' && f) {
-      update(drag.id, { height: Math.max(20, Math.round(f.points[0].y - p.v)) });
+      update(drag.id, { height: Math.max(20, Math.round(toView(f.points[0], side, zMin, frontCam).v - p.v)) });
     } else if (drag.kind === 'ground') {
       updateLayout({ groundY: Math.max(0, Math.min(layout.height, p.v)) });
     } else if (drag.kind === 'newShape') {
@@ -1739,7 +1781,7 @@ export function LayoutPage() {
 
   function onPointerUp() {
     setSnapHint(null);
-    if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid()));
+    if (layout && drag?.kind === 'newShape') addFixture(shapeFrom(drag, layout, zMin, uid(), drag.side === 'front' ? frontCam : null));
     setDrag(null);
   }
 
@@ -2205,7 +2247,7 @@ export function LayoutPage() {
 
   /** One editable view: the drawing (YardView) and the handles over it, seen through the view's camera. */
   const renderView = (side: ViewSide) => {
-    const V = (p: Point) => toView(p, side, zMin);
+    const V = (p: Point) => toView(p, side, zMin, frontCam);
     const front = side === 'front';
     const vb = viewBoxFor(side);
     // Handles and labels keep the same size on the screen at every zoom.
@@ -2401,7 +2443,7 @@ export function LayoutPage() {
                                 else splitAt(f, i);
                                 return;
                               }
-                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i, start: toView(f.points[i], side, zMin) }, f.id, side);
+                              startDrag(e, { kind: 'vertex', side, id: f.id, index: i, start: toView(f.points[i], side, zMin, frontCam) }, f.id, side);
                               if (tool === 'select' || tool === 'edit') {
                                 if (f.id !== selected) keepPart.current = true;
                                 setCorner(i);
@@ -2465,7 +2507,7 @@ export function LayoutPage() {
               );
             }
             const upright = side !== 'top';
-            const outline = f.kind === 'tree' && upright ? treeOutline(f, side === 'side' ? 'side' : 'front').map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
+            const outline = f.kind === 'tree' && upright ? treeOutline(f, side === 'side' ? 'side' : side === 'front' && frontCam ? acrossOf(frontCam) : 'front').map((p) => `${V(p).u},${V(p).v}`).join(' ') : '';
             return (
               <g key={f.id}>
                 {f.kind === 'tree' && upright ? (
@@ -2591,7 +2633,7 @@ export function LayoutPage() {
           ) : null}
 
           {/* A check's slice (drag it) or the ruler's band edges. */}
-          {layoutCheck && stage ? (
+          {layoutCheck && stage && !(front && frontCam) ? (
             <CheckOverlay
               check={layoutCheck}
               stage={stage}
@@ -2681,6 +2723,23 @@ export function LayoutPage() {
             </option>
           ))}
         </select>
+        {v === 'front' ? (
+          <label className="flex shrink-0 items-center gap-1" title="Turn the yard to where the picture was taken from (more in the properties, with nothing selected: Front view angle)">
+            <input
+              type="range"
+              aria-label="Front view turned"
+              min={-MAX_YAW}
+              max={MAX_YAW}
+              step={1}
+              value={layout.frontView?.yaw ?? 0}
+              onPointerDown={() => history.newStep()}
+              onChange={(e) => updateLayout({ frontView: tidyFrontView({ ...layout.frontView, yaw: Number(e.target.value) }) })}
+              onDoubleClick={() => updateLayout({ frontView: tidyFrontView({ ...layout.frontView, yaw: 0 }) })}
+              className="h-3 w-20 cursor-pointer accent-sky-400"
+            />
+            <span className="w-7 text-right tabular-nums">{layout.frontView?.yaw ?? 0}°</span>
+          </label>
+        ) : null}
         <span className="pointer-events-none truncate">
           {VIEW_NOTES[v]}
           {side && (drafting.grid || drafting.gridSnap) ? ` · grid ${gridOf(drafting, layout).text}${drafting.gridSnap ? ', snap' : ''}` : ''}
@@ -2947,6 +3006,7 @@ export function LayoutPage() {
             blocks={stage ? pictureBlocks(stage, sel.id) : null}
             lights={checkLights}
             scale={scale}
+            perStrand={lightsOf(layout, sel.lights)?.perStrand ?? null}
           />
 
           <PropSection
@@ -2993,6 +3053,7 @@ export function LayoutPage() {
               onNew={() => setLightEdit({ type: null, forObject: sel.id })}
               onEdit={(lt) => setLightEdit({ type: lt })}
               onFit={(pixels) => update(sel.id, { pixels, pointLeds: undefined })}
+              onStrings={(patch) => update(sel.id, patch)}
             />
           </PropSection>
 
@@ -3005,7 +3066,7 @@ export function LayoutPage() {
 
           {!isLine(sel) && sel.kind !== 'custom' ? (
             <PropSection key="shape" id="shape" title="Shape">
-              <ShapeProps f={sel} m={m} locked={!!sel.locked} onChange={(patch) => update(sel.id, patch)} />
+              <ShapeProps f={sel} m={m} locked={!!sel.locked} strung={stringGap(sel, layout) != null} onChange={(patch) => update(sel.id, patch)} />
             </PropSection>
           ) : null}
           </>
@@ -3281,6 +3342,7 @@ export function LayoutPage() {
           <PropNote>A scene plays these effects on the real lights when it is picked on the public page, until another scene or color is chosen.</PropNote>
         </PropSection>
         <YardProps layout={layout} m={m} onChange={updateLayout} onMeasure={() => (chooseTool('measure'), setTape(null))} />
+        <FrontViewProps layout={layout} m={m} onChange={(frontView) => updateLayout({ frontView })} />
         <YardCheckProps check={check} onChange={setCheck} layout={layout} stage={stage} m={m} lights={checkLights} />
         {layout.aerial ? (
           <AerialProps
@@ -3303,7 +3365,7 @@ export function LayoutPage() {
           />
           {newLights ? (
             <PropNote>
-              New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart; while you draw, each segment shows its length and LEDs.
+              New lines get as many LEDs as fit at {spacingText(newLights.spacing, m.units)} apart{newLights.perStrand ? `, in whole strings of ${newLights.perStrand}` : ''}; while you draw, each segment shows its length and LEDs.
             </PropNote>
           ) : (
             <PropNote>Pick the light string you use most. New objects are made of it, and lines you draw get the right number of LEDs.</PropNote>
@@ -4097,6 +4159,71 @@ function YardProps({ layout, m, onChange, onMeasure }: { layout: Layout; m: Meas
   );
 }
 
+/** A turn in degrees, set with a slider. */
+function AngleSlider({ label, value, min, max, hint, onChange }: { label: string; value: number; min: number; max: number; hint?: string; onChange: (deg: number) => void }) {
+  return (
+    <PropRow label={label} hint={hint}>
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          aria-label={label}
+          min={min}
+          max={max}
+          step={1}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="h-7 min-w-0 flex-1 cursor-pointer accent-sky-600 dark:accent-sky-400"
+        />
+        <span className="w-8 shrink-0 text-right text-[11px] text-stone-500 tabular-nums">{value}°</span>
+      </div>
+    </PropRow>
+  );
+}
+
+/** A front view angle with its unset settings left out, or undefined for straight on from far away. */
+function tidyFrontView(v: FrontView): FrontView | undefined {
+  const out: FrontView = {};
+  if (v.yaw) out.yaw = Math.max(-MAX_YAW, Math.min(MAX_YAW, Math.round(v.yaw)));
+  if (v.pitch) out.pitch = Math.max(0, Math.min(MAX_PITCH, Math.round(v.pitch)));
+  if (v.distance && v.distance >= 10) out.distance = Math.round(v.distance);
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Where the front view looks at the yard from: the place the picture of the house was taken
+ * from. The yard turns under the picture, so the objects line up with it.
+ */
+function FrontViewProps({ layout, m, onChange }: { layout: Layout; m: Measure; onChange: (v: FrontView | undefined) => void }) {
+  const v = layout.frontView ?? {};
+  const set = (patch: Partial<FrontView>) => onChange(tidyFrontView({ ...v, ...patch }));
+  return (
+    <PropSection key="frontview" id="frontview" title="Front view angle">
+      <AngleSlider label="Turned" value={v.yaw ?? 0} min={-MAX_YAW} max={MAX_YAW} onChange={(yaw) => set({ yaw })} hint="Seen from farther to the right (more) or the left (less), as from the street" />
+      <AngleSlider label="From above" value={v.pitch ?? 0} min={0} max={MAX_PITCH} onChange={(pitch) => set({ pitch })} hint="Looking down on the yard, as from a window upstairs or a ladder" />
+      <PropNumber
+        label="Distance"
+        hint="How far from the front wall the picture was taken: closer makes what is nearer look bigger. Empty or 0: far away (no perspective)."
+        decimal
+        value={v.distance ? m.show(v.distance) : null}
+        placeholder="far away"
+        min={0}
+        step={m.units === 'm' ? 0.5 : 1}
+        unit={m.units}
+        onChange={(n) => set({ distance: n > 0 ? n * m.per : undefined })}
+      />
+      <PropRow label="">
+        <PropButton onClick={() => onChange(undefined)} disabled={!layout.frontView}>
+          <RotateCcw /> Straight on
+        </PropButton>
+      </PropRow>
+      <PropNote>
+        Set where the picture of the house was taken from, and the whole yard turns under it so the objects line up with the picture: a roofline down the side of the house, the trees in front of it. The
+        yard turns about the middle of the front wall at the ground. It only changes how the front view (and the yard on the public page) looks: effects and games are the same.
+      </PropNote>
+    </PropSection>
+  );
+}
+
 /** The name of a point of a line. */
 const pointName = (f: Fixture, i: number) => (i === 0 ? 'first point' : i === f.points.length - 1 ? 'last point' : `corner ${i}`);
 
@@ -4711,12 +4838,15 @@ function SegmentProps({
 
 /** Orange marks where each new strand of lights starts on the selected object, with the device LED number there. */
 function StrandMarks({ f, perStrand, scale, V, k, labels }: { f: Fixture; perStrand: number | null; scale: number; V: (p: Point) => { u: number; v: number }; k: number; labels: boolean }) {
-  const starts = strandStarts(f.pixels, perStrand);
+  // Strings run in the order of the device's LEDs (see stringStarts).
+  const count = Math.floor(f.pixels);
+  const starts = stringStarts(count, perStrand, f.stringBreaks);
   if (!starts.length) return null;
   const px = fixturePixels(f, scale);
   return (
     <g pointerEvents="none">
-      {starts.map((i, n) => {
+      {starts.map((d, n) => {
+        const i = f.reversed ? count - 1 - d : d;
         const p = px[i];
         if (!p) return null;
         const q = V(p);
@@ -4725,7 +4855,7 @@ function StrandMarks({ f, perStrand, scale, V, k, labels }: { f: Fixture; perStr
             <rect x={q.u - 6 * k} y={q.v - 6 * k} width={12 * k} height={12 * k} transform={`rotate(45 ${q.u} ${q.v})`} fill="#fb923c" stroke="#0c0a09" strokeWidth={2 * k} />
             {labels ? (
               <text x={q.u} y={q.v + 24 * k} textAnchor="middle" fontSize={12 * k} fontWeight={600} fill="#fdba74" stroke="#0c0a09" strokeWidth={3.5 * k} paintOrder="stroke" className="tabular-nums">
-                strand {n + 2} · #{deviceLed(f, i)}
+                string {n + 2} · #{f.startPixel + d}
               </text>
             ) : null}
           </g>

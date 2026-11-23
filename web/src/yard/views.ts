@@ -2,6 +2,7 @@
 // are u to the right and v down, in layout units.
 import { buildStage, BUSH_TALL, drawnByPaths, isLine, layoutScale, objectPaths, pointOnSegment, radiusOf, treeOutline, type Fixture, type Layout, type Point } from '../../../shared/layout.ts';
 import type { Box } from './camera.ts';
+import { acrossOf, frontCamera, project, projectAll, unproject, type FrontCam } from './frontCamera.ts';
 import { closestOnSegment, emptyTargets, type SnapTargets, type UV } from './snap.ts';
 
 /**
@@ -64,7 +65,7 @@ export function coverBox(b: Box, aspect: number): Box {
 
 /** Where the LEDs are, in view units (null: none placed). */
 function ledBounds(layout: Layout, side: ViewSide, zRange: [number, number]) {
-  const p = viewPositions(buildStage(layout).positions3, side, zRange[0]);
+  const p = viewPositions(buildStage(layout).positions3, side, zRange[0], frontCamera(layout));
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
@@ -81,18 +82,30 @@ function ledBounds(layout: Layout, side: ViewSide, zRange: [number, number]) {
   return x0 > x1 ? null : { x0, y0, x1, y1 };
 }
 
-/** A point in view coordinates (u to the right, v down). */
-export function toView(p: Point, side: ViewSide, zMin: number): { u: number; v: number } {
+/**
+ * A point in view coordinates (u to the right, v down). `cam`: the front view's camera, when it
+ * is turned (see frontCamera); the other views do not turn.
+ */
+export function toView(p: Point, side: ViewSide, zMin: number, cam?: FrontCam | null): { u: number; v: number } {
+  if (side === 'front' && cam) return project(cam, p.x, p.y, p.z ?? 0);
   return side === 'front' ? { u: p.x, v: p.y } : side === 'top' ? { u: p.x, v: (p.z ?? 0) - zMin } : { u: p.z ?? 0, v: p.y };
 }
 
-/** A point from a position in a view. The coordinate the view does not show comes from `base`. */
-export function fromView(at: { u: number; v: number }, side: ViewSide, zMin: number, base: Point): Point {
+/**
+ * A point from a position in a view. The coordinate the view does not show comes from `base`:
+ * in the front view its depth (turned, the point is where the line of sight meets that depth).
+ */
+export function fromView(at: { u: number; v: number }, side: ViewSide, zMin: number, base: Point, cam?: FrontCam | null): Point {
+  if (side === 'front' && cam) {
+    const p = unproject(cam, at.u, at.v, base.z ?? 0);
+    return { ...base, x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 };
+  }
   return side === 'front' ? { ...base, x: at.u, y: at.v } : side === 'top' ? { ...base, x: at.u, z: Math.round(at.v + zMin) } : { ...base, z: Math.round(at.u), y: at.v };
 }
 
 /** LED positions (x, y, z for each, as in Stage.positions3) in a view: u, v for each. */
-export function viewPositions(positions3: Float32Array, side: ViewSide, zMin: number): Float32Array {
+export function viewPositions(positions3: Float32Array, side: ViewSide, zMin: number, cam?: FrontCam | null): Float32Array {
+  if (side === 'front' && cam) return projectAll(cam, positions3);
   const n = positions3.length / 3;
   const out = new Float32Array(n * 2);
   for (let i = 0; i < n; i++) {
@@ -113,11 +126,14 @@ export class LayoutInView {
   readonly layout: Layout | null;
   readonly side: ViewSide;
   readonly zMin: number;
+  /** The front view's camera, when it is turned. */
+  readonly cam: FrontCam | null;
 
   constructor(layout: Layout | null, side: ViewSide, zMin: number) {
     this.layout = layout;
     this.side = side;
     this.zMin = zMin;
+    this.cam = side === 'front' ? frontCamera(layout) : null;
   }
 
   private get fixtures() {
@@ -126,7 +142,7 @@ export class LayoutInView {
 
   /** Where a point is in this view. */
   at(p: Point) {
-    return toView(p, this.side, this.zMin);
+    return toView(p, this.side, this.zMin, this.cam);
   }
 
   /** What can be snapped to: the points and segments of lines, and the middles of the other objects (`linesOnly`: not those). */
@@ -178,12 +194,18 @@ export class LayoutInView {
   /** The 3D point on segment k of a line nearest to a spot. */
   pointOnLine(f: Fixture, k: number, raw: UV): Point {
     const { at, t } = closestOnSegment(raw, this.at(f.points[k]), this.at(f.points[k + 1]));
-    return fromView({ u: Math.round(at.u), v: Math.round(at.v) }, this.side, this.zMin, pointOnSegment(f, k, t));
+    return fromView({ u: Math.round(at.u), v: Math.round(at.v) }, this.side, this.zMin, pointOnSegment(f, k, t), this.cam);
   }
 
   /** Points moved by (du, dv) in this view; the coordinate the view does not show stays. */
   moved(points: Point[], du: number, dv: number): Point[] {
     const side = this.side;
+    const cam = this.cam;
+    // Turned: each point moves across the screen, at its own depth.
+    if (cam) return points.map((q) => {
+      const v = this.at(q);
+      return fromView({ u: v.u + du, v: v.v + dv }, side, this.zMin, q, cam);
+    });
     return points.map((q) => (side === 'front' ? { ...q, x: q.x + du, y: q.y + dv } : side === 'top' ? { ...q, x: q.x + du, z: (q.z ?? 0) + dv } : { ...q, z: (q.z ?? 0) + du, y: q.y + dv }));
   }
 
@@ -203,7 +225,7 @@ export class LayoutInView {
     const r = radiusOf(f);
     if (this.side === 'top') return { x: c.u - r, y: c.v - r, w: 2 * r, h: 2 * r };
     // A tree: its outline from that side (tilted, as it is), with the whole ball for a cap.
-    if (f.kind === 'tree') return span(treeOutline({ ...f, cover: undefined }, this.side === 'side' ? 'side' : 'front').map((p) => this.at(p)));
+    if (f.kind === 'tree') return span(treeOutline({ ...f, cover: undefined }, this.side === 'side' ? 'side' : this.cam ? acrossOf(this.cam) : 'front').map((p) => this.at(p)));
     const h = r * BUSH_TALL;
     return { x: c.u - r, y: c.v - h, w: 2 * r, h: 2 * h };
   }
