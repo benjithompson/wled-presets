@@ -78,6 +78,10 @@ import {
   unpinPoint,
   segmentLeds,
   deviceRuns,
+  moveToLed,
+  nextFreeLed,
+  sharedLeds,
+  spreadLine,
   extendLine,
   insertPoint,
   fromLedRange,
@@ -100,6 +104,7 @@ import {
   scaleAerial,
   type AerialPicture,
   type Design,
+  type DeviceRun,
   type Fixture,
   type FixtureKind,
   type FrontView,
@@ -863,6 +868,17 @@ export function LayoutPage() {
   const layoutCheck = layout && !probe ? validCheck(toLayoutCheck(check, selected), layout) : null;
   const runs = useMemo(() => (layout ? deviceRuns(layout) : new Map()), [layout]);
   const overlapCount = [...runs.values()].reduce((n, r) => n + r.overlaps.length, 0);
+  /** Which objects share LEDs, in words ("Tree 2 and Roofline share LEDs 0–199"), and the newer of the first two, to select. */
+  const overlapInfo = useMemo(() => {
+    if (!layout) return null;
+    const list = [...runs.values()].flatMap((r: { overlaps: [DeviceRun, DeviceRun][] }) => r.overlaps);
+    if (!list.length) return null;
+    const name = (id: string) => layout.fixtures.find((f) => f.id === id)?.name ?? 'An object';
+    const lines = list.map(([a, b]) => `${name(a.fixtureId)} and ${name(b.fixtureId)} share LEDs ${b.lo}–${Math.min(a.hi, b.hi)}`);
+    const [a, b] = list[0];
+    const index = (id: string) => layout.fixtures.findIndex((f) => f.id === id);
+    return { first: lines[0], all: lines.join('. ') + '.', more: lines.length - 1, pick: index(a.fixtureId) > index(b.fixtureId) ? a.fixtureId : b.fixtureId };
+  }, [layout, runs]);
 
   // Effects: each object's effect is part of the layout (the working copy); "Play" animates
   // them in the views (and on the real lights while Lights is on). A scene saved from here
@@ -1062,11 +1078,37 @@ export function LayoutPage() {
 
   /** Sets the device LED numbers at the first and the last point. */
   const setRange = (f: Fixture, first: number, last: number) => {
-    // One end changed on a line: move only that end; the corners keep their LED numbers.
     const cur = ledRange(f);
+    // A first LED typed past the last one (or on a one-LED object) moves the whole object there,
+    // with as many LEDs as it has: it would otherwise turn round and reach back over every LED
+    // in between.
+    if (first !== cur.first && last === cur.last && (f.pixels <= 1 || Math.sign(first - cur.last) !== Math.sign(cur.first - cur.last))) {
+      const p = moveToLed(f, first);
+      const r = ledRange({ ...f, ...p });
+      update(f.id, p);
+      toast(`${f.name} moved to LEDs ${r.first}–${r.last}, keeping its ${f.pixels} LEDs. To make it longer or shorter, change its Last LED or Number of LEDs.`, { id: 'led-range' });
+      return;
+    }
+    // One end changed on a line: move only that end; the corners keep their LED numbers.
     if (isLine(f) && f.points.length > 2 && (first === cur.first) !== (last === cur.last)) {
       const lastPoint = f.points.length - 1;
-      update(f.id, first !== cur.first ? pinPoint(f, 0, clampPointLed(f, 0, first)) : pinPoint(f, lastPoint, clampPointLed(f, lastPoint, last)));
+      const atFirst = first !== cur.first;
+      const point = atFirst ? 0 : lastPoint;
+      const want = atFirst ? first : last;
+      const got = clampPointLed(f, point, want);
+      if (got === want) {
+        update(f.id, pinPoint(f, point, got));
+        return;
+      }
+      // The end cannot get there without passing a corner that keeps its LED number: the
+      // corners spread over the new LEDs instead, each as far along the line as it was.
+      const range = atFirst ? { first: want, last: cur.last } : { first: cur.first, last: want };
+      const p = spreadLine(f, range.first, range.last);
+      update(f.id, p);
+      toast(
+        `${f.name} now runs on LEDs ${range.first}–${range.last} (${p.pixels}). Its ${atFirst ? 'first' : 'last'} LED had to pass a corner, so the corners were spread over the new LEDs: use Match to the lights to put them back on the real corners.`,
+        { id: 'led-range' }
+      );
       return;
     }
     const next = fromLedRange(first, last);
@@ -1074,6 +1116,22 @@ export function LayoutPage() {
       ...next,
       pixels: Math.min(MAX_FIXTURE_PIXELS, next.pixels)
     });
+  };
+
+  /**
+   * Puts the object on another device. Where its LEDs there are already used by other objects,
+   * it moves to the LEDs after them, and says so.
+   */
+  const changeDevice = (f: Fixture, deviceId: string | null) => {
+    const l = layoutRef.current;
+    if (!l || !deviceId) return void update(f.id, { deviceId });
+    const there = { ...l, fixtures: l.fixtures.map((x) => (x.id === f.id ? { ...x, deviceId } : x)) };
+    const clash = sharedLeds(there, f.id);
+    if (!clash.length) return void update(f.id, { deviceId });
+    const startPixel = nextFreeLed(l, deviceId, f.id);
+    update(f.id, { deviceId, startPixel });
+    const names = [...new Set(clash.map((c) => l.fixtures.find((x) => x.id === c.fixtureId)?.name ?? 'another object'))].join(', ');
+    toast(`LEDs ${f.startPixel}–${f.startPixel + f.pixels - 1} on that device are used by ${names}, so ${f.name} goes on LEDs ${startPixel}–${startPixel + f.pixels - 1}, after every object on it.`, { id: 'led-range' });
   };
 
   /** Pins the corner to a device LED number, or clears the pin with null. */
@@ -1387,7 +1445,8 @@ export function LayoutPage() {
       }
       if (mod && key === 's') {
         e.preventDefault();
-        if (dirty && !overlapCount && !busy) void save();
+        if (overlapInfo) toast.error(`Not saved: ${overlapInfo.all} Two objects cannot drive the same LEDs.`, { id: 'overlap' });
+        else if (dirty && !busy) void save();
         return;
       }
       if (e.key === ' ') {
@@ -2171,7 +2230,7 @@ export function LayoutPage() {
   async function saveScene(target: { name: string } | { id: string }) {
     if (!layout) return;
     if (!fxCount) return void toast.error('Give at least one object an effect first.');
-    if (overlapCount) return void toast.error('Two objects use the same LEDs. Fix that first.');
+    if (overlapInfo) return void toast.error(`${overlapInfo.all} Fix that first.`, { id: 'overlap' });
     setBusy(true);
     try {
       // A scene names the objects by id: save the layout too, so the server has them.
@@ -3367,7 +3426,7 @@ export function LayoutPage() {
               hint="The device that drives these LEDs."
               value={sel.deviceId ?? ''}
               options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
-              onChange={(id) => update(sel.id, { deviceId: id || null })}
+              onChange={(id) => changeDevice(sel, id || null)}
             />
             {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
               <PropNote>Click a segment of the line to turn it off or give it its own effect, or a corner to split the line there.</PropNote>
@@ -3375,6 +3434,16 @@ export function LayoutPage() {
           </PropSection>
 
           <PropSection key="leds" id="leds" title="LEDs">
+            <LedConflicts
+              f={sel}
+              layout={layout}
+              device={(() => {
+                const d = devices.find((x) => x.id === sel.deviceId);
+                return d ? { name: d.name, count: d.info?.leds?.count ?? null } : null;
+              })()}
+              onPick={choose}
+              onMove={(startPixel) => update(sel.id, { startPixel })}
+            />
             <LedProps f={sel} onRange={(a, b) => setRange(sel, a, b)} onMatch={isLine(sel) ? () => startMatch(sel) : undefined} onShape={takesMarks(sel) ? () => startShape(sel) : undefined} onClearMarks={() => update(sel.id, { marks: undefined })} />
           </PropSection>
 
@@ -3849,7 +3918,7 @@ export function LayoutPage() {
       >
         {playing ? <Pause /> : <Play />}
       </button>
-      {overlapCount ? <Badge tone="red">LEDs overlap</Badge> : null}
+      {overlapInfo ? <OverlapBadge info={overlapInfo} short onPick={choose} /> : null}
       <span className="ml-auto" />
       <button type="button" onClick={(e) => moreMenu(below(e))} disabled={busy} aria-label="More: scenes, pictures, file" aria-haspopup="menu" className={iconButton}>
         <Ellipsis />
@@ -4013,7 +4082,7 @@ export function LayoutPage() {
           {/* The command bar: history, viewports, the real lights, the picture, and saving. */}
           <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-stone-200 bg-stone-50 px-2 py-1 dark:border-stone-800 dark:bg-stone-900">
             <h1 className="px-1.5 text-sm font-semibold tracking-tight">Yard layout</h1>
-            {overlapCount ? <Badge tone="red">Objects share LEDs</Badge> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
+            {overlapInfo ? <OverlapBadge info={overlapInfo} onPick={choose} /> : dirty ? <Badge tone="amber">Unsaved changes</Badge> : null}
             {barSep}
             <Button size="sm" variant="ghost" onClick={undo} disabled={!history.canUndo} title="Undo (Ctrl/⌘+Z)" aria-label="Undo" className="px-2">
               <Undo2 />
@@ -4183,6 +4252,10 @@ export function LayoutPage() {
                         selected={playing || probe || layoutCheck ? null : selected}
                         focus={focus3d}
                         onSelect={(id, add) => {
+                          // The 3-D view does not draw: a click there with a drawing tool says where to draw, and keeps the tool.
+                          if (isLineTool(tool) || tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
+                            return void toast('Draw new objects in the front or top view. The 3-D view selects and shows them.', { id: 'side-draw' });
+                          }
                           setTool('select');
                           if (add) return void (id && toggleTarget(id));
                           choose(id);
@@ -5119,6 +5192,78 @@ function LedLabels({ f, corner, segment, V, side, k, scale }: { f: Fixture; corn
         )
       )}
     </>
+  );
+}
+
+/** Says which objects share LEDs; a click selects one of them, whose LEDs panel says what to do. */
+function OverlapBadge({ info, short, onPick }: { info: { first: string; all: string; more: number; pick: string }; short?: boolean; onPick: (id: string) => void }) {
+  return (
+    <button type="button" onClick={() => onPick(info.pick)} title={`${info.all} Click to select one of them.`} className="min-w-0 rounded-full">
+      <Badge tone="red" className="max-w-full">
+        <span className="truncate">{short ? 'LEDs overlap' : info.first}</span>
+        {!short && info.more ? <span className="shrink-0">+{info.more} more</span> : null}
+      </Badge>
+    </button>
+  );
+}
+
+/**
+ * For the selected object: the other objects that use its LEDs, and LEDs past the end of its
+ * device, with a way out (move it to the LEDs after every other object).
+ */
+function LedConflicts({
+  f,
+  layout,
+  device,
+  onPick,
+  onMove
+}: {
+  f: Fixture;
+  layout: Layout;
+  device: { name: string; count: number | null } | null;
+  onPick: (id: string) => void;
+  onMove: (startPixel: number) => void;
+}) {
+  if (!f.deviceId) return null;
+  const clash = sharedLeds(layout, f.id);
+  const lo = f.startPixel;
+  const hi = f.startPixel + f.pixels - 1;
+  const count = device?.count ?? null;
+  const past = count != null && hi >= count;
+  if (!clash.length && !past) return null;
+  const free = nextFreeLed(layout, f.deviceId, f.id);
+  const fits = count == null || free + f.pixels <= count;
+  const devName = device?.name ?? 'its device';
+  return (
+    <div className="mb-2 space-y-1.5 rounded-md bg-red-50 p-2 text-xs text-red-800 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-200 dark:ring-red-900">
+      {clash.map((c) => {
+        const o = layout.fixtures.find((x) => x.id === c.fixtureId);
+        return (
+          <p key={c.fixtureId}>
+            LEDs {c.lo}–{c.hi} are also used by{' '}
+            <button type="button" className="font-semibold underline" onClick={() => onPick(c.fixtureId)}>
+              {o?.name ?? 'another object'}
+            </button>{' '}
+            {o ? `(${o.startPixel}–${o.startPixel + o.pixels - 1})` : ''}.
+          </p>
+        );
+      })}
+      {clash.length ? <p>Two objects cannot drive the same LEDs, so the layout cannot be saved until they don’t.</p> : null}
+      {past ? (
+        <p>
+          {devName} has {count} LEDs (0–{count! - 1}): LEDs {Math.max(lo, count!)}–{hi} of {f.name} are past its end, so they stay dark.
+        </p>
+      ) : null}
+      <p className="text-red-700/80 dark:text-red-300/80">
+        {f.name} uses LEDs {lo}–{hi} ({f.pixels}). Type its First LED below to move it, or:
+      </p>
+      {clash.length ? (
+        <PropButton onClick={() => onMove(free)}>
+          Move to LEDs {free}–{free + f.pixels - 1}
+          {fits ? '' : ' (past the end)'}
+        </PropButton>
+      ) : null}
+    </div>
   );
 }
 
