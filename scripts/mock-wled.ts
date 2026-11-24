@@ -19,8 +19,9 @@ const PRESETS: { n: string; seg: Record<string, unknown>[] }[] = [
 /**
  * `dropUdp`: ignore real-time UDP, like a device behind a router that drops UDP. `frameMs`: an
  * HTTP frame takes this long to show (and to answer), like a busy device on weak Wi-Fi.
+ * `locked`: the device has a settings PIN, so it refuses settings changes (401).
  */
-export function startMockWled(port: number, name: string, ledCount = 150, { dropUdp = false, frameMs = 0 } = {}) {
+export function startMockWled(port: number, name: string, ledCount = 150, { dropUdp = false, frameMs = 0, locked = false } = {}) {
   const presets: Record<string, unknown> = { '0': {} };
   PRESETS.forEach((p, i) => (presets[String(i + 1)] = { on: true, bri: 160, ...p }));
   const state: { on: boolean; bri: number; ps: number; seg: Record<string, any>[] } = { on: true, bri: 128, ps: -1, seg: [{ id: 0, col: [[255, 160, 80]], fx: 0 }] };
@@ -53,6 +54,23 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
     }
   });
   ddp.on('error', () => {});
+  // The device's settings (a few of WLED's), as /json/cfg has them. A POST merges into them as
+  // WLED does: objects key by key, arrays whole.
+  const cfg: Record<string, any> = {
+    id: { mdns: `wled-${name.toLowerCase()}`, name },
+    nw: { ins: [{ ssid: 'home', pskl: 8 }] },
+    wifi: { sleep: false, txpwr: 78 },
+    hw: { led: { total: ledCount, maxpwr: 0, fps: 42, ins: [{ start: 0, len: ledCount, pin: [2], order: 0, rev: false, skip: 0, type: 22, ref: false, rgbwm: 0, freq: 0, maxpwr: 0, ledma: 55 }] } },
+    light: { 'scale-bri': 100, gc: { bri: 1, col: 2.2, val: 2.2 }, tr: { dur: 7 } },
+    def: { ps: 0, on: true, bri: 128 },
+    if: { sync: { send: { en: false }, recv: { bri: true, col: true, fx: true } }, live: { en: true, mso: false, rlm: true, timeout: 25, maxbri: false, 'no-gc': true, offset: 0 } }
+  };
+  const merge = (into: Record<string, any>, from: Record<string, any>) => {
+    for (const [k, v] of Object.entries(from)) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && into[k] && typeof into[k] === 'object' && !Array.isArray(into[k])) merge(into[k], v);
+      else into[k] = v;
+    }
+  };
   let ddpPort = 0;
   let actualPort = port;
   const info = () => ({ ver: '0.15.0', name, mac: `aabbcc${port}`, arch: 'esp32', leds: { count: ledCount }, wifi: { signal: 80 }, udpport: actualPort, ddpport: ddpPort, live: realtime.at > 0 && Date.now() - realtime.at < 2500 });
@@ -74,7 +92,23 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         return res.end(JSON.stringify({ leds: Array.from({ length: ledCount }, (_, i) => Buffer.from(realtime.leds.subarray(i * 3, i * 3 + 3)).toString('hex').toUpperCase()), n: 1 }));
       }
-      if (req.url === '/json/cfg') return json({ hw: { led: { ins: [{ start: 0, len: ledCount, type: 22, pin: [2] }] } } });
+      if (req.url === '/json/cfg' && req.method === 'POST') {
+        if (locked) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 1 }));
+        }
+        merge(cfg, body ?? {});
+        return json({ success: true });
+      }
+      if (req.url === '/json/cfg') return json(cfg);
+      // WLED's LED settings page script: the LED types and GPIO pins of the build (a few of them).
+      if (req.url === '/settings/s.js?p=2') {
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        return res.end(
+          'function GetV(){var d=document;d.um_p=[-1];d.rsvd=[6,7,8,9,10,11];d.ro_gpio=[34,35,36,37,38,39];d.max_gpio=40;' +
+            'd.ledTypes=[{i:22,c:1,t:"D",n:"WS281x RGB"},{i:30,c:3,t:"D",n:"SK6812/WS2814 RGBW"},{i:51,c:1,t:"2P",n:"APA102 RGB"},{i:43,c:1,t:"AAA",n:"PWM RGB"},{i:80,c:1,t:"N",n:"DDP RGB (network)"}];}'
+        );
+      }
       if (req.url === '/presets.json') return json(presets);
       if (req.url === '/json/state' && req.method === 'POST') {
         // Individual LEDs ("i": hex colors from LED 0), as the HTTP fallback sends them.
@@ -169,7 +203,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
     broadcastState();
   };
 
-  return new Promise<{ port: number; ddpPort: () => number; state: typeof state; requests: typeof requests; realtime: typeof realtime; press: typeof press; close: () => Promise<void> }>((resolve) => {
+  return new Promise<{ port: number; ddpPort: () => number; state: typeof state; requests: typeof requests; realtime: typeof realtime; press: typeof press; cfg: typeof cfg; close: () => Promise<void> }>((resolve) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         console.error(`Port ${port} is already in use. Another copy of the mock is probably running. Stop it, or pass another base port: node scripts/mock-wled.ts 4 9201`);
@@ -182,7 +216,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
       actualPort = actual;
       udp.bind(actual, '127.0.0.1');
       ddp.bind(0, '127.0.0.1', () => (ddpPort = ddp.address().port));
-      resolve({ port: actual, ddpPort: () => ddpPort, state, requests, realtime, press, close: () => new Promise((r) => (clearInterval(peekTimer), wss.clients.forEach((c) => c.terminate()), udp.close(), ddp.close(), server.close(() => r()))) });
+      resolve({ port: actual, ddpPort: () => ddpPort, state, requests, realtime, press, cfg, close: () => new Promise((r) => (clearInterval(peekTimer), wss.clients.forEach((c) => c.terminate()), udp.close(), ddp.close(), server.close(() => r()), server.closeAllConnections())) });
     });
   });
 }

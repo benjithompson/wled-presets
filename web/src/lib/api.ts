@@ -2,6 +2,7 @@ import type { PreviewRequest, SequencePreviewRequest } from '../../../shared/edi
 import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type { LineAdmin, LineSettings } from '../../../shared/line.ts';
+import type { WledConfig, WledSettings } from '../../../shared/wledConfig.ts';
 import type {
   AudioFile,
   ApplyResult,
@@ -171,6 +172,12 @@ export const api = {
       '/api/admin/devices/presets/sync',
       { method: 'POST' }
     ),
+  /** A device's own WLED settings, read from it. */
+  wledSettings: (id: string) => request<WledSettings>(`/api/admin/devices/${id}/wled`),
+  /** Sends the changed settings to the device; `unapplied`: what it did not take. */
+  saveWledSettings: (id: string, patch: WledConfig) =>
+    request<{ config: WledConfig | null; unapplied: string[] }>(`/api/admin/devices/${id}/wled`, { method: 'PUT', body: { patch } }),
+  restartWled: (id: string) => request<{ ok: true }>(`/api/admin/devices/${id}/wled/restart`, { method: 'POST' }),
   applyDevicePreset: (id: string, presetId: number) => request(`/api/admin/devices/${id}/apply`, { body: { presetId } }),
   discover: (subnets?: string[]) => request<{ found: DiscoveredDevice[]; subnets: string[] }>('/api/admin/discover', { body: { subnets } }),
 

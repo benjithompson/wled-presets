@@ -170,6 +170,17 @@ export class Lights {
     return o.ok ? { ...r, data: { power, info: { ...info, outputs: o.data } } } : r;
   }
 
+  /**
+   * A device's own settings changed here (its LED outputs may have): its outputs are read again
+   * with its info, now.
+   */
+  settingsChanged(deviceId: string): Promise<void> {
+    const s = this.status.get(deviceId);
+    if (s?.info?.outputs) this.status.set(deviceId, { ...s, info: { ...s.info, outputs: undefined } });
+    this.live = null;
+    return this.refreshStatus();
+  }
+
   /** Checks every enabled device. A check asked for while one runs runs once more after it. */
   refreshStatus(): Promise<void> {
     if (this.refreshing) {
