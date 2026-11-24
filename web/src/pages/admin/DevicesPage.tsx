@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Pencil, Play, Plus, Radar, RefreshCw, Router, Trash2 } from 'lucide-react';
+import { ChevronDown, Pencil, Play, Plus, Radar, RefreshCw, Router, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, DiscoveredDevice } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Spinner, StatusDot, Switch } from '../../components/ui.tsx';
@@ -9,12 +9,14 @@ import { api, type DeviceInput, type PresetImport } from '../../lib/api.ts';
 import { cn, errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { LightsCard } from './LightsCard.tsx';
+import { WledSettingsDialog } from './WledSettings.tsx';
 
 export function DevicesPage() {
   const qc = useQueryClient();
   const { data, isLoading } = useOverview();
   const [editing, setEditing] = useState<DeviceWithStatus | 'new' | null>(null);
   const [deleting, setDeleting] = useState<DeviceWithStatus | null>(null);
+  const [configuring, setConfiguring] = useState<DeviceWithStatus | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: OVERVIEW });
@@ -140,6 +142,9 @@ export function DevicesPage() {
                         {presets.length} preset{presets.length === 1 ? '' : 's'}
                         <ChevronDown className={cn('size-3.5 transition', open && 'rotate-180')} />
                       </button>
+                      <Button size="sm" variant="ghost" title="WLED settings" aria-label={`WLED settings of ${d.name}`} onClick={() => setConfiguring(d)} className="max-md:hidden">
+                        <SlidersHorizontal />
+                      </Button>
                       <Button size="sm" variant="ghost" aria-label={`Edit ${d.name}`} onClick={() => setEditing(d)} className="max-md:hidden">
                         <Pencil />
                       </Button>
@@ -154,6 +159,7 @@ export function DevicesPage() {
                         label={`More for ${d.name}`}
                         title={d.name}
                         items={[
+                          { label: 'WLED settings', icon: SlidersHorizontal, run: () => setConfiguring(d) },
                           { label: 'Edit', icon: Pencil, run: () => setEditing(d) },
                           { label: 'Import its presets', icon: RefreshCw, disabled: !d.enabled, run: () => syncOne.mutate(d.id) },
                           { label: 'Remove', icon: Trash2, danger: true, run: () => setDeleting(d) }
@@ -188,6 +194,7 @@ export function DevicesPage() {
       </Card>
 
       {editing ? <DeviceDialog key={editing === 'new' ? 'new' : editing.id} device={editing === 'new' ? null : editing} onClose={() => setEditing(null)} /> : null}
+      {configuring ? <WledSettingsDialog key={configuring.id} device={configuring} presets={data?.devicePresets[configuring.id] ?? []} onClose={() => setConfiguring(null)} /> : null}
       {discovering ? <DiscoverDialog defaultSubnets={data?.settings.discoverySubnets ?? []} onClose={() => setDiscovering(false)} /> : null}
 
       <ConfirmDialog

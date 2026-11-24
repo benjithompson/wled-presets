@@ -32,6 +32,7 @@ import { readAudio, removeAudio, sequenceInput, writeAudio } from './sequenceSto
 import { summarize } from '../../shared/sequence.ts';
 import { deviceKey, keyDevice } from '../../shared/effects.ts';
 import { MAX_FIXTURE_PIXELS } from '../../shared/layout.ts';
+import { DEFAULT_LED_TYPES, parseSettingsScript, pickStatus, protectedSection, unappliedPaths, type WledSettings } from '../../shared/wledConfig.ts';
 
 export interface AppDeps {
   config: AppConfig;
@@ -149,6 +150,9 @@ async function body<T extends z.ZodType>(c: Context, schema: T): Promise<z.infer
   if (!r.success) throw new HttpError(400, errorMessage(r.error));
   return r.data;
 }
+
+/** How long WLED takes to apply new settings (it sets up LED outputs after it answers). */
+const WLED_SETTLE_MS = 800;
 
 class HttpError extends Error {
   status: 400 | 401 | 403 | 404 | 409 | 502;
@@ -592,6 +596,49 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const { presetId } = await body(c, z.object({ presetId: z.number().int().min(1).max(250) }));
     const r = await wled.applyPreset(device, presetId);
     if (!r.ok) throw new HttpError(502, `${device.name}: ${r.error}`);
+    return c.json({ ok: true });
+  });
+
+  // A device's own WLED settings, so they can be changed here instead of in WLED's app.
+  const needDevice = (c: Context) => {
+    const device = db.getDevice(c.req.param('id')!);
+    if (!device) throw new HttpError(404, 'Unknown device');
+    return device;
+  };
+  const wledError = (name: string, r: { status: number; error: string }) =>
+    new HttpError(502, r.status === 401 ? `${name} has a settings PIN. Remove it in WLED's security settings to change its settings here.` : `${name}: ${r.error}`);
+
+  admin.get('/devices/:id/wled', async (c) => {
+    const device = needDevice(c);
+    const [config, script, info] = await Promise.all([wled.config(device), wled.ledSettingsScript(device), wled.rawInfo(device)]);
+    if (!config.ok) throw wledError(device.name, config);
+    const parsed = script.ok ? parseSettingsScript(script.data) : { ledTypes: null, gpio: null };
+    const out: WledSettings = { config: config.data, ledTypes: parsed.ledTypes ?? DEFAULT_LED_TYPES, gpio: parsed.gpio, info: info.ok ? pickStatus(info.data) : null };
+    return c.json(out);
+  });
+
+  admin.put('/devices/:id/wled', async (c) => {
+    const device = needDevice(c);
+    const { patch } = await body(c, z.object({ patch: z.record(z.string(), z.unknown()) }));
+    const blocked = protectedSection(patch);
+    if (blocked) throw new HttpError(400, `Settings for ${blocked} are not changed from here: a mistake there loses the device. Use WLED's own page on the network.`);
+    if (!Object.keys(patch).length) throw new HttpError(400, 'Nothing to change');
+    const r = await wled.saveConfig(device, patch);
+    if (!r.ok) throw wledError(device.name, r);
+    // WLED sets up changed LED outputs on its next loop, after it has answered.
+    await new Promise((done) => setTimeout(done, WLED_SETTLE_MS));
+    const after = await wled.config(device);
+    lights.log('info', 'config', `WLED settings of "${device.name}" changed (${Object.keys(patch).join(', ')})`, patch, actor(c));
+    await lights.settingsChanged(device.id);
+    bus.emit('devices');
+    return c.json({ config: after.ok ? after.data : null, unapplied: after.ok ? unappliedPaths(patch, after.data) : [] });
+  });
+
+  admin.post('/devices/:id/wled/restart', async (c) => {
+    const device = needDevice(c);
+    const r = await wled.restart(device);
+    if (!r.ok) throw wledError(device.name, r);
+    lights.log('info', 'config', `"${device.name}" restarted`, null, actor(c));
     return c.json({ ok: true });
   });
 

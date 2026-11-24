@@ -77,6 +77,18 @@ export async function requestJson<T = unknown>(
   }
 }
 
+/** A text answer (WLED's settings scripts are JavaScript, not JSON). */
+export async function requestText(url: string, timeoutMs = 3000): Promise<FetchResult<string>> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const text = await res.text();
+    return res.ok ? { ok: true, status: res.status, data: text } : { ok: false, status: res.status, error: `HTTP ${res.status}` };
+  } catch (e) {
+    const name = (e as Error)?.name;
+    return { ok: false, status: 0, error: name === 'TimeoutError' || name === 'AbortError' ? 'Timed out' : 'Unreachable' };
+  }
+}
+
 export function isWledInfo(data: unknown): data is DeviceInfo {
   if (!data || typeof data !== 'object') return false;
   const d = data as Record<string, unknown>;
@@ -157,6 +169,36 @@ export const wled = {
   /** Sets the device's master brightness (1 to 255). */
   brightness(ep: Endpoint, bri: number) {
     return wled.setState(ep, { bri });
+  },
+
+  /** All of the device's settings (WLED's /json/cfg). Passwords are not in it, only their lengths. */
+  async config(ep: Endpoint, timeoutMs = 5000): Promise<FetchResult<Record<string, any>>> {
+    const r = await requestJson<Record<string, any>>(`${baseUrl(ep)}/json/cfg`, { timeoutMs });
+    if (r.ok && (!r.data || typeof r.data !== 'object' || Array.isArray(r.data))) return { ok: false, status: r.status, error: 'No settings in the answer' };
+    return r;
+  },
+
+  /**
+   * Changes the device's settings: WLED takes a partial config, applies it (LED outputs on its
+   * next loop) and saves it. A device with a settings PIN answers 401.
+   */
+  saveConfig(ep: Endpoint, patch: Record<string, unknown>, timeoutMs = 8000) {
+    return requestJson(`${baseUrl(ep)}/json/cfg`, { method: 'POST', body: patch, timeoutMs });
+  },
+
+  /** The script WLED's own LED settings page runs: the LED types and GPIO pins of this build. */
+  ledSettingsScript(ep: Endpoint, timeoutMs = 5000) {
+    return requestText(`${baseUrl(ep)}/settings/s.js?p=2`, timeoutMs);
+  },
+
+  /** The whole of /json/info. */
+  rawInfo(ep: Endpoint, timeoutMs = 3000) {
+    return requestJson<Record<string, unknown>>(`${baseUrl(ep)}/json/info`, { timeoutMs });
+  },
+
+  /** Restarts the device. */
+  restart(ep: Endpoint) {
+    return wled.setState(ep, { rb: true });
   },
 
   async presets(ep: Endpoint): Promise<FetchResult<DevicePreset[]>> {

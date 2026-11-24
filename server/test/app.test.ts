@@ -593,3 +593,56 @@ describe('game area', () => {
     expect((await t.call('PUT', '/api/admin/games/area', {})).json.area).toBeNull();
   });
 });
+
+describe("a device's WLED settings", () => {
+  it('reads them, changes only what changed, and says what the device did not take', async () => {
+    const m = await startMockWled(0, 'Porch', 100);
+    try {
+      await login();
+      const id = (await t.call('POST', '/api/admin/devices', { host: '127.0.0.1', port: m.port })).json.id;
+      const r = await t.call('GET', `/api/admin/devices/${id}/wled`);
+      expect(r.status).toBe(200);
+      expect(r.json.config.hw.led.ins[0]).toMatchObject({ len: 100, pin: [2] });
+      expect(r.json.ledTypes.map((x: any) => x.id)).toEqual([22, 30, 51, 43, 80]);
+      expect(r.json.gpio).toEqual({ reserved: [6, 7, 8, 9, 10, 11], readOnly: [34, 35, 36, 37, 38, 39], max: 40 });
+      expect(r.json.info.ver).toBe('0.15.0');
+
+      const ins = [{ ...r.json.config.hw.led.ins[0], len: 80 }];
+      m.requests.length = 0;
+      const saved = await t.call('PUT', `/api/admin/devices/${id}/wled`, { patch: { id: { name: 'Front porch' }, hw: { led: { ins } } } });
+      expect(saved.status).toBe(200);
+      expect(saved.json.unapplied).toEqual([]);
+      expect(saved.json.config.id).toEqual({ mdns: 'wled-porch', name: 'Front porch' });
+      expect(m.requests.find((q) => q.method === 'POST' && q.url === '/json/cfg')?.body).toEqual({ id: { name: 'Front porch' }, hw: { led: { ins } } });
+      expect(m.cfg.hw.led.fps).toBe(42);
+    } finally {
+      await m.close();
+    }
+  });
+
+  it('leaves Wi-Fi alone, and says when the device has a settings PIN', async () => {
+    const m = await startMockWled(0, 'Shed', 50, { locked: true });
+    try {
+      await login();
+      const id = (await t.call('POST', '/api/admin/devices', { host: '127.0.0.1', port: m.port })).json.id;
+      const wifi = await t.call('PUT', `/api/admin/devices/${id}/wled`, { patch: { nw: { ins: [{ ssid: 'other' }] } } });
+      expect(wifi.status).toBe(400);
+      expect(wifi.json.error).toMatch(/Wi-Fi/);
+      const locked = await t.call('PUT', `/api/admin/devices/${id}/wled`, { patch: { def: { bri: 200 } } });
+      expect(locked.status).toBe(502);
+      expect(locked.json.error).toMatch(/settings PIN/);
+      expect(m.cfg.def.bri).toBe(128);
+    } finally {
+      await m.close();
+    }
+  });
+
+  it('restarts a device, for admins only', async () => {
+    await login();
+    const [roof] = await addDevices();
+    expect((await t.call('POST', `/api/admin/devices/${roof}/wled/restart`)).status).toBe(200);
+    expect(mocks[0].requests.some((q) => q.url === '/json/state' && (q.body as any)?.rb === true)).toBe(true);
+    await t.call('POST', '/api/auth/logout');
+    expect((await t.call('GET', `/api/admin/devices/${roof}/wled`)).status).toBe(401);
+  });
+});
