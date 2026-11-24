@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampPointLed, deviceLed, deviceRuns, fromLedRange, isPinned, ledRange, moveToLed, nextFreeLed, pointOffsets, sampleLayout, sharedLeds, spreadLine, type Fixture, type Layout } from '../../shared/layout.ts';
+import { deviceLed, deviceRuns, fromLedRange, isPinned, ledRange, nextFreeLed, pointOffsets, sampleLayout, setLineEnd, sharedLeds, type Fixture, type Layout } from '../../shared/layout.ts';
 
 // A DigQuad with two outputs as one device: the roof on 0–599 (output 1), a tree on 600–699
 // (output 2), and a second tree just drawn: new objects start at LED 0 until they are placed.
@@ -34,43 +34,71 @@ describe('LEDs shared between objects', () => {
     expect(nextFreeLed(l, 'quad', 'tree2')).toBe(700);
   });
 
-  it('moves a whole object to a first LED, keeping its length and direction', () => {
-    const l = yard();
-    const t2 = l.fixtures[2];
-    expect(ledRange({ ...t2, ...moveToLed(t2, 700) })).toEqual({ first: 700, last: 849 });
-    const down = { ...t2, ...fromLedRange(149, 0) };
-    expect(ledRange({ ...down, ...moveToLed(down, 849) })).toEqual({ first: 849, last: 700 });
-    // Not below LED 0.
-    expect(moveToLed(down, 10)).toEqual({ startPixel: 0 });
-  });
-
   it('has no overlap once the second tree is on 700–849', () => {
     const l = yard();
-    l.fixtures[2] = { ...l.fixtures[2], ...moveToLed(l.fixtures[2], nextFreeLed(l, 'quad', 'tree2')) };
+    l.fixtures[2] = { ...l.fixtures[2], startPixel: nextFreeLed(l, 'quad', 'tree2') };
     expect(deviceRuns(l).get('quad')!.overlaps).toHaveLength(0);
     expect(ledRange(l.fixtures[2])).toEqual({ first: 700, last: 849 });
   });
 
-  it('puts a line with pinned corners on new LEDs when its first LED cannot pass a corner', () => {
-    // A line on 422–849 whose first corner is pinned at LED 423 (one LED in the first segment).
-    const base = sampleLayout().fixtures[0];
-    const line: Fixture = { ...base, id: 'l', kind: 'line', points: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 20, y: 0, z: 0 }, { x: 400, y: 0, z: 0 }], deviceId: 'quad', ...fromLedRange(422, 849), pointLeds: [null, 1, 15, null] };
-    // Moving only the end stops at the corner: the first LED cannot get to 700.
-    expect(clampPointLed(line, 0, 700)).toBeLessThan(700);
-    const out = { ...line, ...spreadLine(line, 700, 849) };
-    expect(ledRange(out)).toEqual({ first: 700, last: 849 });
-    expect(out.pixels).toBe(150);
-    // The corners are in order, inside the line.
-    const offs = pointOffsets(out);
-    for (let i = 1; i < offs.length; i++) expect(offs[i]).toBeGreaterThan(offs[i - 1]);
-    expect(deviceLed(out, offs.at(-1)!)).toBe(849);
+  // A curve drawn with many points: no corner is pinned until it is matched to the lights.
+  const curve = (over: Partial<Fixture>): Fixture => ({
+    ...sampleLayout().fixtures[0],
+    id: 'l',
+    kind: 'line',
+    points: Array.from({ length: 12 }, (_, i) => ({ x: i * 30, y: Math.round(Math.sin(i / 2) * 40), z: 0 })),
+    deviceId: 'quad',
+    ...fromLedRange(0, 99),
+    pointLeds: undefined,
+    ...over
+  });
+  const ordered = (f: Fixture) => pointOffsets(f).every((o, i, a) => i === 0 || o > a[i - 1]);
+
+  it('sets the start and the end of a freshly drawn curve to any LEDs, the corners spreading by length', () => {
+    let f = curve({});
+    f = { ...f, ...setLineEnd(f, 'last', 849).patch };
+    expect(ledRange(f)).toEqual({ first: 0, last: 849 });
+    f = { ...f, ...setLineEnd(f, 'first', 700).patch };
+    expect(ledRange(f)).toEqual({ first: 700, last: 849 });
+    expect(f.pointLeds).toBeUndefined();
+    expect(ordered(f)).toBe(true);
+    // Counting down works the same way.
+    f = { ...f, ...setLineEnd(f, 'first', 900).patch };
+    expect(ledRange(f)).toEqual({ first: 900, last: 849 });
+    expect(ordered(f)).toBe(true);
   });
 
-  it('keeps a pinned corner as far along the line as it was', () => {
-    const base = sampleLayout().fixtures[0];
-    const line: Fixture = { ...base, id: 'l', kind: 'line', points: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 400, y: 0, z: 0 }], deviceId: 'quad', ...fromLedRange(0, 400), pointLeds: [null, 200, null] };
-    const out = { ...line, ...spreadLine(line, 700, 900) };
-    expect(isPinned(out, 1)).toBe(true);
-    expect(pointOffsets(out)[1]).toBe(100);
+  it('takes the two ends typed in either order, whatever the line had before', () => {
+    // A new line put after every other object, past where it should go (850–949).
+    const start = curve(fromLedRange(850, 949));
+    for (const order of [['last', 'first'], ['first', 'last']] as const) {
+      let f = start;
+      for (const end of order) f = { ...f, ...setLineEnd(f, end, end === 'first' ? 700 : 849).patch };
+      expect(ledRange(f)).toEqual({ first: 700, last: 849 });
+      expect(f.pixels).toBe(150);
+      expect(ordered(f)).toBe(true);
+    }
+  });
+
+  it('keeps corners matched to the lights on their LEDs when an end moves', () => {
+    const f = curve({ ...fromLedRange(422, 849), pointLeds: [null, null, null, null, null, 100, null, null, null, null, null, null] });
+    const corner = deviceLed(f, pointOffsets(f)[5]);
+    const out = { ...f, ...setLineEnd(f, 'last', 800).patch };
+    expect(ledRange(out)).toEqual({ first: 422, last: 800 });
+    expect(isPinned(out, 5)).toBe(true);
+    expect(deviceLed(out, pointOffsets(out)[5])).toBe(corner);
+    expect(ordered(out)).toBe(true);
+  });
+
+  it('unpins a matched corner the new LEDs leave no room for, instead of snapping the end back', () => {
+    // Line of lights 2: 422–849, corners pinned at 423 and 437.
+    const f = curve({ points: curve({}).points.slice(0, 4), ...fromLedRange(422, 849), pointLeds: [null, 1, 15, null] });
+    const { patch, unpinned } = setLineEnd(f, 'first', 700);
+    const out = { ...f, ...patch };
+    expect(ledRange(out)).toEqual({ first: 700, last: 849 });
+    expect(out.pixels).toBe(150);
+    expect(unpinned).toEqual([1, 2]);
+    expect(out.pointLeds).toBeUndefined();
+    expect(ordered(out)).toBe(true);
   });
 });

@@ -78,10 +78,9 @@ import {
   unpinPoint,
   segmentLeds,
   deviceRuns,
-  moveToLed,
   nextFreeLed,
   sharedLeds,
-  spreadLine,
+  setLineEnd,
   extendLine,
   insertPoint,
   fromLedRange,
@@ -1079,36 +1078,18 @@ export function LayoutPage() {
   /** Sets the device LED numbers at the first and the last point. */
   const setRange = (f: Fixture, first: number, last: number) => {
     const cur = ledRange(f);
-    // A first LED typed past the last one (or on a one-LED object) moves the whole object there,
-    // with as many LEDs as it has: it would otherwise turn round and reach back over every LED
-    // in between.
-    if (first !== cur.first && last === cur.last && (f.pixels <= 1 || Math.sign(first - cur.last) !== Math.sign(cur.first - cur.last))) {
-      const p = moveToLed(f, first);
-      const r = ledRange({ ...f, ...p });
-      update(f.id, p);
-      toast(`${f.name} moved to LEDs ${r.first}–${r.last}, keeping its ${f.pixels} LEDs. To make it longer or shorter, change its Last LED or Number of LEDs.`, { id: 'led-range' });
-      return;
-    }
-    // One end changed on a line: move only that end; the corners keep their LED numbers.
+    // One end changed on a line: corners matched to the lights keep their LED numbers, the
+    // others spread along the line by length.
     if (isLine(f) && f.points.length > 2 && (first === cur.first) !== (last === cur.last)) {
-      const lastPoint = f.points.length - 1;
       const atFirst = first !== cur.first;
-      const point = atFirst ? 0 : lastPoint;
-      const want = atFirst ? first : last;
-      const got = clampPointLed(f, point, want);
-      if (got === want) {
-        update(f.id, pinPoint(f, point, got));
-        return;
+      const { patch, unpinned } = setLineEnd(f, atFirst ? 'first' : 'last', atFirst ? first : last);
+      update(f.id, patch);
+      if (unpinned.length) {
+        const names = unpinned.map((i) => `corner ${i + 1}`).join(', ').replace(/, ([^,]*)$/, ' and $1');
+        toast(`${f.name}'s new LEDs leave no room for ${names} where ${unpinned.length > 1 ? 'they were' : 'it was'} matched, so ${unpinned.length > 1 ? 'they spread' : 'it spreads'} along the line again. Use Match to the lights to place ${unpinned.length > 1 ? 'them' : 'it'}.`, {
+          id: 'led-range'
+        });
       }
-      // The end cannot get there without passing a corner that keeps its LED number: the
-      // corners spread over the new LEDs instead, each as far along the line as it was.
-      const range = atFirst ? { first: want, last: cur.last } : { first: cur.first, last: want };
-      const p = spreadLine(f, range.first, range.last);
-      update(f.id, p);
-      toast(
-        `${f.name} now runs on LEDs ${range.first}–${range.last} (${p.pixels}). Its ${atFirst ? 'first' : 'last'} LED had to pass a corner, so the corners were spread over the new LEDs: use Match to the lights to put them back on the real corners.`,
-        { id: 'led-range' }
-      );
       return;
     }
     const next = fromLedRange(first, last);
@@ -1137,8 +1118,10 @@ export function LayoutPage() {
   /** Pins the corner to a device LED number, or clears the pin with null. */
   const pinCorner = (f: Fixture, index: number, led: number | null) => {
     if (led != null) {
-      // Only this corner moves: every other corner keeps its LED number.
-      update(f.id, pinPoint(f, index, clampPointLed(f, index, led)));
+      // As when matching it to the lights: corners pinned before it keep their LED numbers,
+      // the ones it passes give way, and the end moves out when it goes past the end.
+      const offset = f.reversed ? f.startPixel + f.pixels - 1 - led : led - f.startPixel;
+      update(f.id, matchPoint(f, index, offset, ledCountOf(f)));
       return;
     }
     update(f.id, unpinPoint(f, index));
@@ -5255,7 +5238,7 @@ function LedConflicts({
         </p>
       ) : null}
       <p className="text-red-700/80 dark:text-red-300/80">
-        {f.name} uses LEDs {lo}–{hi} ({f.pixels}). Type its First LED below to move it, or:
+        {f.name} uses LEDs {lo}–{hi} ({f.pixels}). Type its First and Last LED{isLine(f) ? ' (under Advanced)' : ''} below, or:
       </p>
       {clash.length ? (
         <PropButton onClick={() => onMove(free)}>

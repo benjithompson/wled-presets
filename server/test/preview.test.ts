@@ -118,11 +118,27 @@ describe('matching a drawn line to the real lights', () => {
     expect(f.pointLeds?.[2] ?? null).toBeNull();
     expect(f.pointLeds?.[3] ?? null).toBeNull();
     // A corner leaves one LED for each segment after it, and stays after the point before.
-    expect(matchRange(f, 1)).toEqual({ lo: 1, hi: 46 });
-    expect(matchRange(f, 2)).toEqual({ lo: 46, hi: 47 });
+    expect(matchRange(f, 1)).toEqual({ lo: 1, hi: 1996 });
+    expect(matchRange(f, 2)).toEqual({ lo: 46, hi: 1997 });
     // The start never goes below device LED 0.
     expect(matchRange(line(), 0).lo).toBe(-5);
     expect(matchRange(line({ reversed: true }), 4).hi).toBe(54);
+  });
+
+  it('moves the end out when a corner is matched past it', () => {
+    // The line was given too few LEDs: corner 2 is really at offset 60, past the end (49).
+    let f = step(line(), 1, 20);
+    f = step(f, 2, 60);
+    expect(f).toMatchObject({ startPixel: 5, pixels: 63, reversed: false });
+    expect(pointOffsets(f).slice(0, 3)).toEqual([0, 20, 60]);
+    expect(pointOffsets(f).every((o, i, a) => i === 0 || o > a[i - 1])).toBe(true);
+    // The same counting down: device LED numbers of matched corners stay put.
+    let r = line({ reversed: true });
+    r = step(r, 2, 52);
+    expect(r).toMatchObject({ startPixel: 0, pixels: 55, reversed: true });
+    // A corner leaves the end room above device LED 0, and below the device's last LED.
+    expect(matchRange(line({ reversed: true }), 2).hi).toBe(52);
+    expect(matchRange(line(), 2, 60).hi).toBe(52);
   });
 
   it('stays within the LEDs the device has in WLED', () => {
