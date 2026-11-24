@@ -1587,8 +1587,8 @@ export interface MatchProbe {
 /**
  * The offsets the blinking LED can take for one point, so the points stay in order with at
  * least one LED in each segment. The start stays before the next pinned corner; a corner stays
- * after the point before it (later corners give way, see matchPoint); the end stays after the
- * last pinned corner. Device LED numbers never go below 0, nor past the last LED the device
+ * after the point before it (later corners give way, and the end moves out, see matchPoint);
+ * the end stays after the last pinned corner. Device LED numbers never go below 0, nor past the last LED the device
  * has (`ledCount`, as set in WLED, when known), and the line stays within MAX_FIXTURE_PIXELS.
  */
 export function matchRange(f: Fixture, point: number, ledCount?: number | null): { lo: number; hi: number } {
@@ -1607,15 +1607,18 @@ export function matchRange(f: Fixture, point: number, ledCount?: number | null):
     lo = offs[before] + (L - before);
     hi = MAX_FIXTURE_PIXELS - 1;
   } else {
+    // A corner can go past the end: the end moves along, leaving an LED for each segment after it.
     lo = offs[before] + (point - before);
-    hi = n - 1 - (L - point);
+    hi = MAX_FIXTURE_PIXELS - 1 - (L - point);
   }
+  /** LEDs the end needs after this point. */
+  const tail = point > 0 && point < L ? L - point : 0;
   // Device LED 0 is as far as it goes one way, the device's last LED the other way.
-  if (f.reversed) hi = Math.min(hi, f.startPixel + n - 1);
+  if (f.reversed) hi = Math.min(hi, f.startPixel + n - 1 - tail);
   else lo = Math.max(lo, -f.startPixel);
   if (ledCount && ledCount > 0) {
     if (f.reversed) lo = Math.max(lo, f.startPixel + n - ledCount);
-    else hi = Math.min(hi, ledCount - 1 - f.startPixel);
+    else hi = Math.min(hi, ledCount - 1 - f.startPixel - tail);
   }
   return { lo, hi: Math.max(lo, hi) };
 }
@@ -1634,6 +1637,9 @@ export function matchPoint(f: Fixture, point: number, offset: number, ledCount?:
     const pins = f.pointLeds.map((p, i) => (i > point && p != null && p <= o + (i - point) - 1 ? null : p));
     g = { ...f, pointLeds: pins };
   }
+  // A corner past the end (or too near it): the end moves out, an LED for each segment after it.
+  const n = Math.max(1, Math.floor(f.pixels));
+  if (point > 0 && point < L && o > n - 1 - (L - point)) g = { ...g, ...fromLedRange(deviceLed(g, 0), deviceLed(g, o + L - point)) };
   return setPointLed(g, point, deviceLed(g, o));
 }
 
@@ -1762,6 +1768,37 @@ export function tidyPins(pins: (number | null)[] | undefined): (number | null)[]
   return out?.some((p) => p != null) ? out : undefined;
 }
 
+/**
+ * A line with its first or last LED (`end`) at device LED `led`. Corners pinned to an LED (by
+ * matching the line to the lights) keep their device LED numbers; the others spread along the
+ * line by length, as on a line just drawn. A pinned corner the new LEDs leave no room for (the
+ * end passed it, or its segments would have no LED) loses its pin: its index is in `unpinned`.
+ */
+export function setLineEnd(f: Fixture, end: 'first' | 'last', led: number): { patch: Pick<Fixture, 'startPixel' | 'pixels' | 'reversed' | 'pointLeds'>; unpinned: number[] } {
+  const lastPoint = f.points.length - 1;
+  const offs = pointOffsets(f);
+  const cur = ledRange(f);
+  const range = fromLedRange(Math.max(0, end === 'first' ? led : cur.first), Math.max(0, end === 'last' ? led : cur.last));
+  const n = Math.min(MAX_FIXTURE_PIXELS, range.pixels);
+  const g = { ...f, ...range, pixels: n };
+  const toOffset = (d: number) => (g.reversed ? g.startPixel + n - 1 - d : d - g.startPixel);
+  const pins: (number | null)[] = f.points.map(() => null);
+  const unpinned: number[] = [];
+  let prev = 0;
+  let prevI = 0;
+  for (let i = 1; i < lastPoint; i++) {
+    if (!isPinned(f, i)) continue;
+    const o = toOffset(deviceLed(f, offs[i]));
+    // At least one LED for each segment before it (since the last pin) and after it.
+    if (o - prev >= i - prevI && n - 1 - o >= lastPoint - i) {
+      pins[i] = o;
+      prev = o;
+      prevI = i;
+    } else unpinned.push(i);
+  }
+  return { patch: { ...range, pixels: n, pointLeds: tidyPins(pins) }, unpinned };
+}
+
 /** Pins point `index` of a line to device LED `led`: every other point keeps its LED number. */
 export const pinPoint = (f: Fixture, index: number, led: number) => setPointLed(f, index, led, f.points.map((_, i) => i));
 
@@ -1868,6 +1905,25 @@ export function deviceRuns(layout: Layout): Map<string, { runs: DeviceRun[]; ove
     }
   }
   return out;
+}
+
+/** The other objects on object `id`'s device that use some of its LEDs, with the LEDs they share (lo–hi). */
+export function sharedLeds(layout: Layout, id: string): { fixtureId: string; lo: number; hi: number }[] {
+  const f = layout.fixtures.find((x) => x.id === id);
+  if (!f?.deviceId) return [];
+  const out: { fixtureId: string; lo: number; hi: number }[] = [];
+  for (const o of layout.fixtures) {
+    if (o.id === f.id || o.deviceId !== f.deviceId) continue;
+    const lo = Math.max(f.startPixel, o.startPixel);
+    const hi = Math.min(f.startPixel + f.pixels - 1, o.startPixel + o.pixels - 1);
+    if (lo <= hi) out.push({ fixtureId: o.id, lo, hi });
+  }
+  return out.sort((a, b) => a.lo - b.lo);
+}
+
+/** The first device LED after every object on the device (but `exceptId`): where a new object fits without sharing LEDs. */
+export function nextFreeLed(layout: Layout, deviceId: string, exceptId?: string): number {
+  return Math.max(0, ...layout.fixtures.filter((f) => f.deviceId === deviceId && f.id !== exceptId).map((f) => f.startPixel + f.pixels));
 }
 
 export interface StageFixture {
