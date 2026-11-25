@@ -64,7 +64,8 @@ export function Scene3D({
   onSelect,
   focus,
   className,
-  fill = false
+  fill = false,
+  viewOnly = false
 }: {
   layout: Layout;
   getFrame: (t: number) => Uint8Array | null;
@@ -75,6 +76,8 @@ export function Scene3D({
   className?: string;
   /** Fill the parent (which must be positioned) instead of a 16:9 box. */
   fill?: boolean;
+  /** Only to look at: the hint does not offer selecting. */
+  viewOnly?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const ctx = useRef<Ctx | null>(null);
@@ -381,7 +384,7 @@ export function Scene3D({
       </div>
       {ring ? <HoldRing key={ring.n} x={ring.x} y={ring.y} ms={HOLD_MS} /> : null}
       <p className="pointer-events-none absolute bottom-2 left-3 text-xs text-white/45">
-        {coarse ? 'Drag to turn · pinch to zoom · two fingers to pan · hold on an LED to select its object' : 'Drag to turn · scroll to zoom · right-drag to pan · click an LED to select its object'}
+        {coarse ? `Drag to turn · pinch to zoom · two fingers to pan${viewOnly ? '' : ' · hold on an LED to select its object'}` : `Drag to turn · scroll to zoom · right-drag to pan${viewOnly ? '' : ' · click an LED to select its object'}`}
       </p>
     </div>
   );

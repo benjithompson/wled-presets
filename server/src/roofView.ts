@@ -41,9 +41,24 @@ interface Cell {
  * was sent); one that plays its own preset or color is watched over its WebSocket (WledPeek);
  * a switched-off device is dark; roof objects with no device show the simulator.
  */
+/**
+ * What a view streams. `roof`: the roofline in cells, for the border of the home page. `yard`:
+ * every LED of the yard in stage order (see buildStage), with the layout it was built from in the
+ * geometry, for the admin's live view of the whole layout.
+ */
+export type ViewShape = 'roof' | 'yard';
+
+export interface RoofViewOptions {
+  shape?: ViewShape;
+  /** At most this many browsers at once. Default MAX_ROOF_VIEWERS. */
+  maxViewers?: number;
+}
+
 export class RoofView {
   private src: RoofSources;
   private makePeek: (d: DeviceTarget) => Peek;
+  private shape: ViewShape;
+  private maxViewers: number;
   private viewers = new Set<(e: RoofEvent) => void>();
   private peeks = new Map<string, Peek>();
   private timer: NodeJS.Timeout | null = null;
@@ -51,7 +66,7 @@ export class RoofView {
 
   private layout: Layout | null = null;
   private cells: Cell[] = [];
-  private geometry: RoofGeometry = { cells: 0 };
+  private geometry: RoofGeometry & { layout?: Layout } = { cells: 0 };
   /** Per stage LED: its device and the device LED number (-1: none). */
   private deviceOf: (string | null)[] = [];
   private ledOf = new Int32Array(0);
@@ -59,9 +74,11 @@ export class RoofView {
   private bytes = new Uint8Array(0);
   private last = '';
 
-  constructor(src: RoofSources, makePeek: (d: DeviceTarget) => Peek = (d) => new WledPeek(d, () => d.info?.leds?.count ?? 0)) {
+  constructor(src: RoofSources, makePeek: (d: DeviceTarget) => Peek = (d) => new WledPeek(d, () => d.info?.leds?.count ?? 0), opts: RoofViewOptions = {}) {
     this.src = src;
     this.makePeek = makePeek;
+    this.shape = opts.shape ?? 'roof';
+    this.maxViewers = opts.maxViewers ?? MAX_ROOF_VIEWERS;
   }
 
   /**
@@ -69,7 +86,7 @@ export class RoofView {
    * Returns the function that removes it, or null when too many watch already.
    */
   watch(send: (e: RoofEvent) => void): (() => void) | null {
-    if (this.viewers.size >= MAX_ROOF_VIEWERS) return null;
+    if (this.viewers.size >= this.maxViewers) return null;
     this.rebuildIfMoved();
     this.viewers.add(send);
     send({ event: 'geometry', data: JSON.stringify(this.geometry) });
@@ -91,7 +108,7 @@ export class RoofView {
     };
   }
 
-  /** The roof's colors now, one RGB triple per cell (also what tick() sends). */
+  /** The colors now, one RGB triple per cell (also what tick() sends). */
   frame(): Uint8Array {
     this.rebuildIfMoved();
     const devices = new Map(this.src.devices().map((d) => [d.id, d]));
@@ -188,12 +205,18 @@ export class RoofView {
         this.ledOf[m.pairs[p]] = m.pairs[p + 1];
       }
     }
-    // Strip order, so a chase runs on around the border; the end on the left (from the street) first.
-    const roof = Array.from(stage.roofPath);
-    if (roof.length > 1 && stage.positions[roof[0] * 2] > stage.positions[roof[roof.length - 1] * 2]) roof.reverse();
-    const count = Math.min(MAX_CELLS, roof.length);
-    this.cells = Array.from({ length: count }, (_, c) => ({ leds: roof.slice(Math.floor((c * roof.length) / count), Math.floor(((c + 1) * roof.length) / count)) }));
-    this.geometry = { cells: count };
+    if (this.shape === 'yard') {
+      // Every LED is its own cell, in stage order: the browser builds the same stage from the layout.
+      this.cells = Array.from({ length: stage.pixelCount }, (_, i) => ({ leds: [i] }));
+      this.geometry = { cells: stage.pixelCount, layout };
+    } else {
+      // Strip order, so a chase runs on around the border; the end on the left (from the street) first.
+      const roof = Array.from(stage.roofPath);
+      if (roof.length > 1 && stage.positions[roof[0] * 2] > stage.positions[roof[roof.length - 1] * 2]) roof.reverse();
+      const count = Math.min(MAX_CELLS, roof.length);
+      this.cells = Array.from({ length: count }, (_, c) => ({ leds: roof.slice(Math.floor((c * roof.length) / count), Math.floor(((c + 1) * roof.length) / count)) }));
+      this.geometry = { cells: count };
+    }
     this.roofDevices = [...new Set(this.cells.flatMap((c) => c.leds.map((i) => this.deviceOf[i]).filter((id): id is string => id != null)))];
     for (const [id, p] of this.peeks) {
       if (this.roofDevices.includes(id)) continue;

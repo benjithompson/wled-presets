@@ -67,6 +67,8 @@ export class Lights {
 
   /** One WebSocket per enabled device: WLED says every change of its power and brightness on it. */
   private watchers = new Map<string, { url: string; peek: WledPeek }>();
+  /** Per device, the borrowed peeks (see peek) that want its live colors now. */
+  private liveWanted = new Map<string, Set<object>>();
   /** What each device last reported (see observe), and when. */
   private seen = new Map<string, PowerState & { at: number }>();
   /** Devices that missed an admin's power or brightness switch: they get it when they answer again. */
@@ -296,6 +298,20 @@ export class Lights {
    */
   peek(d: Device): Peek {
     const cur = () => this.watchers.get(d.id)?.peek;
+    // Several views borrow the same WebSocket (the roofline, the admin's yard view): the colors
+    // keep coming while any of them wants them.
+    const me = {};
+    const wanting = () => {
+      let set = this.liveWanted.get(d.id);
+      if (!set) this.liveWanted.set(d.id, (set = new Set()));
+      return set;
+    };
+    const want = (live: boolean) => {
+      const set = wanting();
+      if (live) set.add(me);
+      else set.delete(me);
+      return set.size > 0;
+    };
     return {
       get leds() {
         return cur()?.leds ?? null;
@@ -313,8 +329,8 @@ export class Lights {
         return cur()?.bri ?? null;
       },
       // The current one: after an address change, `d` has the old address.
-      setLive: (live: boolean) => (cur() ?? this.watch(d)).setLive(live),
-      close: () => cur()?.setLive(false)
+      setLive: (live: boolean) => (cur() ?? this.watch(d)).setLive(want(live)),
+      close: () => cur()?.setLive(want(false))
     };
   }
 

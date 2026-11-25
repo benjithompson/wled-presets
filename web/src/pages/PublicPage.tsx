@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Clock, Gamepad2, Loader2, Power, Settings2, Sparkles, Users, WifiOff } from 'lucide-react';
+import { Check, Clock, Eye, Gamepad2, Loader2, Palette, Power, Settings2, Sparkles, Users, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PublicState } from '../../../shared/types.ts';
 import { burst } from '../components/Burst.tsx';
@@ -19,6 +19,7 @@ import { GAME_CATALOG } from '../../../shared/games.ts';
 import { useEvents } from '../lib/useEvents.ts';
 import { fromHex, hex, mix } from '../../../shared/color.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
+import { colorName } from '../lib/colorName.ts';
 import { Roofline, useRoofStream } from '../components/Roofline.tsx';
 import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../components/LightControls.tsx';
 
@@ -121,7 +122,7 @@ export function PublicPage() {
         </header>
 
         {admin ? <AdminBar lightsOff={off} /> : null}
-        {state ? <StatusLine state={state} /> : null}
+        {state ? <StatusLine state={state} line={line} /> : null}
         {line ? <LineBanner line={line} /> : null}
 
         {isLoading ? (
@@ -268,8 +269,9 @@ function GamesSection({ off }: { off: boolean }) {
 }
 
 /**
- * For a signed-in admin: the way back to the admin console, and the switches for every light
- * (power and brightness), so the lights can be put out without leaving the page.
+ * For a signed-in admin: the way back to the admin console, the live view of the whole layout,
+ * and the switches for every light (power and brightness), so the lights can be put out without
+ * leaving the page.
  */
 function AdminBar({ lightsOff }: { lightsOff: boolean }) {
   const { data: controls } = useLightControls();
@@ -281,6 +283,12 @@ function AdminBar({ lightsOff }: { lightsOff: boolean }) {
         className="inline-flex items-center gap-1.5 rounded-full bg-stone-900 px-3 py-1.5 font-medium text-white shadow-sm hover:bg-stone-800 dark:bg-accent-400 dark:text-stone-950 dark:hover:bg-accent-300"
       >
         <Settings2 className="size-4" /> Admin console
+      </a>
+      <a
+        href="/yard"
+        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-medium text-stone-700 ring-1 ring-stone-900/15 hover:bg-white/80 dark:text-stone-200 dark:ring-white/15 dark:hover:bg-white/10"
+      >
+        <Eye className="size-4" /> Live layout
       </a>
       <span className="inline-flex items-center gap-2">
         <PowerButton size="sm" on={!lightsOff} label="All lights" disabled={power.isPending} onToggle={() => power.mutate({ on: lightsOff })} />
@@ -321,12 +329,14 @@ function LineBanner({ line }: { line: LineView }) {
   }
   return (
     <div className={cn(box, 'bg-white/65 text-stone-700 ring-stone-900/10 dark:bg-stone-900/45 dark:text-stone-300 dark:ring-white/10')} aria-live="polite">
-      {now ? (
+      {/* What plays now is in the status line above; here, only that it is yours. */}
+      {now?.you ? (
         <span className="inline-flex items-center gap-2">
           {now.kind === 'game' ? <Gamepad2 className="size-4 text-accent-500" /> : <Sparkles className="size-4 text-accent-500" />}
-          {now.you ? 'Your pick is on: ' : now.kind === 'game' ? 'Someone is playing ' : 'On now: '}
-          <b className="font-semibold text-stone-900 dark:text-white">{now.label}</b>
+          Your pick is on: <b className="font-semibold text-stone-900 dark:text-white">{now.label}</b>
         </span>
+      ) : now?.kind === 'game' ? (
+        <span>Someone has the lights.</span>
       ) : line.calling ? (
         <span>Waiting for the next player…</span>
       ) : null}
@@ -370,7 +380,7 @@ function LineBanner({ line }: { line: LineView }) {
   );
 }
 
-function StatusLine({ state }: { state: PublicState }) {
+function StatusLine({ state, line }: { state: PublicState; line: LineView | null }) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (!state.revertAt) return;
@@ -402,6 +412,7 @@ function StatusLine({ state }: { state: PublicState }) {
                 : `All ${state.totalDevices} lights online`
               : `${state.onlineDevices} of ${state.totalDevices} lights online`}
       </span>
+      <NowPlaying state={state} line={line} />
       {state.revertAt && new Date(state.revertAt).getTime() > Date.now() ? (
         <span className="inline-flex items-center gap-1.5 rounded-full bg-white/60 px-3 py-1 text-stone-500 ring-1 ring-stone-200 dark:bg-white/5 dark:text-stone-400 dark:ring-stone-800">
           <Clock className="size-3.5" />
@@ -409,6 +420,39 @@ function StatusLine({ state }: { state: PublicState }) {
         </span>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * What the lights show now, for visitors who cannot see the house: the game being played, the
+ * scene, or the color by its name (with a dot of it), never its hex.
+ */
+function NowPlaying({ state, line }: { state: PublicState; line: LineView | null }) {
+  if (state.lightsOff || !state.anyOnline) return null;
+  const chip = 'inline-flex items-center gap-1.5 rounded-full bg-white/60 px-3 py-1 text-stone-600 ring-1 ring-stone-200 backdrop-blur-md dark:bg-white/5 dark:text-stone-300 dark:ring-stone-800';
+  const name = 'font-semibold text-stone-900 dark:text-white';
+  if (line?.now?.kind === 'game') {
+    return (
+      <span className={chip} aria-live="polite">
+        <Gamepad2 className="size-3.5 text-accent-500" /> Playing <b className={name}>{line.now.label}</b>
+      </span>
+    );
+  }
+  if (state.currentColor) {
+    return (
+      <span className={chip} aria-live="polite">
+        <Palette className="size-3.5 text-accent-500" /> Showing
+        <span className="size-3 rounded-full ring-1 ring-stone-900/15 dark:ring-white/20" style={{ background: state.currentColor }} aria-hidden />
+        <b className={name}>{colorName(state.currentColor)}</b>
+      </span>
+    );
+  }
+  const scene = state.scenes.find((s) => s.id === state.currentSceneId);
+  if (!scene) return null;
+  return (
+    <span className={chip} aria-live="polite">
+      <Sparkles className="size-3.5 text-accent-500" /> Now playing <b className={name}>{scene.name}</b>
+    </span>
   );
 }
 
