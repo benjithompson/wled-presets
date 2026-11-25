@@ -43,6 +43,8 @@ export interface AppDeps {
   host?: GameHost;
   preview?: LayoutPreview;
   roof?: RoofView;
+  /** Every LED of the yard as it is now, for the admin's live view (see RoofView, shape 'yard'). */
+  yard?: RoofView;
 }
 
 const deviceInput = z.object({
@@ -162,7 +164,7 @@ class HttpError extends Error {
   }
 }
 
-export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof }: AppDeps) {
+export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof, yard }: AppDeps) {
   const app = new Hono();
   const auth = createAuth(db, { secureCookie: config.secureCookie });
   const passkeys = createPasskeys(db);
@@ -433,6 +435,27 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   const admin = new Hono<AuthEnv>();
   admin.use('*', sameOrigin(), auth.require());
+
+  // The whole yard as it is now, LED by LED, for the live view (a picture of the lights, not the editor).
+  admin.get('/yard', (c) => {
+    if (!yard) return c.json({ error: 'No yard view' }, 404);
+    const ip = clientIp(c);
+    const release = streams.take(ip, isLoopbackIp(ip));
+    if (!release) return c.json({ error: 'Too many open pages from your address' }, 429);
+    return streamSSE(c, async (stream) => {
+      stream.onAbort(release);
+      const stop = yard.watch((e) => void stream.writeSSE(e).catch(() => {}));
+      if (!stop) {
+        await stream.writeSSE({ event: 'busy', data: '' });
+        release();
+        return;
+      }
+      const ping = setInterval(() => void stream.writeSSE({ event: 'ping', data: '' }).catch(() => {}), 25_000);
+      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      clearInterval(ping);
+      stop();
+    });
+  });
 
   admin.get('/overview', (c) =>
     c.json({

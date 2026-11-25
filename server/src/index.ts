@@ -61,16 +61,16 @@ lights.onAllOff = () => {
 };
 // What the roofline shows, for the home page. It watches the devices over the same WebSockets
 // that tell the server their power and brightness.
-const roof = new RoofView(
-  {
-    layout: () => host.yard,
-    devices: () => lights.liveDevices(),
-    deviceFrame: (id) => pipeline.deviceFrame(id),
-    simFrame: () => host.simFrame()
-  },
-  (d) => lights.peek(d)
-);
-const app = createApp({ config, db, bus, lights, host, preview, roof });
+const viewSources = {
+  layout: () => host.yard,
+  devices: () => lights.liveDevices(),
+  deviceFrame: (id: string) => pipeline.deviceFrame(id),
+  simFrame: () => host.simFrame()
+};
+const roof = new RoofView(viewSources, (d) => lights.peek(d));
+// The same, for every LED of the yard: the admin's live view of the layout.
+const yard = new RoofView(viewSources, (d) => lights.peek(d), { shape: 'yard', maxViewers: 20 });
+const app = createApp({ config, db, bus, lights, host, preview, roof, yard });
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);
 });
@@ -136,6 +136,7 @@ async function shutdown() {
   await Promise.race([sender.release(lights.devicesWithStatus()), new Promise((r) => setTimeout(r, 1000))]);
   lights.stop();
   roof.close();
+  yard.close();
   host.stop();
   preview.close();
   pipeline.close();

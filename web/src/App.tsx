@@ -11,12 +11,14 @@ import { SettingsPage } from './pages/admin/SettingsPage.tsx';
 import { LayoutPage } from './pages/admin/LayoutPage.tsx';
 import { GamesPage } from './pages/admin/GamesPage.tsx';
 import { PlayPage } from './pages/PlayPage.tsx';
+import { YardLivePage } from './pages/YardLivePage.tsx';
 import { SequencePage } from './pages/admin/sequence/SequencePage.tsx';
 
 const router = createBrowserRouter([
   { path: '/', element: <PublicPage /> },
   { path: '/login', element: <LoginPage /> },
   { path: '/play', element: <PlayPage /> },
+  { path: '/yard', element: <YardLivePage /> },
   {
     path: '/admin',
     element: <AdminLayout />,

@@ -320,6 +320,21 @@ describe('following the devices', () => {
     await until(() => power(ids[0])?.bri === 77);
   });
 
+  it('keeps the colors coming while any view still wants them', async () => {
+    const device = t.db.getDevice(ids[0])!;
+    const roof = t.lights.peek(device);
+    const yard = t.lights.peek(device);
+    const live = () => (t.lights as unknown as { watchers: Map<string, { peek: { live: boolean } }> }).watchers.get(device.id)!.peek.live;
+    roof.setLive(true);
+    yard.setLive(true);
+    expect(live()).toBe(true);
+    // The roofline closes (nobody on the home page): the yard view still gets the colors.
+    roof.close();
+    expect(live()).toBe(true);
+    yard.close();
+    expect(live()).toBe(false);
+  });
+
   it('shows an offline device as offline, and gives it the switch it missed when it is back', async () => {
     const spare = await startMockWled(0, 'Spare');
     const port = spare.port;
