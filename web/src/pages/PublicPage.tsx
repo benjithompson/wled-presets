@@ -122,7 +122,7 @@ export function PublicPage() {
   const theme = useTheme();
   const speed = useBackgroundSpeed();
   const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-  const look = useMemo(() => currentLook(state), [state?.currentColor, state?.currentSceneId, state?.scenes]);
+  const look = useMemo(() => currentLook(state), [state?.currentColor, state?.currentSceneId, state?.playlistSceneId, state?.scenes]);
 
   return (
     <div className="relative min-h-dvh">
@@ -611,13 +611,18 @@ function NowPlaying({ state, line }: { state: PublicState; line: LineView | null
       </span>
     );
   }
-  const scene = state.scenes.find((s) => s.id === state.currentSceneId);
+  const scene = playingScene(state);
   if (!scene) return null;
   return (
     <span className={chip} aria-live="polite">
       <Sparkles className="size-3.5 text-accent-500" /> Now playing <b className={name}>{scene.name}</b>
     </span>
   );
+}
+
+/** The scene on the lights now: the current scene, or, when that is a playlist, the scene it is on. */
+function playingScene(state: PublicState) {
+  return state.scenes.find((s) => s.id === state.playlistSceneId) ?? state.scenes.find((s) => s.id === state.currentSceneId);
 }
 
 /** The palette the background shows: the solid color, the playing scene, or the default. */
@@ -628,7 +633,7 @@ function currentLook(state: PublicState | undefined): Look {
     // A solid color is calm. Add lighter and deeper shades so the field still has depth.
     return { colors: [c, mixHex(c, '#ffffff', 0.45), mixHex(c, '#000000', 0.35)], energy: 0.18 };
   }
-  const scene = state.scenes.find((s) => s.id === state.currentSceneId);
+  const scene = playingScene(state);
   return scene ? { colors: scene.palette, energy: scene.energy } : { colors: [], energy: 0.3 };
 }
 
