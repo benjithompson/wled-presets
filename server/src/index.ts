@@ -71,8 +71,8 @@ const viewSources = {
   simFrame: () => host.simFrame()
 };
 const roof = new RoofView(viewSources, (d) => lights.peek(d));
-// The same, for every LED of the yard: the admin's live view of the layout.
-const yard = new RoofView(viewSources, (d) => lights.peek(d), { shape: 'yard', maxViewers: 20 });
+// The same, for every LED of the yard: the Live tab (visitors at most 60 of these, see app.ts).
+const yard = new RoofView(viewSources, (d) => lights.peek(d), { shape: 'yard', maxViewers: 80 });
 const app = createApp({ config, db, bus, lights, host, preview, roof, yard });
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);

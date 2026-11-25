@@ -28,6 +28,16 @@ export interface RoofSources {
 /** What a device shows by itself (see WledPeek). */
 export type Peek = Pick<WledPeek, 'leds' | 'step' | 'at' | 'on' | 'bri' | 'setLive' | 'close'>;
 
+/**
+ * A kind of viewer with its own limit, for example the public: `max` of them at once, each sent
+ * every `every`th frame (fewer bytes for each, when many watch).
+ */
+export interface ViewerGroup {
+  name: string;
+  max: number;
+  every?: number;
+}
+
 export type RoofEvent = { event: 'geometry'; data: string } | { event: 'frame'; data: string };
 
 interface Cell {
@@ -59,7 +69,8 @@ export class RoofView {
   private makePeek: (d: DeviceTarget) => Peek;
   private shape: ViewShape;
   private maxViewers: number;
-  private viewers = new Set<(e: RoofEvent) => void>();
+  /** Each browser: its group, how often it gets a frame, the frame it got last, and ticks to skip. */
+  private viewers = new Map<(e: RoofEvent) => void, { group: string | null; every: number; sent: string; skip: number }>();
   private peeks = new Map<string, Peek>();
   private timer: NodeJS.Timeout | null = null;
   private lingerTimer: NodeJS.Timeout | null = null;
@@ -85,10 +96,11 @@ export class RoofView {
    * Adds a browser. It gets the geometry and the last frame at once, then each new frame.
    * Returns the function that removes it, or null when too many watch already.
    */
-  watch(send: (e: RoofEvent) => void): (() => void) | null {
+  watch(send: (e: RoofEvent) => void, group?: ViewerGroup): (() => void) | null {
     if (this.viewers.size >= this.maxViewers) return null;
+    if (group && [...this.viewers.values()].filter((v) => v.group === group.name).length >= group.max) return null;
     this.rebuildIfMoved();
-    this.viewers.add(send);
+    this.viewers.set(send, { group: group?.name ?? null, every: Math.max(1, Math.round(group?.every ?? 1)), sent: this.last, skip: 0 });
     send({ event: 'geometry', data: JSON.stringify(this.geometry) });
     if (this.last) send({ event: 'frame', data: this.last });
     if (this.lingerTimer) clearTimeout(this.lingerTimer);
@@ -179,11 +191,21 @@ export class RoofView {
 
   private tick() {
     const moved = this.rebuildIfMoved();
-    if (moved) for (const send of this.viewers) send({ event: 'geometry', data: JSON.stringify(this.geometry) });
+    if (moved) for (const send of this.viewers.keys()) send({ event: 'geometry', data: JSON.stringify(this.geometry) });
     const data = Buffer.from(this.frame()).toString('base64');
-    if (data === this.last && !moved) return;
     this.last = data;
-    for (const send of this.viewers) send({ event: 'frame', data });
+    // Each browser gets a frame when the lights changed since its last one; one sent only every
+    // so many ticks skips the ones between, and still gets where the lights stopped.
+    for (const [send, v] of this.viewers) {
+      if (v.sent === data && !moved) continue;
+      if (v.skip > 0 && !moved) {
+        v.skip--;
+        continue;
+      }
+      v.sent = data;
+      v.skip = v.every - 1;
+      send({ event: 'frame', data });
+    }
   }
 
   private closePeeks() {

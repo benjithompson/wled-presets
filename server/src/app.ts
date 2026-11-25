@@ -175,6 +175,9 @@ async function body<T extends z.ZodType>(c: Context, schema: T): Promise<z.infer
 /** How long WLED takes to apply new settings (it sets up LED outputs after it answers). */
 const WLED_SETTLE_MS = 800;
 
+/** Visitors watching the Live tab at once, and how often each gets a frame (see RoofView). */
+const PUBLIC_YARD_VIEWERS = { name: 'public', max: 60, every: 2 };
+
 class HttpError extends Error {
   status: 400 | 401 | 403 | 404 | 409 | 502;
   constructor(status: HttpError['status'], message: string) {
@@ -313,6 +316,30 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     return streamSSE(c, async (stream) => {
       stream.onAbort(release);
       const stop = roof.watch((e) => void stream.writeSSE(e).catch(() => {}));
+      if (!stop) {
+        await stream.writeSSE({ event: 'busy', data: '' });
+        release();
+        return;
+      }
+      const ping = setInterval(() => void stream.writeSSE({ event: 'ping', data: '' }).catch(() => {}), 25_000);
+      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      clearInterval(ping);
+      stop();
+    });
+  });
+
+  // The whole yard as the lights show it now (the home page's Live tab). Everyone shares the
+  // admins' view of the devices; visitors are a group of their own, so an admin always gets in,
+  // and each gets every other frame (10 a second): every LED of the yard, for many people, is a
+  // lot to send.
+  app.get('/api/yard', publicLimiter, (c) => {
+    if (!yard) return c.json({ error: 'No yard view' }, 404);
+    const ip = clientIp(c);
+    const release = streams.take(ip, isLoopbackIp(ip));
+    if (!release) return c.json({ error: 'Too many open pages from your address' }, 429);
+    return streamSSE(c, async (stream) => {
+      stream.onAbort(release);
+      const stop = yard.watch((e) => void stream.writeSSE(e).catch(() => {}), PUBLIC_YARD_VIEWERS);
       if (!stop) {
         await stream.writeSSE({ event: 'busy', data: '' });
         release();
