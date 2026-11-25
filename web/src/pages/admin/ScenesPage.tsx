@@ -201,7 +201,8 @@ export function ScenesPage() {
               const playable = steps ? steps.length > 0 : mapped > 0 || fx.objects.length > 0;
               const nowIn = data.state.currentSceneId === s.id ? data.state.playlistSceneId : null;
               const isDefault = data.settings.defaultSceneId === s.id;
-              const isCurrent = data.state.currentSceneId === s.id;
+              // The playlist that plays, and the scene of it on the lights now.
+              const isCurrent = data.state.currentSceneId === s.id || data.state.playlistSceneId === s.id;
               return (
                 <li key={s.id} className="flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5">
                   <div className="flex flex-col max-md:hidden">
