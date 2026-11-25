@@ -3,12 +3,18 @@
 // segments the keys the melody plays on (low notes on the left, high ones on the right), and an
 // arpeggio hops from object to object like notes on a staff.
 //
+// Sunrises and objects of your own design (shapes) clap with the roof, and whole objects blink
+// one after another: through the snare roll, with the hook's notes on the trees, and in turn
+// in the second drop.
+//
 // The show is mostly motion on dark: every quarter note moves somewhere (a light that walks
 // along the roof, each object wiping side to side or up and down, a laser scanning across the
-// bushes or up the trees, a wave across the yard), and what moves grows with the music: one
-// roof key in the intro, the bushes in the build, every object in the drops, everything with a
-// 3-D picture behind it at the end of the second drop. The dark between the beats (negative
-// space) is part of it: the yard's 3-D pictures play only where the music swells.
+// bushes or up the yard, a wave across the yard, a shockwave out from its middle), and what
+// moves grows with the music: one roof key in the intro, the bushes in the build, every object
+// in the drops, everything with a 3-D picture behind it at the end of the second drop. The dark
+// between the beats (negative space) is part of it: the yard's 3-D pictures play only where the
+// music swells. The big moves (waves, shockwaves, lasers, the hits) play on the whole yard, not
+// a list of objects, so an object added to the layout later joins in without a new show.
 //
 // One score drives both the lights (a sequence) and the music (the editor synthesizes it into
 // an audio track, web/src/pages/admin/sequence/showcaseAudio.ts), so every flash lands on its
@@ -158,10 +164,17 @@ interface Band {
   trees: Player[];
   /** Bushes: hi-hats and bass, played in turn left and right. */
   bushes: Player[];
+  /** Sunrises and objects of your own design: the claps, with the roof (none when the yard has none). */
+  shapes: Player[];
   /** Whole roofs and lines: the claps and pads. */
   roof: Player[];
   /** Everything, left to right. */
   all: Player[];
+  /**
+   * The whole yard as one target: what it plays reaches every object, also ones added to the
+   * layout after the show was made.
+   */
+  yard: Player[];
 }
 
 function band(layout: Layout): Band {
@@ -201,8 +214,10 @@ function band(layout: Layout): Band {
     ground: ground.length ? ground : all.length ? all : yard,
     trees: trees.length ? trees : others.length ? others : bushes.length ? bushes : roof.length ? roof : yard,
     bushes: bushes.length ? bushes : ground.length ? ground : all.length ? all : yard,
+    shapes: others,
     roof: roof.length ? roof : ground.length ? ground : yard,
-    all: all.length ? all : yard
+    all: all.length ? all : yard,
+    yard
   };
 }
 
@@ -290,11 +305,14 @@ class Layer {
     this.add(keysOf(players), t, dur, solid(color, brightness), { fadeIn: r4(dur * 0.3), transitionIn: inT, fadeOut: r4(dur * 0.6), transitionOut: out, eachObject: true });
   }
 
-  /** A band of light that sweeps across the whole yard in `dur` seconds: it wipes in from one side and out after it. */
+  /**
+   * A band of light that sweeps across the whole yard in `dur` seconds: it wipes in from one
+   * side, and out after it 30% of the time behind, so dark follows it.
+   */
   sweep(t: number, dur: number, color: string, brightness: number, dir: TransitionChoice = 'wipeRight') {
     const start = r4(t);
-    const half = Math.floor(((r4(t + dur) - start) / 2) * 10000) / 10000;
-    this.add([YARD], t, dur, solid(color, brightness), { fadeIn: half, transitionIn: dir, fadeOut: half, transitionOut: dir });
+    const edge = Math.floor((r4(t + dur) - start) * 0.7 * 10000) / 10000;
+    this.add([YARD], t, dur, solid(color, brightness), { fadeIn: edge, transitionIn: dir, fadeOut: edge, transitionOut: dir });
   }
 
   /**
@@ -311,6 +329,39 @@ class Layer {
 
   track(): SeqTrack {
     return { id: newId('layer'), name: this.name, clips: this.clips, opacity: this.opacity, blend: this.blend };
+  }
+}
+
+/** How a shockwave spreads from the middle of the yard: a ring, or two bands that part like curtains. */
+type RingWay = 'ring' | 'split';
+
+/**
+ * Shockwaves: rings of light that roll out from the middle of the whole yard to its edges, so
+ * they reach every object, also ones added after the show was made. Several parts of the show
+ * ask for them (the kick, the claps, the big hits); where two land at once the bigger one plays,
+ * and each ends before the next one starts.
+ */
+class Rings {
+  private at = new Map<number, { t: number; dur: number; color: string; brightness: number; way: RingWay }>();
+
+  add(t: number, dur: number, color: string, brightness: number, way: RingWay = 'ring') {
+    const k = Math.round(t * 1000);
+    const had = this.at.get(k);
+    if (had && had.brightness * had.dur >= brightness * dur) return;
+    this.at.set(k, { t, dur, color, brightness, way });
+  }
+
+  into(layer: Layer) {
+    const rings = [...this.at.values()].sort((a, b) => a.t - b.t);
+    rings.forEach((r, i) => {
+      const next = rings[i + 1];
+      const dur = next ? Math.min(r.dur, next.t - r.t) : r.dur;
+      // The way in leads and the way out follows a fifth behind it: a band with dark either side
+      // that grows from the middle. (The fade's end is rounded down, so it fits in the clip.)
+      const f = Math.floor(dur * 0.8 * 10000) / 10000;
+      const way = r.way === 'ring' ? 'iris' : 'splitOut';
+      layer.add([YARD], r.t, dur, solid(r.color, r.brightness), { fadeIn: f, transitionIn: way, fadeOut: f, transitionOut: way, name: r.way === 'ring' ? 'Shockwave' : 'Shockwave, both ways' });
+    });
   }
 }
 
@@ -362,24 +413,35 @@ type BeatLook =
   | { kind: 'cross'; group: keyof Band; way: 'side' | 'upDown'; brightness: number }
   /** A laser across a group (as one), a pass a beat. */
   | { kind: 'laser'; group: keyof Band; direction: 'right' | 'up'; brightness: number; white?: boolean }
-  /** A wave of color across the whole yard on every beat, there and back. */
-  | { kind: 'wave'; brightness: number };
+  /** A wave of color across the whole yard every `every` beats (1 if not given), there and back. */
+  | { kind: 'wave'; every?: number; brightness: number }
+  /** A shockwave from the middle of the yard out to its edges every `every` beats: the kick, where the trees play something else. */
+  | { kind: 'shock'; every: number; brightness: number }
+  /**
+   * Whole objects of a group, lit one after another `per` times a beat: in order across the
+   * yard, or there and back. Each takes the color of the arpeggio's note at that moment.
+   */
+  | { kind: 'chase'; group: keyof Band; per: number; back?: boolean; brightness: number };
 
 const BEAT_LOOKS: { bar: number; bars: number; looks: BeatLook[] }[] = [
-  { bar: 0, bars: 4, looks: [{ kind: 'walk', group: 'keys', brightness: 0.5 }] },
-  { bar: 4, bars: 2, looks: [{ kind: 'walk', group: 'keys', brightness: 0.9 }, { kind: 'cross', group: 'bushes', way: 'side', brightness: 0.7 }] },
-  { bar: 6, bars: 2, looks: [{ kind: 'walk', group: 'keys', brightness: 0.9 }, { kind: 'laser', group: 'bushes', direction: 'right', brightness: 0.9 }] },
-  { bar: 8, bars: 2, looks: [{ kind: 'cross', group: 'bushes', way: 'upDown', brightness: 0.85 }] },
-  { bar: 10, bars: 2, looks: [{ kind: 'laser', group: 'ground', direction: 'up', brightness: 1 }] },
-  { bar: 12, bars: 2, looks: [{ kind: 'laser', group: 'ground', direction: 'right', brightness: 1, white: true }] },
+  { bar: 0, bars: 2, looks: [{ kind: 'walk', group: 'keys', brightness: 0.5 }] },
+  { bar: 2, bars: 2, looks: [{ kind: 'walk', group: 'keys', brightness: 0.5 }, { kind: 'shock', every: 4, brightness: 0.35 }] },
+  { bar: 4, bars: 2, looks: [{ kind: 'walk', group: 'keys', brightness: 0.9 }, { kind: 'cross', group: 'bushes', way: 'side', brightness: 0.7 }, { kind: 'wave', every: 4, brightness: 0.4 }] },
+  { bar: 6, bars: 2, looks: [{ kind: 'walk', group: 'keys', brightness: 0.9 }, { kind: 'laser', group: 'bushes', direction: 'right', brightness: 0.9 }, { kind: 'cross', group: 'shapes', way: 'upDown', brightness: 0.8 }, { kind: 'wave', every: 4, brightness: 0.4 }] },
+  { bar: 8, bars: 2, looks: [{ kind: 'cross', group: 'bushes', way: 'upDown', brightness: 0.85 }, { kind: 'wave', every: 2, brightness: 0.5 }] },
+  { bar: 10, bars: 2, looks: [{ kind: 'laser', group: 'yard', direction: 'up', brightness: 1 }] },
+  { bar: 12, bars: 2, looks: [{ kind: 'laser', group: 'ground', direction: 'right', brightness: 1, white: true }, { kind: 'shock', every: 4, brightness: 0.8 }] },
   { bar: 14, bars: 2, looks: [{ kind: 'cross', group: 'ground', way: 'side', brightness: 1 }] },
-  { bar: 16, bars: 2, looks: [{ kind: 'wave', brightness: 0.7 }, { kind: 'cross', group: 'bushes', way: 'upDown', brightness: 0.8 }] },
-  { bar: 18, bars: 2, looks: [{ kind: 'cross', group: 'ground', way: 'upDown', brightness: 1 }] },
+  { bar: 16, bars: 2, looks: [{ kind: 'shock', every: 1, brightness: 0.75 }, { kind: 'cross', group: 'bushes', way: 'upDown', brightness: 0.8 }, { kind: 'cross', group: 'shapes', way: 'side', brightness: 0.8 }] },
+  { bar: 18, bars: 2, looks: [{ kind: 'wave', brightness: 0.6 }, { kind: 'cross', group: 'ground', way: 'upDown', brightness: 1 }] },
   { bar: 20, bars: 4, looks: [{ kind: 'walk', group: 'ground', back: true, brightness: 0.45 }] },
-  { bar: 24, bars: 2, looks: [{ kind: 'cross', group: 'all', way: 'side', brightness: 1 }] },
-  { bar: 26, bars: 2, looks: [{ kind: 'laser', group: 'ground', direction: 'right', brightness: 1, white: true }, { kind: 'laser', group: 'trees', direction: 'up', brightness: 1 }] },
-  { bar: 28, bars: 2, looks: [{ kind: 'laser', group: 'all', direction: 'right', brightness: 1, white: true }, { kind: 'cross', group: 'ground', way: 'upDown', brightness: 1 }] }
+  { bar: 24, bars: 2, looks: [{ kind: 'cross', group: 'yard', way: 'side', brightness: 1 }, { kind: 'shock', every: 2, brightness: 0.7 }] },
+  { bar: 26, bars: 2, looks: [{ kind: 'laser', group: 'yard', direction: 'right', brightness: 1, white: true }, { kind: 'chase', group: 'trees', per: 2, back: true, brightness: 1 }, { kind: 'shock', every: 1, brightness: 0.7 }] },
+  { bar: 28, bars: 2, looks: [{ kind: 'laser', group: 'yard', direction: 'up', brightness: 1, white: true }, { kind: 'chase', group: 'ground', per: 2, brightness: 1 }, { kind: 'shock', every: 1, brightness: 0.8 }] }
 ];
+
+/** Bars where the trees play something else (the hook, a chase), and the kick is a shockwave instead. */
+const treesBusy = (bar: number) => (bar >= 16 && bar < 18) || (bar >= 26 && bar < 30);
 
 /** The color of a beat: the chord's on the strong beats, its accent on the others, whiter in the drops. */
 function beatColor(bar: number, beat: number) {
@@ -400,16 +462,21 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
   const flash = new Layer('Flash', 'add');
   const stabs = new Layer('Chord stabs', 'normal');
   const kick = new Layer('Kick (trees)', 'normal');
-  const clap = new Layer('Clap (roof)', 'add');
+  const clap = new Layer('Clap (roof and shapes)', 'add');
   const roll = new Layer('Roof keys (snare roll)', 'normal');
+  const rollObjects = new Layer('Objects one after another (snare roll)', 'normal');
   const lead = new Layer('Melody (roof keys)', 'normal');
+  const hook = new Layer('Hook (whole trees, by note)', 'normal');
   const arp = new Layer('Arpeggio (note to note)', 'normal');
+  const chase = new Layer('Beat: whole objects one after another', 'lighten');
   const walk = new Layer('Beat: a light that walks', 'lighten');
   const sides = new Layer('Beat: each object side to side', 'lighten');
   const upDown = new Layer('Beat: each object up and down', 'lighten');
   const lasers = new Layer('Beat: laser side to side', 'add');
   const lasersUp = new Layer('Beat: laser up and down', 'add');
   const waves = new Layer('Beat: waves across the yard', 'add');
+  const shock = new Layer('Beat: shockwaves from the middle', 'add');
+  const rings = new Rings();
   const bass = new Layer('Bass (bushes)', 'lighten');
   const hats = new Layer('Hi-hats (bushes)', 'add');
   const sweep = new Layer('Roof (beat sweeps)', 'lighten');
@@ -431,8 +498,11 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         const beat = Math.round((n.t - at(bar)) / BEAT);
         const color = beatColor(bar, beat);
         // The trees: filling from the ground in the build, up and back down in the rise, a
-        // flash that drains away in the first drop, side to side in the second.
-        if (bar < 8) kick.fill(b.trees, n.t, BEAT * 0.55, color, n.vel, 'wipeUp', 'fade');
+        // flash that drains away in the first drop, side to side in the second. Where they
+        // play the hook or a chase, a shockwave from the middle of the yard is the kick (see BEAT_LOOKS).
+        if (treesBusy(bar)) {
+          // Shown by the shockwaves.
+        } else if (bar < 8) kick.fill(b.trees, n.t, BEAT * 0.55, color, n.vel, 'wipeUp', 'fade');
         else if (bar < 12) kick.fill(b.trees, n.t, BEAT * 0.65, color, n.vel, 'wipeUp', 'wipeDown');
         else if (bar < 24 || bar >= 31) kick.hit(b.trees, n.t, BEAT * 0.45, color, n.vel, 'wipeDown');
         else kick.cross(b.trees, n.t, BEAT * 0.9, color, n.vel, sideOf(beat));
@@ -447,13 +517,22 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         n.pan = panOf(b.trees);
         break;
       }
-      case 'clap':
-        clap.hit(b.roof, n.t, BEAT * 0.5, whiter(Math.round((n.t - at(bar)) / BEAT) === 1 ? chord.accent : chord.color, 0.5), 0.8, 'fade', 'splitOut');
+      case 'clap': {
+        const color = whiter(Math.round((n.t - at(bar)) / BEAT) === 1 ? chord.accent : chord.color, 0.5);
+        clap.hit([...b.roof, ...b.shapes], n.t, BEAT * 0.5, color, 0.8, 'fade', 'splitOut');
+        // In the second half of each drop, the clap also parts the whole yard from the middle.
+        if ((bar >= 14 && bar < 16) || (bar >= 24 && bar < 26)) rings.add(n.t, BEAT, color, 0.6, 'split');
         n.pan = 0;
         break;
+      }
       case 'snare': {
+        // The roll runs along the roof keys and, at the same time, through every object on the
+        // ground one after another, faster and faster.
         const p = [b.keys[rolls % b.keys.length]];
-        roll.hit(p, n.t, Math.min(BEAT * 0.8, n.dur * 0.9), whiter('#ff2a8a', n.vel * 0.6), 0.4 + 0.6 * n.vel);
+        const dur = Math.min(BEAT * 0.8, n.dur * 0.9);
+        const color = whiter('#ff2a8a', n.vel * 0.6);
+        roll.hit(p, n.t, dur, color, 0.4 + 0.6 * n.vel);
+        rollObjects.hit([b.ground[rolls % b.ground.length]], n.t, dur, whiter(chord.accent, n.vel * 0.4), 0.3 + 0.7 * n.vel);
         n.pan = panOf(p);
         rolls++;
         break;
@@ -477,12 +556,16 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
       case 'lead': {
         const p = [byPitch(b.keys, note, 67, 83)];
         lead.hit(p, n.t, n.dur * 0.94, noteColor(note), n.vel + 0.15, 'fade', n.dur >= BEAT / 2 ? 'splitOut' : undefined);
+        // Halfway through the first drop the whole trees play it too, each note on its tree
+        // (low notes on the left).
+        if (treesBusy(bar)) hook.hit([byPitch(b.trees, note, 67, 83)], n.t, n.dur * 0.94, noteColor(note), 1);
         n.pan = panOf(p);
         break;
       }
       case 'arp': {
-        // In the second drop it runs up and down the roof, and along the ground with it.
-        const p = bar >= 24 ? [byPitch(b.keys, note, 69, 88), byPitch(b.ground, note, 69, 88)] : [byPitch(b.ground, note, 53, 84)];
+        // In the second drop it runs up and down the roof, and along the ground with it until the
+        // whole objects take over (the chases in BEAT_LOOKS).
+        const p = bar >= 24 ? (bar < 26 ? [byPitch(b.keys, note, 69, 88), byPitch(b.ground, note, 69, 88)] : [byPitch(b.keys, note, 69, 88)]) : [byPitch(b.ground, note, 53, 84)];
         arp.hit(p, n.t, n.dur * 0.94, noteColor(note, bar >= 24 ? 0.85 : 1), Math.min(1, n.vel + (bar < 4 ? 0.1 : 0.3)));
         n.pan = panOf(p);
         break;
@@ -494,13 +577,17 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         // The finale: left, right, left, everything; then one last chord that closes in to the middle.
         const last = bar === 31;
         const k = Math.round((n.t - at(30)) / BEAT);
-        const p = last || k === 3 ? b.all : half(b.all, k);
-        stabs.hit(p, n.t, last ? BAR : n.dur, last ? '#ffe6b0' : whiter(CHORDS[k % 4].color, 0.2), 1, last ? 'irisClose' : 'fade');
+        const p = last || k === 3 ? b.yard : half(b.all, k);
+        const color = last ? '#ffe6b0' : whiter(CHORDS[k % 4].color, 0.2);
+        stabs.hit(p, n.t, last ? BAR : n.dur, color, 1, last ? 'irisClose' : 'fade');
+        rings.add(n.t, last ? 2 * BEAT : BEAT, color, 1);
         n.pan = last || k === 3 ? 0 : panOf(p);
         break;
       }
       case 'impact':
-        flash.hit([{ key: YARD, x: 0.5 }], n.t, 0.9, '#ffffff', 0.9, 'fade');
+        // A flash, and a shockwave that rolls out over the whole yard after it.
+        flash.hit(b.yard, n.t, 0.9, '#ffffff', 0.9, 'fade');
+        rings.add(n.t, 2 * BEAT, whiter(chord.accent, 0.4), 1);
         break;
     }
   }
@@ -510,6 +597,8 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
   for (const phrase of BEAT_LOOKS) {
     for (const look of phrase.looks) {
       const group = 'group' in look ? b[look.group] : b.all;
+      // A yard without shapes, say, leaves their part to the rest of the band.
+      if (!group.length) continue;
       if (look.kind === 'laser') {
         // A clip a bar, so every bar starts again from the left (or the bottom) on its downbeat.
         const layer = look.direction === 'up' ? lasersUp : lasers;
@@ -518,6 +607,22 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
           const colors = look.white ? [whiter(c.color, 0.25), whiter(c.accent, 0.25)] : [c.color, c.accent];
           const beats = bar === 11 ? 3 : 4;
           layer.laser(group, at(bar), beats * BEAT, 1, colors, look.brightness, look.direction);
+        }
+        continue;
+      }
+      if (look.kind === 'chase') {
+        // One whole object at a time: across the group in order, or there and back.
+        const n = group.length;
+        const step = BEAT / look.per;
+        const pattern = look.per >= 4 ? ARP16 : ARP8;
+        for (let s = 0; s < phrase.bars * 4 * look.per; s++) {
+          const bar = phrase.bar + Math.floor(s / (4 * look.per));
+          const e = s % (4 * look.per);
+          if (silent(bar, Math.floor(e / look.per))) continue;
+          const loop = look.back && n > 1 ? s % (2 * n - 2) : s % n;
+          const i = loop < n ? loop : 2 * n - 2 - loop;
+          const note = arpTone(bar, pattern[Math.floor((e * pattern.length) / (4 * look.per))]);
+          chase.hit([group[i]], at(bar) + e * step, step * 0.92, noteColor(note, 0.9), look.brightness);
         }
         continue;
       }
@@ -539,12 +644,17 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
         } else if (look.kind === 'cross') {
           const layer = look.way === 'side' ? sides : upDown;
           layer.cross(group, t, BEAT * 0.9, color, look.brightness, look.way === 'side' ? sideOf(beat) : upDownOf(beat));
+        } else if (look.kind === 'shock') {
+          if (k % look.every === 0) rings.add(t, Math.min(look.every, 2) * BEAT, color, look.brightness);
         } else {
-          waves.sweep(t, BEAT, color, look.brightness, sideOf(beat));
+          const every = look.every ?? 1;
+          // A slow wave crosses in two beats and leaves dark after it.
+          if (k % every === 0) waves.sweep(t, Math.min(every, 2) * BEAT, color, look.brightness, sideOf(k / every));
         }
       }
     }
   }
+  rings.into(shock);
   // Waves once a bar in the breakdown, slow and dim.
   for (const bar of [22, 23]) waves.sweep(at(bar), bar === 23 ? 3 * BEAT : BAR, whiter(chordOf(bar).accent, 0.3), 0.4);
 
@@ -588,7 +698,7 @@ export function showcase(layout: Layout, name = 'Showcase'): Showcase {
     }
   }
 
-  const layers = [blackout, flash, stabs, kick, clap, roll, lead, arp, walk, sides, upDown, lasers, lasersUp, waves, sweep, roof, bass, hats, pump, bed];
+  const layers = [blackout, flash, stabs, kick, clap, roll, rollObjects, lead, hook, arp, chase, walk, sides, upDown, lasers, lasersUp, waves, shock, sweep, roof, bass, hats, pump, bed];
   const sequence: Sequence = {
     id: '',
     name,

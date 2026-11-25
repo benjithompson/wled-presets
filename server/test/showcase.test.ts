@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { buildStage, sampleLayout, type Layout } from '../../shared/layout.ts';
 import { neighbours, SequencePlayer } from '../../shared/sequence.ts';
 import { showcase, SHOWCASE_BPM, SHOWCASE_SECONDS } from '../../shared/showcase.ts';
+import { YARD } from '../../shared/effects.ts';
+import { LedPlaces } from '../../shared/transitions.ts';
 import { sequenceInput } from '../src/sequenceStore.ts';
 
 const BEAT = 60 / SHOWCASE_BPM;
@@ -62,9 +64,14 @@ describe('the showcase', () => {
     const layout = yard();
     const { sequence, score } = showcase(layout);
     const clips = (name: string) => sequence.tracks.find((t) => t.name.startsWith(name))!.clips;
-    // Every kick of the score flashes the trees at its moment.
+    // Every kick of the score flashes the trees at its moment, or, where the trees play the hook
+    // or a chase, sends a shockwave out from the middle of the yard.
     const kicks = score.filter((n) => n.inst === 'kick');
-    expect(clips('Kick').map((c) => c.start)).toEqual(kicks.map((n) => Math.round(n.t * 10000) / 10000));
+    const r4 = (x: number) => Math.round(x * 10000) / 10000;
+    const onTrees = new Set(clips('Kick').map((c) => c.start));
+    const rings = new Set(clips('Beat: shockwaves').map((c) => c.start));
+    for (const k of kicks) expect(onTrees.has(r4(k.t)) || rings.has(r4(k.t)), `kick at ${k.t}`).toBe(true);
+    expect(onTrees.size).toBeGreaterThan(kicks.length / 2);
     expect(new Set(clips('Kick').flatMap((c) => c.targets))).toEqual(new Set(['tree-l', 'tree-r']));
     // The melody hops between the roof's segments, by pitch.
     const lead = score.filter((n) => n.inst === 'lead');
@@ -199,5 +206,72 @@ describe('the showcase', () => {
     // The yard's 3-D pictures play in under half of the show.
     const bed = sequence.tracks.find((t) => t.name === 'Yard 3-D')!.clips.reduce((a, c) => a + c.duration, 0);
     expect(bed / sequence.duration).toBeLessThan(0.5);
+  });
+
+  it('sends shockwaves out from the middle of the whole yard: the middle lights first, the edges after', () => {
+    const layout = yard();
+    const { sequence } = showcase(layout);
+    const rings = sequence.tracks.find((t) => t.name.startsWith('Beat: shockwaves'))!;
+    expect(rings.clips.length).toBeGreaterThan(20);
+    for (const c of rings.clips) expect(c.targets).toEqual([YARD]);
+    // Only the rings, from the first beat of bar 16 (a ring a beat).
+    const only = { ...sequence, tracks: [rings] };
+    const stage = buildStage(layout);
+    const places = new LedPlaces(stage);
+    const p = new SequencePlayer(stage, layout, only);
+    const out = new Float32Array(stage.pixelCount * 3);
+    const t0 = 16 * 4 * BEAT;
+    // The nearest third of the LEDs to the middle of the yard, and the farthest third.
+    const dist = Array.from({ length: stage.pixelCount }, (_, i) => i).filter((i) => stage.active[i]).map((i) => ({ i, r: Math.hypot(places.ux[i] - 0.5, places.uy[i] - 0.5) }));
+    dist.sort((a, b) => a.r - b.r);
+    const third = Math.floor(dist.length / 3);
+    const near = dist.slice(0, third).map((d) => d.i);
+    const far = dist.slice(-third).map((d) => d.i);
+    const mean = (leds: number[]) => leds.reduce((a, i) => a + Math.max(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]), 0) / leds.length;
+    const sample = (t: number) => {
+      while (p.time < t - 1e-9) p.update(Math.min(1 / 60, t - p.time), out);
+      return { inner: mean(near), outer: mean(far) };
+    };
+    const early = sample(t0 + 0.4 * BEAT);
+    const late = sample(t0 + 0.85 * BEAT);
+    expect(early.inner).toBeGreaterThan(early.outer + 0.2);
+    expect(late.inner).toBeLessThan(0.02);
+    expect(late.outer).toBeGreaterThan(0.05);
+  });
+
+  it('blinks whole trees one after another: with the hook\'s notes, and in turn in the second drop', () => {
+    const { sequence, score } = showcase(yard());
+    const bar = (t: number) => Math.floor(t / (4 * BEAT) + 1e-6);
+    // The hook on the trees: low notes on the left tree, high ones on the right.
+    const hook = sequence.tracks.find((t) => t.name.startsWith('Hook'))!.clips;
+    const notes = score.filter((n) => n.inst === 'lead' && bar(n.t) >= 16 && bar(n.t) < 18);
+    expect(hook.length).toBe(notes.length);
+    hook.forEach((c, i) => expect(c.targets).toEqual([notes[i].notes[0] <= 75 ? 'tree-l' : 'tree-r']));
+    // The chases: one whole object at a time, the trees in turn, then everything on the ground in order, left to right.
+    const chase = sequence.tracks.find((t) => t.name.startsWith('Beat: whole objects'))!.clips;
+    for (const c of chase) expect(c.targets).toHaveLength(1);
+    const trees = chase.filter((c) => bar(c.start) >= 26 && bar(c.start) < 28).map((c) => c.targets[0]);
+    expect(trees.slice(0, 4)).toEqual(['tree-l', 'tree-r', 'tree-l', 'tree-r']);
+    const ground = chase.filter((c) => bar(c.start) >= 28).map((c) => c.targets[0]);
+    expect(ground.slice(0, 6)).toEqual(['tree-l', 'bush-1', 'bush-2', 'sun', 'bush-3', 'tree-r']);
+    // The sunrise has its own part: the claps, with the roof.
+    expect(sequence.tracks.find((t) => t.name.startsWith('Clap'))!.clips[0].targets).toContain('sun');
+  });
+
+  it('lights every object, also one added to the layout after the show was made', () => {
+    const layout = yard();
+    const { sequence } = showcase(layout);
+    const later: Layout = { ...layout, fixtures: [...layout.fixtures, { ...layout.fixtures.find((f) => f.id === 'bush-2')!, id: 'new-bush', points: [{ x: 1300, y: 760, z: 40 }] }] };
+    const stage = buildStage(later);
+    const p = new SequencePlayer(stage, later, sequence);
+    const out = new Float32Array(stage.pixelCount * 3);
+    const lit = new Map<string, number>();
+    let frames = 0;
+    while (p.time < sequence.duration - 0.05) {
+      p.update(1 / 20, out);
+      frames++;
+      for (const f of stage.fixtures) if (level(stage, out, f.id) > 0.1) lit.set(f.id, (lit.get(f.id) ?? 0) + 1);
+    }
+    for (const f of stage.fixtures) expect((lit.get(f.id) ?? 0) / frames, f.id).toBeGreaterThan(f.id === 'new-bush' ? 0.25 : 0.4);
   });
 });
