@@ -17,6 +17,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** A layout with one roof line through these points (z: toward the street), 3 LEDs per 10 units. */
+function roofLayout(points: Point[]): Layout {
+  const layout = sampleLayout();
+  let length = 0;
+  for (let i = 1; i < points.length; i++) length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y, (points[i].z ?? 0) - (points[i - 1].z ?? 0));
+  const roof: Fixture = { ...layout.fixtures[0], points, pixels: Math.round(length * 0.3) };
+  layout.fixtures = [roof, ...layout.fixtures.slice(1)];
+  return layout;
+}
+
 describe('the yard as games see it', () => {
   it('knows which way the roof slopes, and sorts the other objects by what they are for', () => {
     const stage = buildStage(sampleLayout());
@@ -54,15 +64,6 @@ describe('the yard as games see it', () => {
 });
 
 describe('the roof as it looks from the street', () => {
-  /** A layout with one roof line through these points (z: toward the street), 3 LEDs per 10 units. */
-  function roofLayout(points: Point[]): Layout {
-    const layout = sampleLayout();
-    let length = 0;
-    for (let i = 1; i < points.length; i++) length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y, (points[i].z ?? 0) - (points[i - 1].z ?? 0));
-    const roof: Fixture = { ...layout.fixtures[0], points, pixels: Math.round(length * 0.3) };
-    layout.fixtures = [roof, ...layout.fixtures.slice(1)];
-    return layout;
-  }
   /** The roof LEDs that show from the street, and the ones that do not. */
   function split(stage: ReturnType<typeof buildStage>) {
     const t = roofTrack(stage);
@@ -392,6 +393,139 @@ describe('Roof Duel', () => {
     const scores = game.status().scores!;
     expect(scores[receiverId === 'a' ? 0 : 1].value).toBe(1);
     expect(scores[serverId === 'a' ? 0 : 1].value).toBe(0);
+  });
+
+  /** The roof's left and right ends that show from the street (front-view x). */
+  function seenEnds(stage: ReturnType<typeof buildStage>) {
+    const t = roofTrack(stage);
+    const xs = Array.from(t.leds).filter((_, k) => !t.hidden[k]).map((i) => stage.positions[i * 2]);
+    return [Math.min(...xs), Math.max(...xs)] as const;
+  }
+
+  /**
+   * Two phones playing well: 'a' (Fire, the left end) and 'b' (Ice, the right) serve, and hit the
+   * ball back when it comes within `near` (a share of the roof that shows) of their end.
+   * `extra` runs after each frame with where the ball is, for a test's own presses.
+   */
+  function rally(stage: ReturnType<typeof buildStage>, game: Game, frame: Frame, frames: number, near: number, extra?: (b: { at: number; x: number; dir: number }) => boolean | void) {
+    const [left, right] = seenEnds(stage);
+    const reach = (right - left) * near;
+    let last: number | null = null;
+    // One swing a side per half second (sparks after a hit can look like the ball for a moment).
+    const ready = [0, 0];
+    let f = 0;
+    const swing = (side: number) => {
+      if (f < ready[side]) return;
+      ready[side] = f + 30;
+      pressAs(game, side ? 'b' : 'a');
+    };
+    for (; f < frames; f++) {
+      game.update(1 / 60, frame);
+      if (game.status().phase === 'serve') {
+        last = null;
+        for (const id of ['a', 'b']) if (game.playerStatus!(id).button === 'SERVE') pressAs(game, id);
+        continue;
+      }
+      const at = ball(stage, frame);
+      const x = stage.positions[stage.roofPath[at] * 2];
+      const dir = last === null ? 0 : Math.sign(x - last);
+      last = x;
+      if (dir < 0 && x - left < reach) swing(0);
+      if (dir > 0 && right - x < reach) swing(1);
+      if (extra?.({ at, x, dir })) return;
+    }
+  }
+  const rallyOf = (game: Game) => Number(game.status().stats?.find((s) => s.label === 'Rally')?.value ?? 0);
+
+  it('measures each end zone in roof that shows: a stretch out of sight at an end does not shorten it', () => {
+    // The roof runs 6 m forward along the left side of the house (edge-on: out of sight), then
+    // 8 m along the front. Fire's end is where the front starts.
+    seedRandom(11);
+    const stage = buildStage(roofLayout([{ x: 200, y: 470, z: -600 }, { x: 200, y: 470 }, { x: 1000, y: 470 }]));
+    expect(roofTrack(stage).hidden.filter(Boolean).length).toBeGreaterThan(150);
+    const game = duelGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    pressAs(game, 'a');
+    pressAs(game, 'b');
+    run(game, frame, 3.2);
+    // Both phones hit the ball back when it is 8% of the front from their end: well inside an
+    // end zone (16%) on both sides, so nobody misses.
+    let most = 0;
+    rally(stage, game, frame, 60 * 25, 0.08, () => {
+      most = Math.max(most, rallyOf(game));
+      return game.status().phase === 'point';
+    });
+    expect(game.status().phase).not.toBe('point');
+    expect(most).toBeGreaterThan(8);
+  });
+
+  it('puts up a power orb now and then: a tap as the ball crosses it gives power, and power shots fly faster', () => {
+    seedRandom(5);
+    const stage = buildStage(sampleLayout());
+    const game = duelGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    const [left, right] = seenEnds(stage);
+    /** Frames each of Fire's shots takes over the middle half of the roof. */
+    const crossings: number[] = [];
+    let since = -1;
+    const time = ({ x, dir }: { x: number; dir: number }) => {
+      const u = (x - left) / (right - left);
+      if (dir <= 0) since = -1;
+      else if (since < 0 && u > 0.25 && u < 0.5) since = 0;
+      else if (since >= 0 && u > 0.75) {
+        crossings.push(since);
+        since = -1;
+      } else if (since >= 0) since++;
+    };
+    pressAs(game, 'a');
+    pressAs(game, 'b');
+    run(game, frame, 3.2);
+    // A good rally until the orb shows up.
+    rally(stage, game, frame, 60 * 40, 0.08, (b) => {
+      time(b);
+      return /power orb/.test(game.status().message ?? '');
+    });
+    expect(game.status().message).toMatch(/power orb/);
+    const plain = crossings.splice(0);
+    expect(plain.length).toBeGreaterThan(2);
+    // The orb: the roof LED that flashes magenta (red and blue, no green), once the sparks it
+    // came with have gone.
+    rally(stage, game, frame, 50, 0.08);
+    const votes = new Map<number, number>();
+    rally(stage, game, frame, 60, 0.08, () => {
+      for (let k = 0; k < stage.roofPath.length; k++) {
+        const j = stage.roofPath[k] * 3;
+        const [r, g, b] = [frame.data[j], frame.data[j + 1], frame.data[j + 2]];
+        if (r > 0.4 && b > 0.3 && g < 0.2 * r) votes.set(k, (votes.get(k) ?? 0) + 1);
+      }
+    });
+    // Where it is on the roof track, and the ball each frame, in steps (the game's units).
+    const { at: stepOf } = roofTrack(stage);
+    const orbAt = stepOf[[...votes].sort((p, q) => q[1] - p[1])[0][0]];
+    // A tap just after the ball crosses it takes it (the brightest LED moving a few steps: the ball).
+    let prev = -1;
+    let took = false;
+    rally(stage, game, frame, 60 * 9, 0.08, ({ at: led }) => {
+      const at = stepOf[led];
+      if (prev >= 0 && Math.abs(at - prev) < 12 && Math.min(prev, at) < orbAt - 1 && orbAt + 1 < Math.max(prev, at)) {
+        pressAs(game, 'a');
+        took = true;
+      }
+      prev = at;
+      return took;
+    });
+    expect(took).toBe(true);
+    expect(game.status().message).toMatch(/Fire takes the power orb/);
+    expect(game.status().stats).toContainEqual({ label: '⚡ Fire power', value: 3 });
+    // Fire's power shots cross the roof much quicker than its plain ones did.
+    since = -1;
+    rally(stage, game, frame, 60 * 20, 0.08, (b) => {
+      time(b);
+      return crossings.length >= 2 || game.status().phase === 'point';
+    });
+    expect(crossings.length).toBe(2);
+    expect(Math.max(...crossings)).toBeLessThan(plain.at(-1)! * 0.8);
+    expect(game.status().stats).toContainEqual({ label: '⚡ Fire power', value: 1 });
   });
 
   it('plays the house when one phone taps twice, and the house takes over a side that leaves', () => {
