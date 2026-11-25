@@ -517,9 +517,9 @@ function LineBanner({ line }: { line: LineView }) {
         </span>
       ) : null}
       {/* Your own pick's time left is only worth showing when others wait, and not twice. */}
-      {left != null && (now?.you ? line.waiting && !(cooling && Math.abs(left - cooling) < 1500) : line.waiting || !line.free) ? (
+      {left != null && (now?.you ? (line.waiting || now.kind === 'game') && !(cooling && Math.abs(left - cooling) < 1500) : line.waiting || !line.free) ? (
         <span className="inline-flex items-center gap-1 text-stone-500 tabular-nums dark:text-stone-400">
-          <Clock className="size-3.5" /> {now?.kind === 'game' ? `ends after this game, or in ${clock(left)}` : `next in ${clock(left)}`}
+          <Clock className="size-3.5" /> {now?.kind === 'game' ? (line.waiting ? `ends after this game, or in ${clock(left)}` : `${clock(left)} left`) : `next in ${clock(left)}`}
         </span>
       ) : null}
       {line.you ? (
@@ -528,9 +528,12 @@ function LineBanner({ line }: { line: LineView }) {
             <b className="text-stone-900 dark:text-white">You're {ordinal(line.you.place)} in line</b> for {line.you.label}
             {mine != null ? <span className="tabular-nums">, your turn {mine ? `within ${clock(mine)}` : 'any moment'}</span> : null}.{' '}
             {line.you.kind === 'game' ? (
-              <a href="/play" className="underline underline-offset-2">
-                Wait on the Play page
-              </a>
+              <>
+                <a href="/play" className="underline underline-offset-2">
+                  Wait on the Play page
+                </a>
+                : your game starts there on its own.
+              </>
             ) : (
               'It plays on its own when your turn comes.'
             )}
@@ -542,8 +545,40 @@ function LineBanner({ line }: { line: LineView }) {
       ) : !now?.you ? (
         <span className="basis-full text-xs text-stone-500 dark:text-stone-400">Tap a scene, a color or a game to join the line: one turn at a time.</span>
       ) : null}
+      <UpNext line={line} />
     </div>
   );
+}
+
+/** The first places in line, and when each starts at the latest: a few, with yours among them. */
+function UpNext({ line }: { line: LineView }) {
+  const all = line.ahead ?? [];
+  if (!all.length) return null;
+  const mine = all.findIndex((e) => e.you);
+  // The first three, and yours if it is further down the list.
+  const shown = all.map((e, i) => ({ ...e, place: i + 1 })).filter((e, i) => i < 3 || i === mine);
+  const total = line.waiting + (line.calling || line.offer ? 1 : 0);
+  return (
+    <ol className="grid basis-full gap-1 text-xs">
+      {shown.map((e) => (
+        <li key={e.place} className={cn('flex items-center gap-2 rounded-lg px-2 py-1', e.you ? 'bg-accent-500/10 font-semibold text-stone-900 dark:text-white' : 'text-stone-600 dark:text-stone-400')}>
+          <span className="w-5 text-right tabular-nums opacity-60">{e.place}.</span>
+          {e.kind === 'game' ? <Gamepad2 className="size-3.5 shrink-0 opacity-60" /> : <Sparkles className="size-3.5 shrink-0 opacity-60" />}
+          <span className="min-w-0 flex-1 truncate">
+            {e.label}
+            {e.you ? ' (you)' : ''}
+          </span>
+          <span className="tabular-nums opacity-70">{e.place === 1 && (line.calling || line.offer) ? 'now' : <StartsIn ms={e.startsIn} />}</span>
+        </li>
+      ))}
+      {total > shown.length ? <li className="pl-7 text-stone-500 dark:text-stone-400">and {total - shown.length} more</li> : null}
+    </ol>
+  );
+}
+
+function StartsIn({ ms }: { ms: number }) {
+  const left = useCountdown(ms);
+  return <>{left ? `by ${clock(left)}` : 'any moment'}</>;
 }
 
 function StatusLine({ state, line }: { state: PublicState; line: LineView | null }) {

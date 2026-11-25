@@ -2236,8 +2236,11 @@ export interface GameStatus {
   game: string | null;
   /**
    * False: someone else has the turn, so this phone watches (see LineView). Not set: it plays.
+   * One page plays a game: the visitor's other tabs and phones watch it too.
    */
   canPlay?: boolean;
+  /** The turn is this visitor's, but another tab or phone of theirs plays it. */
+  elsewhere?: boolean;
   /** This phone's view of the line for the lights (who plays now, its place, its turn). */
   line?: LineView;
   phase: string;

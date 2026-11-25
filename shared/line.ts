@@ -17,18 +17,25 @@ export interface LineSettings {
   /** A scene or a color whose turn comes while others still wait plays this long. */
   showSeconds: number;
   /**
-   * When someone is waiting, a game turn ends when its game ends, or this long after the wait
-   * began, whichever comes first. With nobody waiting, a turn lasts as long as the player likes.
+   * A game turn lasts this long (everyone sees its clock); with someone waiting, it also ends when
+   * its game ends. With nobody waiting when the time is up, it plays on until someone joins, then
+   * for one more minute.
    */
   turnMinutes: number;
-  /** The next player has this long to tap Play, or the line moves on without them. */
+  /**
+   * The next player has this long to start playing (their game starts on its own when their play
+   * page is open) or to tap Play (when it is not), or the line moves on without them.
+   */
   offerSeconds: number;
 }
 
 export const DEFAULT_LINE: LineSettings = { enabled: true, quickSeconds: 10, showSeconds: 60, turnMinutes: 5, offerSeconds: 30 };
 
 /** The most people in line at once. */
-export const LINE_MAX = 30;
+export const LINE_MAX = 500;
+
+/** How many places in line each visitor sees listed (the count shows them all). */
+export const LINE_SHOWN = 10;
 
 /** What one visitor sees of the line. Times are milliseconds from now (clocks differ). */
 export interface LineView {
@@ -39,13 +46,18 @@ export interface LineView {
   endsIn: number | null;
   /** People waiting, not counting the one being asked to play. */
   waiting: number;
+  /**
+   * The first places in line (the one being asked to play first), up to LINE_SHOWN: what each is
+   * for, whether it is this visitor's, and about when it starts (at the latest).
+   */
+  ahead: { kind: LineWant['kind']; label: string; you: boolean; startsIn: number }[];
   /** True when a tap plays at once: nobody has the lights, or a scene's time is up and nobody waits. */
   free: boolean;
   /**
-   * This visitor's place in line (1: next) and what for. startsIn: about when their turn comes,
-   * when that can be told (not with a game ahead of them, which may end any time).
+   * This visitor's place in line (1: next) and what for. startsIn: when their turn comes at the
+   * latest (turns ahead may end sooner).
    */
-  you: { place: number; kind: LineWant['kind']; label: string; startsIn: number | null } | null;
+  you: { place: number; kind: LineWant['kind']; label: string; startsIn: number } | null;
   /** It is this visitor's turn to play: they have until then to tap Play. */
   offer: { game: string; label: string; endsIn: number } | null;
   /** Someone else is being asked to play (the lights wait for them). */
