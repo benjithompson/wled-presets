@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildStage, sampleLayout, type Layout } from '../../shared/layout.ts';
 import { layoutOutput } from '../src/framePipeline.ts';
-import { RoofView, type Peek } from '../src/roofView.ts';
+import { ROOF_HZ, RoofView, type Peek } from '../src/roofView.ts';
 import type { DeviceTarget } from '../src/lightSender.ts';
 import { colorName } from '../../web/src/lib/colorName.ts';
 
@@ -47,6 +47,32 @@ describe('yard view', () => {
     expect(view.watch(() => {})).not.toBeNull();
     expect(view.watch(() => {})).toBeNull();
     view.close();
+  });
+
+  it('keeps a group of viewers (the public) to its own limit, and sends each of them every other frame, ending on the last', () => {
+    vi.useFakeTimers();
+    const l = layout();
+    let n = 0;
+    let moving = true;
+    const view = new RoofView({ layout: () => l, devices: () => [], deviceFrame: () => null, simFrame: () => new Uint8Array(30_000).fill(moving ? ++n : n) }, fakePeek, { shape: 'yard', maxViewers: 10 });
+    const pub = { name: 'public', max: 2, every: 2 };
+    const frames = { admin: 0, a: 0, b: 0 };
+    const last = { admin: '', a: '' };
+    view.watch((e) => e.event === 'frame' && (frames.admin++, (last.admin = e.data)));
+    expect(view.watch((e) => e.event === 'frame' && (frames.a++, (last.a = e.data)), pub)).not.toBeNull();
+    expect(view.watch((e) => e.event === 'frame' && frames.b++, pub)).not.toBeNull();
+    expect(view.watch(() => {}, pub)).toBeNull();
+    // Others still get in.
+    expect(view.watch(() => {})).not.toBeNull();
+    vi.advanceTimersByTime((1000 / ROOF_HZ) * 10 + 1);
+    expect(frames.admin).toBe(10);
+    expect(frames.a).toBe(5);
+    // The lights stop changing on a frame the public skipped: they still get it.
+    moving = false;
+    vi.advanceTimersByTime((1000 / ROOF_HZ) * 3);
+    expect(last.a).toBe(last.admin);
+    view.close();
+    vi.useRealTimers();
   });
 });
 

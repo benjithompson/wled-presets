@@ -24,6 +24,7 @@ import { fromHex, hex, mix } from '../../../shared/color.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
 import { colorName } from '../lib/colorName.ts';
 import { Roofline, useRoofStream } from '../components/Roofline.tsx';
+import { LiveYard } from '../yard/LiveYard.tsx';
 import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../components/LightControls.tsx';
 
 const KEY = ['public-state'];
@@ -190,13 +191,13 @@ export function PublicPage() {
   );
 }
 
-type Tab = 'scenes' | 'games' | 'colors';
+type Tab = 'scenes' | 'games' | 'colors' | 'live';
 const TAB_KEY = 'homeTab';
 
 function readTab(): Tab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    return t === 'games' || t === 'colors' ? t : 'scenes';
+    return t === 'games' || t === 'colors' || t === 'live' ? t : 'scenes';
   } catch {
     return 'scenes';
   }
@@ -240,7 +241,8 @@ function HomeChoices({
   const tabs: { id: Tab; label: string; icon: LucideIcon; count?: number }[] = [
     { id: 'scenes', label: 'Scenes', icon: Sparkles, count: state.scenes.length },
     ...(games.length ? [{ id: 'games' as const, label: 'Games', icon: Gamepad2, count: games.length }] : []),
-    ...(state.showColors && !side ? [{ id: 'colors' as const, label: 'Color', icon: Palette }] : [])
+    ...(state.showColors && !side ? [{ id: 'colors' as const, label: 'Color', icon: Palette }] : []),
+    { id: 'live', label: 'Live', icon: Eye }
   ];
   // A tab that is not offered here (the wheel moved beside it, games all hidden) falls back to scenes.
   const tab = tabs.some((t) => t.id === picked) ? picked : 'scenes';
@@ -297,13 +299,13 @@ function HomeChoices({
                   tabIndex={on ? 0 : -1}
                   onClick={() => choose(t.id)}
                   className={cn(
-                    'inline-flex flex-1 items-center justify-center gap-1.5 rounded-full px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4',
+                    'inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-full px-2 py-2 text-sm font-semibold transition sm:flex-none sm:gap-1.5 sm:px-4',
                     on ? 'bg-stone-900 text-white shadow-sm dark:bg-white dark:text-stone-950' : 'text-stone-600 hover:bg-white/80 dark:text-stone-300 dark:hover:bg-white/10'
                   )}
                 >
-                  <t.icon className="size-4" />
+                  <t.icon className="size-4 shrink-0" />
                   {t.label}
-                  {t.count ? <span className={cn('text-xs font-medium tabular-nums', on ? 'opacity-70' : 'text-stone-400 dark:text-stone-500')}>{t.count}</span> : null}
+                  {t.count ? <span className={cn('text-xs font-medium tabular-nums max-[420px]:hidden', on ? 'opacity-70' : 'text-stone-400 dark:text-stone-500')}>{t.count}</span> : null}
                 </button>
               );
             })}
@@ -315,6 +317,16 @@ function HomeChoices({
             scenes
           ) : tab === 'games' ? (
             <GameGrid games={games} off={off} hidden={hidden} />
+          ) : tab === 'live' ? (
+            <LiveYard
+              embedded
+              src={admin ? '/api/admin/yard' : '/api/yard'}
+              actions={
+                <a href="/yard" className="hidden rounded-full px-3 py-1 text-sm text-stone-300 ring-1 ring-white/10 hover:bg-white/10 sm:inline-block">
+                  Full screen
+                </a>
+              }
+            />
           ) : (
             <div className="pt-2">{wheel}</div>
           )}
@@ -449,12 +461,6 @@ function AdminBar({ lightsOff }: { lightsOff: boolean }) {
         className="inline-flex items-center gap-1.5 rounded-full bg-stone-900 px-3 py-1.5 font-medium text-white shadow-sm hover:bg-stone-800 dark:bg-accent-400 dark:text-stone-950 dark:hover:bg-accent-300"
       >
         <Settings2 className="size-4" /> Admin console
-      </a>
-      <a
-        href="/yard"
-        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-medium text-stone-700 ring-1 ring-stone-900/15 hover:bg-white/80 dark:text-stone-200 dark:ring-white/15 dark:hover:bg-white/10"
-      >
-        <Eye className="size-4" /> Live layout
       </a>
       <span className="inline-flex items-center gap-2">
         <PowerButton size="sm" on={!lightsOff} label="All lights" disabled={power.isPending} onToggle={() => power.mutate({ on: lightsOff })} />
