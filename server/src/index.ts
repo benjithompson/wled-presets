@@ -53,6 +53,8 @@ host.setHiddenGames(readHiddenGames(db));
 host.line.configure(readLineSettings(db));
 // Scenes with effects: the game host draws them and sends them to the lights.
 lights.setEffectPlayer((show, transition) => host.playShow(show, transition));
+// A playlist waits while a game has the lights.
+lights.holdPlaylist = () => host.playingGame;
 // No game starts on lights that are switched off.
 host.closed = () => (lights.allOff() ? 'The lights are switched off right now.' : null);
 // Lights switched off on the devices themselves end the game, as the admin's switch does.

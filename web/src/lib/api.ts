@@ -183,9 +183,9 @@ export const api = {
   applyDevicePreset: (id: string, presetId: number) => request(`/api/admin/devices/${id}/apply`, { body: { presetId } }),
   discover: (subnets?: string[]) => request<{ found: DiscoveredDevice[]; subnets: string[] }>('/api/admin/discover', { body: { subnets } }),
 
-  createScene: (s: Pick<Scene, 'name' | 'devicePresets' | 'effects' | 'sequenceId'>) => request<Scene>('/api/admin/scenes', { body: s }),
+  createScene: (s: Pick<Scene, 'name' | 'devicePresets' | 'effects' | 'sequenceId' | 'playlist'>) => request<Scene>('/api/admin/scenes', { body: s }),
   /** Leave `effects` (or `sequenceId`) out to keep the scene's. */
-  updateScene: (id: string, s: Pick<Scene, 'name' | 'devicePresets' | 'effects' | 'sequenceId'>) => request<Scene>(`/api/admin/scenes/${id}`, { method: 'PUT', body: s }),
+  updateScene: (id: string, s: Pick<Scene, 'name' | 'devicePresets' | 'effects' | 'sequenceId' | 'playlist'>) => request<Scene>(`/api/admin/scenes/${id}`, { method: 'PUT', body: s }),
 
   sequences: () => request<{ sequences: SequenceSummary[] }>('/api/admin/sequences'),
   sequence: (id: string) => request<Sequence>(`/api/admin/sequences/${encodeURIComponent(id)}`),

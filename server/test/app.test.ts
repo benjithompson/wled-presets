@@ -61,6 +61,11 @@ beforeEach(async () => {
   t = await setup();
 });
 
+/** Waits (up to 2 seconds) until `done` holds. */
+async function wait(done: () => boolean) {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 10));
+}
+
 async function login() {
   const r = await t.call('POST', '/api/auth/login', { username: 'admin', password: 'correct horse battery' });
   expect(r.status).toBe(200);
@@ -212,6 +217,56 @@ describe('devices and scenes', () => {
     await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransition: 'none' });
     await t.call('POST', `/api/scenes/${scene.id}/apply`);
     expect(transitions.at(-1)).toBeNull();
+  });
+
+  it('plays a playlist of scenes in turn, each for its time, with its transition', async () => {
+    await login();
+    const [a] = await addDevices();
+    const transitions: unknown[] = [];
+    t.lights.setEffectPlayer((show, transition) => {
+      transitions.push(transition ?? null);
+      return { devices: [], objects: show ? 1 : 0 };
+    });
+    t.lights.playlistSecondMs = 4;
+    const red = (await t.call('POST', '/api/admin/scenes', { name: 'Red', devicePresets: { [a]: 3 } })).json;
+    const green = (await t.call('POST', '/api/admin/scenes', { name: 'Green', devicePresets: { [a]: 5 } })).json;
+    const playlist = { all: true, sceneIds: [], seconds: 5, transition: 'wipeLeft', transitionSeconds: 2 };
+    expect((await t.call('POST', '/api/admin/scenes', { name: 'Too fast', playlist: { ...playlist, seconds: 1 } })).status).toBe(400);
+    const list = await t.call('POST', '/api/admin/scenes', { name: 'Everything', playlist });
+    expect(list.status).toBe(201);
+    expect(list.json.playlist).toMatchObject({ all: true, seconds: 5, transition: 'wipeLeft' });
+
+    const presets = () => mocks[0].requests.flatMap((q) => ((q.body as any)?.ps ? [(q.body as any).ps] : []));
+    const r = await t.call('POST', `/api/scenes/${list.json.id}/apply`);
+    expect(r.status).toBe(200);
+    let state = (await t.call('GET', '/api/state')).json;
+    expect(state.currentSceneId).toBe(list.json.id);
+    expect(state.playlistSceneId).toBe(red.id);
+    expect(state.scenes.find((s: any) => s.id === list.json.id)).toMatchObject({ playlist: true });
+    // The first scene comes in with the site's transition; the next ones with the playlist's.
+    expect(transitions[0]).toEqual({ type: 'fade', seconds: 1 });
+    await wait(() => presets().length >= 3);
+    expect(presets().slice(0, 3)).toEqual([3, 5, 3]);
+    expect(transitions[1]).toEqual({ type: 'wipeLeft', seconds: 2 });
+    expect((await t.call('GET', '/api/state')).json.currentSceneId).toBe(list.json.id);
+
+    // Only the scenes picked, and one of them longer.
+    await t.call('PUT', `/api/admin/scenes/${list.json.id}`, { name: 'Green only', playlist: { ...playlist, all: false, sceneIds: [green.id] } });
+    state = (await t.call('GET', '/api/state')).json;
+    expect(state.playlistSceneId).toBe(green.id);
+
+    // A color stops it.
+    await t.call('POST', '/api/color', { color: '#ff8800' });
+    const n = presets().length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(presets().length).toBe(n);
+    expect((await t.call('GET', '/api/state')).json.playlistSceneId).toBeNull();
+
+    // A backup keeps it.
+    const backup = (await t.call('GET', '/api/admin/scenes/export')).json;
+    await t.call('POST', '/api/admin/scenes/import', backup);
+    const restored = (await t.call('GET', '/api/admin/overview')).json.scenes.find((s: any) => s.id === list.json.id);
+    expect(restored.playlist).toMatchObject({ all: false, sceneIds: [green.id] });
   });
 
   it('skips devices without a mapping', async () => {

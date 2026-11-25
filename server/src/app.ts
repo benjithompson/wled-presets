@@ -32,6 +32,7 @@ import { normalizeHost, wled } from './wled.ts';
 import { readAudio, removeAudio, sequenceInput, writeAudio } from './sequenceStore.ts';
 import { summarize } from '../../shared/sequence.ts';
 import { deviceKey, keyDevice } from '../../shared/effects.ts';
+import { cleanPlaylist, PLAYLIST_SECONDS } from '../../shared/playlist.ts';
 import { MAX_FIXTURE_PIXELS } from '../../shared/layout.ts';
 import { DEFAULT_LED_TYPES, parseSettingsScript, pickStatus, protectedSection, unappliedPaths, type WledSettings } from '../../shared/wledConfig.ts';
 
@@ -55,13 +56,26 @@ const deviceInput = z.object({
   enabled: z.boolean().default(true)
 });
 
+const transitionChoice = z.enum(['none', ...TRANSITION_CHOICES.map((t) => t.id)] as [SceneTransitionChoice, ...SceneTransitionChoice[]]);
+const playlistSeconds = z.coerce.number().min(PLAYLIST_SECONDS.min).max(PLAYLIST_SECONDS.max);
+const playlistSchema = z.object({
+  all: z.boolean(),
+  sceneIds: z.array(z.string().max(64)).max(500).default([]),
+  seconds: playlistSeconds,
+  durations: z.record(z.string().max(64), playlistSeconds).optional(),
+  transition: transitionChoice,
+  transitionSeconds: z.coerce.number().min(0).max(SCENE_TRANSITION_SECONDS.max)
+});
+
 const sceneInput = z.object({
   name: z.string().trim().min(1, 'Name is required').max(100),
   devicePresets: z.record(z.string(), z.coerce.number().int().min(1).max(250)).default({}),
   /** Left out: an update keeps the scene's effects. An empty object removes them. */
   effects: effectsSchema.optional(),
   /** Left out: an update keeps the scene's sequence. Null removes it. */
-  sequenceId: z.string().max(64).nullable().optional()
+  sequenceId: z.string().max(64).nullable().optional(),
+  /** Left out: an update keeps the scene a playlist, or not. Null makes it a scene of its own. */
+  playlist: playlistSchema.nullable().optional()
 });
 
 const settingsInput = z.object({
@@ -117,7 +131,8 @@ const backupInput = z.object({
       sortOrder: z.number().optional(),
       devicePresets: z.record(z.string(), z.coerce.number()).default({}),
       effects: effectsSchema.optional().catch(undefined),
-      sequenceId: z.string().max(64).nullable().optional().catch(undefined)
+      sequenceId: z.string().max(64).nullable().optional().catch(undefined),
+      playlist: playlistSchema.nullable().optional().catch(undefined)
     })
   )
 });
@@ -708,7 +723,9 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   admin.post('/scenes', async (c) => {
     const input = await body(c, sceneInput);
     if (input.sequenceId && !db.getSequence(input.sequenceId)) throw new HttpError(400, 'That sequence does not exist');
-    const scene: Scene = { id: crypto.randomUUID(), sortOrder: db.nextSortOrder(), ...input };
+    const id = crypto.randomUUID();
+    const { playlist, ...rest } = input;
+    const scene: Scene = { id, sortOrder: db.nextSortOrder(), ...rest, ...(playlist ? { playlist: cleanPlaylist(playlist, id, db.listScenes().map((s) => s.id)) } : {}) };
     db.saveScene(scene);
     const fx = Object.keys(scene.effects ?? {}).length;
     lights.log('info', 'config', `Scene "${scene.name}" created${fx ? ` with effects on ${fx} object(s)` : ''}`, null, actor(c));
@@ -728,7 +745,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     if (!prev) throw new HttpError(404, 'Unknown scene');
     const input = await body(c, sceneInput);
     if (input.sequenceId && !db.getSequence(input.sequenceId)) throw new HttpError(400, 'That sequence does not exist');
-    db.saveScene({ ...prev, ...input, effects: input.effects ?? prev.effects, sequenceId: input.sequenceId === undefined ? prev.sequenceId : input.sequenceId });
+    const playlist = input.playlist === undefined ? prev.playlist : input.playlist && cleanPlaylist(input.playlist, prev.id, db.listScenes().map((s) => s.id));
+    db.saveScene({ ...prev, ...input, effects: input.effects ?? prev.effects, sequenceId: input.sequenceId === undefined ? prev.sequenceId : input.sequenceId, playlist: playlist ?? null });
     lights.log('info', 'config', `Scene "${input.name}" updated`, null, actor(c));
     // A scene that is playing now shows its new effects at once.
     lights.sceneChanged(prev.id);
@@ -791,7 +809,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
           )
         : null;
       const sequenceId = p.sequenceId && db.getSequence(p.sequenceId) ? p.sequenceId : null;
-      return { id: p.id, name: p.name, sortOrder: p.sortOrder ?? i, devicePresets, ...(effects ? { effects } : {}), ...(sequenceId ? { sequenceId } : {}) };
+      const playlist = p.playlist ? cleanPlaylist(p.playlist, p.id, file.publicPresets.map((q) => q.id)) : null;
+      return { id: p.id, name: p.name, sortOrder: p.sortOrder ?? i, devicePresets, ...(effects ? { effects } : {}), ...(sequenceId ? { sequenceId } : {}), ...(playlist ? { playlist } : {}) };
     });
     db.replaceScenes(scenes);
     lights.log('info', 'config', `Restored ${scenes.length} scene(s) from backup`, null, actor(c));

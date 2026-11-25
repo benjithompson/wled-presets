@@ -1,5 +1,6 @@
 import { effectObjects, effectsLook, type EffectSettings } from '../../shared/effects.ts';
 import { sequenceEffects, sequenceObjects, type Sequence } from '../../shared/sequence.ts';
+import { playlistSteps, playlistTransition } from '../../shared/playlist.ts';
 import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LightControls, LogLevel, PublicState, Scene } from '../../shared/types.ts';
 import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
@@ -83,6 +84,16 @@ export class Lights {
   onAllOff: (() => void) | null = null;
   /** See SETTLE_MS (shorter in tests). */
   settleMs = SETTLE_MS;
+  /** A second of a playlist, in milliseconds (shorter in tests). */
+  playlistSecondMs = 1000;
+  /**
+   * True while something else has the lights (a game): a playlist waits on the scene it is on,
+   * and moves on once the lights are free again.
+   */
+  holdPlaylist: () => boolean = () => false;
+
+  /** The playlist that plays now: its scene, the step it is on, and the timer to the next one. */
+  private playlist: { id: string; step: number; showing: string | null; timer: NodeJS.Timeout | null } | null = null;
 
   constructor(db: Db, bus: Bus) {
     this.db = db;
@@ -103,32 +114,106 @@ export class Lights {
     return sequence ? { sequence } : scene.effects ? { effects: scene.effects } : null;
   }
 
-  /** After a restart: the scene that was playing plays again, if it has effects or a sequence. */
+  /** After a restart: the scene that was playing plays again, if it has effects or a sequence; a playlist starts again. */
   resumeEffects() {
     const id = this.db.getSetting(KEY.currentScene);
-    const show = this.showOf(id ? this.db.getScene(id) : null);
+    const scene = id ? this.db.getScene(id) : null;
+    if (scene?.playlist) return void this.startPlaylist(scene, null);
+    const show = this.showOf(scene);
     if (show) this.effectPlayer?.(show);
   }
 
-  /** A scene was changed: if it is playing, play its new effects at once. */
+  /** The scene whose show plays now: the current scene, or the one its playlist is on. */
+  private showingScene() {
+    const id = this.playlist ? this.playlist.showing : this.db.getSetting(KEY.currentScene);
+    return id ? this.db.getScene(id) : null;
+  }
+
+  /** A scene was changed: if it is playing, play its new effects at once. A playlist that was changed starts again. */
   sceneChanged(sceneId: string) {
-    if (this.db.getSetting(KEY.currentScene) !== sceneId) return;
-    this.effectPlayer?.(this.showOf(this.db.getScene(sceneId)));
+    if (this.playlist?.id === sceneId) {
+      const scene = this.db.getScene(sceneId);
+      if (scene?.playlist) return void this.startPlaylist(scene, playlistTransition(scene.playlist));
+      // No longer a playlist: it plays as a scene of its own.
+      this.stopPlaylist();
+      return void this.effectPlayer?.(this.showOf(scene));
+    }
+    const showing = this.showingScene();
+    if (showing?.id === sceneId) this.effectPlayer?.(this.showOf(showing));
+    else if (!this.playlist && this.db.getSetting(KEY.currentScene) === sceneId) {
+      // A scene that became a playlist.
+      const scene = this.db.getScene(sceneId);
+      if (scene?.playlist) void this.startPlaylist(scene, null);
+    }
   }
 
   /** A sequence was saved or deleted: a playing scene that uses it plays the new version. */
   sequenceChanged(sequenceId: string) {
-    const id = this.db.getSetting(KEY.currentScene);
-    const scene = id ? this.db.getScene(id) : null;
+    const scene = this.showingScene();
     if (scene && (scene.sequenceId === sequenceId || !scene.sequenceId)) this.effectPlayer?.(this.showOf(scene));
   }
 
-  /** A scene was deleted: if it was playing, its effects stop. */
+  /** A scene was deleted: if it was playing, its effects stop. A playlist on it moves on at its next step. */
   sceneDeleted(sceneId: string) {
     if (this.db.getSetting(KEY.currentScene) === sceneId) {
+      this.stopPlaylist();
       this.effectPlayer?.(null);
       this.db.setSetting(KEY.currentScene, '');
     }
+  }
+
+  // ---------- Playlists ----------
+
+  /** The scene a playlist is on now (null when none plays). */
+  playlistScene(): string | null {
+    return this.playlist?.showing ?? null;
+  }
+
+  private stopPlaylist() {
+    if (this.playlist?.timer) clearTimeout(this.playlist.timer);
+    this.playlist = null;
+  }
+
+  /**
+   * Starts a playlist from its first scene (`transition`: how the show before gives way to it).
+   * Returns what its first scene did, or null when it has no scene to play.
+   */
+  private async startPlaylist(scene: Scene, transition: SceneTransition | null): Promise<ApplyResult | null> {
+    this.stopPlaylist();
+    const run = { id: scene.id, step: -1, showing: null as string | null, timer: null as NodeJS.Timeout | null };
+    this.playlist = run;
+    return this.stepPlaylist(run, transition);
+  }
+
+  /** The playlist plays its next scene, and sets the timer for the one after. */
+  private async stepPlaylist(run: NonNullable<Lights['playlist']>, transition: SceneTransition | null): Promise<ApplyResult | null> {
+    run.timer = null;
+    const scene = this.db.getScene(run.id);
+    const steps = scene?.playlist ? playlistSteps(scene.playlist, this.db.listScenes()) : [];
+    if (!scene?.playlist || !steps.length) {
+      if (this.playlist === run) this.playlist = null;
+      return null;
+    }
+    const wait = (seconds: number) => {
+      if (this.playlist === run) run.timer = setTimeout(() => void this.stepPlaylist(run, playlistTransition(scene.playlist!)), seconds * this.playlistSecondMs);
+      run.timer?.unref?.();
+    };
+    // A game has the lights, or they are switched off: try again in a moment.
+    if (run.step >= 0 && (this.holdPlaylist() || this.allOff())) {
+      wait(2);
+      return null;
+    }
+    // The next scene, or the first again (scenes may have come and gone since the last step).
+    const at = steps.findIndex((s) => s.scene.id === run.showing);
+    const step = run.step < 0 ? 0 : at >= 0 ? (at + 1) % steps.length : Math.min(run.step, steps.length - 1) % steps.length;
+    const next = steps[step];
+    run.step = step;
+    run.showing = next.scene.id;
+    const result = await this.play(next.scene, transition);
+    if (this.playlist !== run) return result;
+    wait(next.seconds);
+    this.bus.emit('state');
+    return result;
   }
 
   log(level: LogLevel, action: string, message: string, details?: unknown, actor?: Actor) {
@@ -152,6 +237,7 @@ export class Lights {
   }
 
   stop() {
+    this.stopPlaylist();
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.revertTimer) clearTimeout(this.revertTimer);
     for (const w of this.watchers.values()) w.peek.close();
@@ -414,7 +500,9 @@ export class Lights {
     const presets = this.db.listDevicePresets();
     const layout = readLayout(this.db);
     const sequences = new Map(this.db.listSequences().map((q) => [q.id, q]));
-    const scenes = this.db.listScenes().map((s) => {
+    const list = this.db.listScenes();
+    /** What a scene plays: its looks, and the devices it reaches. */
+    const reach = (s: Scene): { looks: PresetLook[]; devices: string[] } => {
       // Effects (or a sequence) on objects that are in the layout, and the devices they are on.
       const seq = s.sequenceId ? sequences.get(s.sequenceId) : undefined;
       const objects = new Set(seq ? sequenceObjects(seq, layout) : effectObjects(layout, Object.keys(s.effects ?? {})));
@@ -425,9 +513,14 @@ export class Lights {
         const p = presets[deviceId]?.find((x) => x.id === s.devicePresets[deviceId]);
         if (p?.colors?.length) looks.push({ colors: p.colors, energy: p.energy ?? 0.3 });
       }
-      const look = mergeLooks(looks);
-      const all = [...mapped, ...fxDevices];
-      return { id: s.id, name: s.name, online: all.length === 0 ? false : all.some(isOnline), palette: look.colors, energy: look.energy };
+      return { looks, devices: [...mapped, ...fxDevices] };
+    };
+    const scenes = list.map((s) => {
+      // A playlist looks like the scenes it plays, and is online when one of them is.
+      const parts = s.playlist ? playlistSteps(s.playlist, list).map((p) => reach(p.scene)) : [reach(s)];
+      const look = mergeLooks(parts.flatMap((p) => p.looks));
+      const all = parts.flatMap((p) => p.devices);
+      return { id: s.id, name: s.name, online: all.length === 0 ? false : all.some(isOnline), palette: look.colors, energy: look.energy, ...(s.playlist ? { playlist: true } : {}) };
     });
     const onlineDevices = enabled.filter((d) => isOnline(d.id)).length;
     return {
@@ -437,6 +530,7 @@ export class Lights {
       scenes,
       currentSceneId: this.db.getSetting(KEY.currentScene) || null,
       currentColor: this.db.getSetting(KEY.currentColor) || null,
+      playlistSceneId: this.playlistScene(),
       anyOnline: onlineDevices > 0,
       onlineDevices,
       totalDevices: enabled.length,
@@ -469,10 +563,42 @@ export class Lights {
   async applyScene(sceneId: string, actor?: Actor, reason: 'user' | 'revert' = 'user'): Promise<ApplyResult | null> {
     const scene = this.db.getScene(sceneId);
     if (!scene) return null;
-    const devices = this.onDevices();
-    // Effects first: a device with an object that plays an effect gets the effect, not a preset.
     // A scene someone picks comes in with the scene transition; the auto-revert changes at once.
     const transition = reason === 'user' ? sceneTransitionOf(readSettings(this.db)) : null;
+    let result: ApplyResult;
+    if (scene.playlist) result = (await this.startPlaylist(scene, transition)) ?? { applied: [], skipped: [], failed: [], effects: 0 };
+    else {
+      this.stopPlaylist();
+      result = await this.play(scene, transition);
+    }
+    const played = { objects: result.effects ?? 0 };
+    const sent = result.applied.length + result.failed.length;
+
+    if (result.applied.length > 0 || played.objects > 0) {
+      this.db.setSetting(KEY.currentScene, scene.id);
+      this.db.setSetting(KEY.currentColor, '');
+      const { defaultSceneId } = readSettings(this.db);
+      if (scene.id === defaultSceneId) this.cancelRevert();
+      else this.scheduleRevert();
+    } else if (scene.playlist) this.stopPlaylist();
+    const first = scene.playlist && this.playlist ? this.db.getScene(this.playlist.showing ?? '')?.name : null;
+    this.log(
+      result.applied.length || played.objects ? (result.failed.length ? 'warn' : 'info') : 'error',
+      reason === 'revert' ? 'auto_revert' : 'applied',
+      scene.playlist
+        ? `Playlist "${scene.name}" started${first ? ` with "${first}"` : ' with no scene to play'}: ${result.applied.length}/${sent} device(s)${played.objects ? `, effects on ${played.objects} object(s)` : ''}`
+        : `Scene "${scene.name}" applied to ${result.applied.length}/${sent} device(s)${played.objects ? `, effects on ${played.objects} object(s)` : ''}`,
+      { sceneId: scene.id, sceneName: scene.name, ...result },
+      actor
+    );
+    this.bus.emit('state');
+    return result;
+  }
+
+  /** Puts a scene on the lights: its effects or sequence, and its presets on the other devices. */
+  private async play(scene: Scene, transition: SceneTransition | null): Promise<ApplyResult> {
+    const devices = this.onDevices();
+    // Effects first: a device with an object that plays an effect gets the effect, not a preset.
     const played = this.effectPlayer?.(this.showOf(scene), transition) ?? { devices: [], objects: 0 };
     const streamed = new Set(played.devices.filter((id) => !this.isOff(id)));
     const work = [];
@@ -496,22 +622,6 @@ export class Lights {
     if (leveled.length) {
       setTimeout(() => void Promise.all(leveled.map((d) => wled.brightness(d, this.levelOf(d.id)!))), 150).unref?.();
     }
-
-    if (result.applied.length > 0 || played.objects > 0) {
-      this.db.setSetting(KEY.currentScene, scene.id);
-      this.db.setSetting(KEY.currentColor, '');
-      const { defaultSceneId } = readSettings(this.db);
-      if (scene.id === defaultSceneId) this.cancelRevert();
-      else this.scheduleRevert();
-    }
-    this.log(
-      result.applied.length || played.objects ? (result.failed.length ? 'warn' : 'info') : 'error',
-      reason === 'revert' ? 'auto_revert' : 'applied',
-      `Scene "${scene.name}" applied to ${result.applied.length}/${work.length + streamed.size} device(s)${played.objects ? `, effects on ${played.objects} object(s)` : ''}`,
-      { sceneId: scene.id, sceneName: scene.name, ...result },
-      actor
-    );
-    this.bus.emit('state');
     return result;
   }
 
@@ -519,6 +629,7 @@ export class Lights {
     const rgb = parseHex(hex);
     if (!rgb) return null;
     const color = `#${hex.replace('#', '').toLowerCase()}`;
+    this.stopPlaylist();
     this.effectPlayer?.(null);
     const devices = this.onDevices();
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb, this.levelOf(device.id)) })));
