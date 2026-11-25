@@ -3,6 +3,7 @@
 
 import type { EffectSettings } from './effects.ts';
 import type { SceneTransitionChoice } from './transitions.ts';
+import type { Playlist } from './playlist.ts';
 
 export interface Device {
   id: string;
@@ -67,6 +68,8 @@ export interface Scene {
   effects?: Record<string, EffectSettings>;
   /** A sequence that plays (and loops) on the lights instead of the effects. */
   sequenceId?: string | null;
+  /** A playlist: the scene plays other scenes one after another, and nothing of its own. */
+  playlist?: Playlist | null;
 }
 
 /** An uploaded audio file, for the sequence editor. */
@@ -103,6 +106,8 @@ export interface PublicScene {
   palette: string[];
   /** 0 = still, 1 = fast and intense. */
   energy: number;
+  /** A playlist: it plays other scenes in turn. */
+  playlist?: boolean;
 }
 
 export interface PublicState {
@@ -112,6 +117,8 @@ export interface PublicState {
   scenes: PublicScene[];
   currentSceneId: string | null;
   currentColor: string | null;
+  /** When the current scene is a playlist: the scene of it that plays now. */
+  playlistSceneId?: string | null;
   anyOnline: boolean;
   onlineDevices: number;
   totalDevices: number;
@@ -197,5 +204,5 @@ export interface SessionInfo {
 export interface BackupFile {
   version: 1 | 2;
   exportedAt: string;
-  publicPresets: { id: string; name: string; sortOrder?: number; devicePresets: Record<string, number>; effects?: Record<string, EffectSettings>; sequenceId?: string | null }[];
+  publicPresets: { id: string; name: string; sortOrder?: number; devicePresets: Record<string, number>; effects?: Record<string, EffectSettings>; sequenceId?: string | null; playlist?: Playlist | null }[];
 }

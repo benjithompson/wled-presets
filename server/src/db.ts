@@ -129,6 +129,10 @@ export function openDatabase(file: string) {
   if (!hasColumn(db, 'public_presets', 'sequence_id')) {
     db.exec('ALTER TABLE public_presets ADD COLUMN sequence_id TEXT');
   }
+  // v2.69: a scene can be a playlist of other scenes, as JSON.
+  if (!hasColumn(db, 'public_presets', 'playlist')) {
+    db.exec('ALTER TABLE public_presets ADD COLUMN playlist TEXT');
+  }
   // v1 stored the default scene under "defaultPresetId" and minutes under "revertTimeout".
   // Same keys are used here, so no settings migration is needed.
 
@@ -144,11 +148,11 @@ export function openDatabase(file: string) {
        ON CONFLICT(id) DO UPDATE SET name=excluded.name, host=excluded.host, port=excluded.port, enabled=excluded.enabled`
     ),
     deleteDevice: db.prepare('DELETE FROM devices WHERE id = ?'),
-    listScenes: db.prepare('SELECT id, name, sort_order AS sortOrder, effects, sequence_id AS sequenceId FROM public_presets ORDER BY sort_order, name COLLATE NOCASE'),
+    listScenes: db.prepare('SELECT id, name, sort_order AS sortOrder, effects, sequence_id AS sequenceId, playlist FROM public_presets ORDER BY sort_order, name COLLATE NOCASE'),
     listMappings: db.prepare('SELECT publicPresetId, deviceId, presetId FROM public_preset_mappings'),
     upsertScene: db.prepare(
-      `INSERT INTO public_presets(id, name, sort_order, effects, sequence_id) VALUES(@id, @name, @sortOrder, @effects, @sequenceId)
-       ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order, effects=excluded.effects, sequence_id=excluded.sequence_id`
+      `INSERT INTO public_presets(id, name, sort_order, effects, sequence_id, playlist) VALUES(@id, @name, @sortOrder, @effects, @sequenceId, @playlist)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order, effects=excluded.effects, sequence_id=excluded.sequence_id, playlist=excluded.playlist`
     ),
     deleteScene: db.prepare('DELETE FROM public_presets WHERE id = ?'),
     deleteSceneMappings: db.prepare('DELETE FROM public_preset_mappings WHERE publicPresetId = ?'),
@@ -213,10 +217,17 @@ export function openDatabase(file: string) {
   const rowToDevice = (r: any): Device => ({ id: r.id, name: r.name, host: r.host, port: r.port, enabled: Boolean(r.enabled) });
 
   function listScenes(): Scene[] {
-    const rows = stmt.listScenes.all() as (Omit<Scene, 'devicePresets' | 'effects' | 'sequenceId'> & { effects: string | null; sequenceId: string | null })[];
-    const scenes: Scene[] = rows.map(({ effects, sequenceId, ...s }) => {
+    const rows = stmt.listScenes.all() as (Omit<Scene, 'devicePresets' | 'effects' | 'sequenceId' | 'playlist'> & { effects: string | null; sequenceId: string | null; playlist: string | null })[];
+    const scenes: Scene[] = rows.map(({ effects, sequenceId, playlist, ...s }) => {
       const fx = effects ? (safeJson(effects) as Scene['effects']) : null;
-      return { ...s, devicePresets: {}, ...(fx && typeof fx === 'object' && Object.keys(fx).length ? { effects: fx } : {}), ...(sequenceId ? { sequenceId } : {}) };
+      const pl = playlist ? (safeJson(playlist) as Scene['playlist']) : null;
+      return {
+        ...s,
+        devicePresets: {},
+        ...(fx && typeof fx === 'object' && Object.keys(fx).length ? { effects: fx } : {}),
+        ...(sequenceId ? { sequenceId } : {}),
+        ...(pl && typeof pl === 'object' ? { playlist: pl } : {})
+      };
     });
     const byId = new Map(scenes.map((s) => [s.id, s]));
     for (const m of stmt.listMappings.all() as { publicPresetId: string; deviceId: string; presetId: number }[]) {
@@ -228,7 +239,7 @@ export function openDatabase(file: string) {
 
   const saveSceneTx = db.transaction((scene: Scene) => {
     const effects = scene.effects && Object.keys(scene.effects).length ? JSON.stringify(scene.effects) : null;
-    stmt.upsertScene.run({ id: scene.id, name: scene.name, sortOrder: scene.sortOrder, effects, sequenceId: scene.sequenceId ?? null });
+    stmt.upsertScene.run({ id: scene.id, name: scene.name, sortOrder: scene.sortOrder, effects, sequenceId: scene.sequenceId ?? null, playlist: scene.playlist ? JSON.stringify(scene.playlist) : null });
     stmt.deleteSceneMappings.run(scene.id);
     const deviceIds = new Set((stmt.listDevices.all() as { id: string }[]).map((d) => d.id));
     for (const [deviceId, presetId] of Object.entries(scene.devicePresets)) {

@@ -303,6 +303,11 @@ export class GameHost implements FrameSource {
     return { devices: [...this.sceneDevices], objects: playing.size };
   }
 
+  /** True while someone plays a game. */
+  get playingGame() {
+    return this.game.id !== 'idle';
+  }
+
   /** True while a scene's effects play. */
   get playingEffects() {
     return !!this.scene;
