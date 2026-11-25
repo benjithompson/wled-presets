@@ -8,7 +8,7 @@
 // noise fields and hundreds of particles. Keep this file free of Node and DOM APIs.
 
 import { clamp, clamp01, fract, fromHex, mix, seededRandom, smooth, toBytes, WHITE, type Rgb } from './color.ts';
-import { activeLeds, isLine, segmentLeds, type Fixture, type Layout, type Stage } from './layout.ts';
+import { activeLeds, isLine, segmentLeds, type Fixture, type FixtureKind, type Layout, type Stage, type StageFixture } from './layout.ts';
 
 export type Direction = 'right' | 'left' | 'up' | 'down' | 'toward' | 'away' | 'out' | 'in';
 
@@ -177,7 +177,49 @@ const EFFECT_INFO = {
   hologram: { name: 'Hologram', description: 'A wireframe cube, a diamond and a four-dimensional tesseract turn in the air over the yard, with scan lines and glitches.', palette: 'ice', intensity: 'Glitch', size: 'Line width', energy: 0.55, space: '3d' },
   orbits: { name: 'Orbits', description: 'Comets with long tails race around a glowing nucleus on tilted orbits, like an atom, in front of and behind each other.', palette: 'party', intensity: 'Comets', size: 'Comet size', energy: 0.55, space: '3d' },
   supernova: { name: 'Supernova', description: 'A star shudders and collapses, explodes in a flash, and a ragged shock wave rolls over the yard; it leaves a glowing cloud and a spinning pulsar.', palette: 'sunset', intensity: 'Afterglow', size: 'Blast size', energy: 0.9, space: '3d' },
-  kaleidoscope: { name: 'Kaleidoscope', description: 'Colors fold into mirrored wedges around the middle of the yard and keep turning, with glints along the mirrors.', palette: 'rainbow', intensity: 'Mirrors', size: 'Pattern size', energy: 0.5, space: '3d', reverse: 'Turn the other way' }
+  kaleidoscope: { name: 'Kaleidoscope', description: 'Colors fold into mirrored wedges around the middle of the yard and keep turning, with glints along the mirrors.', palette: 'rainbow', intensity: 'Mirrors', size: 'Pattern size', energy: 0.5, space: '3d', reverse: 'Turn the other way' },
+  synapse: {
+    name: 'Synapses',
+    description: 'The yard as a nervous system: each object glows brighter as it charges, then fires. A white-hot spark races through its lights, crosses to objects close by, jumps the gaps to the ones further off, and sets off chain reactions across the yard.',
+    palette: 'neon',
+    intensity: 'Chain reactions',
+    size: 'Afterglow',
+    energy: 0.6,
+    space: '3d',
+    view: false
+  },
+  murmuration: {
+    name: 'Murmuration',
+    description: 'A flock of hundreds of starlings, each steering by its neighbours, twists and folds over the yard at dusk, swirls round a tree or the roof and moves on, and bursts apart when a falcon dives through.',
+    palette: 'sunset',
+    intensity: 'Birds',
+    size: 'Bird size',
+    energy: 0.45,
+    space: '3d',
+    reverse: 'Dark birds against a glowing sky',
+    view: false
+  },
+  ripples: { name: 'Ripple tank', description: 'Real waves: drops fall on the lights, and their rings spread, bounce off the edges of the yard, cross and interfere. Now and then a stone sends out a big swell; crests glint white.', palette: 'ocean', intensity: 'Rain', size: 'Drop size', energy: 0.4, space: '3d' },
+  shadows: {
+    name: 'Colored shadows',
+    description: 'Red, green and blue lamps float round the yard like stage lights. Every tree and bush is lit on the side facing a lamp and throws a shadow on what stands behind it, where the other lamps\' colors show; where all three meet, the light is white.',
+    palette: 'lamps',
+    intensity: 'Lamps',
+    size: 'Lamp reach',
+    energy: 0.35,
+    space: '3d',
+    view: false
+  },
+  paint: {
+    name: 'Paint fight',
+    description: 'Balloons of paint fly in from the street and burst on the lights. The paint splatters onto objects close by, soaks through and runs down while it is wet, until the yard is a patchwork of color; then rain washes it clean.',
+    palette: 'party',
+    intensity: 'Balloons',
+    size: 'Splash size',
+    energy: 0.6,
+    space: '3d',
+    view: false
+  }
 } satisfies Record<string, Omit<EffectInfo, 'id'>>;
 
 /** An effect's id: one of EFFECT_INFO's. */
@@ -221,6 +263,7 @@ const PALETTE_INFO = {
   matrix: { name: 'Code green', colors: ['#002a08', '#00a028', '#30ff60', '#c8ffd0'] },
   plasma: { name: 'Plasma', colors: ['#7a2cff', '#ff40ff', '#40b0ff', '#c070ff'], cyclic: true },
   lava: { name: 'Lava', colors: ['#ff1a00', '#ff7a00', '#ff0060', '#ffc400'], cyclic: true },
+  lamps: { name: 'Red, green, blue', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true },
   custom: { name: 'My colors', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true }
 } satisfies Record<string, Omit<PaletteInfo, 'id'>>;
 
@@ -529,6 +572,10 @@ export interface Space {
   ez: number;
   /** About the distance between neighbouring LEDs, in the same units. */
   pitch: number;
+  /** For each LED: the object it is on, an index into `kinds`. Left out: all one object. */
+  part?: Int32Array;
+  /** The kind of each object of the space. */
+  kinds?: FixtureKind[];
 }
 
 /** A straight string along x: where a 3-D effect plays when it gets no positions. */
@@ -538,8 +585,11 @@ export function lineSpace(n: number): Space {
   return { x, y: new Float32Array(n), z: new Float32Array(n), ex: n > 1 ? 1 : 0, ey: 0, ez: 0, pitch: n > 1 ? 1 / (n - 1) : 1 };
 }
 
-/** The space of some stage LEDs, in a box around `box` (default: the same LEDs). */
-export function stageSpace(stage: Pick<Stage, 'positions3'>, leds: ArrayLike<number>, box: ArrayLike<number> = leds): Space {
+/**
+ * The space of some stage LEDs, in a box around `box` (default: the same LEDs). With the stage's
+ * objects, it also says which object each LED is on (see partsOf).
+ */
+export function stageSpace(stage: Pick<Stage, 'positions3'> & { fixtures?: readonly Pick<StageFixture, 'offset' | 'count' | 'kind'>[] }, leds: ArrayLike<number>, box: ArrayLike<number> = leds): Space {
   const P = stage.positions3;
   let x0 = Infinity;
   let y0 = Infinity;
@@ -573,6 +623,32 @@ export function stageSpace(stage: Pick<Stage, 'positions3'>, leds: ArrayLike<num
     sp.z[i] = (P[k + 2] - cz) / m;
   }
   sp.pitch = estimatePitch(sp);
+  if (stage.fixtures?.length) {
+    // Objects follow each other in the stage: find each LED's by its stage index.
+    const fx = stage.fixtures;
+    const part = new Int32Array(n);
+    const index = new Map<number, number>();
+    const kinds: FixtureKind[] = [];
+    for (let i = 0; i < n; i++) {
+      const led = leds[i];
+      let lo = 0;
+      let hi = fx.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (fx[mid].offset <= led) lo = mid;
+        else hi = mid - 1;
+      }
+      let p = index.get(lo);
+      if (p === undefined) {
+        p = kinds.length;
+        index.set(lo, p);
+        kinds.push(fx[lo].kind);
+      }
+      part[i] = p;
+    }
+    sp.part = part;
+    sp.kinds = kinds;
+  }
   return sp;
 }
 
@@ -584,7 +660,7 @@ export function topSpace(sp: Space): Space {
   const n = sp.x.length;
   const y = new Float32Array(n);
   for (let i = 0; i < n; i++) y[i] = -sp.z[i];
-  return { x: sp.x, y, z: sp.y, ex: sp.ex, ey: sp.ez, ez: sp.ey, pitch: sp.pitch };
+  return { x: sp.x, y, z: sp.y, ex: sp.ex, ey: sp.ez, ez: sp.ey, pitch: sp.pitch, part: sp.part, kinds: sp.kinds };
 }
 
 /** The median distance from an LED to its nearest neighbour, from a sample of LEDs. */
@@ -2304,6 +2380,1219 @@ const kaleidoscope: Factory = (_n, _rand, noise) => (out, { t, intensity, size, 
   }
 };
 
+// ---------- The yard's objects ----------
+// The effects below know more than where each LED is: which object it is on, the shape of that
+// object, and how densely the LEDs sit around it. A spark jumps from bush to tree, a flock
+// roosts on the roof, a lamp lights a tree on one side and throws its shadow on the house.
+
+/** The LEDs of a space sorted into cubes, to find the ones near a point quickly. */
+class LedGrid {
+  private readonly sp: Space;
+  private readonly x0: number;
+  private readonly y0: number;
+  private readonly z0: number;
+  private readonly inv: number;
+  private readonly nx: number;
+  private readonly ny: number;
+  private readonly nz: number;
+  private readonly head: Int32Array;
+  private readonly next: Int32Array;
+
+  constructor(sp: Space, cell: number) {
+    this.sp = sp;
+    const n = sp.x.length;
+    let x0 = 0;
+    let y0 = 0;
+    let z0 = 0;
+    let x1 = 0;
+    let y1 = 0;
+    let z1 = 0;
+    for (let i = 0; i < n; i++) {
+      x0 = Math.min(x0, sp.x[i]);
+      x1 = Math.max(x1, sp.x[i]);
+      y0 = Math.min(y0, sp.y[i]);
+      y1 = Math.max(y1, sp.y[i]);
+      z0 = Math.min(z0, sp.z[i]);
+      z1 = Math.max(z1, sp.z[i]);
+    }
+    let c = Math.max(cell, 1e-4);
+    const cells = (c: number) => (Math.floor((x1 - x0) / c) + 1) * (Math.floor((y1 - y0) / c) + 1) * (Math.floor((z1 - z0) / c) + 1);
+    while (cells(c) > 1 << 18) c *= 1.5;
+    this.x0 = x0;
+    this.y0 = y0;
+    this.z0 = z0;
+    this.inv = 1 / c;
+    this.nx = Math.floor((x1 - x0) / c) + 1;
+    this.ny = Math.floor((y1 - y0) / c) + 1;
+    this.nz = Math.floor((z1 - z0) / c) + 1;
+    this.head = new Int32Array(this.nx * this.ny * this.nz).fill(-1);
+    this.next = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const k = this.cell(sp.x[i], sp.y[i], sp.z[i]);
+      this.next[i] = this.head[k];
+      this.head[k] = i;
+    }
+  }
+
+  private cell(x: number, y: number, z: number) {
+    const ix = Math.min(this.nx - 1, Math.max(0, Math.floor((x - this.x0) * this.inv)));
+    const iy = Math.min(this.ny - 1, Math.max(0, Math.floor((y - this.y0) * this.inv)));
+    const iz = Math.min(this.nz - 1, Math.max(0, Math.floor((z - this.z0) * this.inv)));
+    return ix + this.nx * (iy + this.ny * iz);
+  }
+
+  /** Calls `fn` for every LED within `r` of the point, with its squared distance. */
+  each(px: number, py: number, pz: number, r: number, fn: (i: number, d2: number) => void) {
+    const { sp, inv, nx, ny, nz, head, next } = this;
+    const lo = (v: number, v0: number, m: number) => Math.min(m - 1, Math.max(0, Math.floor((v - r - v0) * inv)));
+    const hi = (v: number, v0: number, m: number) => Math.min(m - 1, Math.max(0, Math.floor((v + r - v0) * inv)));
+    const ax = lo(px, this.x0, nx);
+    const bx = hi(px, this.x0, nx);
+    const ay = lo(py, this.y0, ny);
+    const by = hi(py, this.y0, ny);
+    const az = lo(pz, this.z0, nz);
+    const bz = hi(pz, this.z0, nz);
+    const r2 = r * r;
+    for (let iz = az; iz <= bz; iz++)
+      for (let iy = ay; iy <= by; iy++)
+        for (let ix = ax; ix <= bx; ix++)
+          for (let i = head[ix + nx * (iy + ny * iz)]; i >= 0; i = next[i]) {
+            const dx = sp.x[i] - px;
+            const dy = sp.y[i] - py;
+            const dz = sp.z[i] - pz;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 <= r2) fn(i, d2);
+          }
+  }
+}
+
+/** One object of a space: its LEDs (space indexes, in the order of its string) and the box around them. */
+interface Part {
+  kind: FixtureKind;
+  leds: Int32Array;
+  cx: number;
+  cy: number;
+  cz: number;
+  /** Half the size of its box along each axis. */
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
+/** The objects of a space, and how densely its LEDs sit (see partsOf). */
+interface Parts {
+  list: Part[];
+  /** For each LED: its object, an index into `list`. */
+  of: Int32Array;
+  /** For each LED: how far its nearest neighbour is. Small in a dense bush, big along a sparse string. */
+  near: Float32Array;
+  grid: LedGrid;
+}
+
+const PARTS = new WeakMap<Space, Parts>();
+
+/** The objects of a space and the density of its LEDs, worked out once per space. */
+function partsOf(sp: Space): Parts {
+  const known = PARTS.get(sp);
+  if (known) return known;
+  const n = sp.x.length;
+  const of = sp.part && sp.part.length === n ? sp.part : new Int32Array(n);
+  let count = n ? 1 : 0;
+  for (let i = 0; i < n; i++) count = Math.max(count, of[i] + 1);
+  const sizes = new Int32Array(count);
+  for (let i = 0; i < n; i++) sizes[of[i]]++;
+  const list: Part[] = Array.from({ length: count }, (_, p) => ({ kind: sp.kinds?.[p] ?? 'line', leds: new Int32Array(sizes[p]), cx: 0, cy: 0, cz: 0, rx: 0, ry: 0, rz: 0 }));
+  const fill = new Int32Array(count);
+  for (let i = 0; i < n; i++) list[of[i]].leds[fill[of[i]]++] = i;
+  for (const p of list) {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let z0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    let z1 = -Infinity;
+    for (const i of p.leds) {
+      x0 = Math.min(x0, sp.x[i]);
+      x1 = Math.max(x1, sp.x[i]);
+      y0 = Math.min(y0, sp.y[i]);
+      y1 = Math.max(y1, sp.y[i]);
+      z0 = Math.min(z0, sp.z[i]);
+      z1 = Math.max(z1, sp.z[i]);
+    }
+    if (!p.leds.length) x0 = x1 = y0 = y1 = z0 = z1 = 0;
+    Object.assign(p, { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, cz: (z0 + z1) / 2, rx: (x1 - x0) / 2, ry: (y1 - y0) / 2, rz: (z1 - z0) / 2 });
+  }
+  const grid = new LedGrid(sp, Math.max(sp.pitch * 2, 0.004));
+  const near = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let best = Infinity;
+    for (let r = sp.pitch * 2; r < 4 && best === Infinity; r *= 2)
+      grid.each(sp.x[i], sp.y[i], sp.z[i], r, (j, d2) => {
+        if (j !== i && d2 > 1e-12 && d2 < best) best = d2;
+      });
+    near[i] = best < Infinity ? Math.sqrt(best) : sp.pitch;
+  }
+  const parts = { list, of, near, grid };
+  PARTS.set(sp, parts);
+  return parts;
+}
+
+/** LEDs joined to their neighbours: the next and last on the string, and the nearest around them. */
+interface Graph {
+  /** The neighbours of LED i are to[start[i]] .. to[start[i + 1] - 1], `len` away. */
+  start: Int32Array;
+  to: Int32Array;
+  len: Float32Array;
+}
+
+/**
+ * Joins every LED to the LEDs before and after it on its string, and to up to `k` others within
+ * `reach` times its nearest neighbour's distance (on its own object only, with `sameObject`).
+ * Where LEDs sit densely the web is tight; a gap wider than that between two objects is not crossed.
+ */
+function ledGraph(sp: Space, parts: Parts, reach: number, k: number, sameObject: boolean): Graph {
+  const n = sp.x.length;
+  const adj: Map<number, number>[] = Array.from({ length: n }, () => new Map());
+  const join = (a: number, b: number) => {
+    if (a === b) return;
+    const d = Math.max(1e-5, Math.hypot(sp.x[a] - sp.x[b], sp.y[a] - sp.y[b], sp.z[a] - sp.z[b]));
+    adj[a].set(b, d);
+    adj[b].set(a, d);
+  };
+  for (const p of parts.list) for (let j = 1; j < p.leds.length; j++) join(p.leds[j - 1], p.leds[j]);
+  const found: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    found.length = 0;
+    const r = Math.max(reach * parts.near[i], 1.5 * sp.pitch);
+    parts.grid.each(sp.x[i], sp.y[i], sp.z[i], r, (j, d2) => {
+      if (j !== i && (!sameObject || parts.of[j] === parts.of[i])) found.push([j, d2]);
+    });
+    found.sort((a, b) => a[1] - b[1]);
+    for (let m = 0; m < Math.min(k, found.length); m++) join(i, found[m][0]);
+  }
+  const start = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) start[i + 1] = start[i] + adj[i].size;
+  const to = new Int32Array(start[n]);
+  const len = new Float32Array(start[n]);
+  for (let i = 0; i < n; i++) {
+    let e = start[i];
+    for (const [j, d] of adj[i]) {
+      to[e] = j;
+      len[e++] = d;
+    }
+  }
+  return { start, to, len };
+}
+
+/** For each pair of objects: their nearest LEDs, from a sample of each object's LEDs. */
+function nearestPairs(sp: Space, parts: Parts): { a: number; b: number; pa: number; pb: number; gap: number }[] {
+  const samples = parts.list.map((p) => {
+    const m = Math.min(p.leds.length, 48);
+    return Array.from({ length: m }, (_, s) => p.leds[Math.floor(((s + 0.5) * p.leds.length) / m)]);
+  });
+  const out: { a: number; b: number; pa: number; pb: number; gap: number }[] = [];
+  for (let pa = 0; pa < samples.length; pa++)
+    for (let pb = pa + 1; pb < samples.length; pb++) {
+      let best = Infinity;
+      let a = -1;
+      let b = -1;
+      for (const i of samples[pa])
+        for (const j of samples[pb]) {
+          const d = (sp.x[i] - sp.x[j]) ** 2 + (sp.y[i] - sp.y[j]) ** 2 + (sp.z[i] - sp.z[j]) ** 2;
+          if (d < best) [best, a, b] = [d, i, j];
+        }
+      if (a >= 0) out.push({ a, b, pa, pb, gap: Math.sqrt(best) });
+    }
+  return out;
+}
+
+/** Timed events, earliest first: when, which LED, and a number to go with it. */
+class EventQueue {
+  private t: number[] = [];
+  private a: number[] = [];
+  private b: number[] = [];
+  /** The last event popped. */
+  at = 0;
+  led = 0;
+  value = 0;
+
+  get size() {
+    return this.t.length;
+  }
+
+  clear() {
+    this.t.length = this.a.length = this.b.length = 0;
+  }
+
+  first() {
+    return this.t[0];
+  }
+
+  push(time: number, led: number, value: number) {
+    const { t, a, b } = this;
+    let i = t.length;
+    t.push(time);
+    a.push(led);
+    b.push(value);
+    while (i > 0) {
+      const up = (i - 1) >> 1;
+      if (t[up] <= time) break;
+      t[i] = t[up];
+      a[i] = a[up];
+      b[i] = b[up];
+      i = up;
+    }
+    t[i] = time;
+    a[i] = led;
+    b[i] = value;
+  }
+
+  pop() {
+    const { t, a, b } = this;
+    this.at = t[0];
+    this.led = a[0];
+    this.value = b[0];
+    const lt = t.pop()!;
+    const la = a.pop()!;
+    const lb = b.pop()!;
+    const n = t.length;
+    if (!n) return;
+    let i = 0;
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= n) break;
+      if (c + 1 < n && t[c + 1] < t[c]) c++;
+      if (t[c] >= lt) break;
+      t[i] = t[c];
+      a[i] = a[c];
+      b[i] = b[c];
+      i = c;
+    }
+    t[i] = lt;
+    a[i] = la;
+    b[i] = lb;
+  }
+}
+
+/** Picks an index by weight. */
+function pickWeighted(weights: number[], r: number): number {
+  const sum = weights.reduce((s, w) => s + w, 0);
+  let x = r * sum;
+  for (let i = 0; i < weights.length; i++) {
+    x -= weights[i];
+    if (x < 0) return i;
+  }
+  return weights.length - 1;
+}
+
+/**
+ * Synapses: the yard as a nervous system. Each object slowly charges up (it glows brighter and
+ * brighter) until it fires: a white-hot spark races through its LEDs, from LED to neighbouring
+ * LED, so it climbs a tree's spiral, swells through a bush and runs along the roof. Where two
+ * objects are close the spark crosses on its own; across a wider gap it jumps as a flying spark,
+ * and sets the next object off. After firing, LEDs rest a moment, so sparks that meet put each
+ * other out, like waves in a real nerve.
+ */
+const synapse: Factory = (_n, rand) => {
+  const REST = 1.1;
+  const SPEED = 0.9;
+  const AIR = 0.6;
+  const queue = new EventQueue();
+  let sp: Space | null = null;
+  let parts: Parts;
+  let graph: Graph;
+  let last = new Float64Array(0);
+  let pending = new Float64Array(0);
+  let hue = new Int32Array(0);
+  let charge = new Float32Array(0);
+  let rate = new Float32Array(0);
+  /** The synapses between objects, by the LED a spark jumps from. */
+  let links = new Map<number, { to: number; gap: number }[]>();
+  const flights: { t0: number; t1: number; from: number; to: number; c: number }[] = [];
+  let colors = 0;
+  let jump = 0.6;
+  let started = false;
+
+  const setup = (space: Space) => {
+    sp = space;
+    parts = partsOf(space);
+    const n = space.x.length;
+    graph = ledGraph(space, parts, 3, 6, false);
+    last = new Float64Array(n).fill(-1e9);
+    pending = new Float64Array(n).fill(Infinity);
+    hue = new Int32Array(n);
+    const P = parts.list.length;
+    charge = Float32Array.from({ length: P }, () => 0.15 + 0.75 * rand());
+    rate = Float32Array.from({ length: P }, () => (0.16 + 0.2 * rand()) / Math.sqrt(Math.max(1, P) / 3));
+    // Each object reaches its two nearest neighbours, and the yard is joined up (a spanning tree).
+    links = new Map();
+    const pairs = nearestPairs(space, parts).sort((a, b) => a.gap - b.gap);
+    const chosen = new Set<(typeof pairs)[number]>();
+    const root = Array.from({ length: P }, (_, i) => i);
+    const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])));
+    for (const p of pairs) {
+      const [ra, rb] = [find(p.pa), find(p.pb)];
+      if (ra !== rb) {
+        root[ra] = rb;
+        chosen.add(p);
+      }
+    }
+    for (let q = 0; q < P; q++) pairs.filter((p) => p.pa === q || p.pb === q).slice(0, 2).forEach((p) => chosen.add(p));
+    const link = (a: number, b: number, gap: number) => {
+      const l = links.get(a) ?? [];
+      l.push({ to: b, gap });
+      links.set(a, l);
+    };
+    for (const p of chosen) {
+      link(p.a, p.b, p.gap);
+      link(p.b, p.a, p.gap);
+    }
+    queue.clear();
+    flights.length = 0;
+    started = false;
+  };
+
+  const fire = (i: number, c: number, at: number) => {
+    if (at - last[i] < REST) return;
+    last[i] = at;
+    hue[i] = c;
+    charge[parts.of[i]] = 0;
+    for (let e = graph.start[i]; e < graph.start[i + 1]; e++) {
+      const j = graph.to[e];
+      const tj = at + graph.len[e] / SPEED;
+      if (tj - last[j] >= REST && tj < pending[j]) {
+        pending[j] = tj;
+        queue.push(tj, j, c);
+      }
+    }
+    const ls = links.get(i);
+    if (ls)
+      for (const l of ls) {
+        if (rand() > jump) continue;
+        const t1 = at + 0.08 + l.gap / AIR;
+        if (t1 - last[l.to] < REST) continue;
+        queue.push(t1, l.to, c);
+        flights.push({ t0: at, t1, from: i, to: l.to, c });
+      }
+  };
+
+  return (out, { t, dt, intensity, size, pal, space }) => {
+    if (space !== sp) setup(space);
+    const n = space.x.length;
+    const { list, of } = parts;
+    jump = 0.45 + 0.55 * intensity;
+    // Objects charge up; a full one fires from a random LED, in the next color.
+    for (let p = 0; p < list.length; p++) {
+      charge[p] = Math.min(1, charge[p] + dt * rate[p] * (0.5 + intensity));
+      if (charge[p] >= 1 && list[p].leds.length) fire(list[p].leds[Math.floor(rand() * list[p].leds.length)], ++colors, t);
+    }
+    if (!started && list.length) {
+      // Something goes off at once.
+      started = true;
+      const p = list[Math.floor(rand() * list.length)];
+      if (p.leds.length) fire(p.leds[Math.floor(rand() * p.leds.length)], ++colors, t);
+    }
+    while (queue.size && queue.first() <= t) {
+      queue.pop();
+      const i = queue.led;
+      if (pending[i] === queue.at) pending[i] = Infinity;
+      fire(i, queue.value, queue.at);
+    }
+    const glowFor = 0.25 + 0.3 * size;
+    const headFor = 0.025 + 0.025 * size;
+    for (let i = 0; i < n; i++) {
+      const j = i * 3;
+      const c = stopAt(pal, hue[i]);
+      const ch = charge[of[i]];
+      // The charge glows up before it fires: the object you watch is about to go.
+      let k = (0.04 + 0.3 * ch * ch * ch) * (0.8 + 0.2 * Math.sin(i * 1.7 + t * 2.3));
+      const a = t - last[i];
+      if (a >= 0 && a < 4) {
+        k += 1.15 * Math.exp(-a / glowFor);
+        addRgb(out, j, WHITE, 1.3 * Math.exp(-a / headFor));
+      }
+      addRgb(out, j, c, k);
+    }
+    // Sparks in the air between objects (seen where they pass other lights).
+    for (let f = flights.length - 1; f >= 0; f--) {
+      const fl = flights[f];
+      if (t > fl.t1) {
+        flights.splice(f, 1);
+        continue;
+      }
+      const u = clamp01((t - fl.t0) / (fl.t1 - fl.t0));
+      const x = space.x[fl.from] + (space.x[fl.to] - space.x[fl.from]) * u;
+      const y = space.y[fl.from] + (space.y[fl.to] - space.y[fl.from]) * u + 0.05 * Math.sin(Math.PI * u);
+      const z = space.z[fl.from] + (space.z[fl.to] - space.z[fl.from]) * u;
+      glow3(out, space, x, y, z, 0.02, mix(stopAt(pal, fl.c), WHITE, 0.5), 1.1);
+    }
+  };
+};
+
+/**
+ * Murmuration: a flock of starlings at dusk, each bird steering by its neighbours (keep apart,
+ * fly the same way, stay together). The flock twists, stretches and folds as one, swirls round
+ * a tree or the roof for a while and moves on; now and then a falcon dives through and the
+ * flock bursts apart. Each LED catches the birds near it from as far as its neighbours are, so
+ * a sparse string shows the flock as clearly as a dense bush.
+ */
+const murmuration: Factory = (_n, rand, noise) => {
+  const MAX = 240;
+  const px = new Float32Array(MAX);
+  const py = new Float32Array(MAX);
+  const pz = new Float32Array(MAX);
+  const vx = new Float32Array(MAX);
+  const vy = new Float32Array(MAX);
+  const vz = new Float32Array(MAX);
+  const glowOf = new Float32Array(MAX);
+  let sp: Space | null = null;
+  let parts: Parts;
+  let bx = 0.5;
+  let by = 0.3;
+  let bz = 0.2;
+  const roost = { x: 0, y: 0, z: 0, r: 0.1, axis: 2, spin: 1, until: 0 };
+  const hawk = { on: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, next: 6 };
+  // The birds, sorted into squares each frame.
+  const CELL = 0.05;
+  let head = new Int32Array(0);
+  const nextBird = new Int32Array(MAX);
+  let gx = 1;
+  let gy = 1;
+
+  const pickRoost = (t: number) => {
+    const { list } = parts;
+    if (rand() < 0.25 || !list.length) Object.assign(roost, { x: (rand() - 0.5) * bx, y: by * 0.55, z: 0, r: 0.12 + 0.1 * rand() });
+    else {
+      const p = list[pickWeighted(list.map((q) => Math.sqrt(q.leds.length)), rand())];
+      Object.assign(roost, { x: p.cx, y: p.cy, z: p.cz, r: Math.max(0.05, Math.min(0.3, Math.max(p.rx, p.ry, p.rz) * 0.9)) });
+    }
+    roost.axis = rand() < 0.6 ? 2 : 1;
+    roost.spin = rand() < 0.5 ? -1 : 1;
+    roost.until = t + 5 + 5 * rand();
+  };
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    parts = partsOf(space);
+    bx = Math.max(space.ex / 2, 0.15) + 0.04;
+    by = Math.max(space.ey / 2, 0.1) + 0.04;
+    bz = Math.max(space.ez / 2, 0.06) + 0.04;
+    pickRoost(t);
+    for (let b = 0; b < MAX; b++) {
+      const a = rand() * Math.PI * 2;
+      px[b] = roost.x + (rand() - 0.5) * 0.25;
+      py[b] = roost.y + (rand() - 0.5) * 0.15;
+      pz[b] = roost.z + (rand() - 0.5) * 0.1;
+      vx[b] = Math.cos(a) * 0.3;
+      vy[b] = Math.sin(a) * 0.1;
+      vz[b] = Math.sin(a) * 0.3;
+    }
+    gx = Math.ceil((2 * bx + 0.6) / CELL) + 1;
+    gy = Math.ceil((2 * by + 0.6) / CELL) + 1;
+    head = new Int32Array(gx * gy);
+  };
+
+  // Each bird watches its seven nearest neighbours, however far they are, as real starlings do:
+  // that keeps the flock one body as it stretches and folds.
+  const TOPO = 7;
+  const nd = new Float32Array(TOPO);
+  const ni = new Int32Array(TOPO);
+  const step = (N: number, dt: number, t: number) => {
+    const S = 0.045;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let i = 0; i < N; i++) {
+      cx += px[i] / N;
+      cy += py[i] / N;
+      cz += pz[i] / N;
+    }
+    // The flock chases a point that loops round the roost, so it sweeps round it as a body.
+    const a = t * 0.9 * roost.spin;
+    const tx = roost.x + roost.r * Math.cos(a);
+    const ty = roost.y + roost.r * Math.sin(a) * (roost.axis === 2 ? 0.8 : 0.25);
+    const tz = roost.z + (roost.axis === 2 ? 0 : roost.r * Math.sin(a) * 0.8);
+    for (let i = 0; i < N; i++) {
+      let found = 0;
+      let sx = 0;
+      let sy = 0;
+      let sz = 0;
+      for (let j = 0; j < N; j++) {
+        if (j === i) continue;
+        const dx = px[j] - px[i];
+        const dy = py[j] - py[i];
+        const dz = pz[j] - pz[i];
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < S * S) {
+          const w = 1 / (d2 + 2e-4);
+          sx -= dx * w;
+          sy -= dy * w;
+          sz -= dz * w;
+        }
+        if (found === TOPO && d2 >= nd[TOPO - 1]) continue;
+        let k = found < TOPO ? found++ : TOPO - 1;
+        while (k > 0 && nd[k - 1] > d2) {
+          nd[k] = nd[k - 1];
+          ni[k] = ni[k - 1];
+          k--;
+        }
+        nd[k] = d2;
+        ni[k] = j;
+      }
+      let fx = sx * 0.02;
+      let fy = sy * 0.02;
+      let fz = sz * 0.02;
+      if (found) {
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+        let mx = 0;
+        let my = 0;
+        let mz = 0;
+        for (let k = 0; k < found; k++) {
+          const j = ni[k];
+          ax += vx[j];
+          ay += vy[j];
+          az += vz[j];
+          mx += px[j] - px[i];
+          my += py[j] - py[i];
+          mz += pz[j] - pz[i];
+        }
+        fx += (ax / found - vx[i]) * 2.2 + (mx / found) * 3;
+        fy += (ay / found - vy[i]) * 2.2 + (my / found) * 3;
+        fz += (az / found - vz[i]) * 2.2 + (mz / found) * 3;
+      }
+      // Together as a flock, and after the point that leads it.
+      fx += (cx - px[i]) * 0.5 + (tx - cx) * 1.1;
+      fy += (cy - py[i]) * 0.5 + (ty - cy) * 1.1;
+      fz += (cz - pz[i]) * 0.5 + (tz - cz) * 1.1;
+      // A breath of wind, different for every part of the flock.
+      fx += Math.sin(py[i] * 11 + t * 0.7) * Math.cos(pz[i] * 7 - t * 0.4) * 0.35;
+      fy += Math.sin(px[i] * 9 - t * 0.5) * 0.25;
+      // The edges of the sky push back.
+      if (px[i] > bx) fx -= (px[i] - bx) * 9;
+      if (px[i] < -bx) fx -= (px[i] + bx) * 9;
+      if (py[i] > by) fy -= (py[i] - by) * 9;
+      if (py[i] < -by) fy -= (py[i] + by) * 9;
+      if (pz[i] > bz) fz -= (pz[i] - bz) * 9;
+      if (pz[i] < -bz) fz -= (pz[i] + bz) * 9;
+      // Away from the falcon, fast.
+      if (hawk.on) {
+        const hx = px[i] - hawk.x;
+        const hy = py[i] - hawk.y;
+        const hz = pz[i] - hawk.z;
+        const hd = Math.hypot(hx, hy, hz) + 1e-4;
+        if (hd < 0.16) {
+          const k = (1 - hd / 0.16) * 7;
+          fx += (hx / hd) * k;
+          fy += (hy / hd) * k;
+          fz += (hz / hd) * k;
+        }
+      }
+      vx[i] += fx * dt;
+      vy[i] += fy * dt;
+      vz[i] += fz * dt;
+      const s = Math.hypot(vx[i], vy[i], vz[i]) + 1e-6;
+      const top = hawk.on ? 0.65 : 0.45;
+      const want = s < 0.2 ? 0.2 / s : s > top ? top / s : 1;
+      vx[i] *= want;
+      vy[i] *= want;
+      vz[i] *= want;
+    }
+    for (let i = 0; i < N; i++) {
+      px[i] += vx[i] * dt;
+      py[i] += vy[i] * dt;
+      pz[i] += vz[i] * dt;
+    }
+    if (hawk.on) {
+      hawk.x += hawk.vx * dt;
+      hawk.y += hawk.vy * dt;
+      hawk.z += hawk.vz * dt;
+      if (Math.abs(hawk.x) > bx + 0.4 || Math.abs(hawk.y) > by + 0.4 || Math.abs(hawk.z) > bz + 0.4) hawk.on = false;
+    }
+  };
+
+  return (out, { t, dt, intensity, size, pal, space, reverse }) => {
+    if (space !== sp) setup(space, t);
+    const n = space.x.length;
+    const N = Math.round(60 + 180 * intensity);
+    if (t >= roost.until) pickRoost(t);
+    if (!hawk.on && t >= hawk.next) {
+      // In from one side, aimed at the middle of the flock.
+      let cx = 0;
+      let cy = 0;
+      let cz = 0;
+      for (let i = 0; i < N; i++) {
+        cx += px[i] / N;
+        cy += py[i] / N;
+        cz += pz[i] / N;
+      }
+      const side = rand() < 0.5 ? -1 : 1;
+      Object.assign(hawk, { on: true, x: side * (bx + 0.3), y: by + 0.1, z: (rand() - 0.5) * bz });
+      const d = Math.hypot(cx - hawk.x, cy - hawk.y, cz - hawk.z) + 1e-6;
+      Object.assign(hawk, { vx: ((cx - hawk.x) / d) * 1.3, vy: ((cy - hawk.y) / d) * 1.3, vz: ((cz - hawk.z) / d) * 1.3, next: t + 9 + 8 * rand() });
+    }
+    for (let left = Math.min(dt, 0.2); left > 1e-6; left -= 1 / 30) step(N, Math.min(left, 1 / 30), t);
+    // Ripples of light run through the flock, as waves of turning do through a real one.
+    const wx = Math.cos(t * 0.13);
+    const wy = Math.sin(t * 0.17);
+    // The birds sorted into squares as the street sees them (depth counts little, see below).
+    head.fill(-1);
+    const ox = -bx - 0.3;
+    const oy = -by - 0.3;
+    for (let b = 0; b < N; b++) {
+      glowOf[b] = 0.55 + 0.45 * Math.sin((px[b] * wx + py[b] * wy) * 24 - t * 3.2);
+      const ix = Math.floor((px[b] - ox) / CELL);
+      const iy = Math.floor((py[b] - oy) / CELL);
+      if (ix < 0 || iy < 0 || ix >= gx || iy >= gy) continue;
+      nextBird[b] = head[ix + gx * iy];
+      head[ix + gx * iy] = b;
+    }
+    const near = parts.near;
+    const rb = 0.026 * Math.sqrt(size);
+    for (let i = 0; i < n; i++) {
+      const x = space.x[i];
+      const y = space.y[i];
+      const z = space.z[i];
+      // A sparse LED catches birds from further away, so the flock reads everywhere.
+      const c = Math.min(0.05, Math.max(rb, 0.75 * near[i]));
+      const r = 2.5 * c;
+      const inv = 1 / (c * c);
+      let sum = 0;
+      const ax = Math.max(0, Math.floor((x - r - ox) / CELL));
+      const bxx = Math.min(gx - 1, Math.floor((x + r - ox) / CELL));
+      const ay = Math.max(0, Math.floor((y - r - oy) / CELL));
+      const byy = Math.min(gy - 1, Math.floor((y + r - oy) / CELL));
+      for (let ky = ay; ky <= byy; ky++)
+        for (let kx = ax; kx <= bxx; kx++)
+          for (let b = head[kx + gx * ky]; b >= 0; b = nextBird[b]) {
+            const dx = px[b] - x;
+            const dy = py[b] - y;
+            // Depth counts little: the street sees the flock as a picture, with a touch of parallax.
+            const dz = (pz[b] - z) * 0.2;
+            const d2 = (dx * dx + dy * dy + dz * dz) * inv;
+            if (d2 < 6.25) sum += Math.exp(-d2) * glowOf[b];
+          }
+      const v = 1 - Math.exp(-sum * 1.4);
+      const j = i * 3;
+      const hy = unitY(space, i);
+      const sky = 0.15 + 0.7 * hy + 0.12 * noise.n2(x * 3 + t * 0.05, y * 3);
+      if (reverse) {
+        // Dark birds against a glowing dusk.
+        pal.add(out, j, 1 - clamp01(sky), (0.5 + 0.15 * noise.n2(x * 5 - t * 0.1, y * 4 + 3)) * (1 - 0.94 * v));
+      } else {
+        pal.add(out, j, clamp01(1 - sky), 0.05);
+        pal.add(out, j, clamp01(0.85 - 0.6 * hy + 0.2 * Math.sin(t * 0.21)), 1.25 * v);
+        if (v > 0.7) addRgb(out, j, WHITE, (v - 0.7) * 1.2);
+      }
+    }
+    if (hawk.on) for (let s = 0; s < 6; s++) glow3(out, space, hawk.x - hawk.vx * s * 0.025, hawk.y - hawk.vy * s * 0.025, hawk.z - hawk.vz * s * 0.025, 0.018, WHITE, reverse ? 0 : 1.1 * (1 - s / 6));
+  };
+};
+
+/**
+ * Ripple tank: real waves, worked out on a sheet over the yard. Drops fall on the lights (on
+ * every object in turn, so none stays dry), and their rings spread, bounce off the edges of the
+ * yard, cross and interfere; now and then a stone sends out a big swell. Crests glint white
+ * where they catch the light. The sheet's cells are as fine as the LEDs are dense.
+ */
+const ripples: Factory = (_n, rand) => {
+  let sp: Space | null = null;
+  let parts: Parts;
+  let W = 3;
+  let H = 3;
+  let cell = 1;
+  let x0 = 0;
+  let y0 = 0;
+  let cur = new Float32Array(9);
+  let old = new Float32Array(9);
+  let gu = new Float32Array(0);
+  let gv = new Float32Array(0);
+  let acc = 0;
+  let nextDrop = 0;
+  let nextStone = 4;
+  let rate = 80;
+  const splashes: { t: number; x: number; y: number; z: number; k: number }[] = [];
+
+  const setup = (space: Space) => {
+    sp = space;
+    parts = partsOf(space);
+    const m = 0.05;
+    const spanX = Math.max(space.ex, 0.02) + 2 * m;
+    const spanY = Math.max(space.ey, 0.02) + 2 * m;
+    const long = Math.max(spanX, spanY);
+    const N = Math.round(Math.min(150, Math.max(56, long / (space.pitch * 1.4))));
+    cell = long / N;
+    W = Math.max(3, Math.ceil(spanX / cell) + 1);
+    H = Math.max(3, Math.ceil(spanY / cell) + 1);
+    x0 = -spanX / 2;
+    y0 = -spanY / 2;
+    cur = new Float32Array(W * H);
+    old = new Float32Array(W * H);
+    const n = space.x.length;
+    gu = new Float32Array(n);
+    gv = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      gu[i] = (space.x[i] - x0) / cell;
+      gv[i] = (space.y[i] - y0) / cell;
+    }
+    // Waves cross the yard in about three seconds, however fine the sheet.
+    rate = N * 0.75;
+    acc = 0;
+  };
+
+  const drop = (u: number, v: number, amp: number, r: number) => {
+    const R = Math.ceil(r * 2.5);
+    for (let dy = -R; dy <= R; dy++)
+      for (let dx = -R; dx <= R; dx++) {
+        const x = Math.round(u) + dx;
+        const y = Math.round(v) + dy;
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const d2 = ((x - u) ** 2 + (y - v) ** 2) / (r * r);
+        const k = -amp * Math.exp(-d2);
+        cur[x + y * W] += k;
+        old[x + y * W] += k * 0.6;
+      }
+  };
+
+  /** A drop on a random LED of a random object: every object gets its rain. */
+  const dropOnLights = (t: number, amp: number, r: number) => {
+    const { list } = parts;
+    const p = list[Math.floor(rand() * list.length)];
+    if (!p?.leds.length || !sp) return;
+    const i = p.leds[Math.floor(rand() * p.leds.length)];
+    drop(gu[i], gv[i], amp, r);
+    splashes.push({ t, x: sp.x[i], y: sp.y[i], z: sp.z[i], k: amp });
+  };
+
+  const height = (u: number, v: number) => {
+    const x = Math.min(W - 1.001, Math.max(0, u));
+    const y = Math.min(H - 1.001, Math.max(0, v));
+    const i = Math.floor(x);
+    const j = Math.floor(y);
+    const fx = x - i;
+    const fy = y - j;
+    const k = i + j * W;
+    return (cur[k] * (1 - fx) + cur[k + 1] * fx) * (1 - fy) + (cur[k + W] * (1 - fx) + cur[k + W + 1] * fx) * fy;
+  };
+
+  return (out, { t, dt, intensity, size, pal, space }) => {
+    if (space !== sp) setup(space);
+    const r = 2.2 + 3.2 * size;
+    if (t >= nextDrop) {
+      dropOnLights(t, 1, r);
+      nextDrop = t + (0.15 + rand() * 0.5) / (0.35 + 1.6 * intensity);
+    }
+    if (t >= nextStone) {
+      dropOnLights(t, 2.6, r * 2.2);
+      nextStone = t + 5 + 5 * rand();
+    }
+    // The wave equation, a fixed step at a time; the edges of the yard reflect.
+    acc = Math.min(acc + dt * rate, 16);
+    const C = 0.22;
+    const damp = Math.exp(-1.1 / rate);
+    while (acc >= 1) {
+      acc -= 1;
+      for (let y = 0; y < H; y++) {
+        const up = (y > 0 ? y - 1 : 1) * W;
+        const dn = (y < H - 1 ? y + 1 : H - 2) * W;
+        const row = y * W;
+        for (let x = 0; x < W; x++) {
+          const l = x > 0 ? x - 1 : 1;
+          const rr = x < W - 1 ? x + 1 : W - 2;
+          const k = row + x;
+          const c = cur[k];
+          const lap = cur[row + l] + cur[row + rr] + cur[up + x] + cur[dn + x] - 4 * c;
+          old[k] = (2 * c - old[k] + C * lap) * damp;
+        }
+      }
+      const s = cur;
+      cur = old;
+      old = s;
+    }
+    const n = space.x.length;
+    const gain = 3.2;
+    for (let i = 0; i < n; i++) {
+      const u = gu[i];
+      const v = gv[i];
+      const h = height(u, v) * gain;
+      const sx = (height(u + 1, v) - height(u - 1, v)) * gain;
+      const sy = (height(u, v + 1) - height(u, v - 1)) * gain;
+      const j = i * 3;
+      const lift = Math.tanh(h);
+      // Still water is dark, troughs darker; crests rise into the palette's light end.
+      pal.add(out, j, clamp01(0.35 + 0.65 * lift), 0.05 + 0.08 * smooth(-1, 0, lift) + 1.1 * smooth(0, 0.9, lift));
+      // Where a slope faces the light (up and to the left), it glints.
+      const glint = clamp01(-sx * 0.55 + sy * 0.85 - 0.3);
+      if (glint > 0) addRgb(out, j, WHITE, glint * glint * 1.4);
+    }
+    for (let s = splashes.length - 1; s >= 0; s--) {
+      const sp2 = splashes[s];
+      const a = t - sp2.t;
+      if (a > 0.3) splashes.splice(s, 1);
+      else glow3(out, space, sp2.x, sp2.y, sp2.z, 0.012 + 0.01 * sp2.k, WHITE, (1 - a / 0.3) * 0.9);
+    }
+  };
+};
+
+/**
+ * Colored shadows: red, green and blue lamps float round the yard like stage lights, each
+ * circling an object for a while. Everything is lit on the side that faces a lamp (a tree's
+ * round, a bush's dome, the house front toward the street), and trees, bushes and shapes throw
+ * shadows on what stands behind them: where one lamp's light is blocked, the others' colors show.
+ * Where all three meet, the light is white.
+ */
+const shadows: Factory = (_n, rand) => {
+  let sp: Space | null = null;
+  let parts: Parts;
+  let nx = new Float32Array(0);
+  let ny = new Float32Array(0);
+  let nz = new Float32Array(0);
+  /** Round occluders (x, y, z, radius, object) and flat ones (an ellipse facing the street). */
+  let balls: number[] = [];
+  let discs: number[] = [];
+  let minZ = 0;
+  let homes: number[] = [];
+  const lamps = Array.from({ length: 5 }, (_, k) => ({ from: 0, to: 0, since: -10, ph: rand() * 6.28, rate: (0.45 + 0.35 * rand()) * (k % 2 ? -1 : 1), next: 0 }));
+
+  const setup = (space: Space) => {
+    sp = space;
+    parts = partsOf(space);
+    const n = space.x.length;
+    nx = new Float32Array(n);
+    ny = new Float32Array(n);
+    nz = new Float32Array(n);
+    balls = [];
+    discs = [];
+    minZ = Infinity;
+    for (let i = 0; i < n; i++) minZ = Math.min(minZ, space.z[i]);
+    parts.list.forEach((p, pi) => {
+      const big = Math.max(p.rx, p.ry, p.rz, 1e-4);
+      const flatZ = p.rz < 0.25 * big;
+      for (const i of p.leds) {
+        // The way each LED faces: off a round object's middle, or toward the street.
+        let a = 0;
+        let b = 0;
+        let c = 1;
+        if (!flatZ) {
+          const m = 0.2 * big;
+          a = (space.x[i] - p.cx) / Math.max(p.rx, m) ** 2;
+          b = (space.y[i] - p.cy) / Math.max(p.ry, m) ** 2;
+          c = (space.z[i] - p.cz) / Math.max(p.rz, m) ** 2;
+          const l = Math.hypot(a, b, c) || 1;
+          [a, b, c] = [a / l, b / l, c / l];
+        }
+        nx[i] = a;
+        ny[i] = b;
+        nz[i] = c;
+      }
+      if (p.kind === 'roof' || p.kind === 'line') return;
+      if (!flatZ) {
+        // A chain of balls up the object, as wide as its LEDs at each height.
+        const bands = 4;
+        for (let s = 0; s < bands; s++) {
+          const lo = p.cy - p.ry + (2 * p.ry * s) / bands;
+          const hi = lo + (2 * p.ry) / bands;
+          let r = 0;
+          for (const i of p.leds) if (space.y[i] >= lo - 1e-6 && space.y[i] <= hi + 1e-6) r = Math.max(r, Math.hypot(space.x[i] - p.cx, space.z[i] - p.cz));
+          if (r > 0.01) balls.push(p.cx, (lo + hi) / 2, p.cz, Math.max(r, (hi - lo) / 2) * 0.9, pi);
+        }
+      } else if (p.rx > 0.02 && p.ry > 0.02) discs.push(p.cx, p.cy, p.cz, p.rx, p.ry, pi);
+    });
+    // Lamps prefer objects with a round to light and a shadow to throw.
+    const round = parts.list.map((p, i) => [p, i] as const).filter(([p]) => p.rz >= 0.25 * Math.max(p.rx, p.ry, p.rz));
+    homes = (round.length ? round : parts.list.map((p, i) => [p, i] as const)).map(([, i]) => i);
+    lamps.forEach((l, k) => {
+      l.from = l.to = homes[k % homes.length] ?? 0;
+      l.since = -10;
+      l.next = 3 + k * 2.5 + rand() * 2;
+    });
+  };
+
+  const P = [0, 0, 0];
+  const orbit = (pi: number, a: number, out: number[]) => {
+    const p = parts.list[pi];
+    if (!p) {
+      out[0] = out[1] = 0;
+      out[2] = 0.3;
+      return;
+    }
+    const r = Math.min(0.45, Math.max(p.rx, p.rz, 0.04) * 1.4 + 0.07);
+    out[0] = p.cx + r * Math.sin(a);
+    out[1] = p.cy + p.ry * 0.35 * Math.sin(a * 1.7) + 0.03;
+    out[2] = Math.max(minZ + 0.03, p.cz + r * Math.cos(a));
+  };
+
+  return (out, { t, intensity, size, pal, space }) => {
+    if (space !== sp) setup(space);
+    const n = space.x.length;
+    const K = 2 + Math.round(intensity * 2);
+    const reach = 0.12 + 0.22 * size;
+    const lx: number[] = [];
+    const ly: number[] = [];
+    const lz: number[] = [];
+    const lc: Rgb[] = [];
+    for (let k = 0; k < K; k++) {
+      const l = lamps[k];
+      if (t >= l.next && homes.length > 1) {
+        l.from = l.to;
+        let to = homes[Math.floor(rand() * homes.length)];
+        if (to === l.to) to = homes[(homes.indexOf(to) + 1) % homes.length];
+        l.to = to;
+        l.since = t;
+        l.next = t + 7 + 5 * rand();
+      }
+      const a = l.ph + t * l.rate * 1.6;
+      // Glide from one object to the next.
+      const u = smooth(0, 2.2, t - l.since);
+      orbit(l.from, a, P);
+      const [ax, ay, az] = P;
+      orbit(l.to, a, P);
+      lx.push(ax + (P[0] - ax) * u);
+      ly.push(ay + (P[1] - ay) * u + 0.12 * Math.sin(Math.PI * u));
+      lz.push(az + (P[2] - az) * u);
+      lc.push(stopAt(pal, k));
+    }
+    const { of } = parts;
+    for (let i = 0; i < n; i++) {
+      const x = space.x[i];
+      const y = space.y[i];
+      const z = space.z[i];
+      const me = of[i];
+      const j = i * 3;
+      for (let k = 0; k < K; k++) {
+        const dx = lx[k] - x;
+        const dy = ly[k] - y;
+        const dz = lz[k] - z;
+        const d = Math.hypot(dx, dy, dz) + 1e-5;
+        const facing = (nx[i] * dx + ny[i] * dy + nz[i] * dz) / d;
+        let light = clamp01((facing + 0.2) / 1.2) / (1 + (d / reach) ** 2);
+        if (light < 0.004) continue;
+        // Shadows: soft-edged, from every other object in the way.
+        for (let b = 0; b < balls.length && light > 0.004; b += 5) {
+          if (balls[b + 4] === me) continue;
+          const d2 = segD2(balls[b], balls[b + 1], balls[b + 2], x, y, z, lx[k], ly[k], lz[k]);
+          if (segT < 0.02 || segT > 0.98) continue;
+          const r = balls[b + 3];
+          light *= smooth(r * 0.55, r * 1.05, Math.sqrt(d2));
+        }
+        for (let b = 0; b < discs.length && light > 0.004; b += 6) {
+          if (discs[b + 5] === me) continue;
+          const cz = discs[b + 2];
+          if ((z - cz) * (lz[k] - cz) >= 0) continue;
+          const u = (cz - z) / (lz[k] - z);
+          const qx = (x + dx * u - discs[b]) / discs[b + 3];
+          const qy = (y + dy * u - discs[b + 1]) / discs[b + 4];
+          light *= smooth(0.65, 1.15, qx * qx + qy * qy);
+        }
+        addRgb(out, j, lc[k], light * 1.6);
+      }
+    }
+    // The lamps themselves, where they float through the lights.
+    for (let k = 0; k < K; k++) glow3(out, space, lx[k], ly[k], lz[k], 0.02, mix(lc[k], WHITE, 0.45), 1.3);
+  };
+};
+
+/**
+ * Paint fight: balloons of paint fly in from the street in high arcs and burst on the lights.
+ * The paint splatters (droplets land on the objects close by), soaks through the object it hit
+ * and runs down it while it is wet, glistening, then dries; new paint covers old. When the yard
+ * is a patchwork of color, rain washes it clean from the top down, and it starts again.
+ */
+const paintfight: Factory = (_n, rand) => {
+  let sp: Space | null = null;
+  let parts: Parts;
+  let graph: Graph;
+  let col = new Float32Array(0);
+  let wet = new Float32Array(0);
+  let flash = new Float32Array(0);
+  let painted = new Uint8Array(0);
+  let count = 0;
+  let maxZ = 0;
+  let top = 0;
+  let bottom = 0;
+  let nextThrow = 0;
+  let washAt = -1;
+  let cycleStart = 0;
+  let lastColor = -1;
+  const balls: { t0: number; t1: number; x0: number; y0: number; z0: number; to: number; h: number; c: Rgb; big: boolean }[] = [];
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    parts = partsOf(space);
+    graph = ledGraph(space, parts, 2.6, 8, true);
+    const n = space.x.length;
+    col = new Float32Array(n * 3);
+    wet = new Float32Array(n);
+    flash = new Float32Array(n);
+    painted = new Uint8Array(n);
+    count = 0;
+    maxZ = -Infinity;
+    top = -Infinity;
+    bottom = Infinity;
+    for (let i = 0; i < n; i++) {
+      maxZ = Math.max(maxZ, space.z[i]);
+      top = Math.max(top, space.y[i]);
+      bottom = Math.min(bottom, space.y[i]);
+    }
+    balls.length = 0;
+    nextThrow = t;
+    washAt = -1;
+    cycleStart = t;
+  };
+
+  const coat = (i: number, c: Rgb, a: number) => {
+    const j = i * 3;
+    const f = clamp01(a);
+    col[j] += (c[0] - col[j]) * f;
+    col[j + 1] += (c[1] - col[j + 1]) * f;
+    col[j + 2] += (c[2] - col[j + 2]) * f;
+    wet[i] = Math.max(wet[i], f);
+    if (!painted[i] && f > 0.3) {
+      painted[i] = 1;
+      count++;
+    }
+  };
+
+  const splash = (i: number, c: Rgb, R: number, big: boolean) => {
+    const space = sp!;
+    const me = parts.of[i];
+    const seed = rand() * 100;
+    parts.grid.each(space.x[i], space.y[i], space.z[i], R * 1.3, (j, d2) => {
+      // A ragged edge; other objects close by only catch the middle of it.
+      const edge = R * (0.7 + 0.6 * hash01(j, seed)) * (parts.of[j] === me ? 1 : 0.55);
+      const d = Math.sqrt(d2);
+      if (d > edge) return;
+      coat(j, c, 1.2 - (d / edge) * 0.5);
+      flash[j] = Math.max(flash[j], 1 - d / edge);
+    });
+    // Droplets fly off and land where there are lights.
+    const drops = big ? 10 : 5;
+    for (let k = 0; k < drops; k++) {
+      const a = rand() * Math.PI * 2;
+      const r = R * (1.4 + 2.5 * rand());
+      const qx = space.x[i] + Math.cos(a) * r;
+      const qy = space.y[i] + Math.sin(a) * r * 0.7 - 0.02;
+      const qz = space.z[i] + (rand() - 0.5) * r;
+      let best = -1;
+      let bd = Infinity;
+      parts.grid.each(qx, qy, qz, R, (j, d2) => {
+        if (d2 < bd) [best, bd] = [j, d2];
+      });
+      if (best >= 0)
+        parts.grid.each(space.x[best], space.y[best], space.z[best], R * 0.35, (j) => {
+          coat(j, c, 0.9);
+          flash[j] = Math.max(flash[j], 0.5);
+        });
+    }
+  };
+
+  const toss = (t: number, intensity: number, pal: Pal) => {
+    const { list } = parts;
+    const p = list[Math.floor(rand() * list.length)];
+    if (!p?.leds.length || !sp) return;
+    const to = p.leds[Math.floor(rand() * p.leds.length)];
+    let k = Math.floor(rand() * pal.stops.length);
+    if (k === lastColor && pal.stops.length > 1) k = (k + 1) % pal.stops.length;
+    lastColor = k;
+    const first = balls.length === 0 && count === 0;
+    balls.push({
+      t0: t,
+      t1: t + (first ? 0.5 : 0.8 + 0.5 * rand()),
+      x0: sp.x[to] + (rand() - 0.5) * 0.4,
+      y0: bottom - 0.05,
+      z0: maxZ + 0.45,
+      to,
+      h: 0.1 + 0.25 * rand(),
+      c: pal.stops[k],
+      big: rand() < 0.15
+    });
+    nextThrow = t + (0.25 + 1.3 * (1 - intensity)) * (0.5 + rand());
+  };
+
+  return (out, { t, dt, intensity, size, pal, space }) => {
+    if (space !== sp) setup(space, t);
+    const n = space.x.length;
+    const R = 0.025 + 0.03 * size;
+    // When the yard is mostly painted, or after a while, the rain comes.
+    if (washAt < 0 && (count > 0.85 * n || t - cycleStart > 45)) washAt = t;
+    const washing = washAt >= 0;
+    if (!washing && t >= nextThrow) toss(t, intensity, pal);
+    for (let b = balls.length - 1; b >= 0; b--) {
+      const ball = balls[b];
+      const u = (t - ball.t0) / (ball.t1 - ball.t0);
+      if (u >= 1) {
+        balls.splice(b, 1);
+        splash(ball.to, ball.c, ball.big ? R * 1.8 : R, ball.big);
+        continue;
+      }
+      // In flight, as the street sees it: rising, then falling onto its object.
+      const x = ball.x0 + (space.x[ball.to] - ball.x0) * u;
+      const y = ball.y0 + (space.y[ball.to] - ball.y0) * u + 4 * ball.h * u * (1 - u);
+      const z = ball.z0 + (space.z[ball.to] - ball.z0) * u;
+      glow3(out, space, x, y, z, 0.016 + 0.006 * u, ball.c, 1.1, true);
+      glow3(out, space, x, y, z, 0.007, WHITE, 0.6, true);
+    }
+    // Wet paint soaks through its object and runs downhill; it dries as it goes.
+    const { start, to, len } = graph;
+    for (let i = 0; i < n; i++) {
+      const w = wet[i];
+      if (w < 0.03) continue;
+      const j3 = i * 3;
+      for (let e = start[i]; e < start[i + 1]; e++) {
+        const j = to[e];
+        const diff = w - wet[j];
+        if (diff <= 0.02) continue;
+        const down = clamp01((space.y[i] - space.y[j]) / len[e]);
+        const f = Math.min(0.35, diff * dt * (1.2 + 9 * down * down));
+        const k3 = j * 3;
+        const m = Math.min(1, f * 2.2);
+        col[k3] += (col[j3] - col[k3]) * m;
+        col[k3 + 1] += (col[j3 + 1] - col[k3 + 1]) * m;
+        col[k3 + 2] += (col[j3 + 2] - col[k3 + 2]) * m;
+        wet[j] += f * 0.85;
+        if (!painted[j] && m > 0.3) {
+          painted[j] = 1;
+          count++;
+        }
+      }
+    }
+    const dry = Math.exp(-dt / 1.8);
+    const fade = Math.exp(-dt / 0.1);
+    const span = Math.max(1e-4, top - bottom);
+    for (let i = 0; i < n; i++) {
+      wet[i] *= dry;
+      flash[i] *= fade;
+      const j = i * 3;
+      if (washing) {
+        // Rain runs down from the top: the paint goes, streak by streak.
+        const reach = washAt + ((top - space.y[i]) / span) * 2.2 + hash01(i, 5) * 0.6;
+        if (t > reach) {
+          const k = Math.exp(-dt / 0.3);
+          col[j] *= k;
+          col[j + 1] *= k;
+          col[j + 2] *= k;
+          if (t - reach < 0.25) addRgb(out, j, [0.55, 0.7, 1], (1 - (t - reach) / 0.25) * 0.6);
+        }
+      }
+      const shine = 0.7 + 0.45 * wet[i] * (0.75 + 0.25 * Math.sin(t * 9 + i * 0.7));
+      out[j] += col[j] * shine + 0.012;
+      out[j + 1] += col[j + 1] * shine + 0.012;
+      out[j + 2] += col[j + 2] * shine + 0.012;
+      if (flash[i] > 0.01) addRgb(out, j, WHITE, flash[i] * 1.3);
+    }
+    if (washing && t - washAt > 3.4) {
+      col.fill(0);
+      wet.fill(0);
+      painted.fill(0);
+      count = 0;
+      washAt = -1;
+      cycleStart = t;
+      nextThrow = t + 0.3;
+    }
+  };
+};
+
 const FACTORIES: Record<EffectId, Factory> = {
   solid,
   gradient,
@@ -2347,7 +3636,12 @@ const FACTORIES: Record<EffectId, Factory> = {
   hologram,
   orbits,
   supernova,
-  kaleidoscope
+  kaleidoscope,
+  synapse,
+  murmuration,
+  ripples,
+  shadows,
+  paint: paintfight
 };
 
 /** One running effect on `n` LEDs: along a string (1-D), or at the places in `space` (3-D). */

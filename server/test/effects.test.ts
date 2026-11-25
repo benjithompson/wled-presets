@@ -397,3 +397,127 @@ describe('effects on a whole device', () => {
     expect(keyDevice('roof')).toBeNull();
   });
 });
+
+describe('3-D effects that know the yard’s objects', () => {
+  const layout = sampleLayout();
+  const stage = buildStage(layout);
+  const all = Array.from({ length: stage.pixelCount }, (_, i) => i);
+  /** For each object of the sample yard, the stage LEDs it has. */
+  const objects = stage.fixtures.map((f) => Array.from({ length: f.count }, (_, i) => f.offset + i));
+  const play = (effect: Parameters<typeof defaultSettings>[0], seconds: number, each: (out: Float32Array, t: number) => void, patch: Partial<EffectSettings> = {}) => {
+    const scene = new EffectScene(stage, layout, { [YARD]: { ...defaultSettings(effect), brightness: 1, ...patch } });
+    const out = new Float32Array(stage.pixelCount * 3);
+    for (let f = 1; f <= seconds * 30; f++) {
+      scene.update(1 / 30, out);
+      each(out, f / 30);
+    }
+  };
+  const sum = (out: Float32Array, i: number) => out[i * 3] + out[i * 3 + 1] + out[i * 3 + 2];
+
+  it('know which object each LED is on, and what kind it is', () => {
+    const sp = stageSpace(stage, all);
+    expect(sp.kinds).toEqual(['roof', 'bush', 'bush', 'bush']);
+    expect(sp.part![0]).toBe(0);
+    expect(sp.part![objects[2][5]]).toBe(2);
+    // A space of some objects only numbers the ones it has.
+    const two = stageSpace(stage, [...objects[3], ...objects[1]]);
+    expect(two.kinds).toEqual(['bush', 'bush']);
+    expect([two.part![0], two.part![objects[3].length]]).toEqual([0, 1]);
+  });
+
+  it('synapses: sparks spread through every object and jump between them', () => {
+    // A spark's head is white: each object fires (all its colors high at once) at least once.
+    const fired = new Set<number>();
+    play('synapse', 20, (out) => {
+      objects.forEach((leds, o) => {
+        if (leds.some((i) => Math.min(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]) > 0.6)) fired.add(o);
+      });
+    });
+    expect(fired.size).toBe(objects.length);
+  });
+
+  it('murmuration: the flock flies over the yard from object to object', () => {
+    const visited = new Set<number>();
+    play('murmuration', 30, (out) => {
+      objects.forEach((leds, o) => {
+        if (leds.filter((i) => sum(out, i) > 0.9).length >= 3) visited.add(o);
+      });
+    });
+    expect(visited.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('paint fight: paint covers the yard, then rain washes it off', () => {
+    let most = 0;
+    let after = 1;
+    play('paint', 60, (out) => {
+      const painted = all.filter((i) => sum(out, i) > 0.25).length / all.length;
+      if (painted > most) most = painted;
+      else if (most > 0.6) after = Math.min(after, painted);
+    }, { intensity: 1 });
+    expect(most).toBeGreaterThan(0.6);
+    expect(after).toBeLessThan(0.2);
+  });
+
+  it('ripple tank: rings spread from where the drops land', () => {
+    // From still water, the light moves: an LED goes from crest to trough and back.
+    let lo = Infinity;
+    let hi = 0;
+    play('ripples', 6, (out, t) => {
+      if (t < 1) return;
+      const v = sum(out, objects[0][200]);
+      lo = Math.min(lo, v);
+      hi = Math.max(hi, v);
+    });
+    expect(hi - lo).toBeGreaterThan(0.3);
+  });
+
+  it('colored shadows: an object between a lamp and the wall throws a shadow on it', () => {
+    // A wall facing the street, and a bush in front of it.
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const zs: number[] = [];
+    const part: number[] = [];
+    for (let a = 0; a < 40; a++)
+      for (let b = 0; b < 16; b++) {
+        xs.push(-0.5 + a / 39);
+        ys.push(-0.25 + (b / 15) * 0.5);
+        zs.push(-0.25);
+        part.push(0);
+      }
+    for (let k = 0; k < 120; k++) {
+      // Points spread over a ball.
+      const y = 1 - (2 * (k + 0.5)) / 120;
+      const r = Math.sqrt(1 - y * y);
+      const a = k * 2.39996;
+      xs.push(0.09 * r * Math.cos(a));
+      ys.push(-0.1 + 0.09 * y);
+      zs.push(0.05 + 0.09 * r * Math.sin(a));
+      part.push(1);
+    }
+    const n = xs.length;
+    const space = (kinds: Space['kinds']): Space => ({ x: Float32Array.from(xs), y: Float32Array.from(ys), z: Float32Array.from(zs), ex: 1, ey: 0.5, ez: 0.39, pitch: 0.03, part: Int32Array.from(part), kinds });
+    const wallLight = (kinds: Space['kinds']) => {
+      const r = new EffectRunner('shadows', n, 5, space(kinds));
+      const s = { ...defaultSettings('shadows'), brightness: 1 };
+      const frames: number[][] = [];
+      for (let f = 0; f < 600; f++) {
+        const out = r.render(1 / 30, s);
+        frames.push(Array.from({ length: 640 }, (_, i) => out[i * 3] + out[i * 3 + 1] + out[i * 3 + 2]));
+      }
+      return frames;
+    };
+    // The same lamps on the same paths: with a bush that throws a shadow, and with one that doesn't.
+    const shaded = wallLight(['roof', 'bush']);
+    const open = wallLight(['roof', 'line']);
+    let darker = 0;
+    let total = [0, 0];
+    shaded.forEach((frame, f) =>
+      frame.forEach((v, i) => {
+        total = [total[0] + v, total[1] + open[f][i]];
+        if (open[f][i] > 0.2 && v < 0.5 * open[f][i]) darker++;
+      })
+    );
+    expect(total[0]).toBeLessThan(total[1]);
+    expect(darker).toBeGreaterThan(200);
+  });
+});
