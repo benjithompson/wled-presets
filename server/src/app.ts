@@ -18,7 +18,8 @@ import { isValidCidr } from './net.ts';
 import { createPasskeys, PasskeyError, siteOf } from './passkeys.ts';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import { ConnectionLimit, limitBody, rateLimit } from './rateLimit.ts';
-import { readGameArea, readSettings, writeGameArea, writeLineSettings, writeSettings } from './settings.ts';
+import { cleanGameArea, readGameArea, readHiddenGames, readSettings, writeGameArea, writeHiddenGames, writeLineSettings, writeSettings } from './settings.ts';
+import { GAME_CATALOG } from '../../shared/games.ts';
 import { visitorCookie, visitorId } from './visitor.ts';
 import type { Visitor } from './line.ts';
 import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
@@ -81,8 +82,11 @@ const rgbInput = z.tuple([z.number().int().min(0).max(255), z.number().int().min
 const gameAreaInput = z.object({
   exclude: z.array(z.string().min(1).max(64)).max(512).optional(),
   skip: z.record(z.string().min(1).max(64), z.array(z.number().int().min(0).max(9999)).max(512)).optional(),
-  trim: z.record(z.string().min(1).max(64), z.tuple([z.number().int().min(0).max(99999), z.number().int().min(0).max(99999)])).optional()
+  trim: z.record(z.string().min(1).max(64), z.tuple([z.number().int().min(0).max(99999), z.number().int().min(0).max(99999)])).optional(),
+  games: z.record(z.string().min(1).max(64), z.record(z.string().min(1).max(64), z.boolean())).optional()
 });
+
+const GAME_IDS = GAME_CATALOG.map((g) => g.id);
 
 /** A picture in a layout file: its type, and its bytes in base64 (up to 12 MB). */
 const pictureInput = z.object({ type: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), data: z.string().max(17_000_000) });
@@ -947,19 +951,34 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   admin.get('/games/area', (c) => c.json({ area: readGameArea(db) }));
   admin.put('/games/area', async (c) => {
     const input = await body(c, gameAreaInput);
-    // Keep only what leaves something out, for objects that are in the layout.
-    const ids = new Set(readLayout(db).fixtures.map((f) => f.id));
-    const keep = <T>(r: Record<string, T> | undefined, used: (v: T) => boolean) => Object.fromEntries(Object.entries(r ?? {}).filter(([id, v]) => ids.has(id) && used(v)));
-    const area = {
-      exclude: [...new Set(input.exclude ?? [])].filter((id) => ids.has(id)),
-      skip: keep(input.skip, (v) => v.length > 0),
-      trim: keep(input.trim, ([a, b]) => a > 0 || b > 0)
-    };
-    const any = area.exclude.length || Object.keys(area.skip).length || Object.keys(area.trim).length;
-    writeGameArea(db, any ? area : null);
-    host?.setGameArea(any ? area : null);
-    lights.log('info', 'config', any ? `Game area saved: ${area.exclude.length} object(s) left out, ${Object.keys(area.skip).length + Object.keys(area.trim).length} line(s) shortened` : 'Game area saved: games use the whole yard', null, actor(c));
-    return c.json({ area: any ? area : null });
+    // Keep only what leaves something out, for objects that are in the layout and games in the catalog.
+    const area = cleanGameArea(input, readLayout(db).fixtures.map((f) => f.id), GAME_IDS);
+    writeGameArea(db, area);
+    host?.setGameArea(area);
+    const own = Object.keys(area?.games ?? {}).length;
+    lights.log(
+      'info',
+      'config',
+      area
+        ? `Game area saved: ${area.exclude?.length ?? 0} object(s) left out, ${Object.keys(area.skip ?? {}).length + Object.keys(area.trim ?? {}).length} line(s) shortened${own ? `, ${own} game(s) with their own objects` : ''}`
+        : 'Game area saved: games use the whole yard',
+      null,
+      actor(c)
+    );
+    return c.json({ area });
+  });
+
+  // Games hidden from visitors (Games page). Admins still see them, to try them.
+  admin.get('/games/hidden', (c) => c.json({ hidden: readHiddenGames(db) }));
+  admin.put('/games/hidden', async (c) => {
+    const input = await body(c, z.object({ hidden: z.array(z.string().min(1).max(64)).max(64) }));
+    const hidden = GAME_IDS.filter((id) => input.hidden.includes(id));
+    writeHiddenGames(db, hidden);
+    host?.setHiddenGames(hidden);
+    bus.emit('state');
+    const names = GAME_CATALOG.filter((g) => hidden.includes(g.id)).map((g) => g.name);
+    lights.log('info', 'config', names.length ? `Games hidden from visitors: ${names.join(', ')}` : 'Every game shows on the play page', null, actor(c));
+    return c.json({ hidden });
   });
 
   // Debug mode: send the games to the real lights too.
@@ -1084,13 +1103,9 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     host?.setLayout(layout);
     // The game area goes with the layout (only for its objects); a file without one leaves the game area as it is.
     if (file.gameArea !== undefined) {
-      const ids = new Set(layout.fixtures.map((f) => f.id));
-      const g = file.gameArea;
-      const keep = <T>(r: Record<string, T> | undefined) => Object.fromEntries(Object.entries(r ?? {}).filter(([id]) => ids.has(id)));
-      const area = g ? { exclude: (g.exclude ?? []).filter((id) => ids.has(id)), skip: keep(g.skip), trim: keep(g.trim) } : null;
-      const any = area && (area.exclude.length || Object.keys(area.skip).length || Object.keys(area.trim).length);
-      writeGameArea(db, any ? area : null);
-      host?.setGameArea(any ? area : null);
+      const area = cleanGameArea(file.gameArea, layout.fixtures.map((f) => f.id), GAME_IDS);
+      writeGameArea(db, area);
+      host?.setGameArea(area);
     }
     const pixels = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
     lights.log('info', 'config', `Yard layout imported: ${layout.fixtures.length} object(s), ${pixels} LED(s)${unmatched ? `; ${unmatched} object(s) without their device` : ''}`, null, actor(c));

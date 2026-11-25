@@ -118,6 +118,8 @@ export interface PublicState {
   revertAt: string | null;
   /** An admin switched every light off: nothing plays until one switches them on again. */
   lightsOff: boolean;
+  /** Games an admin hid from visitors (by id). */
+  hiddenGames: string[];
 }
 
 /**

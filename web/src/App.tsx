@@ -16,8 +16,12 @@ import { SequencePage } from './pages/admin/sequence/SequencePage.tsx';
 
 const router = createBrowserRouter([
   { path: '/', element: <PublicPage /> },
+  // A link to one scene: it plays (or joins the line) when the page opens.
+  { path: '/scene/:scene', element: <PublicPage /> },
   { path: '/login', element: <LoginPage /> },
-  { path: '/play', element: <PlayPage /> },
+  // /play/<game>: a link to one game, which starts when the lights are free (see PlayPage). One
+  // route, so the page (and its connection) stays when the address follows the game.
+  { path: '/play/:game?', element: <PlayPage /> },
   { path: '/yard', element: <YardLivePage /> },
   {
     path: '/admin',

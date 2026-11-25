@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams } from 'react-router';
 import type React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bug, Loader2, Radio, Square, Users, WifiOff, X } from 'lucide-react';
+import { ArrowLeft, Bug, EyeOff, Loader2, Radio, Square, Users, WifiOff, X } from 'lucide-react';
 import type { ButtonTone, GameControl, GameSetting } from '../../../shared/layout.ts';
 import { api } from '../lib/api.ts';
 import { YardView } from '../yard/YardView.tsx';
@@ -14,10 +15,12 @@ import { GameScreen, GameWindow } from './GameWindow.tsx';
 import { PaintStudio } from './PaintStudio.tsx';
 import { MoleBoard, WhackWindow } from './WhackArcade.tsx';
 import { cn } from '../lib/utils.ts';
+import { gamePath } from '../../../shared/links.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
 export function PlayPage() {
-  const { layout, games, status, connected, frame, send, notice } = usePlaySocket();
+  const { layout, games: gameList, status, connected, frame, send, notice } = usePlaySocket();
+  const games = gameList ?? [];
   /** The buttons held down now, by id ('main': the big button). */
   const [pressed, setPressed] = useState<ReadonlySet<string>>(new Set());
   // The line for the lights: with someone else's turn, this phone watches.
@@ -34,32 +37,49 @@ export function PlayPage() {
   const [suggested, setSuggested] = useState<string | null>(null);
   const [shownNotice, setShownNotice] = useState<string | null>(null);
   useEffect(() => {
-    if (!notice) return;
-    setShownNotice(notice.text);
+    if (notice) setShownNotice(notice.text);
+  }, [notice]);
+  // A note shows for a few seconds (the same note again starts over).
+  useEffect(() => {
+    if (!shownNotice) return;
     const t = setTimeout(() => setShownNotice(null), 5000);
     return () => clearTimeout(t);
-  }, [notice]);
+  }, [shownNotice, notice]);
   const { data: session } = useQuery({ queryKey: ['session'], queryFn: api.session, retry: false });
   const isAdmin = !!session?.user;
   const [debugOpen, setDebugOpen] = useState(false);
   const realLights = status?.realLights ?? [];
 
+  const playingName = playing ? games.find((g) => g.id === status?.game)?.name : undefined;
   useEffect(() => {
-    document.title = 'Play';
-  }, []);
+    document.title = playingName ? `${playingName} · Play` : 'Play';
+  }, [playingName]);
 
-  // Opened from a game on the public page (/play?game=cascade): start it when the lights are free.
-  // When they are busy, it is only pointed out: joining the line is the visitor's own tap.
-  const wanted = useRef(new URLSearchParams(location.search).get('game'));
+  // Opened from a link to a game (/play/cascade, or /play?game=cascade from older links): start
+  // it when the lights are free. When they are busy, it is only pointed out: joining the line is
+  // the visitor's own tap.
+  const params = useParams();
+  const wanted = useRef<string | null>(params.game ?? new URLSearchParams(location.search).get('game'));
   useEffect(() => {
     const id = wanted.current;
-    if (!id || !connected || !status || !games.length) return;
+    if (!id || !connected || !status || !gameList) return;
     wanted.current = null;
-    history.replaceState(null, '', location.pathname);
-    if (!games.some((g) => g.id === id) || (status.game && status.canPlay !== false)) return;
+    const g = gameList.find((x) => x.id === id);
+    if (!g) return setShownNotice("That game isn't on right now. Pick another one!");
+    if (status.game && status.canPlay !== false) return;
     if (joins && !isAdmin) setSuggested(id);
     else send({ type: 'start', game: id });
-  }, [connected, status, games, send, joins, isAdmin]);
+  }, [connected, status, gameList, send, joins, isAdmin]);
+
+  // The address follows the game this phone plays (/play/<game>), so it can be shared from the
+  // browser; back at the picker it is /play. Not before a game from a link was asked for.
+  // The router is not told: the page stays as it is.
+  const shownGame = connected && playing ? (status?.game ?? null) : null;
+  useEffect(() => {
+    if (wanted.current || !connected) return;
+    const path = shownGame ? gamePath(shownGame) : '/play';
+    if (location.pathname !== path || location.search) history.replaceState(history.state, '', path);
+  }, [shownGame, connected, status]);
 
   // Each button is held for as long as its finger (or key) is down: some games pour while you
   // hold. Several can be down at once (one finger per button).
@@ -291,6 +311,7 @@ export function PlayPage() {
                 {line ? <LineCard line={line} onLeave={() => send({ type: 'leaveLine' })} className="mb-6" /> : null}
                 <h1 className="mb-1 text-2xl font-bold tracking-tight">{joins ? 'Join the line' : 'Pick a game'}</h1>
                 <p className="mb-5 text-white/60">{joins ? 'The lights are busy. Pick a game to wait for your turn.' : 'The lights on the house become the game.'}</p>
+                {gameList && !games.length ? <p className="rounded-2xl bg-white/5 p-5 text-white/70 ring-1 ring-white/10">No games are on right now. Come back later!</p> : null}
                 <div className="grid gap-3 sm:grid-cols-2">
                   {games.map((g) => {
                     const look = gameLook(g.id);
@@ -315,6 +336,12 @@ export function PlayPage() {
                         <span>
                           <span className="flex flex-wrap items-center gap-2 text-lg font-semibold">
                             {g.name}
+                            {g.hidden ? (
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-white/60" title="Hidden from visitors: only admins see it">
+                                <EyeOff className="mr-1 inline size-3" />
+                                Hidden
+                              </span>
+                            ) : null}
                             {line?.you?.kind === 'game' && line.you.label === g.name ? (
                               <span className="rounded-full bg-amber-300/15 px-2 py-0.5 text-xs font-semibold text-amber-200">In line · {line.you.place}</span>
                             ) : joins ? (

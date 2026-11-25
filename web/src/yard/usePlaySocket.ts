@@ -20,7 +20,8 @@ async function inflate(data: ArrayBuffer): Promise<Uint8Array> {
  */
 export function usePlaySocket() {
   const [layout, setLayout] = useState<Layout | null>(null);
-  const [games, setGames] = useState<GameInfo[]>([]);
+  /** The games this browser may pick, once the server sent them (null until then). */
+  const [games, setGames] = useState<GameInfo[] | null>(null);
   const [status, setStatus] = useState<GameStatus | null>(null);
   const [connected, setConnected] = useState(false);
   /** A note from the server (the line is full), with when it came so the same text shows again. */

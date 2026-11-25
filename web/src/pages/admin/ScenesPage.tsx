@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Layers, Pencil, Play, Plus, RefreshCw, Sparkles, Star, Trash2, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Layers, Link2, Pencil, Play, Plus, RefreshCw, Sparkles, Star, Trash2, Upload } from 'lucide-react';
 import { defaultSettings, deviceKey, effectInfo, effectObjects, effectTarget, keyDevice, paletteColors, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { SequenceSummary } from '../../../../shared/sequence.ts';
 import type { Layout } from '../../../../shared/layout.ts';
@@ -10,7 +10,8 @@ import type { DeviceWithStatus, Scene } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Select, Spinner, StatusDot } from '../../components/ui.tsx';
 import { MoreButton } from '../../components/mobile.tsx';
 import { api, type Overview, isQueued } from '../../lib/api.ts';
-import { downloadJson, errorText } from '../../lib/utils.ts';
+import { copyLink, downloadJson, errorText } from '../../lib/utils.ts';
+import { scenePath } from '../../../../shared/links.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { EFFECT_GROUPS, EffectProps, PaletteSwatch } from './effectProps.tsx';
 
@@ -260,6 +261,16 @@ export function ScenesPage() {
                     <Button size="sm" variant="ghost" onClick={() => setEditing(s)} className="max-md:hidden">
                       <Pencil /> Edit
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Copy a link to ${s.name}`}
+                      title="Copy a link that plays this scene"
+                      onClick={() => void copyLink(scenePath(s, data.scenes), `Link to ${s.name}`)}
+                      className="max-md:hidden"
+                    >
+                      <Link2 />
+                    </Button>
                     <Button size="sm" variant="ghost" aria-label={`Delete ${s.name}`} onClick={() => setDeleting(s)} className="hover:text-red-600 max-md:hidden dark:hover:text-red-400">
                       <Trash2 />
                     </Button>
@@ -269,6 +280,7 @@ export function ScenesPage() {
                       title={s.name}
                       items={[
                         { label: 'Edit', icon: Pencil, run: () => setEditing(s) },
+                        { label: 'Copy link', icon: Link2, run: () => void copyLink(scenePath(s, data.scenes), `Link to ${s.name}`) },
                         ...(seq
                           ? [{ label: 'Open the sequence', icon: Clapperboard, run: () => openSequence(seq.id) }]
                           : fx.layoutItems
