@@ -1,5 +1,6 @@
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
+import { addressKey } from './clientIp.ts';
 
 /** Fixed-window, in-memory rate limiter keyed by client IP. Enough for a single-container LAN app. */
 export function rateLimit({ windowMs, max, clientIp, skip }: { windowMs: number; max: number; clientIp: (c: any) => string; skip?: (c: any) => boolean }): MiddlewareHandler {
@@ -11,7 +12,8 @@ export function rateLimit({ windowMs, max, clientIp, skip }: { windowMs: number;
 
   return async (c, next) => {
     if (skip?.(c)) return next();
-    const key = clientIp(c);
+    // An IPv6 visitor counts by their /64 (see addressKey): they could take a new address each time.
+    const key = addressKey(clientIp(c));
     const now = Date.now();
     let h = hits.get(key);
     if (!h || h.reset < now) hits.set(key, (h = { count: 0, reset: now + windowMs }));
@@ -45,7 +47,8 @@ export class ConnectionLimit {
    * closed), or null when there is no place. `shared`: a key that many visitors share (a proxy's
    * own address when TRUST_PROXY is off) only counts toward the total.
    */
-  take(key: string, shared = false): (() => void) | null {
+  take(address: string, shared = false): (() => void) | null {
+    const key = addressKey(address);
     const n = this.open.get(key) ?? 0;
     if (this.count >= this.total || (!shared && n >= this.perKey)) return null;
     this.open.set(key, n + 1);

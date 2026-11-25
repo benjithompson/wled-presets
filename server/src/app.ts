@@ -221,6 +221,12 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       crossOriginEmbedderPolicy: false
     })
   );
+  // Over HTTPS (at the proxy in front), the browser keeps to HTTPS for this name from then on. A
+  // plain-HTTP address on the home network gets no such header (a browser ignores it there anyway).
+  app.use('*', async (c, next) => {
+    await next();
+    if (viaHttps(c)) c.header('Strict-Transport-Security', 'max-age=15552000');
+  });
   app.use('/api/*', async (c, next) => {
     await next();
     if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
@@ -260,7 +266,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.get('/api/state', publicLimiter, (c) => c.json(lights.publicState()));
 
-  app.get('/api/events', (c) => {
+  app.get('/api/events', publicLimiter, (c) => {
     const me = visitorId(c);
     const ip = clientIp(c);
     const release = streams.take(ip, isLoopbackIp(ip));
@@ -353,6 +359,12 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   const LIGHTS_OFF = 'The lights are switched off right now.';
 
+  // Changing the lights is for this site's own pages: another site's page cannot do it with its
+  // visitors' browsers (each one a new visitor, from a new address, in line).
+  app.use('/api/scenes/*', sameOrigin());
+  app.use('/api/color', sameOrigin());
+  app.use('/api/line/*', sameOrigin());
+
   app.post('/api/scenes/:id/apply', applyLimiter, async (c) => {
     const id = c.req.param('id');
     const name = lights.publicState().scenes.find((s) => s.id === id)?.name;
@@ -389,7 +401,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   app.get('/api/layout', publicLimiter, (c) => c.json(readLayout(db)));
 
-  app.get('/api/layout/background', (c) => {
+  app.get('/api/layout/background', publicLimiter, (c) => {
     const bg = readBackground(db, config.databasePath);
     if (!bg) return c.json({ error: 'No background picture' }, 404);
     return new Response(new Uint8Array(bg.bytes), { headers: { 'Content-Type': bg.type, 'Cache-Control': 'no-cache' } });
