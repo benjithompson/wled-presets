@@ -28,7 +28,7 @@ export const GAME_CATALOG = [
     id: 'duel',
     name: 'Roof Duel',
     tagline: 'Fire against Ice on the roof',
-    description: 'Fire against Ice: hit the ball back when it reaches your end of the roof. The later the hit, the faster it flies.',
+    description: 'Fire against Ice: hit the ball back when it reaches your end of the roof. The later the hit, the faster it flies. Tap as the ball crosses the flashing power orb for power shots.',
     players: '2 players, or play the house'
   },
   {
