@@ -124,8 +124,10 @@ export function PublicPage() {
   const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
   const look = useMemo(() => currentLook(state), [state?.currentColor, state?.currentSceneId, state?.playlistSceneId, state?.scenes]);
 
+  // Taps and long presses on the buttons should not select their text (a phone shows its
+  // selection handles); text fields still select.
   return (
-    <div className="relative min-h-dvh">
+    <div className="relative min-h-dvh select-none [-webkit-touch-callout:none] [&_input]:select-text [&_textarea]:select-text">
       <LightField look={look} dark={dark} speed={speed} />
       <Roofline roof={roof} dark={dark} />
 
