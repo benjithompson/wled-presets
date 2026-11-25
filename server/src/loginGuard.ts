@@ -1,3 +1,5 @@
+import { addressKey } from './clientIp.ts';
+
 // Slows down password guessing on the admin sign-in. Failed sign-ins are counted per address and
 // per username: a few are free (typos), then each further one has to wait twice as long as the
 // last, up to 15 minutes. Per address stops one guesser; per username stops a guesser with many
@@ -82,16 +84,16 @@ export class LoginGuard {
 
   /** Milliseconds until this sign-in may be tried (0: now). A passkey sign-in has no username (null). */
   wait(username: string | null, from: SignInFrom) {
-    return Math.max(this.ips.wait(from.ip), from.lan || username == null ? 0 : this.names.wait(LoginGuard.key(username)));
+    return Math.max(this.ips.wait(addressKey(from.ip)), from.lan || username == null ? 0 : this.names.wait(LoginGuard.key(username)));
   }
 
   fail(username: string | null, from: SignInFrom) {
-    this.ips.fail(from.ip);
+    this.ips.fail(addressKey(from.ip));
     if (!from.lan && username != null) this.names.fail(LoginGuard.key(username));
   }
 
   succeed(username: string | null, from: SignInFrom) {
-    this.ips.clear(from.ip);
+    this.ips.clear(addressKey(from.ip));
     if (username != null) this.names.clear(LoginGuard.key(username));
   }
 }

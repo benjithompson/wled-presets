@@ -6,7 +6,7 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 import { createApp } from '../src/app.ts';
 import { COOKIE, createAuth } from '../src/auth.ts';
-import { isDirectLan, isLocal, parseTrustProxy, pickIp } from '../src/clientIp.ts';
+import { addressKey, isDirectLan, isLocal, parseTrustProxy, pickIp } from '../src/clientIp.ts';
 import { loadConfig } from '../src/config.ts';
 import { openDatabase } from '../src/db.ts';
 import { Bus } from '../src/events.ts';
@@ -65,6 +65,30 @@ describe('client address', () => {
     expect(isDirectLan(headers({}), '::ffff:10.0.0.4')).toBe(true);
     expect(isDirectLan(headers({}), '203.0.113.9')).toBe(false);
     expect(isDirectLan(headers({ 'cf-ray': 'abc' }), '127.0.0.1')).toBe(false);
+  });
+});
+
+describe('address keys for limits', () => {
+  it('counts an IPv6 visitor by their /64, and an IPv4 one by their address', () => {
+    expect(addressKey('203.0.113.7')).toBe('203.0.113.7');
+    expect(addressKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(addressKey('2001:db8:aa:bb:1:2:3:4')).toBe('2001:db8:aa:bb::/64');
+    expect(addressKey('2001:DB8:AA:BB::9')).toBe('2001:db8:aa:bb::/64');
+    expect(addressKey('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(addressKey('fe80::1%eth0')).toBe('fe80:0:0:0::/64');
+    expect(addressKey('::1')).toBe('0:0:0:0::/64');
+  });
+
+  it('holds one /64 to the limits of one address', () => {
+    const l = new ConnectionLimit(2, 100);
+    expect(l.take('2001:db8:1:2::a')).not.toBeNull();
+    expect(l.take('2001:db8:1:2::b')).not.toBeNull();
+    expect(l.take('2001:db8:1:2::c')).toBeNull();
+    expect(l.take('2001:db8:1:3::a')).not.toBeNull();
+    const line = new Line(DEFAULT_LINE);
+    line.ask({ id: 'p0', actor: { ip: '198.51.100.1', userAgent: null } }, { kind: 'game', game: 'slice' }, 'Slice');
+    for (let i = 1; i <= LINE_PER_ADDRESS; i++) expect(line.ask({ id: `p${i}`, actor: { ip: `2001:db8:1:2::${i}`, userAgent: null } }, { kind: 'game', game: 'slice' }, 'Slice').result).toBe('queued');
+    expect(line.ask({ id: 'p99', actor: { ip: '2001:db8:1:2::99', userAgent: null } }, { kind: 'game', game: 'slice' }, 'Slice').result).toBe('full');
   });
 });
 
@@ -264,6 +288,30 @@ describe('app hardening', () => {
     const big = JSON.stringify({ username: 'admin', password: 'x'.repeat(200_000) });
     expect((await req('POST', '/api/auth/login', big, { 'x-forwarded-for': '203.0.113.1' })).status).toBe(413);
     expect((await req('POST', '/api/color', JSON.stringify({ color: '#ff0000', pad: 'x'.repeat(100_000) }))).status).toBe(413);
+  });
+
+  it("refuses another site's page changing the lights or the line", async () => {
+    const { req } = await setup();
+    expect((await req('POST', '/api/color', { color: '#ff0000' }, { origin: 'https://evil.example' })).status).toBe(403);
+    expect((await req('POST', '/api/color', { color: '#ff0000' }, { 'sec-fetch-site': 'cross-site' })).status).toBe(403);
+    expect((await req('POST', '/api/scenes/x/apply', undefined, { origin: 'https://evil.example' })).status).toBe(403);
+    expect((await req('POST', '/api/line/leave', undefined, { origin: 'https://evil.example' })).status).toBe(403);
+    // The site's own page may.
+    expect((await req('POST', '/api/line/leave', undefined, { origin: 'https://lights.example.com' })).status).toBe(200);
+  });
+
+  it('tells a browser that came over HTTPS to keep to it', async () => {
+    const { req } = await setup();
+    expect((await req('GET', '/api/health', undefined, { 'x-forwarded-proto': 'https' })).res.headers.get('strict-transport-security')).toMatch(/max-age=\d+/);
+    expect((await req('GET', '/api/health')).res.headers.get('strict-transport-security')).toBeNull();
+  });
+
+  it('limits requests from one IPv6 /64 together', async () => {
+    const { req } = await setup();
+    let last = 0;
+    for (let i = 0; i < 125; i++) last = (await req('GET', '/api/layout', undefined, { 'x-forwarded-for': `2001:db8:5:6::${i.toString(16)}` })).status;
+    expect(last).toBe(429);
+    expect((await req('GET', '/api/layout', undefined, { 'x-forwarded-for': '2001:db8:5:7::1' })).status).toBe(200);
   });
 
   it('refuses a cross-site sign-in with no Origin', async () => {

@@ -55,6 +55,30 @@ export function isPrivateIp(ip: string | undefined): boolean {
   return net.isIPv6(l) && (/^f[cd]/.test(l) || /^fe[89ab]/.test(l));
 }
 
+/**
+ * The key a visitor's address counts under for limits (requests, open pages, places in line,
+ * sign-ins). An IPv6 address is one of a /64 network that one home or phone gets whole, so
+ * anyone can take a new address from it at will: the limits count the /64. IPv4 is as it is.
+ */
+export function addressKey(ip: string): string {
+  const a = plain(ip).split('%')[0].toLowerCase();
+  if (!net.isIPv6(a)) return a;
+  const [head, tail] = a.includes('::') ? a.split('::') : [a, null];
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  // An IPv4 address at the end (::1.2.3.4) is two groups.
+  const last = t.length ? t : h;
+  if (last.length && last[last.length - 1].includes('.')) {
+    const [p, q, r, s] = last.pop()!.split('.').map(Number);
+    last.push(((p << 8) | q).toString(16), ((r << 8) | s).toString(16));
+  }
+  const groups = tail == null ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t];
+  return `${groups
+    .slice(0, 4)
+    .map((g) => (parseInt(g || '0', 16) || 0).toString(16))
+    .join(':')}::/64`;
+}
+
 /** The visitor's address: from the trusted proxy's headers, else the connection's. */
 export function pickIp(header: Header, socketIp: string | undefined, trust: TrustProxy): string {
   if (trust === 'cloudflare') {

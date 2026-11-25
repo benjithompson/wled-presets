@@ -1,5 +1,5 @@
 import { DEFAULT_LINE, LINE_MAX, LINE_SHOWN, type LineAdmin, type LineSettings, type LineView, type LineWant } from '../../shared/line.ts';
-import { isLoopbackIp } from './clientIp.ts';
+import { addressKey, isLoopbackIp } from './clientIp.ts';
 
 /**
  * The most places in line from one address. A household or a group on one Wi-Fi shares an
@@ -190,7 +190,8 @@ export class Line {
   private placesOf(who: Visitor) {
     const ip = who.actor?.ip;
     if (who.admin || !ip || ip === 'unknown' || isLoopbackIp(ip)) return 0;
-    return this.queue.filter((e) => e.who.actor?.ip === ip).length;
+    const key = addressKey(ip);
+    return this.queue.filter((e) => e.who.actor?.ip && addressKey(e.who.actor.ip) === key).length;
   }
 
   /**
