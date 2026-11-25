@@ -1,4 +1,5 @@
 import { clsx, type ClassValue } from 'clsx';
+import { toast } from 'sonner';
 
 export const cn = (...v: ClassValue[]) => clsx(v);
 
@@ -24,4 +25,33 @@ export function downloadJson(data: unknown, filename: string) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Copies a link to a page of this site (a path such as /play/cascade) and says so. The clipboard
+ * API needs HTTPS; on the plain-HTTP LAN address the older way is tried, and failing that the
+ * link is shown to copy by hand.
+ */
+export async function copyLink(path: string, what = 'Link'): Promise<void> {
+  const url = new URL(path, location.origin).href;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(url);
+    copied = true;
+  } catch {
+    const box = document.createElement('textarea');
+    box.value = url;
+    box.setAttribute('readonly', '');
+    box.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+    document.body.append(box);
+    box.select();
+    try {
+      copied = document.execCommand('copy');
+    } catch {
+      /* shown instead */
+    }
+    box.remove();
+  }
+  if (copied) toast.success(`${what} copied`, { description: url });
+  else toast.info(url, { description: 'Copy this link to share it', duration: 15_000 });
 }

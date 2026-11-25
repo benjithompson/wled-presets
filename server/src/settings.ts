@@ -16,6 +16,7 @@ export const KEY = {
   currentColor: 'currentColor',
   revertAt: 'revertAt',
   gameArea: 'gameArea',
+  hiddenGames: 'hiddenGames',
   line: 'lineSettings',
   lightsOff: 'lightsOff',
   brightness: 'lightsBrightness',
@@ -94,6 +95,44 @@ export function readGameArea(db: Db): GameArea | null {
 
 export function writeGameArea(db: Db, area: GameArea | null) {
   db.setSetting(KEY.gameArea, area ? JSON.stringify(area) : '');
+}
+
+/**
+ * A game area as it is kept: only what leaves something out (or, for one game, changes
+ * something), for objects in the layout and games in the catalog. Null when it changes nothing.
+ */
+export function cleanGameArea(input: GameArea | null | undefined, objects: Iterable<string>, games: Iterable<string>): GameArea | null {
+  if (!input) return null;
+  const ids = new Set(objects);
+  const known = new Set(games);
+  const keep = <T>(r: Record<string, T> | undefined, used: (v: T) => boolean) => Object.fromEntries(Object.entries(r ?? {}).filter(([id, v]) => ids.has(id) && used(v)));
+  const own = Object.fromEntries(
+    Object.entries(input.games ?? {})
+      .filter(([id]) => known.has(id))
+      .map(([id, g]) => [id, keep(g, (v) => typeof v === 'boolean')] as const)
+      .filter(([, g]) => Object.keys(g).length > 0)
+  );
+  const area: GameArea = {
+    exclude: [...new Set(input.exclude ?? [])].filter((id) => ids.has(id)),
+    skip: keep(input.skip, (v) => v.length > 0),
+    trim: keep(input.trim, ([a, b]) => a > 0 || b > 0),
+    ...(Object.keys(own).length ? { games: own } : {})
+  };
+  return area.exclude!.length || Object.keys(area.skip!).length || Object.keys(area.trim!).length || area.games ? area : null;
+}
+
+/** Games an admin hid from visitors (by id). They stay in the catalog: admins can still play them. */
+export function readHiddenGames(db: Db): string[] {
+  try {
+    const v = JSON.parse(db.getSetting(KEY.hiddenGames) || '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeHiddenGames(db: Db, ids: string[]) {
+  db.setSetting(KEY.hiddenGames, JSON.stringify(ids));
 }
 
 /** The line for the lights (see shared/line.ts). On by default: the site may be open to anyone. */

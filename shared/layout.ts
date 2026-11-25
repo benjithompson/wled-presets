@@ -1430,6 +1430,29 @@ export interface GameArea {
   skip?: Record<string, number[]>;
   /** Lines and roofs: how many LEDs games leave out at the first point's end and at the last point's end. */
   trim?: Record<string, [number, number]>;
+  /**
+   * One game's own choice of objects, by game id, then object id: true uses the object in that
+   * game, false leaves it out, whatever `exclude` says for all games. Segments and ends stay
+   * as set for all games.
+   */
+  games?: Record<string, Record<string, boolean>>;
+}
+
+/**
+ * The area one game plays on: the area for all games, with that game's own choice of objects
+ * (see GameArea.games). Null: all of the yard.
+ */
+export function gameAreaFor(area: GameArea | null | undefined, gameId: string): GameArea | null {
+  if (!area) return null;
+  const { games, ...all } = area;
+  const own = games?.[gameId];
+  if (!own || !Object.keys(own).length) return all;
+  const out = new Set(all.exclude ?? []);
+  for (const [id, used] of Object.entries(own)) {
+    if (used) out.delete(id);
+    else out.add(id);
+  }
+  return { ...all, exclude: [...out] };
 }
 
 /** For each LED of the object (from the first point): 1 when games use it. */
@@ -1454,7 +1477,11 @@ export function gameLeds(f: Fixture, area: GameArea | null | undefined): Uint8Ar
 
 /** True when the area leaves something out. */
 export const gameAreaSet = (a: GameArea | null | undefined) =>
-  !!a && (!!a.exclude?.length || Object.values(a.skip ?? {}).some((x) => x.length) || Object.values(a.trim ?? {}).some(([x, y]) => x > 0 || y > 0));
+  !!a &&
+  (!!a.exclude?.length ||
+    Object.values(a.skip ?? {}).some((x) => x.length) ||
+    Object.values(a.trim ?? {}).some(([x, y]) => x > 0 || y > 0) ||
+    Object.values(a.games ?? {}).some((g) => Object.keys(g).length > 0));
 
 /**
  * Moves segment effects to new segment indexes after the points changed. `to(k)` gives the
@@ -2168,6 +2195,8 @@ export interface GameInfo {
   description: string;
   /** For the game picker, for example "1 player" or "1–2 players". */
   players?: string;
+  /** An admin hid it from visitors (only admins get hidden games, to try them). */
+  hidden?: boolean;
 }
 
 /** The big button's color on the play screen. */

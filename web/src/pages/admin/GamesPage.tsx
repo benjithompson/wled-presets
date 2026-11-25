@@ -1,22 +1,27 @@
-// Games: which lights the games on /play use. Leave out lights that cannot be seen (around a
-// corner of the house, behind a tree), whole objects, segments of a line, or LEDs at its ends.
-// Scenes and effects still use every light.
+// Games: which games visitors see, and which lights the games on /play use. Leave out lights that
+// cannot be seen (around a corner of the house, behind a tree), whole objects, segments of a
+// line, or LEDs at its ends; and one game can have its own choice of objects. Scenes and
+// effects still use every light.
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Gamepad2, Radio, RotateCcw, Save } from 'lucide-react';
+import { ChevronDown, Eye, EyeOff, Gamepad2, Link2, Radio, RotateCcw, Save, SlidersHorizontal, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { framePut } from '../../../../shared/editorView.ts';
-import { activeLeds, buildStage, editorPulse, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofHidden, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
-import { Badge, Button, Card, CardHeader, Empty, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
+import { activeLeds, buildStage, editorPulse, gameAreaFor, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofHidden, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
+import { Badge, Button, Card, CardHeader, Empty, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { PhoneActionBar } from '../../components/mobile.tsx';
 import { api } from '../../lib/api.ts';
-import { cn, errorText } from '../../lib/utils.ts';
+import { cn, copyLink, errorText } from '../../lib/utils.ts';
+import { gameLook } from '../../lib/gameLooks.ts';
+import { GAME_CATALOG } from '../../../../shared/games.ts';
+import { gamePath } from '../../../../shared/links.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { YardView } from '../../yard/YardView.tsx';
 import { LineCard } from './LineCard.tsx';
 
 const AREA = ['admin', 'game-area'];
+const HIDDEN = ['admin', 'hidden-games'];
 
 const ROLES: { kind: FixtureKind[]; label: string; role: string }[] = [
   { kind: ['roof'], label: 'Roof', role: 'where the game is played' },
@@ -27,12 +32,22 @@ const ROLES: { kind: FixtureKind[]; label: string; role: string }[] = [
 
 const css = (c: [number, number, number]) => `rgb(${c.join(' ')})`;
 
+const byKey = <T,>(entries: [string, T][]) => entries.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+
 /** The area without empty entries, so an unchanged area compares equal. */
 function tidy(a: GameArea | null): GameArea {
   const skip = Object.fromEntries(Object.entries(a?.skip ?? {}).filter(([, v]) => v.length).map(([k, v]) => [k, [...v].sort((x, y) => x - y)]));
   const trim = Object.fromEntries(Object.entries(a?.trim ?? {}).filter(([, [x, y]]) => x > 0 || y > 0));
-  return { exclude: [...(a?.exclude ?? [])].sort(), skip, trim };
+  const games = Object.fromEntries(
+    byKey(Object.entries(a?.games ?? {}))
+      .map(([g, own]) => [g, Object.fromEntries(byKey(Object.entries(own)))] as [string, Record<string, boolean>])
+      .filter(([, own]) => Object.keys(own).length)
+  );
+  return { exclude: [...(a?.exclude ?? [])].sort(), skip, trim, ...(Object.keys(games).length ? { games } : {}) };
 }
+
+/** How many objects a game has its own choice for (see GameArea.games), counting only objects in the layout. */
+const ownCount = (area: GameArea, game: string, fixtures: Fixture[]) => fixtures.filter((f) => area.games?.[game]?.[f.id] !== undefined).length;
 
 export function GamesPage() {
   const qc = useQueryClient();
@@ -42,11 +57,48 @@ export function GamesPage() {
   const [focus, setFocus] = useState<{ id: string; segment: number | null } | null>(null);
   const [onLights, setOnLights] = useState(false);
   const [lightNames, setLightNames] = useState<string[]>([]);
+  /** The game whose own lights are being chosen; null: the lights for all games. */
+  const [game, setGame] = useState<string | null>(null);
+  const gameName = GAME_CATALOG.find((g) => g.id === game)?.name ?? null;
+  const yardRef = useRef<HTMLDivElement>(null);
 
   const base = useMemo(() => tidy(saved?.area ?? null), [saved]);
   const area = draft ?? base;
   const dirty = JSON.stringify(tidy(area)) !== JSON.stringify(base);
   const edit = (fn: (a: GameArea) => GameArea) => setDraft((d) => tidy(fn(tidy(d ?? base))));
+  /** What the picture, the counts and the lights show: the lights of the game chosen, or of all games. */
+  const view = useMemo(() => (game ? tidy(gameAreaFor(area, game)) : area), [area, game]);
+  /** In a game's own choice: uses the object, or not, whatever all games do (back to the same as all games when it matches). */
+  const setOwn = (id: string, used: boolean) =>
+    edit((x) => {
+      if (!game) return x;
+      const own = { ...x.games?.[game] };
+      if (used === !x.exclude?.includes(id)) delete own[id];
+      else own[id] = used;
+      return { ...x, games: { ...x.games, [game]: own } };
+    });
+  const resetOwn = (g: string) => edit((x) => ({ ...x, games: { ...x.games, [g]: {} } }));
+  const chooseFor = (g: string | null) => {
+    setGame(g);
+    yardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // Games visitors can pick: a switch saves at once.
+  const { data: hiddenData } = useQuery({ queryKey: HIDDEN, queryFn: api.hiddenGames });
+  const hidden = hiddenData?.hidden ?? [];
+  const setHidden = useMutation({
+    mutationFn: (ids: string[]) => api.saveHiddenGames(ids),
+    onMutate: (ids) => {
+      const prev = qc.getQueryData(HIDDEN);
+      qc.setQueryData(HIDDEN, { hidden: ids });
+      return { prev };
+    },
+    onSuccess: (r) => qc.setQueryData(HIDDEN, r),
+    onError: (e, _ids, ctx) => {
+      qc.setQueryData(HIDDEN, ctx?.prev);
+      toast.error(errorText(e));
+    }
+  });
 
   const save = useMutation({
     mutationFn: () => api.saveGameArea(tidy(area)),
@@ -61,8 +113,8 @@ export function GamesPage() {
   // The view: the stage offsets of each object, and a frame painted from the area.
   const stage = useMemo(() => (layout ? buildStage(layout) : null), [layout]);
   const frame = useRef<Uint8Array | null>(null);
-  const live = useRef({ area, focus });
-  live.current = { area, focus };
+  const live = useRef({ area: view, focus });
+  live.current = { area: view, focus };
   const getFrame = () => {
     if (!layout || !stage) return null;
     if (!frame.current || frame.current.length !== stage.pixelCount * 3) frame.current = new Uint8Array(stage.pixelCount * 3);
@@ -73,36 +125,38 @@ export function GamesPage() {
 
   // Show on the lights: the same picture on the real lights, kept alive while the page is open.
   const inFront = useInFront();
-  useLightsPreview(onLights && inFront && layout ? { layout, selected: focus?.id ?? null, corner: null, segment: focus?.segment ?? null, area: tidy(area) } : null, {
+  useLightsPreview(onLights && inFront && layout ? { layout, selected: focus?.id ?? null, corner: null, segment: focus?.segment ?? null, area: view } : null, {
     active: onLights && inFront,
     onDevices: setLightNames,
     onError: (e) => (setLightNames([]), toast.error(errorText(e)))
   });
 
   const fixtures = layout?.fixtures ?? [];
-  const inGame = (f: Fixture) => gameLeds(f, area).reduce((n, v) => n + v, 0);
+  const inGame = (f: Fixture) => gameLeds(f, view).reduce((n, v) => n + v, 0);
   const total = fixtures.reduce((n, f) => n + activeLeds(f).reduce((m, v) => m + v, 0), 0);
   const used = fixtures.reduce((n, f) => n + inGame(f), 0);
   // Roof LEDs that cannot be seen from the street: games hurry through them on their own.
   const unseen = useMemo(() => {
     if (!layout) return 0;
     let n = 0;
-    for (const hidden of roofHidden(layout, area).values()) for (const v of hidden) n += v;
+    for (const hid of roofHidden(layout, view).values()) for (const v of hid) n += v;
     return n;
-  }, [layout, area]);
+  }, [layout, view]);
 
   return (
     <>
       <PageHeader
         title="Games"
-        description="Choose the lights that games play on. Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light."
+        description="Choose which games visitors can pick, and the lights that games play on. Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light."
         more={[
-          {
-            label: 'Use every light',
-            icon: RotateCcw,
-            run: () => setDraft({}),
-            disabled: !fixtures.length || (!area.exclude?.length && !Object.keys(area.skip ?? {}).length && !Object.keys(area.trim ?? {}).length)
-          }
+          game
+            ? { label: 'Same lights as all games', icon: Undo2, run: () => resetOwn(game), disabled: !ownCount(area, game, fixtures) }
+            : {
+                label: 'Use every light',
+                icon: RotateCcw,
+                run: () => setDraft({}),
+                disabled: !fixtures.length || (!area.exclude?.length && !Object.keys(area.skip ?? {}).length && !Object.keys(area.trim ?? {}).length && !area.games)
+              }
         ]}
         actions={
           <>
@@ -124,6 +178,8 @@ export function GamesPage() {
 
       <LineCard />
 
+      <GameList hidden={hidden} onHide={(ids) => setHidden.mutate(ids)} area={area} fixtures={fixtures} game={game} onChoose={chooseFor} />
+
       {isLoading ? (
         <Card className="grid place-items-center py-16">
           <Spinner />
@@ -136,7 +192,28 @@ export function GamesPage() {
         </Card>
       ) : (
         <div className="space-y-5">
-          <Card className="overflow-hidden">
+          <Card className="scroll-mt-4 overflow-hidden">
+            <div ref={yardRef} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-stone-100 px-5 py-3 dark:border-stone-800">
+              <label htmlFor="lights-for" className="text-sm font-medium">
+                Lights for
+              </label>
+              <div className="w-56 max-sm:flex-1">
+                <Select id="lights-for" className="h-9" value={game ?? ''} onChange={(e) => setGame(e.target.value || null)}>
+                  <option value="">All games</option>
+                  {GAME_CATALOG.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                      {ownCount(area, g.id, fixtures) ? ' (its own)' : ''}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <p className="min-w-0 flex-1 text-xs text-stone-500 dark:text-stone-400">
+                {game
+                  ? `Switch objects on or off for ${gameName} only. Segments and ends are the same for every game.`
+                  : 'What every game uses, unless a game has its own choice of objects.'}
+              </p>
+            </div>
             <div className="bg-stone-950 p-3 sm:p-4">
               <YardView layout={layout} getFrame={getFrame} maxHeight="46dvh" highlight={focus?.id ?? null} onPick={(id) => setFocus(id ? { id, segment: null } : null)} />
             </div>
@@ -158,7 +235,7 @@ export function GamesPage() {
                 </span>
               )}
               <span className="ml-auto tabular-nums">
-                {used} of {total} lights in games
+                {used} of {total} lights in {gameName ?? 'games'}
                 {onLights ? ` · on ${lightNames.length ? lightNames.join(', ') : 'no device (give objects a device in the layout)'}` : ''}
               </span>
             </div>
@@ -172,7 +249,7 @@ export function GamesPage() {
                 <CardHeader title={r.label} description={`In games: ${r.role}.`} />
                 <ul className="divide-y divide-stone-100 dark:divide-stone-800">
                   {list.map((f) => (
-                    <ObjectRow key={f.id} f={f} area={area} edit={edit} focus={focus} setFocus={setFocus} inGame={inGame(f)} />
+                    <ObjectRow key={f.id} f={f} area={area} view={view} game={game ? { id: game, name: gameName ?? game } : null} edit={edit} setOwn={setOwn} focus={focus} setFocus={setFocus} inGame={inGame(f)} />
                   ))}
                 </ul>
               </Card>
@@ -195,21 +272,32 @@ export function GamesPage() {
 function ObjectRow({
   f,
   area,
+  view,
+  game,
   edit,
+  setOwn,
   focus,
   setFocus,
   inGame
 }: {
   f: Fixture;
+  /** The area as it is edited (for all games, with each game's own choice). */
   area: GameArea;
+  /** The area shown: of the game chosen, else of all games. */
+  view: GameArea;
+  /** The game whose own lights are chosen; null: all games. */
+  game: { id: string; name: string } | null;
   edit: (fn: (a: GameArea) => GameArea) => void;
+  setOwn: (id: string, used: boolean) => void;
   focus: { id: string; segment: number | null } | null;
   setFocus: (f: { id: string; segment: number | null } | null) => void;
   inGame: number;
 }) {
   const [open, setOpen] = useState(false);
-  const included = !area.exclude?.includes(f.id);
-  const line = isLine(f) && f.points.length > 1;
+  const included = !view.exclude?.includes(f.id);
+  const own = game ? area.games?.[game.id]?.[f.id] : undefined;
+  // Segments and ends are set for all games.
+  const line = isLine(f) && f.points.length > 1 && !game;
   const lit = activeLeds(f).reduce((n, v) => n + v, 0);
   const skip = area.skip?.[f.id] ?? [];
   const [start, end] = area.trim?.[f.id] ?? [0, 0];
@@ -231,12 +319,24 @@ function ObjectRow({
   return (
     <li onPointerEnter={() => setFocus({ id: f.id, segment: null })} className={cn('px-4 py-3 sm:px-5', focused && 'bg-sky-50/60 dark:bg-sky-500/5')}>
       <div className="flex flex-wrap items-center gap-3">
-        <Switch checked={included} onChange={(v) => edit((x) => ({ ...x, exclude: v ? (x.exclude ?? []).filter((id) => id !== f.id) : [...(x.exclude ?? []), f.id] }))} label={`Use ${f.name} in games`} />
+        <Switch
+          checked={included}
+          onChange={(v) => (game ? setOwn(f.id, v) : edit((x) => ({ ...x, exclude: v ? (x.exclude ?? []).filter((id) => id !== f.id) : [...(x.exclude ?? []), f.id] })))}
+          label={`Use ${f.name} in ${game?.name ?? 'games'}`}
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{f.name}</p>
-          <p className="text-xs text-stone-500 tabular-nums">{included ? (inGame === lit ? `All ${lit} lights` : `${inGame} of ${lit} lights`) : 'Left out of games'}</p>
+          <p className="text-xs text-stone-500 tabular-nums">{included ? (inGame === lit ? `All ${lit} lights` : `${inGame} of ${lit} lights`) : `Left out of ${game?.name ?? 'games'}`}</p>
         </div>
         {included && inGame < lit ? <Badge tone="amber">Shortened</Badge> : null}
+        {own !== undefined ? (
+          <>
+            <Badge tone="blue">{own ? `Only in ${game!.name}` : `Not in ${game!.name}`}</Badge>
+            <Button size="sm" variant="ghost" onClick={() => setOwn(f.id, !own)} title="Use it as all games do">
+              <Undo2 /> <span className="max-sm:hidden">Same as all games</span>
+            </Button>
+          </>
+        ) : null}
         {line && included ? (
           <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
             Segments and ends <ChevronDown className={cn('transition', open && 'rotate-180')} />
@@ -289,5 +389,77 @@ function ObjectRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * Every game: whether visitors can pick it (saved at once), whether it has its own choice of
+ * lights, and its link to share.
+ */
+function GameList({
+  hidden,
+  onHide,
+  area,
+  fixtures,
+  game,
+  onChoose
+}: {
+  hidden: string[];
+  onHide: (ids: string[]) => void;
+  area: GameArea;
+  fixtures: Fixture[];
+  game: string | null;
+  onChoose: (id: string | null) => void;
+}) {
+  const shown = GAME_CATALOG.length - GAME_CATALOG.filter((g) => hidden.includes(g.id)).length;
+  return (
+    <Card className="mb-5">
+      <CardHeader
+        title="Games"
+        description={`${shown} of ${GAME_CATALOG.length} on the play page. Hidden games stay out of the home page and the play page for visitors; signed in, you still see them, to try them.`}
+      />
+      <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+        {GAME_CATALOG.map((g) => {
+          const look = gameLook(g.id);
+          const Icon = look.icon;
+          const on = !hidden.includes(g.id);
+          const own = ownCount(area, g.id, fixtures);
+          return (
+            <li key={g.id} className={cn('flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5', game === g.id && 'bg-sky-50/60 dark:bg-sky-500/5')}>
+              <Switch checked={on} onChange={(v) => onHide(v ? hidden.filter((id) => id !== g.id) : [...hidden, g.id])} label={`Show ${g.name} to visitors`} />
+              <span className={cn('grid size-8 shrink-0 place-items-center rounded-lg bg-gradient-to-br text-white shadow-sm', look.className, !on && 'opacity-40 grayscale')}>
+                <Icon className="size-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className={cn('truncate text-sm font-medium', !on && 'text-stone-500')}>{g.name}</p>
+                <p className="text-xs text-stone-500">
+                  {on ? (
+                    <>
+                      <Eye className="mr-1 inline size-3" />
+                      On the play page
+                    </>
+                  ) : (
+                    <>
+                      <EyeOff className="mr-1 inline size-3" />
+                      Hidden from visitors
+                    </>
+                  )}
+                  {' · '}
+                  {own ? `its own choice for ${own} object${own === 1 ? '' : 's'}` : 'the lights of all games'}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button size="sm" variant="ghost" onClick={() => onChoose(game === g.id ? null : g.id)} aria-pressed={game === g.id} title={`Choose the objects ${g.name} plays on`}>
+                  <SlidersHorizontal /> <span className="max-sm:hidden">Lights</span>
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void copyLink(gamePath(g.id), `Link to ${g.name}`)} title={`Copy a link that opens ${g.name}`}>
+                  <Link2 /> <span className="max-sm:hidden">Copy link</span>
+                </Button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
   );
 }

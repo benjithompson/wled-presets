@@ -4,7 +4,7 @@ import type { ApplyResult, Device, DeviceInfo, DeviceWithStatus, LightControls, 
 import { readLayout } from './layoutStore.ts';
 import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
-import { KEY, readLightControls, readSettings, sceneTransitionOf, writeLightControls } from './settings.ts';
+import { KEY, readHiddenGames, readLightControls, readSettings, sceneTransitionOf, writeLightControls } from './settings.ts';
 import type { SceneTransition } from '../../shared/transitions.ts';
 import { parseHex } from '../../shared/color.ts';
 import { baseUrl, lastWrite, wled, type FetchResult, type PowerState } from './wled.ts';
@@ -441,7 +441,8 @@ export class Lights {
       onlineDevices,
       totalDevices: enabled.length,
       revertAt: this.db.getSetting(KEY.revertAt) || null,
-      lightsOff: this.allOff()
+      lightsOff: this.allOff(),
+      hiddenGames: readHiddenGames(this.db)
     };
   }
 

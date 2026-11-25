@@ -9,7 +9,7 @@ import { databaseScores } from './scoreStore.ts';
 import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
-import { migrateV1Settings, readGameArea, readLineSettings, readSettings } from './settings.ts';
+import { migrateV1Settings, readGameArea, readHiddenGames, readLineSettings, readSettings } from './settings.ts';
 import { admitUpgrade, upgradeVisitor } from './visitor.ts';
 import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
@@ -48,6 +48,7 @@ const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout'
 useScoreStore(databaseScores(db.raw));
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), pipeline);
 host.setGameArea(readGameArea(db));
+host.setHiddenGames(readHiddenGames(db));
 // One turn at a time with the lights: everyone else waits in line.
 host.line.configure(readLineSettings(db));
 // Scenes with effects: the game host draws them and sends them to the lights.

@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { EffectScene, type EffectSettings } from '../../../shared/effects.ts';
 import { SequencePlayer, type Sequence } from '../../../shared/sequence.ts';
 import { Crossover, pickTransition, type SceneTransition } from '../../../shared/transitions.ts';
-import { buildStage, CONTROL_ID, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
+import { buildStage, CONTROL_ID, gameAreaFor, type GameArea, type GameInfo, type GameStatus, type Layout, type Stage } from '../../../shared/layout.ts';
 import { GAME_CATALOG, type GameId, type PlayMessage } from '../../../shared/games.ts';
 import { endRun, nameScore, pendingInitials, removeScore, scoreboard } from './kit.ts';
 import { DEFAULT_LINE } from '../../../shared/line.ts';
@@ -101,11 +101,15 @@ export type Identify = (req: IncomingMessage) => Visitor | null;
 export class GameHost implements FrameSource {
   /** Every LED of the layout: scenes play on it. */
   private stage: Stage;
-  /** The same LEDs, with only the game area active: games play on it. */
-  private gameStage: Stage;
   private area: GameArea | null;
-  /** LEDs outside the game area: they stay dark during a game. */
-  private outside = new Int32Array(0);
+  /**
+   * The same LEDs, with only the game area active: games play on it. One for every game with
+   * its own choice of objects ('': the area for all games), each with its LEDs outside the
+   * area, which stay dark during the game. Built when first needed.
+   */
+  private stages = new Map<string, { stage: Stage; outside: Int32Array }>();
+  /** Games hidden from visitors: only admins see them and can start them. */
+  private hidden = new Set<string>();
   private layout: Layout;
   private frame: Frame;
   private bytes: Uint8Array<ArrayBuffer>;
@@ -166,7 +170,6 @@ export class GameHost implements FrameSource {
     this.area = null;
     this.layout = layout;
     ({ stage: this.stage, maps: this.maps } = layoutOutput(layout));
-    this.gameStage = this.buildGameStage();
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     this.game = idleGame(this.gameStage);
@@ -178,18 +181,29 @@ export class GameHost implements FrameSource {
     this.turnTimer.unref();
   }
 
-  private buildGameStage(): Stage {
-    const g = buildStage(this.layout, this.area);
-    const out: number[] = [];
-    for (let i = 0; i < g.pixelCount; i++) if (!g.active[i] && this.stage.active[i]) out.push(i);
-    this.outside = Int32Array.from(out);
-    return g;
+  /** The stage a game plays on (see stages): its own, when it has its own choice of objects. */
+  private stageFor(gameId: string) {
+    const key = this.area?.games?.[gameId] ? gameId : '';
+    let s = this.stages.get(key);
+    if (!s) {
+      const stage = buildStage(this.layout, gameAreaFor(this.area, key));
+      const out: number[] = [];
+      for (let i = 0; i < stage.pixelCount; i++) if (!stage.active[i] && this.stage.active[i]) out.push(i);
+      s = { stage, outside: Int32Array.from(out) };
+      this.stages.set(key, s);
+    }
+    return s;
+  }
+
+  /** The stage of the area for all games (the idle animation plays on it). */
+  private get gameStage(): Stage {
+    return this.stageFor('').stage;
   }
 
   /** The part of the yard that games use. A running game ends: it cannot go on in a changed area. */
   setGameArea(area: GameArea | null) {
     this.area = area;
-    this.gameStage = this.buildGameStage();
+    this.stages.clear();
     if (this.game.id !== 'idle') this.log('Game ended: the game area changed');
     this.game = idleGame(this.gameStage);
     this.sendStatus(true);
@@ -233,7 +247,7 @@ export class GameHost implements FrameSource {
   setLayout(layout: Layout) {
     this.layout = layout;
     ({ stage: this.stage, maps: this.maps } = layoutOutput(layout));
-    this.gameStage = this.buildGameStage();
+    this.stages.clear();
     this.frame = new Frame(this.stage.pixelCount);
     this.bytes = new Uint8Array(this.stage.pixelCount * 3);
     // A game cannot continue on a changed yard.
@@ -364,7 +378,7 @@ export class GameHost implements FrameSource {
       this.heartbeat.unref();
     }
     ws.send(JSON.stringify({ type: 'layout', layout: this.layout }));
-    ws.send(JSON.stringify({ type: 'games', games: GAMES.map(({ id, name, description, players }) => ({ id, name, description, players })) }));
+    this.sendGames(ws, this.clients.get(ws)!.visitor);
     this.sendStatus(true);
     let second = 0;
     let sent = 0;
@@ -405,6 +419,7 @@ export class GameHost implements FrameSource {
     if (msg.type === 'start') {
       const g = GAMES.find((x) => x.id === msg.game);
       if (!g) return;
+      if (this.hidden.has(g.id) && !who.admin) return this.notice(ws, `${g.name} isn't on right now. Pick another game!`);
       const asked = line.ask(who, { kind: 'game', game: g.id }, g.name);
       if (asked.result === 'now') this.startGame(g.id);
       else if (asked.result === 'full') this.notice(ws, 'The line is full right now. Try again in a few minutes!');
@@ -458,11 +473,27 @@ export class GameHost implements FrameSource {
   private startGame(id: string) {
     const g = GAMES.find((x) => x.id === id)!;
     endRun();
-    this.game = g.create(this.gameStage);
+    this.game = g.create(this.stageFor(g.id).stage);
     this.lastInput = Date.now();
     this.overSince = null;
     this.awaySince = null;
     this.log(`Game started: ${g.name}`);
+  }
+
+  /**
+   * Games an admin hid from visitors. Phones get the new list at once; a hidden game that runs
+   * now plays to its end.
+   */
+  setHiddenGames(ids: string[]) {
+    this.hidden = new Set(ids);
+    for (const [ws, c] of this.clients) this.sendGames(ws, c.visitor);
+  }
+
+  /** The games a browser may pick: visitors get the ones not hidden; admins all, the hidden ones marked. */
+  private sendGames(ws: WebSocket, who: Visitor) {
+    if (ws.readyState !== ws.OPEN) return;
+    const games = GAMES.filter((g) => who.admin || !this.hidden.has(g.id)).map(({ id, name, description, players }) => ({ id, name, description, players, ...(this.hidden.has(id) ? { hidden: true } : {}) }));
+    ws.send(JSON.stringify({ type: 'games', games }));
   }
 
   private notice(ws: WebSocket, text: string) {
@@ -517,9 +548,9 @@ export class GameHost implements FrameSource {
       if (this.scene instanceof Crossover && this.scene.done) this.scene = this.scene.to;
     } else {
       this.game.update(dt, this.frame);
-      // Lights outside the game area stay dark, whatever the game drew there.
+      // Lights outside the game's area stay dark, whatever the game drew there.
       const d = this.frame.data;
-      for (const i of this.outside) d[i * 3] = d[i * 3 + 1] = d[i * 3 + 2] = 0;
+      for (const i of this.stageFor(this.game.id).outside) d[i * 3] = d[i * 3 + 1] = d[i * 3 + 2] = 0;
     }
     this.frame.toBytes(this.bytes);
     this.view.push(this.bytes, this.clients);

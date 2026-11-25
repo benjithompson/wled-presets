@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { buildStage, GAME_UNSEEN_RGB, MAX_SPEEDUP, paintGameArea, roofTrack, sampleLayout, segmentLeds, type Fixture, type GameStatus, type Layout, type Point } from '../../shared/layout.ts';
+import { buildStage, gameAreaFor, GAME_UNSEEN_RGB, MAX_SPEEDUP, paintGameArea, roofTrack, sampleLayout, segmentLeds, type Fixture, type GameStatus, type Layout, type Point } from '../../shared/layout.ts';
 import { catcherGame } from '../src/game/catcher.ts';
 import { cascadeGame } from '../src/game/cascade.ts';
 import { duelGame } from '../src/game/duel.ts';
@@ -692,6 +692,61 @@ describe('the game area', () => {
     expect(new Yard(stage).bushes.some((p) => p.fixture.id === bush.id)).toBe(false);
   });
 
+  it("gives one game its own choice of objects on top of the area for all games", () => {
+    const other = layout.fixtures.filter((f) => f.kind === 'bush')[1];
+    const area = { exclude: [bush.id], skip: { [roof.id]: [1] }, games: { whack: { [bush.id]: true, [other.id]: false } } };
+    expect(gameAreaFor(area, 'catcher')).toEqual({ exclude: [bush.id], skip: { [roof.id]: [1] } });
+    expect(gameAreaFor(area, 'whack')).toEqual({ exclude: [other.id], skip: { [roof.id]: [1] } });
+    expect(gameAreaFor(null, 'whack')).toBeNull();
+    const whack = buildStage(layout, gameAreaFor(area, 'whack'));
+    expect(whack.fixtures.some((f) => f.id === bush.id)).toBe(true);
+    expect(whack.fixtures.some((f) => f.id === other.id)).toBe(false);
+  });
+
+  /** The roof's light in the frames the browser gets while catcher runs on the host with `area`. */
+  async function roofLightIn(area: Parameters<GameHost['setGameArea']>[0]) {
+    const server = http.createServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const host = new GameHost(layout, () => {});
+    host.setGameArea(area);
+    host.attach(server, '/api/play');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/play`);
+    let lit = 0;
+    let frames = 0;
+    const r = full.fixtures.find((f) => f.id === roof.id)!;
+    let playing = false;
+    ws.on('message', (data, isBinary) => {
+      if (!isBinary) {
+        const m = JSON.parse(String(data));
+        if (m.type === 'status') playing = m.status.game === 'catcher';
+        return;
+      }
+      if (!playing) return;
+      const b = data as Buffer;
+      frames++;
+      for (let i = r.offset; i < r.offset + r.count; i++) lit += b[i * 3] + b[i * 3 + 1] + b[i * 3 + 2];
+    });
+    await new Promise((res) => ws.on('open', res));
+    ws.send(JSON.stringify({ type: 'start', game: 'catcher' }));
+    ws.send(JSON.stringify({ type: 'input', action: 'press' }));
+    await new Promise((res) => setTimeout(res, 400));
+    ws.close();
+    host.stop();
+    server.close();
+    expect(frames).toBeGreaterThan(0);
+    return lit;
+  }
+
+  it('plays a game on its own choice of objects', async () => {
+    // Left out for all games, but in for catcher: it lights up.
+    expect(await roofLightIn({ exclude: [roof.id], games: { catcher: { [roof.id]: true } } })).toBeGreaterThan(0);
+    // In for all games, but out for catcher: it stays dark.
+    expect(await roofLightIn({ games: { catcher: { [roof.id]: false } } })).toBe(0);
+    // Another game's choice changes nothing for catcher.
+    expect(await roofLightIn({ exclude: [roof.id], games: { whack: { [roof.id]: true } } })).toBe(0);
+  });
+
   it('keeps the lights outside the area dark while a game runs', async () => {
     const server = http.createServer();
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -717,6 +772,55 @@ describe('the game area', () => {
     expect(frames).toBeGreaterThan(0);
     expect(lit).toBe(0);
     ws.close();
+    host.stop();
+    server.close();
+  });
+});
+
+describe('hidden games', () => {
+  it('leaves them out for visitors, but lets admins see and start them', async () => {
+    const server = http.createServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const host = new GameHost(sampleLayout(), () => {});
+    host.setHiddenGames(['cascade']);
+    host.attach(server, '/api/play', (req) => ({ id: req.url?.includes('admin') ? 'a' : 'v', admin: !!req.url?.includes('admin') }));
+    const open = async (query: string) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/play${query}`);
+      const got: { games: { id: string; hidden?: boolean }[][]; notices: string[]; game: string | null } = { games: [], notices: [], game: null };
+      ws.on('message', (data, isBinary) => {
+        if (isBinary) return;
+        const m = JSON.parse(String(data));
+        if (m.type === 'games') got.games.push(m.games);
+        else if (m.type === 'notice') got.notices.push(m.text);
+        else if (m.type === 'status') got.game = m.status.game;
+      });
+      await new Promise((res) => ws.on('open', res));
+      await new Promise((res) => setTimeout(res, 50));
+      return { ws, got };
+    };
+    const visitor = await open('');
+    const admin = await open('?admin');
+    expect(visitor.got.games[0].some((g) => g.id === 'cascade')).toBe(false);
+    expect(visitor.got.games[0].some((g) => g.id === 'catcher')).toBe(true);
+    expect(admin.got.games[0].find((g) => g.id === 'cascade')).toMatchObject({ hidden: true });
+    expect(admin.got.games[0].find((g) => g.id === 'catcher')?.hidden).toBeUndefined();
+
+    // A visitor with an old link cannot start it; an admin can.
+    visitor.ws.send(JSON.stringify({ type: 'start', game: 'cascade' }));
+    await new Promise((res) => setTimeout(res, 50));
+    expect(visitor.got.notices[0]).toMatch(/Cascade isn't on/);
+    expect(visitor.got.game).toBeNull();
+    admin.ws.send(JSON.stringify({ type: 'start', game: 'cascade' }));
+    await new Promise((res) => setTimeout(res, 50));
+    expect(admin.got.game).toBe('cascade');
+
+    // Shown again: every phone gets the new list at once.
+    host.setHiddenGames([]);
+    await new Promise((res) => setTimeout(res, 50));
+    expect(visitor.got.games.at(-1)!.some((g) => g.id === 'cascade')).toBe(true);
+    visitor.ws.close();
+    admin.ws.close();
     host.stop();
     server.close();
   });

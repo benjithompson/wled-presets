@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Clock, Eye, Gamepad2, Loader2, Palette, Power, Settings2, Sparkles, Users, WifiOff } from 'lucide-react';
+import { Check, Clock, Eye, EyeOff, Gamepad2, Loader2, Palette, Power, Settings2, Sparkles, Users, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PublicState } from '../../../shared/types.ts';
 import { burst } from '../components/Burst.tsx';
@@ -16,6 +17,7 @@ import { clock, ordinal, type LineView } from '../../../shared/line.ts';
 import { useCountdown } from '../lib/useCountdown.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { GAME_CATALOG } from '../../../shared/games.ts';
+import { findScene, gamePath } from '../../../shared/links.ts';
 import { useEvents } from '../lib/useEvents.ts';
 import { fromHex, hex, mix } from '../../../shared/color.ts';
 import { cn, errorText, relativeTime } from '../lib/utils.ts';
@@ -93,6 +95,23 @@ export function PublicPage() {
     },
     onSettled: () => setPending(null)
   });
+
+  // Opened from a link to a scene (/scene/<name>, or /?scene=<id>): it plays, or joins the line
+  // when the lights are busy, once. The address goes back to the home page, so a reload does not
+  // play it again (the router is not told: the page stays as it is).
+  const params = useParams();
+  const linked = useRef<string | null>(params.scene ?? new URLSearchParams(location.search).get('scene'));
+  useEffect(() => {
+    const ref = linked.current;
+    if (!ref || !state) return;
+    linked.current = null;
+    history.replaceState(history.state, '', '/');
+    const s = findScene(ref, state.scenes);
+    if (!s) toast.error("That scene isn't here anymore. Pick another one!");
+    else if (state.lightsOff) toast.info(`The lights are switched off right now, so ${s.name} can't play.`);
+    else if (!s.online) toast.info(`${s.name} can't play right now: its lights are offline.`);
+    else if (state.currentSceneId !== s.id) scene.mutate(s.id);
+  }, [state, scene]);
 
   // Right after a change of theirs, a visitor waits a few seconds before the next (a throttle).
   const cooling = useCountdown(line?.cooldown ?? null);
@@ -213,7 +232,7 @@ export function PublicPage() {
                   </div>
                 )}
               </section>
-              <GamesSection off={off} />
+              <GamesSection off={off} hidden={state.hiddenGames ?? []} admin={admin} />
             </div>
           </main>
         ) : null}
@@ -222,8 +241,13 @@ export function PublicPage() {
   );
 }
 
-/** The games, in their own group: cards the size of the scene buttons that open the play page. */
-function GamesSection({ off }: { off: boolean }) {
+/**
+ * The games, in their own group: cards the size of the scene buttons that open the play page.
+ * Games an admin hid are left out; an admin sees them, marked.
+ */
+function GamesSection({ off, hidden, admin }: { off: boolean; hidden: string[]; admin: boolean }) {
+  const games = GAME_CATALOG.filter((g) => admin || !hidden.includes(g.id));
+  if (!games.length) return null;
   return (
     <section aria-labelledby="games-h">
       <h2 id="games-h" className="mb-4 flex items-center gap-2 text-xs font-semibold tracking-widest text-stone-400 uppercase dark:text-stone-500">
@@ -231,13 +255,13 @@ function GamesSection({ off }: { off: boolean }) {
         <span className="font-normal tracking-normal normal-case">· the lights on the house become the game</span>
       </h2>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {GAME_CATALOG.map((g) => {
+        {games.map((g) => {
           const look = gameLook(g.id);
           const Icon = look.icon;
           return (
             <a
               key={g.id}
-              href={off ? undefined : `/play?game=${g.id}`}
+              href={off ? undefined : gamePath(g.id)}
               aria-disabled={off || undefined}
               onClick={(e) => (off ? e.preventDefault() : burst(e.currentTarget))}
               onPointerEnter={(e) => e.pointerType === 'mouse' && fieldPreview({ colors: look.colors, energy: 0.7 })}
@@ -254,7 +278,17 @@ function GamesSection({ off }: { off: boolean }) {
                 <span className={cn('grid size-7 place-items-center rounded-lg bg-gradient-to-br text-white shadow-md transition group-hover:scale-110', look.className)}>
                   <Icon className="size-4" />
                 </span>
-                <span className="text-[10px] font-semibold tracking-wider text-stone-400 uppercase">{g.players?.startsWith('2') ? '2 players' : '1 player'}</span>
+                <span className="text-[10px] font-semibold tracking-wider text-stone-400 uppercase">
+                  {hidden.includes(g.id) ? (
+                    <span className="inline-flex items-center gap-1" title="Hidden from visitors: only admins see it">
+                      <EyeOff className="size-3" /> Hidden
+                    </span>
+                  ) : g.players?.startsWith('2') ? (
+                    '2 players'
+                  ) : (
+                    '1 player'
+                  )}
+                </span>
               </span>
               <span className="mt-4">
                 <span className="block text-[15px] leading-snug font-semibold">{g.name}</span>

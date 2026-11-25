@@ -592,6 +592,32 @@ describe('game area', () => {
     expect((await t.call('GET', '/api/admin/games/area')).json.area).toEqual(r.json.area);
     expect((await t.call('PUT', '/api/admin/games/area', {})).json.area).toBeNull();
   });
+
+  it("keeps a game's own choice of objects, for games in the catalog and objects in the layout", async () => {
+    await login();
+    const layout = sampleLayout();
+    expect((await t.call('PUT', '/api/admin/layout', layout)).status).toBe(200);
+    const [roof, bush] = layout.fixtures;
+    const r = await t.call('PUT', '/api/admin/games/area', { games: { whack: { [bush.id]: false, nope: true }, chess: { [roof.id]: false }, catcher: {} } });
+    expect(r.status).toBe(200);
+    expect(r.json.area).toEqual({ exclude: [], skip: {}, trim: {}, games: { whack: { [bush.id]: false } } });
+    expect((await t.call('PUT', '/api/admin/games/area', { games: { whack: { [bush.id]: 'no' } } })).status).toBe(400);
+  });
+});
+
+describe('hidden games', () => {
+  it('keeps games in the catalog hidden from visitors, and says so on the public state', async () => {
+    expect((await t.call('PUT', '/api/admin/games/hidden', { hidden: ['beat'] })).status).toBe(401);
+    await login();
+    expect((await t.call('GET', '/api/admin/games/hidden')).json.hidden).toEqual([]);
+    const r = await t.call('PUT', '/api/admin/games/hidden', { hidden: ['beat', 'chess', 'paint', 'beat'] });
+    expect(r.status).toBe(200);
+    expect(r.json.hidden).toEqual(['beat', 'paint']);
+    expect((await t.call('GET', '/api/admin/games/hidden')).json.hidden).toEqual(['beat', 'paint']);
+    expect((await t.call('GET', '/api/state')).json.hiddenGames).toEqual(['beat', 'paint']);
+    await t.call('PUT', '/api/admin/games/hidden', { hidden: [] });
+    expect((await t.call('GET', '/api/state')).json.hiddenGames).toEqual([]);
+  });
 });
 
 describe("a device's WLED settings", () => {
