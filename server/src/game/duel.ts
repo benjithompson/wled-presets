@@ -11,6 +11,8 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // nearer the end), the faster it flies back: a hit at the very tip is a SMASH. The ball rolls
 // over the real roof: it slows climbing to a peak and speeds up coming down. Every hit makes the
 // rally faster. Let the ball past your end and the other side scores; first to five wins.
+// A lead is a handicap: for each point a side leads by, its end zone is shorter (an eighth or
+// so of it a point, never under half), so the side behind can catch up.
 //
 // The yard keeps the score: the roof is split between Fire and Ice, and the line between them
 // moves toward whoever is losing. Each point flies as a light from the roof into the scorer's
@@ -19,8 +21,8 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // flash with every hit. One phone plays the house: tap twice.
 //
 // The ends are the ends of the roof the street can see: where the roof line runs on out of sight
-// (back along the side of the house), that stretch belongs to neither end, and each end zone is
-// as long as the other in what can be seen.
+// (back along the side of the house), that stretch belongs to neither end, and at level scores
+// each end zone is as long as the other in what can be seen.
 //
 // Now and then a power orb shows up somewhere along the middle of the roof: one or two LEDs,
 // flashing. The first to tap while the ball is right over it takes it (a tap that misses is a
@@ -52,6 +54,8 @@ const ORB_LIFE = 9;
 /** Powered shots the orb gives, and how much faster they fly. */
 const POWER_SHOTS = 3;
 const POWER_BOOST = 1.55;
+/** How much of its end zone a side loses for each point it leads by. */
+const LEAD_SHRINK = 0.12;
 /** A random number from lo to hi. */
 const between = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 
@@ -162,12 +166,16 @@ export function duelGame(stage: Stage): Game {
     for (let i = e; i >= 0 && i < n; i += dir) if (fromEnd(side, i) >= d) return i;
     return e + dir * d;
   }
-  /** The steps of each end zone, from the end in, with how deep in the zone each is (1 at the end). */
-  const zoneSteps = [0, 1].map((side) => {
-    const steps: { i: number; depth: number }[] = [];
-    for (let i = endOf(side); i >= 0 && i < n && fromEnd(side, i) < zone; i -= toward(side)) steps.push({ i, depth: 1 - fromEnd(side, i) / zone });
-    return steps;
-  });
+  /**
+   * A side's end zone, in steps that show: the full zone when level, shorter by LEAD_SHRINK of it
+   * for every point the side leads by (never under half).
+   */
+  function zoneOf(side: number) {
+    const lead = Math.max(0, score[side] - score[1 - side]);
+    return Math.max(6, Math.round(zone * Math.max(0.5, 1 - LEAD_SHRINK * lead)));
+  }
+  /** Each end zone's length as drawn: it slides to a new length rather than jumping. */
+  const zoneShown = [zone, zone];
   const heading = () => (Math.sign(vel) === toward(0) ? 0 : 1);
   const human = (side: number) => !!slots[side].id;
   const sideOf = (id: string) => slots.findIndex((s) => s.id === id);
@@ -190,7 +198,7 @@ export function duelGame(stage: Stage): Game {
   }
 
   function serve() {
-    pos = inward(server, zone * 0.4);
+    pos = inward(server, zoneOf(server) * 0.4);
     vel = 0;
     owner = server;
     powered = false;
@@ -275,7 +283,7 @@ export function duelGame(stage: Stage): Game {
 
   function whiff(side: number) {
     lockout[side] = round.clock + 0.4;
-    sparks.burst(inward(side, zone * 0.3), [[0.3, 0.3, 0.35]], 6, n * 0.05, 0.4);
+    sparks.burst(inward(side, zoneOf(side) * 0.3), [[0.3, 0.3, 0.35]], 6, n * 0.05, 0.4);
     // A swing at nothing: a dull red shudder on that side of the house.
     const p = roof.point(endOf(side));
     show.ripple(p.x, p.y, COLORS.bad, { amount: 0.25, speed: stage.scale * 10 });
@@ -283,8 +291,12 @@ export function duelGame(stage: Stage): Game {
 
   function pointTo(scorer: number) {
     const loser = 1 - scorer;
+    const before = zoneOf(scorer);
     score[scorer]++;
     lastScorer = scorer;
+    // A bigger lead, a shorter end zone: the piece it loses crumbles off.
+    const after = zoneOf(scorer);
+    if (after < before) sparks.burst(inward(scorer, (before + after) / 2), [TEAMS[scorer].color, [0.3, 0.3, 0.35]], 16, n * 0.06, 0.8);
     const end = endOf(loser);
     const p = roof.point(end);
     const c = TEAMS[scorer].color;
@@ -322,7 +334,7 @@ export function duelGame(stage: Stage): Game {
   // ---------- Input ----------
 
   function inZone(side: number, h: { pos: number; vel: number }) {
-    return Math.sign(h.vel) === toward(side) && fromEnd(side, h.pos) <= zone;
+    return Math.sign(h.vel) === toward(side) && fromEnd(side, h.pos) <= zoneOf(side);
   }
 
   function swing(side: number) {
@@ -333,7 +345,7 @@ export function duelGame(stage: Stage): Game {
     const then = seen.since(round.clock - LAG)[0] ?? seen.latest;
     const recent = seen.since(round.clock - GRACE).filter((h) => inZone(side, h));
     const h = then && inZone(side, then) ? then : recent.at(-1);
-    if (h) return hit(side, 1 - fromEnd(side, h.pos) / zone);
+    if (h) return hit(side, 1 - fromEnd(side, h.pos) / zoneOf(side));
     if (orb && overOrb()) return takeOrb(side);
     whiff(side);
   }
@@ -472,12 +484,13 @@ export function duelGame(stage: Stage): Game {
     const target = heading();
     // The house plays its side.
     if (!human(target) && slots[target].house) {
-      if (fromEnd(target, pos) <= zone && !housePlan) {
+      const reach = zoneOf(target);
+      if (fromEnd(target, pos) <= reach && !housePlan) {
         const behind = score[target] - score[1 - target];
         const pace = Math.abs(vel) / topSpeed;
         housePlan = { depth: 0.2 + Math.random() * (0.55 + Math.max(0, -behind) * 0.05), miss: Math.random() < Math.min(0.45, 0.05 + rally * 0.012 + pace * 0.25) };
       }
-      if (housePlan && !housePlan.miss && 1 - fromEnd(target, pos) / zone >= housePlan.depth) hit(target, 1 - fromEnd(target, pos) / zone);
+      if (housePlan && !housePlan.miss && 1 - fromEnd(target, pos) / reach >= housePlan.depth) hit(target, 1 - fromEnd(target, pos) / reach);
     }
     // Past the end, with a little grace for a late press.
     const over = (pos - endOf(target)) * toward(target);
@@ -505,12 +518,15 @@ export function duelGame(stage: Stage): Game {
       yard.roofAt(i, TEAMS[side].color, 0.05 + 0.015 * Math.sin(round.clock * 2 + i * 0.2) + (power[side] ? 0.06 + 0.14 * throb[side] : 0));
       if (edge) yard.roofAt(i, WHITE, 0.25 + 0.2 * Math.sin(round.clock * 9));
     }
-    // End zones: brighter as the ball comes at them, with a white-hot tip for a smash.
+    // End zones: brighter as the ball comes at them, with a white-hot tip for a smash. The
+    // leader's is shorter; it slides to its new length after a point.
     for (let side = 0; side < 2; side++) {
       const c = TEAMS[side].color;
-      const coming = round.phase === 'rally' && heading() === side ? Math.max(0, 1 - Math.max(0, fromEnd(side, pos) - zone) / (span * 0.5)) : 0;
+      const len = (zoneShown[side] += (zoneOf(side) - zoneShown[side]) * Math.min(1, dt * 3));
+      const coming = round.phase === 'rally' && heading() === side ? Math.max(0, 1 - Math.max(0, fromEnd(side, pos) - len) / (span * 0.5)) : 0;
       const locked = round.clock < lockout[side];
-      for (const { i, depth } of zoneSteps[side]) {
+      for (let i = endOf(side); i >= 0 && i < n && fromEnd(side, i) < len; i -= toward(side)) {
+        const depth = 1 - fromEnd(side, i) / len;
         const tip = depth > 0.8 ? 0.15 + 0.1 * Math.sin(round.clock * 10) : 0;
         yard.roofAt(i, locked ? [0.3, 0.3, 0.3] : c, 0.1 + coming * 0.3 + depth * 0.06);
         if (tip && !locked) yard.roofAt(i, WHITE, tip * (0.5 + coming));
@@ -717,7 +733,7 @@ export function duelGame(stage: Stage): Game {
       // A side with power sends a throb of its color out over its half of the yard.
       for (let side = 0; side < 2; side++) {
         if (!power[side] || round.phase === 'won' || Math.floor(round.clock * 1.4) === Math.floor((round.clock - dt) * 1.4)) continue;
-        const p = roof.point(inward(side, zone * 0.5));
+        const p = roof.point(inward(side, zoneOf(side) * 0.5));
         waves.add(p.x, p.y, mix(TEAMS[side].color, ORB, 0.15), { amount: 0.45, reach: show.box.w * 0.55 });
       }
       if (round.phase === 'won') drawWin();
@@ -743,7 +759,7 @@ export function duelGame(stage: Stage): Game {
         countdown: 'Get ready…',
         serve: `${TEAMS[server].name} serves.`,
         rally: rally > 2 ? `${lastHit} Rally of ${rally}!` : rally ? lastHit : 'Hit it back when it reaches your end!',
-        point: `${TEAMS[lastScorer].name} scores! ${score[0]}–${score[1]}`,
+        point: `${TEAMS[lastScorer].name} scores! ${score[0]}–${score[1]}${score[lastScorer] > score[1 - lastScorer] && score[lastScorer] < WIN ? `. ${TEAMS[lastScorer].name}'s end zone shrinks.` : ''}`,
         won: `${TEAMS[w].name} wins ${score[w]}–${score[1 - w]}!`
       };
       const playing = round.phase === 'rally' || round.phase === 'serve';

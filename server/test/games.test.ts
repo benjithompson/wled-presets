@@ -404,12 +404,13 @@ describe('Roof Duel', () => {
 
   /**
    * Two phones playing well: 'a' (Fire, the left end) and 'b' (Ice, the right) serve, and hit the
-   * ball back when it comes within `near` (a share of the roof that shows) of their end.
+   * ball back when it comes within `near` (a share of the roof that shows) of their end: one
+   * share for both, or one each (null: that side never swings).
    * `extra` runs after each frame with where the ball is, for a test's own presses.
    */
-  function rally(stage: ReturnType<typeof buildStage>, game: Game, frame: Frame, frames: number, near: number, extra?: (b: { at: number; x: number; dir: number }) => boolean | void) {
+  function rally(stage: ReturnType<typeof buildStage>, game: Game, frame: Frame, frames: number, near: number | readonly (number | null)[], extra?: (b: { at: number; x: number; dir: number }) => boolean | void) {
     const [left, right] = seenEnds(stage);
-    const reach = (right - left) * near;
+    const reach = (typeof near === 'number' ? [near, near] : near).map((k) => (k === null ? -Infinity : (right - left) * k));
     let last: number | null = null;
     // One swing a side per half second (sparks after a hit can look like the ball for a moment).
     const ready = [0, 0];
@@ -430,8 +431,8 @@ describe('Roof Duel', () => {
       const x = stage.positions[stage.roofPath[at] * 2];
       const dir = last === null ? 0 : Math.sign(x - last);
       last = x;
-      if (dir < 0 && x - left < reach) swing(0);
-      if (dir > 0 && right - x < reach) swing(1);
+      if (dir < 0 && x - left < reach[0]) swing(0);
+      if (dir > 0 && right - x < reach[1]) swing(1);
       if (extra?.({ at, x, dir })) return;
     }
   }
@@ -457,6 +458,39 @@ describe('Roof Duel', () => {
     });
     expect(game.status().phase).not.toBe('point');
     expect(most).toBeGreaterThan(8);
+  });
+
+  it('shortens the end zone of the side that leads, more for a bigger lead', () => {
+    seedRandom(2);
+    const stage = buildStage(sampleLayout());
+    const game = duelGame(stage);
+    const frame = new Frame(stage.pixelCount);
+    pressAs(game, 'a');
+    pressAs(game, 'b');
+    run(game, frame, 3.2);
+    const scores = () => game.status().scores!.map((s) => s.value);
+    let fireHit = false;
+    const watch = () => {
+      if (game.status().phase === 'rally' && /Hit!|hit!|SMASH/.test(game.status().message ?? '')) fireHit = true;
+    };
+    // Ice never swings. Near level, Fire hits back 12% of the roof from its end: inside its zone (16%).
+    rally(stage, game, frame, 60 * 60, [0.12, null], () => {
+      watch();
+      return scores()[0] >= 2;
+    });
+    expect(scores()).toEqual([2, 0]);
+    expect(fireHit).toBe(true);
+    // Hitting later (inside its zone at a 3-point lead), Fire goes 4–0 up.
+    rally(stage, game, frame, 60 * 60, [0.07, null], () => scores()[0] >= 4);
+    expect(scores()).toEqual([4, 0]);
+    // Four points up, Fire's zone is about half as long: 12% from the end is a swing at nothing.
+    fireHit = false;
+    rally(stage, game, frame, 60 * 30, [0.12, null], () => {
+      watch();
+      return scores()[1] >= 1 || scores()[0] > 4;
+    });
+    expect(fireHit).toBe(false);
+    expect(scores()).toEqual([4, 1]);
   });
 
   it('puts up a power orb now and then: a tap as the ball crosses it gives power, and power shots fly faster', () => {
