@@ -52,18 +52,29 @@ describe('the line for the lights', () => {
     expect(line.ask(v('c'), scene('red'), 'Red').result).toBe('now');
   });
 
-  it('lets a visitor change their own turn once their throttle runs out, keeping its clock', () => {
+  it('lets a visitor change their own turn while nobody else waits, keeping its clock; with others waiting, a pick goes to the back of the line', () => {
     const { line, wait } = clockLine();
     line.ask(v('a'), scene('red'), 'Red');
     line.ask(v('b'), scene('blue'), 'Blue');
     line.ask(v('c'), scene('white'), 'White');
     wait(10);
-    // B's turn is a minute (C waits); B may change it every 10 seconds, and its clock keeps running.
+    // B's turn is a minute (C waits): B's next pick waits its 10 seconds, then goes behind C.
     expect(line.ask(v('b'), color('#00ff00'), 'Color #00ff00')).toEqual({ result: 'wait', retryIn: 10_000 });
     wait(10);
     expect(line.view('b').cooldown).toBeNull();
-    expect(line.ask(v('b'), color('#00ff00'), 'Color #00ff00')).toEqual({ result: 'now' });
-    expect(line.view('b')).toMatchObject({ now: { label: 'Color #00ff00', you: true }, endsIn: 50_000, cooldown: 10_000 });
+    expect(line.ask(v('b'), color('#00ff00'), 'Color #00ff00')).toEqual({ result: 'queued', place: 2 });
+    expect(line.view('b')).toMatchObject({ now: { label: 'Blue', you: true }, endsIn: 50_000, you: { place: 2, label: 'Color #00ff00', startsIn: 110_000 } });
+    expect(line.view('x').ahead).toEqual([
+      { kind: 'scene', label: 'White', you: false, startsIn: 50_000 },
+      { kind: 'color', label: 'Color #00ff00', you: false, startsIn: 110_000 }
+    ]);
+    // C's turn: nobody waits behind C, so C's next pick plays at once.
+    line.leave('b');
+    wait(50);
+    expect(line.view('c').now).toMatchObject({ label: 'White', you: true });
+    wait(10);
+    expect(line.ask(v('c'), color('#0000ff'), 'Color #0000ff')).toEqual({ result: 'now' });
+    expect(line.view('c').now).toMatchObject({ label: 'Color #0000ff', you: true });
     // Admins are never throttled.
     expect(line.ask(v('boss', true), scene('red'), 'Red').result).toBe('now');
     expect(line.ask(v('boss', true), scene('blue'), 'Blue').result).toBe('now');
@@ -107,18 +118,33 @@ describe('the line for the lights', () => {
     expect(line.view('b').you).toBeNull();
   });
 
-  it('gives a game turn as long as the player likes, until someone waits; then the game or the time ends it', () => {
+  it('gives a game turn five minutes on a clock everyone sees; someone who joins later waits for the rest of it', () => {
+    const { line, ended, wait } = clockLine();
+    line.ask(v('a'), game('slice'), 'Slice');
+    expect(line.view('a').endsIn).toBe(5 * 60_000);
+    expect(line.view('b')).toMatchObject({ now: { kind: 'game', you: false }, endsIn: 5 * 60_000, waiting: 0 });
+    wait(60);
+    line.ask(v('b'), game('beat'), 'Beat Drop');
+    expect(line.view('a').endsIn).toBe(4 * 60_000);
+    expect(line.view('b').you).toMatchObject({ place: 1, startsIn: 4 * 60_000 });
+    wait(4 * 60);
+    expect(ended).toEqual(['the turn was up']);
+  });
+
+  it('lets a game play on when its time is up and nobody waits; then someone who joins gives it one more minute', () => {
     const { line, ended, wait } = clockLine();
     line.ask(v('a'), game('slice'), 'Slice');
     wait(30 * 60);
     expect(line.holder()).toBe('a');
     expect(line.view('a').endsIn).toBeNull();
-    // B wants a game: A has five more minutes at most.
     line.ask(v('b'), game('beat'), 'Beat Drop');
-    expect(line.view('a').endsIn).toBe(5 * 60_000);
-    wait(4 * 60);
+    expect(line.view('a').endsIn).toBe(60_000);
+    // Joining and leaving again gives it no more time.
+    line.ask(v('c'), scene('red'), 'Red');
+    line.leave('c');
+    wait(59);
     expect(ended).toEqual([]);
-    wait(60);
+    wait(1);
     expect(ended).toEqual(['the turn was up']);
     expect(line.holder()).toBeNull();
     // B is asked to tap Play, and the lights wait for them.
@@ -157,7 +183,27 @@ describe('the line for the lights', () => {
     line.ask(v('a'), scene('red'), 'Red');
     expect(line.ask(v('a'), game('slice'), 'Slice')).toEqual({ result: 'now' });
     expect(line.holder()).toBe('a');
-    expect(line.view('a').endsIn).toBeNull();
+    expect(line.view('a').endsIn).toBe(5 * 60_000);
+  });
+
+  it("starts the next player's game on its own when their play page is open", () => {
+    const { line, wait } = clockLine();
+    const started: string[] = [];
+    line.present = (id) => id === 'b';
+    line.onStartGame = (g, who) => started.push(`${who.id}:${g}`);
+    line.ask(v('a'), game('slice'), 'Slice');
+    line.ask(v('b'), game('beat'), 'Beat Drop');
+    line.ask(v('c'), game('slice'), 'Slice');
+    line.release('a', 'the game ended');
+    expect(started).toEqual(['b:beat']);
+    expect(line.holder()).toBe('b');
+    expect(line.view('c')).toMatchObject({ now: { label: 'Beat Drop', you: false }, endsIn: 5 * 60_000, you: { place: 1 } });
+    // C's page is not open: C is asked to tap Play.
+    line.release('b', 'the game ended');
+    expect(started).toEqual(['b:beat']);
+    expect(line.view('c').offer).toMatchObject({ game: 'slice' });
+    expect(line.view('b').ahead).toEqual([{ kind: 'game', label: 'Slice', you: false, startsIn: 0 }]);
+    wait(1);
   });
 
   it('never makes an admin wait, and is not there when switched off', () => {
@@ -223,16 +269,52 @@ describe('taking turns on the play page', () => {
     for (let i = 0; i < 3; i++) await a.send({ type: 'input', action: 'press' }, 140);
     await new Promise((r) => setTimeout(r, 600));
     expect(a.last.status).toMatchObject({ phase: 'over', button: 'DONE' });
+    // B's page is open: B's game starts on its own.
     await a.send({ type: 'input', action: 'press' });
-    expect(a.last.status).toMatchObject({ game: null, canPlay: false });
-    expect(b.last.status!.line!.offer).toMatchObject({ game: 'catcher', label: 'Comet Catcher' });
-    await b.send({ type: 'accept' });
-    expect(b.last.status).toMatchObject({ game: 'catcher', canPlay: true, line: { now: { you: true } } });
+    expect(b.last.status).toMatchObject({ game: 'catcher', canPlay: true, line: { now: { you: true }, endsIn: 5 * 60_000 } });
     expect(a.last.status).toMatchObject({ game: 'catcher', canPlay: false });
     // B says goodbye (closes the page): the turn is over, and the lights are free.
     await b.send({ type: 'leave' });
     expect(a.last.status).toMatchObject({ game: null, line: { free: true, now: null } });
     a.ws.close();
+    host.stop();
+    server.close();
+  });
+
+  it('lets one page play a game: the same visitor in another tab watches, and plays on if the first one closes', async () => {
+    const { host, server, port } = await start();
+    const a = await phone(port, 'aaaaaaaaaaaaaaaaaaaa');
+    const tab = await phone(port, 'aaaaaaaaaaaaaaaaaaaa');
+    await a.send({ type: 'start', game: 'slice' });
+    expect(a.last.status).toMatchObject({ game: 'slice', canPlay: true });
+    expect(tab.last.status).toMatchObject({ game: 'slice', canPlay: false, elsewhere: true });
+    await tab.send({ type: 'input', action: 'press' });
+    expect(a.last.status!.phase).toBe('ready');
+    a.ws.close();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(tab.last.status).toMatchObject({ game: 'slice', canPlay: true });
+    tab.ws.close();
+    host.stop();
+    server.close();
+  });
+
+  it('ends the turn of a next player whose game started on its own but who does not play in time', async () => {
+    const { host, server, port } = await start();
+    host.line.configure({ ...DEFAULT_LINE, offerSeconds: 0.3 });
+    const a = await phone(port, 'aaaaaaaaaaaaaaaaaaaa');
+    const b = await phone(port, 'bbbbbbbbbbbbbbbbbbbb');
+    const c = await phone(port, 'cccccccccccccccccccc');
+    await a.send({ type: 'start', game: 'slice' });
+    await b.send({ type: 'start', game: 'catcher' });
+    await c.send({ type: 'start', game: 'slice' });
+    // A stops: B's game starts on its own.
+    await a.send({ type: 'stop' });
+    expect(b.last.status).toMatchObject({ game: 'catcher', canPlay: true });
+    await new Promise((r) => setTimeout(r, 1000));
+    // B never pressed: C's game started.
+    expect(c.last.status).toMatchObject({ game: 'slice', canPlay: true });
+    expect(b.last.status).toMatchObject({ canPlay: false, line: { you: null } });
+    for (const p of [a, b, c]) p.ws.close();
     host.stop();
     server.close();
   });

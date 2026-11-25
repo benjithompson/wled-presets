@@ -66,10 +66,10 @@ export function LineCard() {
           <Field label="Busy turn (seconds)" hint="A scene or a color whose turn comes while others still wait plays this long.">
             {(id) => <Input id={id} type="number" min={10} max={3600} value={s.showSeconds} onChange={num('showSeconds')} />}
           </Field>
-          <Field label="Game turn (minutes)" hint="Once someone waits, a turn ends with its game, or this long after the wait began.">
+          <Field label="Game turn (minutes)" hint="A game turn lasts this long, on a clock everyone sees. With someone waiting it also ends with its game; with nobody waiting it plays on, and gets one more minute once someone joins.">
             {(id) => <Input id={id} type="number" min={1} max={60} step={0.5} value={s.turnMinutes} onChange={num('turnMinutes')} />}
           </Field>
-          <Field label="Time to tap Play (seconds)" hint="The next player has this long, or the line moves on.">
+          <Field label="Time to start a turn (seconds)" hint="The next player has this long to start playing (their game starts on its own when their Play page is open) or to tap Play, or the line moves on.">
             {(id) => <Input id={id} type="number" min={10} max={300} value={s.offerSeconds} onChange={num('offerSeconds')} />}
           </Field>
         </div>

@@ -9,7 +9,7 @@ import { YardView } from '../yard/YardView.tsx';
 import { usePlaySocket } from '../yard/usePlaySocket.ts';
 import { gameLook } from '../lib/gameLooks.ts';
 import { InitialsEntry, Scoreboard } from './HighScores.tsx';
-import { LineCard, OfferCard, TurnBanner } from './LineParts.tsx';
+import { LineCard, OfferCard, TurnBanner, WatchBanner } from './LineParts.tsx';
 import { ArcadeWindow } from './ArcadeHud.tsx';
 import { GameScreen, GameWindow } from './GameWindow.tsx';
 import { PaintStudio } from './PaintStudio.tsx';
@@ -30,9 +30,16 @@ export function PlayPage() {
   const playing = !!status?.game && canPlay;
   const watching = !!status?.game && !canPlay;
   const offer = line?.offer ?? null;
-  // Picking a game joins the line when the lights are busy (your own scene becomes a game at
-  // once, unless others wait).
-  const joins = lined && !!line && !line.free && !(line.now?.you && (line.now.kind === 'game' || !line.waiting));
+  // Picking a game joins the line when the lights are busy (your own turn changes at once,
+  // unless others wait: then you go to the back of the line).
+  const joins = lined && !!line && !line.free && !(line.now?.you && !line.waiting);
+  // Your turn came and your game started on its own: the phone buzzes.
+  const inLine = !!line?.you;
+  const wasInLine = useRef(false);
+  useEffect(() => {
+    if (wasInLine.current && !inLine && playing) navigator.vibrate?.([200, 100, 200]);
+    wasInLine.current = inLine;
+  }, [inLine, playing]);
   /** The game picked on the public page, waiting for a tap here when the lights are busy. */
   const [suggested, setSuggested] = useState<string | null>(null);
   const [shownNotice, setShownNotice] = useState<string | null>(null);
@@ -302,12 +309,7 @@ export function PlayPage() {
               </section>
             ) : (
               <section className="flex-1 py-6">
-                {watching ? (
-                  <p className="mb-4 text-center text-lg text-white/80">
-                    Watching <b className="text-white">{games.find((g) => g.id === status?.game)?.name ?? 'the game'}</b>
-                    {status?.score ? <span className="text-white/60 tabular-nums"> · score {status.score}</span> : null}
-                  </p>
-                ) : null}
+                {watching ? <WatchBanner game={games.find((g) => g.id === status?.game)?.name ?? 'the game'} score={status?.score} elsewhere={status?.elsewhere} /> : null}
                 {line ? <LineCard line={line} onLeave={() => send({ type: 'leaveLine' })} className="mb-6" /> : null}
                 <h1 className="mb-1 text-2xl font-bold tracking-tight">{joins ? 'Join the line' : 'Pick a game'}</h1>
                 <p className="mb-5 text-white/60">{joins ? 'The lights are busy. Pick a game to wait for your turn.' : 'The lights on the house become the game.'}</p>
