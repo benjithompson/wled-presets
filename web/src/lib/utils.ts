@@ -55,3 +55,18 @@ export async function copyLink(path: string, what = 'Link'): Promise<void> {
   if (copied) toast.success(`${what} copied`, { description: url });
   else toast.info(url, { description: 'Copy this link to share it', duration: 15_000 });
 }
+
+/**
+ * A time soon, as people say it: "4:33 PM" (or with `at`, "at 4:33 PM"), "tomorrow at 7:02 AM",
+ * "Friday at 4:33 PM". In the time zone given, else the viewer's own.
+ */
+export function soonTime(iso: string | number, { timeZone, now = Date.now(), at: prefix = false }: { timeZone?: string; now?: number; at?: boolean } = {}): string {
+  const at = new Date(iso);
+  const day = (d: Date | number) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  const time = at.toLocaleTimeString(undefined, { timeZone, hour: 'numeric', minute: '2-digit' });
+  const days = Math.round((Date.parse(day(at)) - Date.parse(day(now))) / 86_400_000);
+  if (days === 0) return prefix ? `at ${time}` : time;
+  if (days === 1) return `tomorrow at ${time}`;
+  if (days > 1 && days < 7) return `${at.toLocaleDateString(undefined, { timeZone, weekday: 'long' })} at ${time}`;
+  return `${at.toLocaleDateString(undefined, { timeZone, month: 'short', day: 'numeric' })} at ${time}`;
+}

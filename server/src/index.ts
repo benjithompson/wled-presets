@@ -18,6 +18,7 @@ import { LayoutPreview } from './layoutPreview.ts';
 import { FramePipeline } from './framePipeline.ts';
 import { LightSender } from './lightSender.ts';
 import { RoofView } from './roofView.ts';
+import { LightScheduler } from './lightSchedule.ts';
 
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
@@ -70,10 +71,13 @@ const viewSources = {
   deviceFrame: (id: string) => pipeline.deviceFrame(id),
   simFrame: () => host.simFrame()
 };
+// The schedule switches every light on and off at its times; visitors are told when they come on.
+const schedule = new LightScheduler(db, lights, bus, { afterOff: () => lights.onAllOff?.() });
+lights.lightsOnAt = () => schedule.nextOnAt();
 const roof = new RoofView(viewSources, (d) => lights.peek(d));
 // The same, for every LED of the yard: the Live tab (visitors at most 60 of these, see app.ts).
 const yard = new RoofView(viewSources, (d) => lights.peek(d), { shape: 'yard', maxViewers: 80 });
-const app = createApp({ config, db, bus, lights, host, preview, roof, yard });
+const app = createApp({ config, db, bus, lights, host, preview, roof, yard, schedule });
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   lights.log('info', 'startup', `Listening on http://localhost:${info.port}`);
 });
@@ -99,6 +103,7 @@ if (db.countUsers() > 0 && config.adminPassword && isExamplePassword(config.admi
   console.warn('WARNING: ADMIN_PASSWORD is the example password. If an admin still uses it, it only signs in from the home network: change it in the admin console.');
 }
 lights.start(config.statusIntervalMs);
+schedule.start();
 // A scene with effects that was playing before a restart plays again.
 lights.resumeEffects();
 
@@ -137,6 +142,7 @@ if (config.discoveryOnStartup) {
 async function shutdown() {
   // Unfreeze devices that got frames over HTTP, so they do not stay on the last frame.
   await Promise.race([sender.release(lights.devicesWithStatus()), new Promise((r) => setTimeout(r, 1000))]);
+  schedule.stop();
   lights.stop();
   roof.close();
   yard.close();

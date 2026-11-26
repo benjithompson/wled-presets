@@ -91,6 +91,8 @@ export class Lights {
    * and moves on once the lights are free again.
    */
   holdPlaylist: () => boolean = () => false;
+  /** When the schedule switches the lights on next (ISO), or null: told to visitors while they are off. */
+  lightsOnAt: () => string | null = () => null;
 
   /** The playlist that plays now: its scene, the step it is on, and the timer to the next one. */
   private playlist: { id: string; step: number; showing: string | null; timer: NodeJS.Timeout | null } | null = null;
@@ -536,6 +538,7 @@ export class Lights {
       totalDevices: enabled.length,
       revertAt: this.db.getSetting(KEY.revertAt) || null,
       lightsOff: this.allOff(),
+      lightsOnAt: this.allOff() ? this.lightsOnAt() : null,
       hiddenGames: readHiddenGames(this.db)
     };
   }
@@ -692,9 +695,10 @@ export class Lights {
    * Switches one device, or every device, on or off. Off holds: scenes, colors, effects and
    * games leave the device dark until an admin switches it on again.
    */
-  async setPower(on: boolean, deviceId: string | null, actor?: Actor): Promise<ApplyResult> {
+  async setPower(on: boolean, deviceId: string | readonly string[] | null, actor?: Actor, why?: string): Promise<ApplyResult> {
     const all = this.db.listDevices();
-    const target = deviceId ? all.filter((d) => d.id === deviceId) : all;
+    const picked = deviceId == null ? null : new Set(typeof deviceId === 'string' ? [deviceId] : deviceId);
+    const target = picked ? all.filter((d) => picked.has(d.id)) : all;
     const ids = new Set(target.map((d) => d.id));
     const c = this.controls();
     const off = on ? c.off.filter((id) => !ids.has(id)) : [...new Set([...c.off, ...ids])];
@@ -705,8 +709,8 @@ export class Lights {
     // A device that was getting frames is given back on the next frame, switched off (after any
     // frame still on its way: see LightSender.giveBack).
     this.noteMissed(result);
-    const what = deviceId ? `"${target[0]?.name ?? deviceId}"` : 'All lights';
-    this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}`, result, actor);
+    const what = !picked ? 'All lights' : target.length === 1 || typeof deviceId === 'string' ? `"${target[0]?.name ?? deviceId}"` : `${target.length} lights`;
+    this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}${why ? ` ${why}` : ''}`, result, actor);
     this.bus.emit('devices');
     this.bus.emit('state');
     return result;

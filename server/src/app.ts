@@ -26,6 +26,8 @@ import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
 import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, type SceneTransitionChoice } from '../../shared/transitions.ts';
 import type { GameHost } from './game/host.ts';
 import type { RoofView } from './roofView.ts';
+import type { LightScheduler } from './lightSchedule.ts';
+import { isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -47,6 +49,8 @@ export interface AppDeps {
   roof?: RoofView;
   /** Every LED of the yard as it is now, for the admin's live view (see RoofView, shape 'yard'). */
   yard?: RoofView;
+  /** Switches the lights on and off at set times (see LightSchedule). */
+  schedule?: LightScheduler;
 }
 
 const deviceInput = z.object({
@@ -89,6 +93,23 @@ const settingsInput = z.object({
   sceneTransition: z.enum(['none', ...TRANSITION_CHOICES.map((t) => t.id)] as [SceneTransitionChoice, ...SceneTransitionChoice[]]).optional(),
   sceneTransitionSeconds: z.number().finite().min(SCENE_TRANSITION_SECONDS.min).max(SCENE_TRANSITION_SECONDS.max).optional()
 });
+
+const scheduleTime = z.object({
+  at: z.enum(['sunrise', 'sunset', 'time']),
+  offset: z.number().int().min(-OFFSET_MINUTES).max(OFFSET_MINUTES),
+  time: z.string().refine(isClockTime, 'Use a time such as 23:00')
+});
+const scheduleInput = z
+  .object({
+    enabled: z.boolean(),
+    latitude: z.number().finite().min(-90).max(90).nullable(),
+    longitude: z.number().finite().min(-180).max(180).nullable(),
+    timeZone: z.string().max(64).refine(isTimeZone, 'Unknown time zone'),
+    on: scheduleTime,
+    off: scheduleTime
+  })
+  .refine((s) => !s.enabled || scheduleRuns(s), 'Set where the lights are: sunrise and sunset need it')
+  .refine((s) => !(s.on.at === s.off.at && (s.on.at === 'time' ? s.on.time === s.off.time : s.on.offset === s.off.offset)), 'The lights cannot switch on and off at the same time');
 
 /** An RGB color, each part 0..255. */
 const rgbInput = z.tuple([z.number().int().min(0).max(255), z.number().int().min(0).max(255), z.number().int().min(0).max(255)]);
@@ -186,7 +207,7 @@ class HttpError extends Error {
   }
 }
 
-export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof, yard }: AppDeps) {
+export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof, yard, schedule }: AppDeps) {
   const app = new Hono();
   const auth = createAuth(db, { secureCookie: config.secureCookie });
   const passkeys = createPasskeys(db);
@@ -544,6 +565,18 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       line?.clear('the lights were switched off');
     }
     return c.json({ controls: lights.controls(), result });
+  });
+
+  // The schedule that switches every light on and off (see LightSchedule).
+  admin.get('/lights/schedule', (c) => {
+    if (!schedule) throw new HttpError(404, 'No schedule here');
+    return c.json(schedule.get());
+  });
+
+  admin.put('/lights/schedule', async (c) => {
+    if (!schedule) throw new HttpError(404, 'No schedule here');
+    await schedule.save(await body(c, scheduleInput), actor(c));
+    return c.json(schedule.get());
   });
 
   admin.put('/lights/brightness', async (c) => {

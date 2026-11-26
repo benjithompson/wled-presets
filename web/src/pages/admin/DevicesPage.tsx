@@ -9,6 +9,7 @@ import { api, type DeviceInput, type PresetImport } from '../../lib/api.ts';
 import { cn, errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { LightsCard } from './LightsCard.tsx';
+import { ScheduleCard } from './ScheduleCard.tsx';
 import { WledSettingsDialog } from './WledSettings.tsx';
 
 export function DevicesPage() {
@@ -76,6 +77,7 @@ export function DevicesPage() {
       />
 
       <LightsCard devices={devices} />
+      {enabled ? <ScheduleCard /> : null}
 
       <Card>
         {isLoading ? (
