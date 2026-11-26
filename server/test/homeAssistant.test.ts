@@ -235,13 +235,15 @@ describe('lights added on the devices page', () => {
 });
 
 describe('home assistant lights in the layout', () => {
-  it('get the mix of their LEDs from each frame, once a second at most', async () => {
+  it('get the mix of their LEDs from each frame, as fast as set, one command at a time', async () => {
     const { FramePipeline, meanColor } = await import('../src/framePipeline.ts');
     const { LightSender } = await import('../src/lightSender.ts');
     const { HaFrames } = await import('../src/haFrames.ts');
     await connect();
     const off = new Set<string>();
     const frames = new HaFrames(t.home, (id, wakes) => wakes || !off.has(id), () => null);
+    let clock = 1_000_000;
+    frames.now = () => clock;
     const map = { deviceId: 'ha:light.porch', size: 2, pairs: Int32Array.from([0, 0, 1, 1]), objects: ['Porch lamp'] };
     const frame = { maps: [map], bytes: Uint8Array.from([200, 0, 0, 100, 0, 0]) };
     expect(meanColor(frame, map)).toEqual([150, 0, 0]);
@@ -255,30 +257,91 @@ describe('home assistant lights in the layout', () => {
     const source = { running: true, tick: () => frame };
     pipeline.add(source);
     pipeline.wake();
-    await until(() => got.length > 0);
-    frames.flush(1_000_000);
     await until(() => ha.states.get('light.porch')!.state === 'on');
-    // Full color, at the brightness of the mix.
+    // Full color, at the brightness of the mix, with a fade as long as the gap (2 a second).
     expect(ha.states.get('light.porch')!.attributes.rgb_color).toEqual([255, 0, 0]);
     expect(ha.states.get('light.porch')!.attributes.brightness).toBe(150);
-    const sent = ha.calls.length;
-    // Within the second, and the same color: nothing more.
-    frames.flush(1_000_500);
-    frames.flush(1_002_000);
-    expect(ha.calls.length).toBe(sent);
-    // Dark: off. Switched off by an admin: nothing is sent.
-    frames.frame('ha:light.porch', [0, 0, 0], false);
-    frames.flush(1_004_000);
-    await until(() => ha.states.get('light.porch')!.state === 'off');
-    off.add('ha:light.porch');
-    frames.frame('ha:light.porch', [0, 255, 0], false);
-    frames.flush(1_006_000);
-    await wait(50);
-    expect(ha.states.get('light.porch')!.state).toBe('off');
-    // The source stops: the light is let go.
+    expect(ha.calls.at(-1)!.body.transition).toBe(0.5);
     pipeline.remove(source);
     await until(() => got.some((g) => (g as unknown[])[1] === null));
     pipeline.close();
+
+    // Let go, then frames again: the first goes at once. The same color again: nothing. A new
+    // color, too soon: it waits for its time.
+    const before = ha.calls.length;
+    frames.frame('ha:light.porch', [150, 0, 0], false);
+    await until(() => ha.calls.length === before + 1);
+    const sent = ha.calls.length;
+    frames.frame('ha:light.porch', [150, 0, 0], false);
+    frames.frame('ha:light.porch', [0, 0, 150], false);
+    await wait(50);
+    clock += 200;
+    frames.frame('ha:light.porch', [0, 0, 150], false);
+    await wait(50);
+    expect(ha.calls.length).toBe(sent);
+    clock += 400;
+    frames.frame('ha:light.porch', [0, 0, 150], false);
+    await until(() => ha.calls.length === sent + 1);
+    // Only the color: the brightness did not change (on Zigbee it is a command of its own).
+    expect(ha.calls.at(-1)!.body).toMatchObject({ rgb_color: [0, 0, 255] });
+    expect(ha.calls.at(-1)!.body.brightness).toBeUndefined();
+
+    // Faster when set: 10 a second, a fade of a tenth.
+    t.home.setFps(10);
+    clock += 100;
+    frames.frame('ha:light.porch', [0, 150, 0], false);
+    await until(() => ha.calls.length === sent + 2);
+    expect(ha.calls.at(-1)!.body.transition).toBe(0.1);
+
+    // Dark: off. Switched off by an admin: nothing is sent.
+    clock += 100;
+    frames.frame('ha:light.porch', [0, 0, 0], false);
+    await until(() => ha.states.get('light.porch')!.state === 'off');
+    off.add('ha:light.porch');
+    clock += 100;
+    frames.frame('ha:light.porch', [0, 255, 0], false);
+    await wait(50);
+    expect(ha.states.get('light.porch')!.state).toBe('off');
+    expect(frames.report()['ha:light.porch'].sent).toBeGreaterThanOrEqual(4);
     frames.close();
   });
+
+  it('go over the WebSocket when Home Assistant has one, and REST when not', async () => {
+    await connect();
+    ha.calls.length = 0;
+    expect((await t.home.set('light.porch', true, { rgb: [0, 0, 255] })).ok).toBe(true);
+    expect(ha.calls.at(-1)).toMatchObject({ service: 'light.turn_on', via: 'ws', body: { rgb_color: [0, 0, 255] } });
+    expect((await t.home.set('light.porch', false, { via: 'rest' })).ok).toBe(true);
+    expect(ha.calls.at(-1)).toMatchObject({ service: 'light.turn_off', via: 'rest' });
+    t.home.close();
+  });
+
+  it('can be speed tested, one test at a time', async () => {
+    await connect();
+    ha.states.get('light.porch')!.state = 'off';
+    await t.home.refresh();
+    const r = await t.call('POST', '/api/admin/ha/speedtest', { entity: 'light.porch', fps: 10, seconds: 2 });
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ entity: 'light.porch', via: 'ws', fps: 10, inflight: 1, fade: true, errors: 0 });
+    expect(r.json.sent).toBeGreaterThanOrEqual(15);
+    expect(r.json.achieved).toBeGreaterThan(7);
+    // It was off: it is off again.
+    expect(ha.states.get('light.porch')!.state).toBe('off');
+    expect((await t.call('POST', '/api/admin/ha/speedtest', { entity: 'switch.fan', fps: 10, seconds: 2 })).status).toBe(400);
+    expect((await t.call('PUT', '/api/admin/ha/rate', { fps: 8 })).json).toMatchObject({ fps: 8, inflight: 1, fade: true });
+    expect((await t.call('PUT', '/api/admin/ha/rate', { fps: 8, inflight: 2, fade: false })).json).toMatchObject({ fps: 8, inflight: 2, fade: false });
+    // Two at once, against a light that takes 150 ms: twice as many.
+    ha.timing.serviceMs = 150;
+    try {
+      const one = (await t.call('POST', '/api/admin/ha/speedtest', { entity: 'light.porch', fps: 20, seconds: 2 })).json;
+      const two = (await t.call('POST', '/api/admin/ha/speedtest', { entity: 'light.porch', fps: 20, seconds: 2, inflight: 2, fade: false })).json;
+      expect(one.achieved).toBeLessThan(8);
+      expect(two.achieved).toBeGreaterThan(one.achieved * 1.6);
+      expect(ha.calls.at(-2)!.body.transition).toBe(0);
+    } finally {
+      ha.timing.serviceMs = 0;
+    }
+    expect((await t.call('PUT', '/api/admin/ha/rate', { fps: 99 })).status).toBe(400);
+    t.home.close();
+  }, 20_000);
 });

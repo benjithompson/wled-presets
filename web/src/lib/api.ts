@@ -3,7 +3,7 @@ import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type { LineAdmin, LineSettings } from '../../../shared/line.ts';
 import type { LightSchedule } from '../../../shared/schedule.ts';
-import type { HaSettings, HaView } from '../../../shared/homeAssistant.ts';
+import type { HaSettings, HaSpeedResult, HaView } from '../../../shared/homeAssistant.ts';
 import type { WledConfig, WledSettings } from '../../../shared/wledConfig.ts';
 import type {
   AudioFile,
@@ -166,6 +166,10 @@ export const api = {
   saveHomeAssistant: (s: Omit<HaSettings, 'lights'> & { lights?: string[]; token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
   /** The Home Assistant lights the site controls (entity ids). */
   saveHaLights: (lights: string[]) => request<HaView>('/api/admin/ha/lights', { method: 'PUT', body: { lights } }),
+  /** How many colors a second Home Assistant lights in the layout take. */
+  setHaRate: (r: { fps: number; inflight?: number; fade?: boolean }) => request<HaView>('/api/admin/ha/rate', { method: 'PUT', body: r }),
+  /** A rainbow on one light for a few seconds, to see how fast it can go. */
+  haSpeedTest: (t: { entity: string; fps: number; seconds: number; via: 'ws' | 'rest'; inflight: number; fade: boolean }) => request<HaSpeedResult>('/api/admin/ha/speedtest', { body: t }),
   testHomeAssistant: () => request<HaView>('/api/admin/ha/test', { method: 'POST' }),
   /** The schedule that switches every light on and off (see LightSchedule). */
   lightSchedule: () => request<LightSchedule>('/api/admin/lights/schedule'),

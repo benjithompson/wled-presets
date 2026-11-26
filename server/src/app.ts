@@ -27,7 +27,8 @@ import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, type SceneTransitionChoic
 import type { GameHost } from './game/host.ts';
 import type { RoofView } from './roofView.ts';
 import type { LightScheduler } from './lightSchedule.ts';
-import { cleanHaUrl, type HomeAssistant } from './homeAssistant.ts';
+import { cleanHaUrl, HA_FPS, HA_INFLIGHT_MAX, type HomeAssistant } from './homeAssistant.ts';
+import { haSpeedTest } from './haSpeedTest.ts';
 import { isSwitchable } from '../../shared/homeAssistant.ts';
 import { isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
@@ -622,6 +623,48 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     bus.emit('devices');
     bus.emit('state');
     return c.json(h.view());
+  });
+
+  // How fast the lights in the layout may take colors (see HaFrames).
+  admin.put('/ha/rate', async (c) => {
+    const h = needHa();
+    const input = await body(c, z.object({ fps: z.number().int().min(HA_FPS.min).max(HA_FPS.max), inflight: z.number().int().min(1).max(HA_INFLIGHT_MAX).optional(), fade: z.boolean().optional() }));
+    const before = { fps: h.fps(), inflight: h.inflight(), fade: h.fade() };
+    h.setFrames(input);
+    const after = { fps: h.fps(), inflight: h.inflight(), fade: h.fade() };
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      lights.log('info', 'settings', `Home Assistant lights in the layout: ${after.fps} colors a second, ${after.inflight} at once, ${after.fade ? 'fading' : 'no fade'}`, { before, after }, actor(c));
+    }
+    return c.json(h.view());
+  });
+
+  // A speed test: a rainbow on one light, as fast as asked, to see what it can take. One at a time.
+  let testing = false;
+  admin.post('/ha/speedtest', async (c) => {
+    const h = needHa();
+    const input = await body(
+      c,
+      z.object({
+        entity: entityId,
+        fps: z.number().int().min(1).max(30),
+        seconds: z.number().int().min(2).max(30).default(10),
+        via: z.enum(['ws', 'rest']).default('ws'),
+        inflight: z.number().int().min(1).max(HA_INFLIGHT_MAX).default(1),
+        fade: z.boolean().default(true)
+      })
+    );
+    if (!input.entity.startsWith('light.')) throw new HttpError(400, 'Pick a light');
+    if (!h.connected()) throw new HttpError(400, 'Home Assistant is not connected');
+    if (testing) throw new HttpError(409, 'A speed test is running');
+    testing = true;
+    try {
+      const { entity, ...how } = input;
+      const result = await haSpeedTest(h, entity, how);
+      lights.log('info', 'settings', `Speed test of ${entity}: ${result.achieved} of ${input.fps} colors a second over ${input.via === 'ws' ? 'the WebSocket' : 'REST'}, ${input.inflight} at once, ${result.latency.p50} ms each`, result, actor(c));
+      return c.json(result);
+    } finally {
+      testing = false;
+    }
   });
 
   admin.post('/ha/test', async (c) => {
