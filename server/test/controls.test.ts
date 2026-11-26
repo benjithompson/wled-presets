@@ -457,7 +457,8 @@ describe('activity of visitors', () => {
     t.signOut();
     expect((await t.call('POST', '/api/color', { color: '#00ff00' })).status).toBe(200);
     logs = t.db.listLogs(5, 'visitor');
-    expect(logs[0]).toMatchObject({ action: 'visitor', message: expect.stringMatching(/^Visitor [\w-]{6}: color #00ff00 applied/) });
+    expect(logs[0]).toMatchObject({ action: 'visitor', message: expect.stringMatching(/^Visitor [\w-]{6} \([^)]+\): color #00ff00 applied/) });
+    expect(logs[0].details).toMatchObject({ ip: logs[0].clientIp });
     expect((logs[0].details as { visitor: string }).visitor).toMatch(/^[\w-]{6}$/);
   });
 });

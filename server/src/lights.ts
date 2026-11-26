@@ -12,6 +12,7 @@ import { baseUrl, lastWrite, wled, type FetchResult, type PowerState } from './w
 import { mergeLooks, type PresetLook } from './presetLook.ts';
 import type { Peek } from './roofView.ts';
 import { WledPeek } from './wledPeek.ts';
+import { visitorLabel } from './visitor.ts';
 import type { HomeAssistant } from './homeAssistant.ts';
 import { entityOf, haId, isHaId } from '../../shared/homeAssistant.ts';
 
@@ -625,11 +626,11 @@ export class Lights {
     this.log(
       result.applied.length || played.objects ? (result.failed.length ? 'warn' : 'info') : 'error',
       reason === 'revert' ? 'auto_revert' : actor?.visitor ? 'visitor' : 'applied',
-      (actor?.visitor ? `Visitor ${actor.visitor}: ` : '') +
+      (actor?.visitor ? `${visitorLabel(actor.visitor, actor.ip)}: ` : '') +
       scene.playlist
         ? `Playlist "${scene.name}" started${first ? ` with "${first}"` : ' with no scene to play'}: ${result.applied.length}/${sent} device(s)${played.objects ? `, effects on ${played.objects} object(s)` : ''}`
         : `Scene "${scene.name}" applied to ${result.applied.length}/${sent} device(s)${played.objects ? `, effects on ${played.objects} object(s)` : ''}`,
-      { sceneId: scene.id, sceneName: scene.name, ...(actor?.visitor ? { visitor: actor.visitor } : {}), ...result },
+      { sceneId: scene.id, sceneName: scene.name, ...(actor?.visitor ? { visitor: actor.visitor, ip: actor.ip } : {}), ...result },
       actor
     );
     this.bus.emit('state');
@@ -684,8 +685,8 @@ export class Lights {
     this.log(
       result.applied.length ? (result.failed.length ? 'warn' : 'info') : 'error',
       actor?.visitor ? 'visitor' : 'applied',
-      `${actor?.visitor ? `Visitor ${actor.visitor}: c` : 'C'}olor ${color} applied to ${result.applied.length}/${devices.length} device(s)`,
-      { color, ...(actor?.visitor ? { visitor: actor.visitor } : {}), ...result },
+      `${actor?.visitor ? `${visitorLabel(actor.visitor, actor.ip)}: c` : 'C'}olor ${color} applied to ${result.applied.length}/${devices.length} device(s)`,
+      { color, ...(actor?.visitor ? { visitor: actor.visitor, ip: actor.ip } : {}), ...result },
       actor
     );
     this.bus.emit('state');

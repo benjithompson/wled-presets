@@ -10,7 +10,7 @@ import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
 import { migrateV1Settings, readGameArea, readHiddenGames, readLineSettings, readSettings } from './settings.ts';
-import { admitUpgrade, upgradeVisitor, visitorTag } from './visitor.ts';
+import { admitUpgrade, upgradeVisitor, visitorLabel, visitorTag } from './visitor.ts';
 import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
 import { readLayout } from './layoutStore.ts';
@@ -60,7 +60,7 @@ const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', ms
 host.activity = (who, message, details) => {
   if (who.admin) return;
   const tag = visitorTag(who.id);
-  lights.log('info', 'visitor', `Visitor ${tag}: ${message}`, { visitor: tag, ...details }, who.actor);
+  lights.log('info', 'visitor', `${visitorLabel(tag, who.actor?.ip)}: ${message}`, { visitor: tag, ip: who.actor?.ip, ...details }, who.actor);
 };
 host.setGameArea(readGameArea(db));
 host.setHiddenGames(readHiddenGames(db));
