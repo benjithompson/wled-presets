@@ -628,12 +628,15 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // How fast the lights in the layout may take colors (see HaFrames).
   admin.put('/ha/rate', async (c) => {
     const h = needHa();
-    const input = await body(c, z.object({ fps: z.number().int().min(HA_FPS.min).max(HA_FPS.max), inflight: z.number().int().min(1).max(HA_INFLIGHT_MAX).optional(), fade: z.boolean().optional() }));
-    const before = { fps: h.fps(), inflight: h.inflight(), fade: h.fade() };
+    const input = await body(
+      c,
+      z.object({ fps: z.number().int().min(HA_FPS.min).max(HA_FPS.max), inflight: z.number().int().min(1).max(HA_INFLIGHT_MAX).optional(), fade: z.boolean().optional(), direct: z.boolean().optional() })
+    );
+    const before = { fps: h.fps(), inflight: h.inflight(), fade: h.fade(), direct: h.direct() };
     h.setFrames(input);
-    const after = { fps: h.fps(), inflight: h.inflight(), fade: h.fade() };
+    const after = { fps: h.fps(), inflight: h.inflight(), fade: h.fade(), direct: h.direct() };
     if (JSON.stringify(before) !== JSON.stringify(after)) {
-      lights.log('info', 'settings', `Home Assistant lights in the layout: ${after.fps} colors a second, ${after.inflight} at once, ${after.fade ? 'fading' : 'no fade'}`, { before, after }, actor(c));
+      lights.log('info', 'settings', `Home Assistant lights in the layout: ${after.fps} colors a second, ${after.inflight} at once, ${after.fade ? 'fading' : 'no fade'}${after.direct ? ', as Zigbee commands' : ''}`, { before, after }, actor(c));
     }
     return c.json(h.view());
   });
@@ -650,7 +653,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
         seconds: z.number().int().min(2).max(30).default(10),
         via: z.enum(['ws', 'rest']).default('ws'),
         inflight: z.number().int().min(1).max(HA_INFLIGHT_MAX).default(1),
-        fade: z.boolean().default(true)
+        fade: z.boolean().default(true),
+        direct: z.boolean().default(false)
       })
     );
     if (!input.entity.startsWith('light.')) throw new HttpError(400, 'Pick a light');
@@ -660,7 +664,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     try {
       const { entity, ...how } = input;
       const result = await haSpeedTest(h, entity, how);
-      lights.log('info', 'settings', `Speed test of ${entity}: ${result.achieved} of ${input.fps} colors a second over ${input.via === 'ws' ? 'the WebSocket' : 'REST'}, ${input.inflight} at once, ${result.latency.p50} ms each`, result, actor(c));
+      lights.log('info', 'settings', `Speed test of ${entity}: ${result.achieved} of ${input.fps} colors a second over ${input.via === 'ws' ? 'the WebSocket' : 'REST'}, ${input.inflight} at once${result.direct ? ', as Zigbee commands' : ''}, ${result.latency.p50} ms each`, result, actor(c));
       return c.json(result);
     } finally {
       testing = false;

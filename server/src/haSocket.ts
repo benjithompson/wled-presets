@@ -3,7 +3,8 @@ import WebSocket from 'ws';
 /** How long to wait before connecting again after Home Assistant closed the connection. */
 const RETRY_MS = 5000;
 
-type Pending = { resolve: (r: { ok: true } | { ok: false; error: string }) => void; timer: NodeJS.Timeout };
+type Answer = { ok: true; result: unknown } | { ok: false; error: string };
+type Pending = { resolve: (r: Answer) => void; timer: NodeJS.Timeout };
 
 /**
  * One WebSocket to Home Assistant (its /api/websocket), for switching lights fast: a command is
@@ -47,7 +48,7 @@ export class HaSocket {
       };
       const timer = setTimeout(() => finish(false), this.timeoutMs);
       ws.on('message', (raw) => {
-        let m: { type?: string; id?: number; success?: boolean; error?: { message?: string } };
+        let m: { type?: string; id?: number; success?: boolean; result?: unknown; error?: { message?: string } };
         try {
           m = JSON.parse(String(raw));
         } catch {
@@ -65,7 +66,7 @@ export class HaSocket {
           if (!p) return;
           this.pending.delete(m.id);
           clearTimeout(p.timer);
-          p.resolve(m.success ? { ok: true } : { ok: false, error: m.error?.message || 'Home Assistant refused it' });
+          p.resolve(m.success ? { ok: true, result: m.result } : { ok: false, error: m.error?.message || 'Home Assistant refused it' });
         }
       });
       ws.on('error', () => finish(false));
@@ -93,10 +94,10 @@ export class HaSocket {
   }
 
   /**
-   * Calls a service (light.turn_on, say) on one entity. Resolves when Home Assistant has done it;
-   * null when there is no connection (use REST instead).
+   * Sends one command (a message with a type) and resolves with Home Assistant's answer; null
+   * when there is no connection.
    */
-  async call(domain: string, service: string, entityId: string, data: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string } | null> {
+  async send(msg: Record<string, unknown>): Promise<Answer | null> {
     if (!(await this.connect()) || !this.ws) return null;
     const ws = this.ws;
     const id = this.next++;
@@ -106,8 +107,16 @@ export class HaSocket {
         resolve({ ok: false, error: 'Home Assistant did not answer in time' });
       }, this.timeoutMs);
       this.pending.set(id, { resolve, timer });
-      ws.send(JSON.stringify({ id, type: 'call_service', domain, service, service_data: data, target: { entity_id: entityId } }));
+      ws.send(JSON.stringify({ ...msg, id }));
     });
+  }
+
+  /**
+   * Calls a service (light.turn_on, say), on one entity or none. Resolves when Home Assistant has
+   * done it; null when there is no connection (use REST instead).
+   */
+  call(domain: string, service: string, entityId: string | null, data: Record<string, unknown>): Promise<Answer | null> {
+    return this.send({ type: 'call_service', domain, service, service_data: data, ...(entityId ? { target: { entity_id: entityId } } : {}) });
   }
 
   close() {

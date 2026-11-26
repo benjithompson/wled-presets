@@ -201,9 +201,11 @@ function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaVi
   const [seconds, setSeconds] = useState(10);
   const [inflight, setInflight] = useState(1);
   const [fade, setFade] = useState(true);
+  // A ZHA light can take its colors as Zigbee commands: likely faster, so tried first.
+  const [direct, setDirect] = useState(!!light.zigbee);
   const [runs, setRuns] = useState<HaSpeedResult[]>([]);
   const run = useMutation({
-    mutationFn: () => api.haSpeedTest({ entity: light.id, fps, seconds, via, inflight, fade }),
+    mutationFn: () => api.haSpeedTest({ entity: light.id, fps, seconds, via, inflight, fade, direct: direct && via === 'ws' }),
     onSuccess: (r) => setRuns((x) => [r, ...x]),
     onError: (e) => toast.error(errorText(e))
   });
@@ -273,7 +275,17 @@ function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaVi
               </Select>
             )}
           </Field>
-          <Button variant="primary" className="justify-center max-sm:col-span-2" loading={run.isPending} onClick={() => run.mutate()}>
+          {light.zigbee ? (
+            <Field label="Command">
+              {(id) => (
+                <Select id={id} value={direct ? '1' : '0'} onChange={(e) => setDirect(e.target.value === '1')} disabled={via === 'rest'}>
+                  <option value="1">Zigbee color command</option>
+                  <option value="0">light.turn_on</option>
+                </Select>
+              )}
+            </Field>
+          ) : null}
+          <Button variant="primary" className={cn('justify-center max-sm:col-span-2', light.zigbee && 'sm:col-span-2')} loading={run.isPending} onClick={() => run.mutate()}>
             <Gauge /> {run.isPending ? `Playing ${seconds} s…` : 'Run'}
           </Button>
         </div>
@@ -294,12 +306,12 @@ function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaVi
               <tbody className="divide-y divide-stone-100 dark:divide-stone-800">
                 {runs.map((r, i) => {
                   const use = Math.max(1, Math.min(20, Math.floor(r.achieved)));
-                  const inUse = view.fps === use && view.inflight === r.inflight && view.fade === r.fade;
+                  const inUse = view.fps === use && view.inflight === r.inflight && view.fade === r.fade && view.direct === r.direct;
                   return (
                     <tr key={runs.length - i}>
                       <td className="px-3 py-2">
                         {r.via === 'ws' ? 'WebSocket' : 'REST'}
-                        <span className="text-stone-500">{` · ${r.inflight} at once · ${r.fade ? 'fade' : 'no fade'}`}</span>
+                        <span className="text-stone-500">{` · ${r.direct ? 'Zigbee · ' : ''}${r.inflight} at once · ${r.fade ? 'fade' : 'no fade'}`}</span>
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums">{r.fps}/s</td>
                       <td className={cn('px-2 py-2 text-right font-medium tabular-nums', r.achieved >= r.fps * 0.9 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')}>{r.achieved}/s</td>
@@ -309,7 +321,7 @@ function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaVi
                         {r.errors}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <Button size="sm" variant="ghost" disabled={inUse || rate.isPending} onClick={() => rate.mutate({ fps: use, inflight: r.inflight, fade: r.fade })} title="The lights in the layout take colors this way">
+                        <Button size="sm" variant="ghost" disabled={inUse || rate.isPending} onClick={() => rate.mutate({ fps: use, inflight: r.inflight, fade: r.fade, direct: r.direct })} title="The lights in the layout take colors this way">
                           {inUse ? 'In use' : `Use ${use}/s`}
                         </Button>
                       </td>
@@ -321,7 +333,8 @@ function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaVi
           </div>
         ) : (
           <p className="text-sm text-stone-500">
-            Start at 10 a second over the WebSocket. If it takes fewer than asked, the light (or its Zigbee network) cannot go faster: each command waits for the light to answer. The layout now uses {view.fps} a second, {view.inflight} at once, {view.fade ? 'fading' : 'without a fade'}.
+            Start at 10 a second over the WebSocket. If it takes fewer than asked, the light (or its Zigbee network) cannot go faster: each command waits for the light to answer. The layout now uses {view.fps} a second, {view.inflight} at once, {view.fade ? 'fading' : 'without a fade'}{view.direct ? ', as Zigbee commands' : ''}.
+            {light.zigbee ? ' This is a ZHA light: a Zigbee color command is one message to it, where light.turn_on is several, each waiting for the light.' : ''}
           </p>
         )}
       </div>

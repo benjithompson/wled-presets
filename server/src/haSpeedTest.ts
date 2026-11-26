@@ -13,7 +13,7 @@ import type { HomeAssistant } from './homeAssistant.ts';
 export async function haSpeedTest(
   ha: HomeAssistant,
   entity: string,
-  { fps, seconds, via, inflight = 1, fade = true }: { fps: number; seconds: number; via: 'ws' | 'rest'; inflight?: number; fade?: boolean }
+  { fps, seconds, via, inflight = 1, fade = true, direct = false }: { fps: number; seconds: number; via: 'ws' | 'rest'; inflight?: number; fade?: boolean; direct?: boolean }
 ): Promise<HaSpeedResult> {
   const wasOff = ha.entity(entity)?.state === 'off';
   const every = 1000 / fps;
@@ -33,7 +33,7 @@ export async function haSpeedTest(
     const rgb = hsvBytes((t / 3) % 1, 1);
     const at = performance.now();
     void ha
-      .set(entity, true, { rgb: [rgb[0], rgb[1], rgb[2]], bri: sent === 0 ? 255 : null, transition, via })
+      .set(entity, true, { rgb: [rgb[0], rgb[1], rgb[2]], bri: sent === 0 ? 255 : null, transition, via, direct })
       .then((r) => {
         latencies.push(performance.now() - at);
         sent++;
@@ -62,6 +62,8 @@ export async function haSpeedTest(
     via,
     inflight,
     fade,
+    // Only a ZHA light takes Zigbee commands; another got light.turn_on.
+    direct: direct && via === 'ws' && ha.canDirect(entity),
     fps,
     seconds,
     sent,
