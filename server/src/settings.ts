@@ -2,6 +2,7 @@ import type { GameArea } from '../../shared/layout.ts';
 import type { LightControls, Settings } from '../../shared/types.ts';
 import type { Db } from './db.ts';
 import { DEFAULT_LINE, type LineSettings } from '../../shared/line.ts';
+import { cleanSchedule, type LightSchedule } from '../../shared/schedule.ts';
 import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, type SceneTransition, type SceneTransitionChoice } from '../../shared/transitions.ts';
 
 // Keys match v1 where the concept existed.
@@ -21,7 +22,10 @@ export const KEY = {
   lightsOff: 'lightsOff',
   brightness: 'lightsBrightness',
   sceneTransition: 'sceneTransition',
-  sceneTransitionSeconds: 'sceneTransitionSeconds'
+  sceneTransitionSeconds: 'sceneTransitionSeconds',
+  schedule: 'lightSchedule',
+  scheduleRan: 'lightScheduleRan',
+  scheduleHeld: 'lightScheduleHeld'
 } as const;
 
 /** What a new install does between scenes: a short crossfade. */
@@ -169,4 +173,17 @@ export function readLightControls(db: Db): LightControls {
 export function writeLightControls(db: Db, c: LightControls) {
   db.setSetting(KEY.lightsOff, JSON.stringify(c.off));
   db.setSetting(KEY.brightness, JSON.stringify(c.brightness));
+}
+
+/** The lights' schedule (see shared/schedule.ts). Off by default. */
+export function readSchedule(db: Db): LightSchedule {
+  try {
+    return cleanSchedule(JSON.parse(db.getSetting(KEY.schedule) || 'null'));
+  } catch {
+    return cleanSchedule(null);
+  }
+}
+
+export function writeSchedule(db: Db, s: LightSchedule) {
+  db.setSetting(KEY.schedule, JSON.stringify(cleanSchedule(s)));
 }

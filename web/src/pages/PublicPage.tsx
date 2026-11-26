@@ -21,7 +21,7 @@ import { GAME_CATALOG } from '../../../shared/games.ts';
 import { findScene, gamePath } from '../../../shared/links.ts';
 import { useEvents } from '../lib/useEvents.ts';
 import { fromHex, hex, mix } from '../../../shared/color.ts';
-import { cn, errorText, relativeTime } from '../lib/utils.ts';
+import { cn, errorText, relativeTime, soonTime } from '../lib/utils.ts';
 import { colorName } from '../lib/colorName.ts';
 import { Roofline, useRoofStream } from '../components/Roofline.tsx';
 import { LiveYard } from '../yard/LiveYard.tsx';
@@ -110,7 +110,7 @@ export function PublicPage() {
     history.replaceState(history.state, '', '/');
     const s = findScene(ref, state.scenes);
     if (!s) toast.error("That scene isn't here anymore. Pick another one!");
-    else if (state.lightsOff) toast.info(`The lights are switched off right now, so ${s.name} can't play.`);
+    else if (state.lightsOff) toast.info(`The lights are switched off right now, so ${s.name} can't play.${state.lightsOnAt ? ` They come back on ${soonTime(state.lightsOnAt, { at: true })}.` : ''}`);
     else if (!s.online) toast.info(`${s.name} can't play right now: its lights are offline.`);
     else if (state.currentSceneId !== s.id) scene.mutate(s.id);
   }, [state, scene]);
@@ -610,7 +610,9 @@ function StatusLine({ state, line }: { state: PublicState; line: LineView | null
         {state.totalDevices === 0
           ? 'No lights set up'
           : state.lightsOff
-            ? 'The lights are switched off for now'
+            ? state.lightsOnAt
+              ? `The lights are off until ${soonTime(state.lightsOnAt)}`
+              : 'The lights are switched off for now'
             : !state.anyOnline
             ? 'Lights are offline'
             : all
