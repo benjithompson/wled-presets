@@ -1,8 +1,14 @@
 import { isSwitchable, type HaEntity, type HaSettings, type HaView } from '../../shared/homeAssistant.ts';
 import type { Db } from './db.ts';
 import type { FetchResult } from './wled.ts';
+import { HaSocket } from './haSocket.ts';
 
-const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights' } as const;
+const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights', fps: 'haFps', inflight: 'haInflight', fade: 'haFade' } as const;
+
+/** How often a light in the layout may take a new color, per second (see HaFrames): the default, and the range. */
+export const HA_FPS = { default: 2, min: 1, max: 20 } as const;
+/** Commands on their way to one light at once (see HaFrames): the most. */
+export const HA_INFLIGHT_MAX = 3;
 
 const COLOR_MODES = new Set(['hs', 'xy', 'rgb', 'rgbw', 'rgbww']);
 
@@ -118,6 +124,9 @@ export class HomeAssistant {
     this.db.setSetting(KEY.lights, JSON.stringify([...new Set(s.lights)]));
     if (token !== undefined) this.db.setSetting(KEY.token, token ?? '');
     this.cache = null;
+    // A new address or token: a new connection.
+    this.socket?.close();
+    this.socket = null;
     if (!this.connected()) {
       this.states.clear();
       this.status = null;
@@ -125,7 +134,50 @@ export class HomeAssistant {
   }
 
   view(): HaView {
-    return { ...this.settings(), hasToken: this.hasToken(), status: this.status, entities: [...this.states.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+    return { ...this.settings(), hasToken: this.hasToken(), status: this.status, fps: this.fps(), inflight: this.inflight(), fade: this.fade(), entities: [...this.states.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+
+  /** How many colors a second a light in the layout may take (see HaFrames). */
+  fps(): number {
+    const n = Number(this.db.getSetting(KEY.fps));
+    return Number.isFinite(n) && n >= HA_FPS.min && n <= HA_FPS.max ? n : HA_FPS.default;
+  }
+
+  setFps(n: number) {
+    this.db.setSetting(KEY.fps, Math.min(HA_FPS.max, Math.max(HA_FPS.min, n)));
+  }
+
+  /** Commands on their way to one light at once (1: each waits for the light to answer the last). */
+  inflight(): number {
+    const n = Number(this.db.getSetting(KEY.inflight));
+    return Number.isInteger(n) && n >= 1 && n <= HA_INFLIGHT_MAX ? n : 1;
+  }
+
+  /** True: each color fades in over the gap to the next; false: it changes at once. */
+  fade(): boolean {
+    return this.db.getSetting(KEY.fade) !== '0';
+  }
+
+  /** The way the lights in the layout take colors (see HaFrames). */
+  setFrames(f: { fps: number; inflight?: number; fade?: boolean }) {
+    this.setFps(f.fps);
+    if (f.inflight != null) this.db.setSetting(KEY.inflight, Math.min(HA_INFLIGHT_MAX, Math.max(1, Math.round(f.inflight))));
+    if (f.fade != null) this.db.setSetting(KEY.fade, f.fade ? '1' : '0');
+  }
+
+  private socket: HaSocket | null = null;
+
+  /** The WebSocket to Home Assistant, made when first needed. */
+  private ws(): HaSocket | null {
+    const url = this.settings().url;
+    const token = this.db.getSetting(KEY.token);
+    if (!url || !token) return null;
+    return (this.socket ??= new HaSocket(url, token));
+  }
+
+  close() {
+    this.socket?.close();
+    this.socket = null;
   }
 
   /** The entity as Home Assistant last said (see refresh), or undefined. */
@@ -206,7 +258,11 @@ export class HomeAssistant {
    * Switches an entity on or off. A light takes a brightness (1 to 255), a color and a
    * transition (seconds) when it can; a switch only goes on or off.
    */
-  async set(id: string, on: boolean, opts: { bri?: number | null; rgb?: [number, number, number] | null; transition?: number } = {}): Promise<FetchResult<unknown>> {
+  async set(
+    id: string,
+    on: boolean,
+    opts: { bri?: number | null; rgb?: [number, number, number] | null; transition?: number; via?: 'ws' | 'rest' } = {}
+  ): Promise<FetchResult<unknown>> {
     const [domain] = id.split('.');
     const e = this.states.get(id);
     const body: Record<string, unknown> = { entity_id: id };
@@ -216,7 +272,10 @@ export class HomeAssistant {
     }
     if (domain === 'light' && opts.transition != null) body.transition = opts.transition;
     this.writes.set(id, Date.now());
-    const r = await this.request(`/api/services/${domain}/turn_${on ? 'on' : 'off'}`, body);
+    // Over the WebSocket when it is open (or opens), else REST.
+    const { entity_id: _, ...data } = body;
+    const viaWs = opts.via === 'rest' ? null : await this.ws()?.call(domain, `turn_${on ? 'on' : 'off'}`, id, data);
+    const r: FetchResult<unknown> = viaWs ? (viaWs.ok ? { ok: true, status: 200, data: null } : { ok: false, status: 0, error: viaWs.error }) : await this.request(`/api/services/${domain}/turn_${on ? 'on' : 'off'}`, body);
     this.writes.set(id, Date.now());
     if (r.ok && e) this.states.set(id, { ...e, state: on ? 'on' : 'off' });
     return r;

@@ -39,6 +39,31 @@ export interface HaView extends HaSettings {
   status: { ok: true; version: string; location: string } | { ok: false; error: string } | null;
   /** Its lights and switches. */
   entities: HaEntity[];
+  /** How many colors a second a light in the layout may take (see HaFrames). */
+  fps: number;
+  /** Commands on their way to one light at once. */
+  inflight: number;
+  /** Each color fades in over the gap to the next (else it changes at once). */
+  fade: boolean;
+}
+
+/** What a speed test of one light found (see HomeAssistant speed test). */
+export interface HaSpeedResult {
+  entity: string;
+  via: 'ws' | 'rest';
+  inflight: number;
+  fade: boolean;
+  /** Colors a second asked for, and how many it took. */
+  fps: number;
+  achieved: number;
+  seconds: number;
+  sent: number;
+  /** Ticks with a command still on its way: the light was not ready for the next. */
+  waited: number;
+  errors: number;
+  error?: string;
+  /** How long Home Assistant took to do each command, in ms. */
+  latency: { avg: number; p50: number; p95: number; max: number };
 }
 
 /** In the lights' switches (LightControls) a Home Assistant light is "ha:" and its entity id. */

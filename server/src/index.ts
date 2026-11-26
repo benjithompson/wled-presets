@@ -152,6 +152,7 @@ async function shutdown() {
   await Promise.race([sender.release(lights.devicesWithStatus()), new Promise((r) => setTimeout(r, 1000))]);
   schedule.stop();
   haFrames.close();
+  ha.close();
   lights.stop();
   roof.close();
   yard.close();

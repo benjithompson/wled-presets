@@ -1,8 +1,9 @@
 // A pretend Home Assistant for development and tests: its REST API's config, states and the
 // turn_on and turn_off services of lights and switches, behind a token.
 //
-//   node scripts/mock-ha.ts [port] [token]
+//   MOCK_HA_MS=90 node scripts/mock-ha.ts [port] [token]
 import http from 'node:http';
+import { WebSocketServer } from 'ws';
 
 export interface MockEntity {
   state: string;
@@ -20,7 +21,22 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
     ['switch.fan', { state: 'off', attributes: { friendly_name: 'Fan' } }],
     ['sensor.outside', { state: '3.5', attributes: { friendly_name: 'Outside' } }]
   ]);
-  const calls: { service: string; body: Record<string, unknown> }[] = [];
+  const calls: { service: string; body: Record<string, unknown>; via: 'rest' | 'ws' }[] = [];
+  /** How long a service takes, in ms: a Zigbee light answers when it took the command. */
+  const timing = { serviceMs: 0 };
+
+  /** Does a service, as both APIs do. Null: no such entity. */
+  const service = (domain: string, name: string, body: Record<string, unknown>, via: 'rest' | 'ws'): MockEntity | null => {
+    calls.push({ service: `${domain}.${name}`, body, via });
+    const e = states.get(String(body.entity_id));
+    if (!e || !String(body.entity_id).startsWith(`${domain}.`)) return null;
+    const on = name === 'turn_on';
+    e.state = on ? 'on' : 'off';
+    if (on && typeof body.brightness === 'number') e.attributes.brightness = body.brightness;
+    if (on && Array.isArray(body.rgb_color)) e.attributes.rgb_color = body.rgb_color;
+    hooks.onSwitch?.(String(body.entity_id), on);
+    return e;
+  };
   /** Called after a service switched an entity: a plug powering a controller, say. */
   const hooks: { onSwitch?: (entity: string, on: boolean) => void } = {};
 
@@ -44,29 +60,60 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
       const m = /^\/api\/services\/(\w+)\/(turn_on|turn_off)$/.exec(req.url ?? '');
       if (req.method === 'POST' && m) {
         const body = raw ? JSON.parse(raw) : {};
-        calls.push({ service: `${m[1]}.${m[2]}`, body });
-        const e = states.get(body.entity_id);
-        if (!e || !body.entity_id.startsWith(`${m[1]}.`)) return json(400, { message: 'Unknown entity' });
-        const on = m[2] === 'turn_on';
-        e.state = on ? 'on' : 'off';
-        if (on && typeof body.brightness === 'number') e.attributes.brightness = body.brightness;
-        if (on && Array.isArray(body.rgb_color)) e.attributes.rgb_color = body.rgb_color;
-        hooks.onSwitch?.(body.entity_id, on);
-        return json(200, [{ entity_id: body.entity_id, state: e.state, attributes: e.attributes }]);
+        setTimeout(() => {
+          const e = service(m[1], m[2], body, 'rest');
+          if (!e) return json(400, { message: 'Unknown entity' });
+          json(200, [{ entity_id: body.entity_id, state: e.state, attributes: e.attributes }]);
+        }, timing.serviceMs);
+        return;
       }
       json(404, { message: 'Not found' });
     });
   });
 
-  return new Promise<{ port: number; url: string; token: string; states: typeof states; calls: typeof calls; hooks: typeof hooks; close: () => Promise<void> }>((resolve) => {
+  // The WebSocket API (/api/websocket): sign in with the token, then call_service.
+  const wss = new WebSocketServer({ server, path: '/api/websocket' });
+  wss.on('connection', (ws) => {
+    let authed = false;
+    ws.send(JSON.stringify({ type: 'auth_required', ha_version: '2026.11.3' }));
+    ws.on('message', (raw) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === 'auth') {
+        authed = m.access_token === token;
+        ws.send(JSON.stringify({ type: authed ? 'auth_ok' : 'auth_invalid' }));
+        if (!authed) ws.close();
+        return;
+      }
+      if (!authed) return;
+      if (m.type === 'call_service') {
+        setTimeout(() => {
+          const e = service(m.domain, m.service, { ...m.service_data, entity_id: m.target?.entity_id }, 'ws');
+          ws.send(JSON.stringify(e ? { id: m.id, type: 'result', success: true, result: { context: {} } } : { id: m.id, type: 'result', success: false, error: { code: 'not_found', message: 'Unknown entity' } }));
+        }, timing.serviceMs);
+      }
+    });
+  });
+
+  return new Promise<{ port: number; url: string; token: string; states: typeof states; calls: typeof calls; hooks: typeof hooks; timing: typeof timing; close: () => Promise<void> }>((resolve) => {
     server.listen(port, '127.0.0.1', () => {
       const actual = (server.address() as { port: number }).port;
-      resolve({ port: actual, url: `http://127.0.0.1:${actual}`, token, states, calls, hooks, close: () => new Promise((r) => (server.close(() => r()), server.closeAllConnections())) });
+      resolve({
+        port: actual,
+        url: `http://127.0.0.1:${actual}`,
+        token,
+        states,
+        calls,
+        hooks,
+        timing,
+        close: () => new Promise((r) => (wss.clients.forEach((c) => c.terminate()), wss.close(), server.close(() => r()), server.closeAllConnections()))
+      });
     });
   });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const ha = await startMockHa(Number(process.argv[2] ?? 8123), process.argv[3]);
+  // MOCK_HA_MS: how long each command takes, as a Zigbee light's answer does (about 60 to 150 ms).
+  ha.timing.serviceMs = Number(process.env.MOCK_HA_MS ?? 0);
   console.log(`Mock Home Assistant on ${ha.url}, token ${ha.token}`);
 }
