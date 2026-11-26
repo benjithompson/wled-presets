@@ -147,7 +147,9 @@ import { YardView } from '../../yard/YardView.tsx';
 import { fromView, LayoutInView, toView, viewPositions, type PointRef, type ViewSide } from '../../yard/views.ts';
 import { ellipsePolygon, pickAt, type Picked, type PickShape } from '../../yard/pick.ts';
 import { acrossOf, frontCamera } from '../../yard/frontCamera.ts';
-import { draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
+import { bulbFrom, draftOutline, draftSize, shapeFrom, type ShapeDraft } from './newShapes.ts';
+import { useHomeAssistant } from './HomeAssistantCard.tsx';
+import { entityOf, haId, isHaId } from '../../../../shared/homeAssistant.ts';
 import { fitCam, frameCam, lerpCam, panBy, pinch, viewBoxOf, wheelFactor, zoomAt, type Box, type Cam, type Pair, type PaneSize } from '../../yard/camera.ts';
 import { NumberInput, PropAccordion, PropAdvanced, PropButton, PropNote, PropNumber, PropRow, PropSection, PropSelect, PropSlider, PropText } from './props.tsx';
 import { onGrid, snapPoint, type SnapGrid, type Snapped, type SnapTargets } from '../../yard/snap.ts';
@@ -166,11 +168,11 @@ import { OVERVIEW, PageMenu, useOverview } from './AdminLayout.tsx';
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));
 
 /** align: lines the picture from above up with the yard (no button: the Pictures menu starts it). */
-type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'semicircle' | 'measure' | 'align';
+type Tool = 'select' | 'edit' | 'split' | 'pan' | 'roof' | 'line' | 'bush' | 'tree' | 'semicircle' | 'bulb' | 'measure' | 'align';
 type LineTool = 'roof' | 'line';
 const isLineTool = (t: Tool): t is LineTool => t === 'roof' || t === 'line';
 /** One-key shortcuts, as in most drawing programs. */
-const TOOL_KEYS: Record<string, Tool> = { v: 'select', a: 'edit', c: 'split', h: 'pan', r: 'roof', l: 'line', b: 'bush', t: 'tree', u: 'semicircle', m: 'measure' };
+const TOOL_KEYS: Record<string, Tool> = { v: 'select', a: 'edit', c: 'split', h: 'pan', r: 'roof', l: 'line', b: 'bush', t: 'tree', u: 'semicircle', g: 'bulb', m: 'measure' };
 /** A line being drawn. `cont`: it continues an existing line from one of its ends. */
 type Draft = { side: ViewSide; pts: UV[]; cont?: { id: string; at: 'first' | 'last' } };
 type MenuItem = { label: string; keys?: string; danger?: boolean; run: () => void };
@@ -248,7 +250,7 @@ const VIEW_NOTES: Record<ViewName, string> = {
 };
 /** The 2D views. */
 const SIDES: ViewSide[] = ['front', 'top', 'side'];
-const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', measure: 'Measure', align: 'Align picture' };
+const TOOL_LABELS: Record<Tool, string> = { select: 'Select', edit: 'Edit points', split: 'Split', pan: 'Pan', roof: 'Roofline', line: 'Line', bush: 'Bush', tree: 'Tree', semicircle: 'Semicircle', bulb: 'Bulb', measure: 'Measure', align: 'Align picture' };
 /** The size of handles and labels was set for about 1.6 layout units per pixel; this keeps them the same size on the screen at every zoom. */
 const BASE_K = 1.6;
 
@@ -710,6 +712,7 @@ export function LayoutPage() {
     queryFn: api.layout
   });
   const { data: overview } = useOverview();
+  const { data: ha } = useHomeAssistant();
   const [layout, setLayout] = useState<Layout | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   /** Index of the selected point of the selected line (0 and the last point are its ends). */
@@ -1979,7 +1982,7 @@ export function LayoutPage() {
       return;
     }
     if (e.button !== 0) return;
-    if (side === 'side' && (isLineTool(tool) || tool === 'bush' || tool === 'tree' || tool === 'semicircle')) {
+    if (side === 'side' && (isLineTool(tool) || tool === 'bush' || tool === 'tree' || tool === 'semicircle' || tool === 'bulb')) {
       return void toast('Draw new objects in the front or top view. The side view moves, turns and tilts them.', { id: 'side-draw' });
     }
     if (isLineTool(tool)) {
@@ -1992,6 +1995,10 @@ export function LayoutPage() {
       // A line is drawn in one view; a click in the other view starts again there.
       const s = snapAt(e, side, drawingHere ? draft.pts[draft.pts.length - 1] : null);
       setDraft((d) => (d.side === side && d.pts.length ? { ...d, pts: [...d.pts, s.at] } : { side, pts: [s.at] }));
+      return;
+    }
+    if (tool === 'bulb') {
+      if (layout) addFixture(bulbFrom(side, snapAt(e, side).at, layout, zMin, uid(), side === 'front' ? frontCam : null));
       return;
     }
     if (tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
@@ -2085,7 +2092,7 @@ export function LayoutPage() {
         hint = snapAt(e, side, tape && !tape.b && tape.side === side ? tape.a : null);
       } else if (tool === 'align' && side === 'top' && alignPts.length % 2) {
         hint = snapAt(e, side, alignPts[alignPts.length - 1]);
-      } else if (tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
+      } else if (tool === 'bush' || tool === 'tree' || tool === 'semicircle' || tool === 'bulb') {
         hint = snapAt(e, side);
       } else if (tool === 'edit' || tool === 'split') {
         const s = snapPoint(p, targetsFor(side, undefined, true), tolFor(side), { snap: drafting.snap !== e.altKey });
@@ -2462,6 +2469,8 @@ export function LayoutPage() {
   }
 
   const devices = overview?.devices ?? [];
+  // Home Assistant lights in use: an object can be one of them (see HaFrames).
+  const haLights = ha?.url && ha.hasToken ? ha.lights.map((id) => ha.entities.find((e) => e.id === id) ?? { id, name: id }) : [];
   const totals = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
   const m = measureOf(layout);
   const scale = layoutScale(layout);
@@ -2509,7 +2518,9 @@ export function LayoutPage() {
           ? 'Tap a line to add a point, then drag it into place. Drag a point to move it. Long-press a point to delete it. Drag anywhere else to pan.'
           : tool === 'split'
             ? 'Tap a corner, or a spot on a line, to cut the line in two there.'
-            : tool === 'bush'
+            : tool === 'bulb'
+              ? 'Click where the bulb is: a single light, such as a floodlight or a smart bulb in Home Assistant.'
+              : tool === 'bush'
               ? 'Press on the middle of the bush and drag out to its edge.'
               : tool === 'tree'
                 ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
@@ -2532,7 +2543,9 @@ export function LayoutPage() {
           ? 'Click a line to add a point, then drag it into place. Drag a point to move it (Shift: straight across or straight up). Delete removes the selected point. Ctrl-click (⌘-click) an end to continue the line.'
           : tool === 'split'
             ? 'Click a corner, or a spot on a line, to cut the line in two there.'
-            : tool === 'bush'
+            : tool === 'bulb'
+              ? 'Click where the bulb is: a single light, such as a floodlight or a smart bulb in Home Assistant.'
+              : tool === 'bush'
               ? 'Press on the middle of the bush and drag out to its edge.'
               : tool === 'tree'
                 ? 'Front view: drag from the base up to the top. Top view: drag from the middle out to the edge of the base.'
@@ -3405,12 +3418,32 @@ export function LayoutPage() {
               </fieldset>
             ) : null}
             <PropSelect
-              label="WLED device"
-              hint="The device that drives these LEDs."
+              label="Device"
+              hint="The WLED device that drives these LEDs, or a Home Assistant light (added on the Devices page)."
               value={sel.deviceId ?? ''}
-              options={[['', 'Simulation only'], ...devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`])]}
+              options={[['', 'Simulation only']]}
+              groups={[
+                { label: 'WLED', options: devices.map((d): [string, string] => [d.id, `${d.name}${d.info?.leds?.count ? ` (${d.info.leds.count} LEDs)` : ''}`]) },
+                ...(haLights.length || (sel.deviceId && isHaId(sel.deviceId))
+                  ? [
+                      {
+                        label: 'Home Assistant',
+                        options: [
+                          ...haLights.map((e): [string, string] => [haId(e.id), e.name]),
+                          // One no longer in use stays shown, so the object keeps it until it is changed.
+                          ...(sel.deviceId && isHaId(sel.deviceId) && !haLights.some((e) => haId(e.id) === sel.deviceId) ? [[sel.deviceId, `${entityOf(sel.deviceId)} (not in use)`] as [string, string]] : [])
+                        ]
+                      }
+                    ]
+                  : [])
+              ]}
               onChange={(id) => changeDevice(sel, id || null)}
             />
+            {sel.deviceId && isHaId(sel.deviceId) ? (
+              <PropNote>
+                A Home Assistant light shows one color: the mix of this object's LEDs, a new one about once a second with a fade to it. One LED is enough; give the object more to spread it over a shape.
+              </PropNote>
+            ) : null}
             {isLine(sel) && sel.points.length > 2 && segment == null && corner == null ? (
               <PropNote>Click a segment of the line to turn it off or give it its own effect, or a corner to split the line there.</PropNote>
             ) : null}
@@ -3496,7 +3529,7 @@ export function LayoutPage() {
             </fieldset>
           </PropSection>
 
-          {!isLine(sel) && sel.kind !== 'custom' ? (
+          {!isLine(sel) && sel.kind !== 'custom' && sel.kind !== 'bulb' ? (
             phone ? (
               // On a phone, a section for each part, so no one of them is a long scroll.
               SHAPE_PARTS.filter((p) => shapeParts(sel).includes(p.part)).map(({ part, title }) => (
@@ -3919,6 +3952,7 @@ export function LayoutPage() {
     ['bush', Circle, 'Bush'],
     ['tree', TreePine, 'Tree'],
     ['semicircle', Rainbow, 'Semicircle'],
+    ['bulb', Lightbulb, 'Bulb'],
     ['custom', Shapes, 'Custom']
   ];
   const addTool = addTools.find(([t]) => t === tool);
@@ -4171,6 +4205,7 @@ export function LayoutPage() {
               {toolButton('bush', Circle)}
               {toolButton('tree', TreePine)}
               {toolButton('semicircle', Rainbow)}
+              {toolButton('bulb', Lightbulb)}
               <button
                 type="button"
                 onClick={() => setLibrary(true)}
@@ -4236,7 +4271,7 @@ export function LayoutPage() {
                         focus={focus3d}
                         onSelect={(id, add) => {
                           // The 3-D view does not draw: a click there with a drawing tool says where to draw, and keeps the tool.
-                          if (isLineTool(tool) || tool === 'bush' || tool === 'tree' || tool === 'semicircle') {
+                          if (isLineTool(tool) || tool === 'bush' || tool === 'tree' || tool === 'semicircle' || tool === 'bulb') {
                             return void toast('Draw new objects in the front or top view. The 3-D view selects and shows them.', { id: 'side-draw' });
                           }
                           setTool('select');

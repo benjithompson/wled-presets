@@ -3,6 +3,7 @@ import type { RoofGeometry } from '../../shared/types.ts';
 import { layoutOutput } from './framePipeline.ts';
 import { takesFrames, type DeviceTarget } from './lightSender.ts';
 import { WledPeek } from './wledPeek.ts';
+import { isHaId } from '../../shared/homeAssistant.ts';
 
 /** Frames a second to the home page. Enough for a strip along the edge of the window. */
 export const ROOF_HZ = 20;
@@ -151,7 +152,8 @@ export class RoofView {
         let src: ArrayLike<number> | null = null;
         let at = 0;
         let k = 1;
-        if (id == null) {
+        // Objects with no device, and Home Assistant lights (they take a color a second): as drawn.
+        if (id == null || isHaId(id)) {
           src = sim;
           at = i * 3;
         } else if (lit.has(id)) {

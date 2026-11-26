@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Pencil, Play, Plus, Radar, RefreshCw, Router, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { ChevronDown, House, Pencil, Play, Plus, Radar, RefreshCw, Router, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, DiscoveredDevice } from '../../../../shared/types.ts';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Spinner, StatusDot, Switch } from '../../components/ui.tsx';
@@ -10,6 +10,8 @@ import { cn, errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { LightsCard } from './LightsCard.tsx';
 import { ScheduleCard } from './ScheduleCard.tsx';
+import { HaLightsCard } from './HaLightsCard.tsx';
+import { useHomeAssistant } from './HomeAssistantCard.tsx';
 import { WledSettingsDialog } from './WledSettings.tsx';
 
 export function DevicesPage() {
@@ -20,6 +22,9 @@ export function DevicesPage() {
   const [configuring, setConfiguring] = useState<DeviceWithStatus | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [addingHa, setAddingHa] = useState(false);
+  const { data: ha } = useHomeAssistant();
+  const haConnected = !!ha?.url && ha.hasToken;
   const refresh = () => qc.invalidateQueries({ queryKey: OVERVIEW });
 
   const toggle = useMutation({
@@ -67,11 +72,12 @@ export function DevicesPage() {
         }
         more={[
           { label: syncAll.isPending ? 'Importing presets…' : 'Import all presets', icon: RefreshCw, run: () => syncAll.mutate(), disabled: !enabled || syncAll.isPending },
-          { label: 'Discover', icon: Radar, run: () => setDiscovering(true) }
+          { label: 'Discover', icon: Radar, run: () => setDiscovering(true) },
+          ...(haConnected ? [{ label: 'Add Home Assistant light', icon: House, run: () => setAddingHa(true) }] : [])
         ]}
         actions={
           <Button variant="primary" onClick={() => setEditing('new')}>
-            <Plus /> Add device
+            <Plus /> Add WLED device
           </Button>
         }
       />
@@ -194,6 +200,8 @@ export function DevicesPage() {
           </ul>
         )}
       </Card>
+
+      <HaLightsCard adding={addingHa} onAdding={setAddingHa} />
 
       {editing ? <DeviceDialog key={editing === 'new' ? 'new' : editing.id} device={editing === 'new' ? null : editing} onClose={() => setEditing(null)} /> : null}
       {configuring ? <WledSettingsDialog key={configuring.id} device={configuring} presets={data?.devicePresets[configuring.id] ?? []} onClose={() => setConfiguring(null)} /> : null}

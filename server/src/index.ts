@@ -20,6 +20,7 @@ import { LightSender } from './lightSender.ts';
 import { RoofView } from './roofView.ts';
 import { LightScheduler } from './lightSchedule.ts';
 import { HomeAssistant } from './homeAssistant.ts';
+import { HaFrames } from './haFrames.ts';
 
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
@@ -49,6 +50,9 @@ const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg))
 // Everything that draws on the lights goes through one pipeline: the editors' previews win
 // over games and scenes.
 const pipeline = new FramePipeline(() => lights.liveDevices(), sender);
+// Home Assistant lights in the layout take the colors of their objects, about once a second.
+const haFrames = new HaFrames(ha, (id, wakes) => wakes || !lights.isOff(id), (id) => lights.levelOf(id));
+pipeline.haSink = haFrames.frame;
 const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout', msg));
 useScoreStore(databaseScores(db.raw));
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), pipeline);
@@ -147,6 +151,7 @@ async function shutdown() {
   // Unfreeze devices that got frames over HTTP, so they do not stay on the last frame.
   await Promise.race([sender.release(lights.devicesWithStatus()), new Promise((r) => setTimeout(r, 1000))]);
   schedule.stop();
+  haFrames.close();
   lights.stop();
   roof.close();
   yard.close();

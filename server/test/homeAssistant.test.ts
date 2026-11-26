@@ -95,8 +95,10 @@ describe('home assistant settings', () => {
     const r = await connect();
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ url: ha.url, hasToken: true, status: { ok: true, version: '2026.11.3', location: 'Home' } });
-    expect(r.json.entities.map((e: { id: string }) => e.id)).toEqual(['light.garage', 'light.porch', 'switch.roof_psu', 'switch.tree_psu']);
-    expect(r.json.entities.find((e: { id: string }) => e.id === 'light.porch')).toMatchObject({ color: true, dimmable: true });
+    expect(r.json.entities.map((e: { id: string }) => e.id)).toEqual(['switch.fan', 'light.garage', 'light.porch', 'switch.roof_psu', 'switch.tree_psu']);
+    expect(r.json.entities.find((e: { id: string }) => e.id === 'light.porch')).toMatchObject({ color: true, dimmable: true, outlet: false, area: 'Front yard', device: 'Porch bulb', integration: 'hue' });
+    expect(r.json.entities.find((e: { id: string }) => e.id === 'switch.roof_psu')).toMatchObject({ outlet: true, area: 'Garage' });
+    expect(r.json.entities.find((e: { id: string }) => e.id === 'switch.fan')).toMatchObject({ area: '', device: '' });
     expect(r.text).not.toContain(ha.token);
     expect((await t.call('GET', '/api/admin/ha')).text).not.toContain(ha.token);
     expect(JSON.stringify(t.db.listLogs(1000, null))).not.toContain(ha.token);
@@ -215,5 +217,68 @@ describe('plugs that power a controller', () => {
     await t.lights.refreshStatus();
     expect(t.lights.isOff(ids[0])).toBe(true);
     expect(t.lights.isOff(ids[1])).toBe(false);
+  });
+});
+
+describe('lights added on the devices page', () => {
+  it('are kept when the settings are saved, and a plug is never one', async () => {
+    await connect();
+    const r = await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'switch.fan'] });
+    expect(r.json.lights).toEqual(['light.porch', 'switch.fan']);
+    expect((await t.call('PUT', '/api/admin/ha/lights', { lights: ['switch.roof_psu'] })).status).toBe(400);
+    // Saving the connection (no lights in it) keeps them; a new plug leaves the lights.
+    const s = await t.call('PUT', '/api/admin/ha', { url: ha.url, plugs: { [ids[0]]: 'switch.fan' } });
+    expect(s.json.lights).toEqual(['light.porch']);
+    t.signOut();
+    expect((await t.call('PUT', '/api/admin/ha/lights', { lights: [] })).status).toBe(401);
+  });
+});
+
+describe('home assistant lights in the layout', () => {
+  it('get the mix of their LEDs from each frame, once a second at most', async () => {
+    const { FramePipeline, meanColor } = await import('../src/framePipeline.ts');
+    const { LightSender } = await import('../src/lightSender.ts');
+    const { HaFrames } = await import('../src/haFrames.ts');
+    await connect();
+    const off = new Set<string>();
+    const frames = new HaFrames(t.home, (id, wakes) => wakes || !off.has(id), () => null);
+    const map = { deviceId: 'ha:light.porch', size: 2, pairs: Int32Array.from([0, 0, 1, 1]), objects: ['Porch lamp'] };
+    const frame = { maps: [map], bytes: Uint8Array.from([200, 0, 0, 100, 0, 0]) };
+    expect(meanColor(frame, map)).toEqual([150, 0, 0]);
+
+    const got: unknown[] = [];
+    const pipeline = new FramePipeline(() => [], new LightSender());
+    pipeline.haSink = (id, rgb, wakes) => {
+      got.push([id, rgb]);
+      frames.frame(id, rgb, wakes);
+    };
+    const source = { running: true, tick: () => frame };
+    pipeline.add(source);
+    pipeline.wake();
+    await until(() => got.length > 0);
+    frames.flush(1_000_000);
+    await until(() => ha.states.get('light.porch')!.state === 'on');
+    // Full color, at the brightness of the mix.
+    expect(ha.states.get('light.porch')!.attributes.rgb_color).toEqual([255, 0, 0]);
+    expect(ha.states.get('light.porch')!.attributes.brightness).toBe(150);
+    const sent = ha.calls.length;
+    // Within the second, and the same color: nothing more.
+    frames.flush(1_000_500);
+    frames.flush(1_002_000);
+    expect(ha.calls.length).toBe(sent);
+    // Dark: off. Switched off by an admin: nothing is sent.
+    frames.frame('ha:light.porch', [0, 0, 0], false);
+    frames.flush(1_004_000);
+    await until(() => ha.states.get('light.porch')!.state === 'off');
+    off.add('ha:light.porch');
+    frames.frame('ha:light.porch', [0, 255, 0], false);
+    frames.flush(1_006_000);
+    await wait(50);
+    expect(ha.states.get('light.porch')!.state).toBe('off');
+    // The source stops: the light is let go.
+    pipeline.remove(source);
+    await until(() => got.some((g) => (g as unknown[])[1] === null));
+    pipeline.close();
+    frames.close();
   });
 });

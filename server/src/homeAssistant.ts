@@ -10,19 +10,42 @@ const COLOR_MODES = new Set(['hs', 'xy', 'rgb', 'rgbw', 'rgbww']);
 interface HaState {
   entity_id: string;
   state: string;
-  attributes?: { friendly_name?: string; supported_color_modes?: string[] };
+  attributes?: { friendly_name?: string; supported_color_modes?: string[]; device_class?: string };
 }
 
-function entityOf(s: HaState): HaEntity {
+/** Where an entity is in Home Assistant: its area, its device and the integration it comes from. */
+type Place = { area: string; device: string; integration: string };
+const NOWHERE: Place = { area: '', device: '', integration: '' };
+
+function entityOf(s: HaState, place: Place = NOWHERE): HaEntity {
   const modes = s.attributes?.supported_color_modes ?? [];
   return {
     id: s.entity_id,
     name: s.attributes?.friendly_name || s.entity_id,
     state: s.state,
     color: modes.some((m) => COLOR_MODES.has(m)),
-    dimmable: modes.some((m) => m !== 'onoff')
+    dimmable: modes.some((m) => m !== 'onoff'),
+    outlet: s.attributes?.device_class === 'outlet',
+    ...place
   };
 }
+
+/**
+ * The area, device and integration of every light and switch, in one request: /api/states has
+ * none of them, and the registries are only on the WebSocket API. Home Assistant renders this
+ * template (its own Jinja) to JSON: [[entity id, area, device, integration], ...].
+ */
+export const PLACES_TEMPLATE = [
+  '{%- set ns = namespace(rows=[]) -%}',
+  '{%- for s in (states.light | list) + (states.switch | list) -%}',
+  '{%- set ids = device_attr(s.entity_id, "identifiers") -%}',
+  '{%- set ns.rows = ns.rows + [[s.entity_id, area_name(s.entity_id) or "", device_attr(s.entity_id, "name_by_user") or device_attr(s.entity_id, "name") or "", ((ids | list | first | first) if ids else "") or ""]] -%}',
+  '{%- endfor -%}',
+  '{{ ns.rows | tojson }}'
+].join('');
+
+/** How long the areas and devices are kept before they are read again. */
+const PLACES_MS = 10 * 60_000;
 
 /** An address for Home Assistant: http or https, with no path. Null when it is not one. */
 export function cleanHaUrl(input: string): string | null {
@@ -46,6 +69,8 @@ export function cleanHaUrl(input: string): string | null {
 export class HomeAssistant {
   private db: Db;
   private states = new Map<string, HaEntity>();
+  private places = new Map<string, Place>();
+  private placesAt = 0;
   private status: HaView['status'] = null;
   /** When this app last switched each entity (Date.now()): a change soon after is its own. */
   private writes = new Map<string, number>();
@@ -138,6 +163,7 @@ export class HomeAssistant {
   async test(): Promise<HaView['status']> {
     const r = await this.request<{ version?: string; location_name?: string }>('/api/config');
     this.status = r.ok ? { ok: true, version: r.data?.version ?? '?', location: r.data?.location_name ?? '' } : { ok: false, error: r.error };
+    this.placesAt = 0;
     if (r.ok) await this.refresh();
     return this.status;
   }
@@ -150,17 +176,30 @@ export class HomeAssistant {
       return { ok: false, changed: [] };
     }
     if (this.status?.ok !== true) this.status = { ok: true, version: '', location: '' };
+    const list = (Array.isArray(r.data) ? r.data : []).filter((s) => s && typeof s.entity_id === 'string' && isSwitchable(s.entity_id));
+    // Areas and devices change seldom: read again now and then, and when a new entity comes.
+    if (Date.now() - this.placesAt > PLACES_MS || list.some((s) => !this.places.has(s.entity_id))) await this.readPlaces();
     const changed: HaEntity[] = [];
     const next = new Map<string, HaEntity>();
-    for (const s of Array.isArray(r.data) ? r.data : []) {
-      if (!s || typeof s.entity_id !== 'string' || !isSwitchable(s.entity_id)) continue;
-      const e = entityOf(s);
+    for (const s of list) {
+      const e = entityOf(s, this.places.get(s.entity_id));
       const prev = this.states.get(e.id);
       if (prev && prev.state !== e.state) changed.push(e);
       next.set(e.id, e);
     }
     this.states = next;
     return { ok: true, changed };
+  }
+
+  /** Reads where each light and switch is (see PLACES_TEMPLATE). Without it, they are nowhere. */
+  private async readPlaces() {
+    this.placesAt = Date.now();
+    const r = await this.request<unknown>('/api/template', { template: PLACES_TEMPLATE });
+    if (!r.ok || !Array.isArray(r.data)) return;
+    const str = (v: unknown) => (typeof v === 'string' ? v : '');
+    this.places = new Map(
+      r.data.filter((row): row is unknown[] => Array.isArray(row) && typeof row[0] === 'string').map((row) => [row[0] as string, { area: str(row[1]), device: str(row[2]), integration: str(row[3]) }])
+    );
   }
 
   /**

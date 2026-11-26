@@ -1,4 +1,4 @@
-import { RotateCcw } from 'lucide-react';
+import { House, RotateCcw } from 'lucide-react';
 import type { DeviceWithStatus } from '../../../../shared/types.ts';
 import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../../components/LightControls.tsx';
 import { Card, CardHeader, Spinner } from '../../components/ui.tsx';
@@ -134,8 +134,9 @@ export function LightsCard({ devices }: { devices: DeviceWithStatus[] }) {
           return (
             <li key={id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 sm:px-5">
               <PowerButton size="sm" on={on} label={e.name} disabled={power.isPending || gone} onToggle={() => power.mutate({ on: !on, deviceId: id })} />
-              <span className={cn('min-w-28 flex-1 truncate text-sm font-medium sm:flex-none sm:basis-40', !on && 'text-stone-400')} title={`${e.id} in Home Assistant`}>
-                {e.name}
+              <span className={cn('flex min-w-28 flex-1 items-center gap-1.5 text-sm font-medium sm:flex-none sm:basis-40', !on && 'text-stone-400')} title={`${e.id} in Home Assistant`}>
+                <span className="truncate">{e.name}</span>
+                <House className="size-3.5 shrink-0 text-stone-400" aria-label="Home Assistant" />
               </span>
               {gone ? (
                 <span className="min-w-48 flex-1 text-sm text-red-600 dark:text-red-400">Unavailable in Home Assistant</span>

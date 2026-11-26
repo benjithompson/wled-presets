@@ -1,6 +1,7 @@
 import type { OutputInfo } from '../../../shared/layout.ts';
 import { DDP_PORT } from '../realtime.ts';
 import type { DeviceMap, FramePipeline, FrameSource } from '../framePipeline.ts';
+import { entityOf, isHaId } from '../../../shared/homeAssistant.ts';
 
 /**
  * Games on the real lights: the debug panel's switch and brightness, and what it shows about
@@ -41,7 +42,7 @@ export class GameOutput {
         const d = all.find((x) => x.id === m.deviceId);
         return {
           id: m.deviceId,
-          name: d?.name ?? 'Unknown device',
+          name: d?.name ?? (isHaId(m.deviceId) ? `${entityOf(m.deviceId)} (Home Assistant)` : 'Unknown device'),
           host: d?.host ?? '',
           ddpPort: d?.info?.ddpport ?? DDP_PORT,
           online: !!(d as { online?: boolean | null } | undefined)?.online,
