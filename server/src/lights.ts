@@ -715,9 +715,16 @@ export class Lights {
     return ids.length > 0 && ids.every((id) => this.isOff(id));
   }
 
-  /** The Home Assistant lights the site switches, as "ha:" ids (none without Home Assistant). */
+  /** The Home Assistant lights the site switches, as "ha:" ids (none without Home Assistant): the ones added and not disabled. */
   haLights(): string[] {
-    return this.ha?.connected() ? this.ha.settings().lights.map(haId) : [];
+    if (!this.ha?.connected()) return [];
+    const { lights, disabled } = this.ha.settings();
+    return lights.filter((id) => !disabled.includes(id)).map(haId);
+  }
+
+  /** True when the site switches this Home Assistant light ("ha:" id): added, and not disabled. */
+  haEnabled(id: string): boolean {
+    return this.haLights().includes(id);
   }
 
   /** The Home Assistant plug that powers a device, or null. */
@@ -759,7 +766,8 @@ export class Lights {
     const target = picked ? all.filter((d) => picked.has(d.id)) : all;
     const haTarget = picked ? ha.filter((id) => picked.has(id)) : ha;
     const ids = new Set([...target.map((d) => d.id), ...haTarget]);
-    const known = new Set([...all.map((d) => d.id), ...ha]);
+    // A disabled light keeps its switch for when it is enabled again, as a disabled device does.
+    const known = new Set([...all.map((d) => d.id), ...(this.ha?.settings().lights.map(haId) ?? [])]);
     const c = this.controls();
     const off = on ? c.off.filter((id) => !ids.has(id)) : [...new Set([...c.off, ...ids])];
     this.saveControls({ ...c, off: off.filter((id) => known.has(id)) });
@@ -859,7 +867,9 @@ export class Lights {
     let c = this.controls();
     const switched: string[] = [];
     for (const e of changed) {
-      if (e.state !== 'on' && e.state !== 'off') continue;
+      // Only on to off and back: a light coming back from unavailable (a Zigbee light that missed
+      // a few checks) says what it is, which is no one switching it.
+      if ((e.state !== 'on' && e.state !== 'off') || (e.from !== 'on' && e.from !== 'off')) continue;
       // This app's own switch, coming back.
       if (Date.now() - ha.lastWrite(e.id) < this.settleMs + this.pollMs) continue;
       const on = e.state === 'on';

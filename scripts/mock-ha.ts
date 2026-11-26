@@ -33,6 +33,8 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
   const service = (domain: string, name: string, body: Record<string, unknown>, via: 'rest' | 'ws'): MockEntity | null => {
     calls.push({ service: `${domain}.${name}`, body, via });
     const e = states.get(String(body.entity_id));
+    // Reads the entity again from the device: nothing changes here.
+    if (domain === 'homeassistant' && name === 'update_entity') return e ?? null;
     if (!e || !String(body.entity_id).startsWith(`${domain}.`)) return null;
     const on = name === 'turn_on';
     e.state = on ? 'on' : 'off';

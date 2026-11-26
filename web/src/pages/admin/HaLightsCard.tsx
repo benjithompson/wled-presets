@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Gauge, House, Plus, Trash2 } from 'lucide-react';
+import { Gauge, House, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { haId, type HaEntity, type HaSpeedResult, type HaView } from '../../../../shared/homeAssistant.ts';
 import { Badge, Button, Card, CardHeader, Dialog, Empty, Field, Select, Switch } from '../../components/ui.tsx';
@@ -15,7 +15,7 @@ import { HA, useHomeAssistant } from './HomeAssistantCard.tsx';
 function useSaveLights() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (lights: string[]) => api.saveHaLights(lights),
+    mutationFn: (v: string[] | { lights: string[]; disabled: string[] }) => (Array.isArray(v) ? api.saveHaLights(v) : api.saveHaLights(v.lights, v.disabled)),
     onSuccess: (v: HaView) => {
       qc.setQueryData(HA, v);
       void qc.invalidateQueries({ queryKey: OVERVIEW });
@@ -35,6 +35,7 @@ export function HaLightsCard({ adding, onAdding }: { adding: boolean; onAdding: 
   const { data: layout } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
   const save = useSaveLights();
   const [testing, setTesting] = useState<HaEntity | null>(null);
+  const [tuning, setTuning] = useState(false);
   const connected = !!ha?.url && ha.hasToken;
   if (!ha) return null;
 
@@ -49,7 +50,9 @@ export function HaLightsCard({ adding, onAdding }: { adding: boolean; onAdding: 
         actions={
           connected ? (
             <>
-              <RateSelect view={ha} />
+              <Button size="sm" variant="ghost" title="How the lights in the layout take colors" onClick={() => setTuning(true)}>
+                <SlidersHorizontal /> <span className="max-sm:hidden">{`${ha.fps}/s · ${ha.fade ? 'fade' : 'instant'}${ha.direct ? ' · Zigbee' : ''}`}</span>
+              </Button>
               <Button size="sm" onClick={() => onAdding(true)}>
                 <Plus /> Add lights
               </Button>
@@ -78,13 +81,14 @@ export function HaLightsCard({ adding, onAdding }: { adding: boolean; onAdding: 
           {ha.lights.map((id) => {
             const e = byId.get(id);
             const objects = objectsOf(id);
+            const enabled = !ha.disabled.includes(id);
             return (
-              <li key={id} className="flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5">
+              <li key={id} className={cn('flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5', !enabled && 'opacity-60')}>
                 {e ? <EntityIcon e={e} className="size-5" /> : null}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="truncate font-medium">{e?.name ?? id}</span>
-                    {!e ? <Badge tone="amber">Not in Home Assistant</Badge> : e.state === 'unavailable' ? <Badge tone="red">Unavailable</Badge> : null}
+                    {!enabled ? <Badge>Disabled</Badge> : !e ? <Badge tone="amber">Not in Home Assistant</Badge> : e.state === 'unavailable' ? <Badge tone="red">Unavailable</Badge> : null}
                   </div>
                   <p className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-stone-500 dark:text-stone-400">
                     <span className="font-mono text-[13px]">{id}</span>
@@ -98,6 +102,17 @@ export function HaLightsCard({ adding, onAdding }: { adding: boolean; onAdding: 
                     <Gauge /> <span className="max-sm:hidden">Speed test</span>
                   </Button>
                 ) : null}
+                <Switch
+                  label={`${e?.name ?? id} enabled`}
+                  checked={enabled}
+                  disabled={save.isPending}
+                  onChange={(on) =>
+                    save.mutate(
+                      { lights: ha.lights, disabled: on ? ha.disabled.filter((x) => x !== id) : [...ha.disabled, id] },
+                      { onSuccess: () => toast.success(`${e?.name ?? id} ${on ? 'enabled' : 'disabled: the site leaves it alone'}`) }
+                    )
+                  }
+                />
                 <Button
                   size="sm"
                   variant="ghost"
@@ -115,6 +130,7 @@ export function HaLightsCard({ adding, onAdding }: { adding: boolean; onAdding: 
       )}
       {connected ? <AddHaLightsDialog open={adding} view={ha} onClose={() => onAdding(false)} /> : null}
       {testing ? <SpeedTestDialog light={testing} view={ha} onClose={() => setTesting(null)} /> : null}
+      {tuning ? <FrameSettingsDialog view={ha} onClose={() => setTuning(false)} /> : null}
     </Card>
   );
 }
@@ -164,28 +180,84 @@ function AddHaLightsDialog({ open, view, onClose }: { open: boolean; view: HaVie
 
 const RATES = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
 
-/** How many colors a second the lights in the layout take (see HaFrames). */
-function RateSelect({ view }: { view: HaView }) {
+/**
+ * How the Home Assistant lights in the layout take colors while effects and games play (see
+ * HaFrames), set by hand: the rate, how many commands may be on their way, a fade or an
+ * instant change, and for ZHA lights Zigbee color commands or light.turn_on. A speed test finds
+ * good values; this sets them without one.
+ */
+function FrameSettingsDialog({ view, onClose }: { view: HaView; onClose: () => void }) {
   const qc = useQueryClient();
-  const set = useMutation({
-    mutationFn: api.setHaRate,
+  const [fps, setFps] = useState(view.fps);
+  const [inflight, setInflight] = useState(view.inflight);
+  const [fade, setFade] = useState(view.fade);
+  const [direct, setDirect] = useState(view.direct);
+  const zigbee = view.entities.some((e) => e.zigbee && view.lights.includes(e.id));
+  const save = useMutation({
+    mutationFn: () => api.setHaRate({ fps, inflight, fade, direct }),
     onSuccess: (v) => {
       qc.setQueryData(HA, v);
-      toast.success(`Home Assistant lights: ${v.fps} colors a second`);
+      toast.success(`Home Assistant lights: ${v.fps} colors a second, ${v.fade ? 'fading' : 'instant'}`);
+      onClose();
     },
     onError: (e) => toast.error(errorText(e))
   });
+  const changed = fps !== view.fps || inflight !== view.inflight || fade !== view.fade || direct !== view.direct;
   return (
-    <label className="flex items-center gap-2 text-sm text-stone-500 dark:text-stone-400" title="How often a Home Assistant light in the layout takes a new color while effects and games play">
-      <span className="max-sm:hidden">Colors a second</span>
-      <Select aria-label="Colors a second" className="h-8 !w-20" value={view.fps} disabled={set.isPending} onChange={(e) => set.mutate({ fps: Number(e.target.value) })}>
-        {(RATES.includes(view.fps) ? RATES : [...RATES, view.fps].sort((a, b) => a - b)).map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
-      </Select>
-    </label>
+    <Dialog
+      open
+      onClose={onClose}
+      size="md"
+      title="Light settings"
+      description="How Home Assistant lights in the layout take colors while effects and games play. Faster looks smoother, if the lights (and their Zigbee network) keep up; a speed test on a light shows what it can take."
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" loading={save.isPending} disabled={!changed} onClick={() => save.mutate()}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-4 pb-4 sm:grid-cols-2">
+        <Field label="Colors a second" hint="How often a light takes a new color">
+          {(id) => (
+            <Select id={id} value={fps} onChange={(e) => setFps(Number(e.target.value))}>
+              {(RATES.includes(fps) ? RATES : [...RATES, fps].sort((a, b) => a - b)).map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        <Field label="Color change" hint="A fade lasts until the next color">
+          {(id) => (
+            <Select id={id} value={fade ? '1' : '0'} onChange={(e) => setFade(e.target.value === '1')}>
+              <option value="1">Fade to each color</option>
+              <option value="0">Instant</option>
+            </Select>
+          )}
+        </Field>
+        <Field label="At once" hint="Commands on their way to a light">
+          {(id) => (
+            <Select id={id} value={inflight} onChange={(e) => setInflight(Number(e.target.value))}>
+              <option value={1}>1 (wait for each)</option>
+              <option value={2}>2 on their way</option>
+              <option value={3}>3 on their way</option>
+            </Select>
+          )}
+        </Field>
+        <Field label="Command" hint={zigbee ? 'For ZHA lights; on and off always go through Home Assistant' : 'Zigbee commands are for ZHA lights (none added)'}>
+          {(id) => (
+            <Select id={id} value={direct ? '1' : '0'} onChange={(e) => setDirect(e.target.value === '1')}>
+              <option value="1">Zigbee color command</option>
+              <option value="0">light.turn_on</option>
+            </Select>
+          )}
+        </Field>
+      </div>
+    </Dialog>
   );
 }
 

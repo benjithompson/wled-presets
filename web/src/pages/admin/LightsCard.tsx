@@ -21,7 +21,7 @@ export function LightsCard({ devices }: { devices: DeviceWithStatus[] }) {
   const { data: ha } = useHomeAssistant();
   const enabled = devices.filter((d) => d.enabled);
   // Home Assistant's lights that switch with these (see HaSettings).
-  const haLights = ha?.url && ha.hasToken ? ha.lights.map((id) => ha.entities.find((e) => e.id === id) ?? { id, name: id, state: 'unknown', color: false, dimmable: false }) : [];
+  const haLights = ha?.url && ha.hasToken ? ha.lights.filter((id) => !ha.disabled.includes(id)).map((id) => ha.entities.find((e) => e.id === id) ?? { id, name: id, state: 'unknown', color: false, dimmable: false }) : [];
   if (!enabled.length && !haLights.length) return null;
   if (!controls) {
     return (

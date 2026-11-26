@@ -163,9 +163,9 @@ export const api = {
   /** Home Assistant (see HaSettings). The token goes in, and never comes back. */
   homeAssistant: () => request<HaView>('/api/admin/ha'),
   /** token: undefined keeps the one kept; null removes it. */
-  saveHomeAssistant: (s: Omit<HaSettings, 'lights'> & { lights?: string[]; token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
+  saveHomeAssistant: (s: Omit<HaSettings, 'lights' | 'disabled'> & { lights?: string[]; token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
   /** The Home Assistant lights the site controls (entity ids). */
-  saveHaLights: (lights: string[]) => request<HaView>('/api/admin/ha/lights', { method: 'PUT', body: { lights } }),
+  saveHaLights: (lights: string[], disabled?: string[]) => request<HaView>('/api/admin/ha/lights', { method: 'PUT', body: { lights, ...(disabled ? { disabled } : {}) } }),
   /** How many colors a second Home Assistant lights in the layout take. */
   setHaRate: (r: { fps: number; inflight?: number; fade?: boolean; direct?: boolean }) => request<HaView>('/api/admin/ha/rate', { method: 'PUT', body: r }),
   /** A rainbow on one light for a few seconds, to see how fast it can go. */

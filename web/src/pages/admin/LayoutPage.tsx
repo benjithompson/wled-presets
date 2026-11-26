@@ -2470,7 +2470,14 @@ export function LayoutPage() {
 
   const devices = overview?.devices ?? [];
   // Home Assistant lights in use: an object can be one of them (see HaFrames).
-  const haLights = ha?.url && ha.hasToken ? ha.lights.map((id) => ha.entities.find((e) => e.id === id) ?? { id, name: id }) : [];
+  // A disabled one stays pickable (its objects keep it), marked so.
+  const haLights =
+    ha?.url && ha.hasToken
+      ? ha.lights.map((id) => {
+          const name = ha.entities.find((e) => e.id === id)?.name ?? id;
+          return { id, name: ha.disabled.includes(id) ? `${name} (disabled)` : name };
+        })
+      : [];
   const totals = layout.fixtures.reduce((n, f) => n + f.pixels, 0);
   const m = measureOf(layout);
   const scale = layoutScale(layout);

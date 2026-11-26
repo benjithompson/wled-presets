@@ -11,6 +11,11 @@ const SAME = 12;
 const DARK = 8;
 /** A brightness this close to the last one sent is not sent again (it is a second Zigbee command). */
 const SAME_BRI = 6;
+/**
+ * Dark this long before the light goes off: a chase or a twinkle is dark for a moment now and
+ * then, and switching a Zigbee light off and on with each is slow, and drops commands.
+ */
+export const DARK_HOLD_MS = 1500;
 
 /** What the colors of one light did: for the console, to see how fast it goes. */
 export interface HaFrameStats {
@@ -31,7 +36,9 @@ export interface HaFrameStats {
  * old ones. The brightness is the light's own level (its slider on the Devices page), sent
  * when it comes on and when the level changes, never with each color (on Zigbee it is a
  * command of its own): a dim part of an effect shows at that level, a dark one switches the
- * light off. A light that only goes on and off (a switch) is on while its objects are lit,
+ * light off once it has been dark for DARK_HOLD_MS. On and off always go through Home Assistant
+ * (light.turn_on and turn_off), so its state stays right; only the colors in between may go as
+ * Zigbee commands (HomeAssistant.direct). A light that only goes on and off (a switch) is on while its objects are lit,
  * checked every few seconds.
  */
 export class HaFrames {
@@ -46,6 +53,8 @@ export class HaFrames {
   /** The admin's brightness for the light, as WLED counts it (1 to 255), or null. */
   private level: (id: string) => number | null;
   private wakes = new Map<string, boolean>();
+  /** Since when each light's objects have been dark (see DARK_HOLD_MS). */
+  private darkSince = new Map<string, number>();
   /** The clock (a test sets its own). */
   now = () => Date.now();
 
@@ -61,6 +70,7 @@ export class HaFrames {
       this.latest.delete(id);
       this.sent.delete(id);
       this.wakes.delete(id);
+      this.darkSince.delete(id);
       return;
     }
     this.latest.set(id, rgb);
@@ -90,6 +100,13 @@ export class HaFrames {
     if (last && now - last.at < every) return;
     const top = Math.max(...rgb);
     const on = top >= DARK;
+    if (on) this.darkSince.delete(id);
+    else if (last?.on) {
+      // Dark for a moment: the light keeps its color until it has been dark a while.
+      const since = this.darkSince.get(id) ?? now;
+      this.darkSince.set(id, since);
+      if (now - since < DARK_HOLD_MS) return;
+    }
     // The light's own level (its slider on the Devices page), not the mix's: frames carry only
     // the color, so each one is a single command.
     const bri = this.level(id) ?? 255;
@@ -106,7 +123,8 @@ export class HaFrames {
     const transition = this.ha.fade() ? Math.round(every / 100) / 10 : 0;
     const started = performance.now();
     void this.ha
-      .set(entity, on, on ? { rgb: color, bri: sendBri ? bri : null, transition, direct: this.ha.direct() } : { transition })
+      // Coming on: through light.turn_on, so Home Assistant knows it is on (a Zigbee color command does not tell it).
+      .set(entity, on, on ? { rgb: color, bri: sendBri ? bri : null, transition, direct: this.ha.direct() && !!last?.on } : { transition })
       .then((r) => {
         const s = this.stat(id);
         const ms = performance.now() - started;

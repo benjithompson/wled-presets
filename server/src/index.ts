@@ -51,7 +51,7 @@ const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg))
 // over games and scenes.
 const pipeline = new FramePipeline(() => lights.liveDevices(), sender);
 // Home Assistant lights in the layout take the colors of their objects, about once a second.
-const haFrames = new HaFrames(ha, (id, wakes) => wakes || !lights.isOff(id), (id) => lights.levelOf(id));
+const haFrames = new HaFrames(ha, (id, wakes) => lights.haEnabled(id) && (wakes || !lights.isOff(id)), (id) => lights.levelOf(id));
 pipeline.haSink = haFrames.frame;
 const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout', msg));
 useScoreStore(databaseScores(db.raw));
