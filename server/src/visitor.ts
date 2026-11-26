@@ -94,3 +94,6 @@ export function admitUpgrade(req: IncomingMessage, opts: { trustProxy: TrustProx
  * from that browser, so one person's picks can be followed without telling who they are.
  */
 export const visitorTag = (id: string) => id.replace(/^c:/, '').slice(0, 6);
+
+/** How a visitor is named in the activity log: their tag and the address they came from. */
+export const visitorLabel = (tag: string, ip?: string | null) => (ip ? `Visitor ${tag} (${ip})` : `Visitor ${tag}`);
