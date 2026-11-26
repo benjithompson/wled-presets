@@ -25,13 +25,15 @@ export interface HaEntity {
  * What the site does with Home Assistant. `plugs`: WLED device id -> the plug (a switch or a
  * light) that powers it, controller and all: switched on before the device, off after it.
  * `lights`: other lights, switched with the lights' power (all and each), the schedule, and
- * scenes and colors.
+ * scenes and colors, unless they are in `disabled`.
  */
 export interface HaSettings {
   /** Its address, such as http://192.168.29.29:8123. Empty: not connected. */
   url: string;
   plugs: Record<string, string>;
   lights: string[];
+  /** Lights added but disabled: kept, with their place in the layout, but the site leaves them alone. */
+  disabled: string[];
 }
 
 /** For the console: the settings, whether a token is kept (never the token), and what HA has. */

@@ -30,7 +30,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
   const [token, setToken] = useState('');
   const [picking, setPicking] = useState<DeviceWithStatus | null>(null);
   useEffect(() => {
-    if (data && !form) setForm({ url: data.url || 'http://192.168.29.29:8123', plugs: data.plugs, lights: data.lights });
+    if (data && !form) setForm({ url: data.url || 'http://192.168.29.29:8123', plugs: data.plugs, lights: data.lights, disabled: data.disabled });
   }, [data, form]);
 
   const done = (v: HaView) => {
@@ -43,7 +43,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
     onSuccess: (v, t) => {
       done(v);
       setToken('');
-      setForm({ url: v.url, plugs: v.plugs, lights: v.lights });
+      setForm({ url: v.url, plugs: v.plugs, lights: v.lights, disabled: v.disabled });
       if (t === null) toast.success('Token removed');
       else if (v.status && !v.status.ok) toast.warning(`Saved, but ${v.status.error.charAt(0).toLowerCase()}${v.status.error.slice(1)}`);
       else toast.success('Home Assistant saved');

@@ -606,7 +606,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const before = h.settings();
     // A plug is not also a light.
     const plugs = new Set(Object.values(input.plugs));
-    h.save({ url: input.url, plugs: input.plugs, lights: (input.lights ?? before.lights).filter((id) => !plugs.has(id)) }, input.token);
+    h.save({ url: input.url, plugs: input.plugs, lights: (input.lights ?? before.lights).filter((id) => !plugs.has(id)), disabled: before.disabled }, input.token);
     const token = input.token === undefined ? '' : input.token === null ? ', token removed' : ', new token';
     lights.log('info', 'settings', `Home Assistant settings changed${token}`, { before, after: h.settings() }, actor(c));
     if (h.connected()) await h.test();
@@ -618,14 +618,23 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // The lights to use (see HaSettings.lights): added and removed on the Devices page.
   admin.put('/ha/lights', async (c) => {
     const h = needHa();
-    const { lights: next } = await body(c, z.object({ lights: z.array(entityId).max(64) }));
+    /** disabled: left out, the ones disabled stay so. */
+    const { lights: next, disabled } = await body(c, z.object({ lights: z.array(entityId).max(64), disabled: z.array(entityId).max(64).optional() }));
     const before = h.settings();
     const plugs = new Set(Object.values(before.plugs));
     if (next.some((id) => plugs.has(id))) throw new HttpError(400, 'That one is the power plug of a controller');
-    h.save({ ...before, lights: next });
+    h.save({ ...before, lights: next, disabled: disabled ?? before.disabled });
+    const after = h.settings();
     const added = next.filter((id) => !before.lights.includes(id));
     const removed = before.lights.filter((id) => !next.includes(id));
-    if (added.length || removed.length) lights.log('info', 'settings', `Home Assistant lights${added.length ? ` added: ${added.join(', ')}` : ''}${removed.length ? `${added.length ? ';' : ''} removed: ${removed.join(', ')}` : ''}`, null, actor(c));
+    const name = (id: string) => h.entity(id)?.name ?? id;
+    const changes = [
+      added.length ? `added: ${added.join(', ')}` : '',
+      removed.length ? `removed: ${removed.join(', ')}` : '',
+      ...after.disabled.filter((id) => !before.disabled.includes(id)).map((id) => `"${name(id)}" disabled`),
+      ...before.disabled.filter((id) => !after.disabled.includes(id) && next.includes(id)).map((id) => `"${name(id)}" enabled`)
+    ].filter(Boolean);
+    if (changes.length) lights.log('info', 'settings', `Home Assistant lights: ${changes.join('; ')}`, null, actor(c));
     bus.emit('devices');
     bus.emit('state');
     return c.json(h.view());

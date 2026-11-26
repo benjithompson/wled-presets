@@ -234,6 +234,84 @@ describe('lights added on the devices page', () => {
   });
 });
 
+describe('a disabled home assistant light', () => {
+  it('stays in the list but the site leaves it alone, and comes back when enabled', async () => {
+    await connect();
+    const r = await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.garage', 'light.nope'] });
+    expect(r.json).toMatchObject({ lights: ['light.porch', 'light.garage'], disabled: ['light.garage'] });
+    expect(t.lights.haLights()).toEqual(['ha:light.porch']);
+    expect(t.db.listLogs(1000, null).some((l) => l.message.includes('"Garage" disabled') || l.message.includes('"light.garage" disabled'))).toBe(true);
+    ha.calls.length = 0;
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: null });
+    expect(ha.calls.some((c) => c.body.entity_id === 'light.porch')).toBe(true);
+    expect(ha.calls.some((c) => c.body.entity_id === 'light.garage')).toBe(false);
+    expect((await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: 'ha:light.garage' })).status).toBe(404);
+    // Saving the connection keeps it disabled; switched in Home Assistant, it is not followed.
+    expect((await t.call('PUT', '/api/admin/ha', { url: ha.url, plugs: {} })).json.disabled).toEqual(['light.garage']);
+    // Enabled again: the site switches it.
+    expect((await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] })).json.disabled).toEqual([]);
+    expect(t.lights.haLights()).toEqual(['ha:light.porch', 'ha:light.garage']);
+  });
+});
+
+describe('home assistant lights that misbehave', () => {
+  it('coming back from unavailable are not taken as switched off', async () => {
+    await connect();
+    await t.lights.setPower(true, null);
+    t.lights.settleMs = 0;
+    (t.lights as unknown as { pollMs: number }).pollMs = 0;
+    await wait(5);
+    ha.states.get('light.porch')!.state = 'unavailable';
+    await t.lights.refreshStatus();
+    ha.states.get('light.porch')!.state = 'off';
+    await t.lights.refreshStatus();
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    // Switched off from on: followed.
+    ha.states.get('light.garage')!.state = 'off';
+    await t.lights.refreshStatus();
+    expect(t.lights.isOff('ha:light.garage')).toBe(true);
+  });
+
+  it('are read again by Home Assistant after a command fails, at most now and then', async () => {
+    await connect();
+    ha.calls.length = 0;
+    expect((await t.home.set('light.nope', true, { rgb: [255, 0, 0] })).ok).toBe(false);
+    expect((await t.home.set('light.nope', true, { rgb: [0, 255, 0] })).ok).toBe(false);
+    await until(() => ha.calls.some((c) => c.service === 'homeassistant.update_entity'));
+    await wait(50);
+    expect(ha.calls.filter((c) => c.service === 'homeassistant.update_entity')).toHaveLength(1);
+    t.home.close();
+  });
+
+  it('in the layout come on through light.turn_on, then take Zigbee colors', async () => {
+    const { HaFrames } = await import('../src/haFrames.ts');
+    await connect();
+    t.home.setFrames({ fps: 10, direct: true });
+    const frames = new HaFrames(t.home, () => true, () => null);
+    let clock = 1_000_000;
+    frames.now = () => clock;
+    ha.calls.length = 0;
+    frames.frame('ha:light.porch', [255, 0, 0], false);
+    await until(() => ha.calls.length === 1);
+    expect(ha.calls[0].service).toBe('light.turn_on');
+    clock += 200;
+    frames.frame('ha:light.porch', [0, 0, 255], false);
+    await until(() => ha.calls.length === 2);
+    expect(ha.calls[1]).toMatchObject({ service: 'zha.issue_zigbee_cluster_command', body: { cluster_id: 0x0300 } });
+    // Dark a while: off through light.turn_off; lit again: on through light.turn_on.
+    clock += 200;
+    frames.frame('ha:light.porch', [0, 0, 0], false);
+    clock += 1600;
+    frames.frame('ha:light.porch', [0, 0, 0], false);
+    await until(() => ha.calls.at(-1)?.service === 'light.turn_off');
+    clock += 200;
+    frames.frame('ha:light.porch', [0, 255, 0], false);
+    await until(() => ha.calls.at(-1)?.service === 'light.turn_on');
+    frames.close();
+    t.home.close();
+  });
+});
+
 describe('home assistant lights in the layout', () => {
   it('get the mix of their LEDs from each frame, as fast as set, one command at a time', async () => {
     const { FramePipeline, meanColor } = await import('../src/framePipeline.ts');
@@ -293,8 +371,16 @@ describe('home assistant lights in the layout', () => {
     await until(() => ha.calls.length === sent + 2);
     expect(ha.calls.at(-1)!.body.transition).toBe(0.1);
 
-    // Dark: off. Switched off by an admin: nothing is sent.
+    // Dark for a moment: it keeps its color. Dark a while: off. Switched off by an admin: nothing is sent.
     clock += 100;
+    const lit = ha.calls.length;
+    frames.frame('ha:light.porch', [0, 0, 0], false);
+    clock += 1000;
+    frames.frame('ha:light.porch', [0, 0, 0], false);
+    await wait(50);
+    expect(ha.calls.length).toBe(lit);
+    expect(ha.states.get('light.porch')!.state).toBe('on');
+    clock += 600;
     frames.frame('ha:light.porch', [0, 0, 0], false);
     await until(() => ha.states.get('light.porch')!.state === 'off');
     off.add('ha:light.porch');
@@ -330,7 +416,8 @@ describe('home assistant lights in the layout', () => {
     expect((await t.home.set('light.porch', true, { rgb: [255, 0, 0], bri: 100, transition: 0.1, direct: true })).ok).toBe(true);
     const sent = ha.calls.slice(-2).map((c) => c.body);
     expect(sent).toContainEqual({ ieee: '00:17:88:01:0b:2a:3c:4d', endpoint_id: 11, cluster_id: 0x0300, cluster_type: 'in', command_type: 'server', command: 7, params: { color_x: Math.round(x * 65535), color_y: Math.round(y * 65535), transition_time: 1 } });
-    expect(sent).toContainEqual(expect.objectContaining({ cluster_id: 0x0008, command: 4, params: { level: 100, transition_time: 1 } }));
+    // Move to level, not with on/off: on and off go through light.turn_on and turn_off only, so Home Assistant's state stays right.
+    expect(sent).toContainEqual(expect.objectContaining({ cluster_id: 0x0008, command: 0, params: { level: 100, transition_time: 1 } }));
     // Not asked for, or not a ZHA light: light.turn_on.
     await t.home.set('light.porch', true, { rgb: [0, 255, 0] });
     expect(ha.calls.at(-1)!.service).toBe('light.turn_on');
