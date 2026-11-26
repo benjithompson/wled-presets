@@ -16,12 +16,16 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
   const states = new Map<string, MockEntity>([
     ['switch.roof_psu', { state: 'on', attributes: { friendly_name: 'Roof PSU', device_class: 'outlet' }, place: { area: 'Garage', device: 'Roof plug', integration: 'tplink' } }],
     ['switch.tree_psu', { state: 'on', attributes: { friendly_name: 'Tree PSU', device_class: 'outlet' }, place: { area: 'Front yard', device: 'Tree plug', integration: 'tplink' } }],
-    ['light.porch', { state: 'off', attributes: { friendly_name: 'Porch', supported_color_modes: ['hs', 'color_temp'] }, place: { area: 'Front yard', device: 'Porch bulb', integration: 'hue' } }],
+    ['light.porch', { state: 'off', attributes: { friendly_name: 'Porch', supported_color_modes: ['xy', 'color_temp'] }, place: { area: 'Front yard', device: 'Porch bulb', integration: 'zha' } }],
     ['light.garage', { state: 'off', attributes: { friendly_name: 'Garage', supported_color_modes: ['brightness'] }, place: { area: 'Garage', device: 'Garage dimmer', integration: 'zwave_js' } }],
     ['switch.fan', { state: 'off', attributes: { friendly_name: 'Fan' } }],
     ['sensor.outside', { state: '3.5', attributes: { friendly_name: 'Outside' } }]
   ]);
   const calls: { service: string; body: Record<string, unknown>; via: 'rest' | 'ws' }[] = [];
+  /** ZHA's devices (zha/devices): the porch bulb, its color cluster on endpoint 11 (as on Hue bulbs). */
+  const zhaDevices = [
+    { ieee: '00:17:88:01:0b:2a:3c:4d', name: 'Porch bulb', entities: [{ entity_id: 'light.porch', name: 'Porch' }], signature: { endpoints: { '11': { profile_id: 260, input_clusters: ['0x0000', '0x0006', '0x0008', '0x0300'], output_clusters: ['0x0019'] }, '242': { input_clusters: [], output_clusters: ['0x0021'] } } } }
+  ];
   /** How long a service takes, in ms: a Zigbee light answers when it took the command. */
   const timing = { serviceMs: 0 };
 
@@ -85,6 +89,16 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
         return;
       }
       if (!authed) return;
+      if (m.type === 'zha/devices') return void ws.send(JSON.stringify({ id: m.id, type: 'result', success: true, result: zhaDevices }));
+      // A Zigbee command straight to a ZHA light: the light takes it, Home Assistant's state is left as it was.
+      if (m.type === 'call_service' && m.domain === 'zha' && m.service === 'issue_zigbee_cluster_command') {
+        setTimeout(() => {
+          calls.push({ service: 'zha.issue_zigbee_cluster_command', body: m.service_data, via: 'ws' });
+          const known = zhaDevices.some((d) => d.ieee === m.service_data?.ieee);
+          ws.send(JSON.stringify(known ? { id: m.id, type: 'result', success: true, result: null } : { id: m.id, type: 'result', success: false, error: { message: 'Unknown device' } }));
+        }, timing.serviceMs);
+        return;
+      }
       if (m.type === 'call_service') {
         setTimeout(() => {
           const e = service(m.domain, m.service, { ...m.service_data, entity_id: m.target?.entity_id }, 'ws');

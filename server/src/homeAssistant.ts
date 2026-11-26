@@ -1,9 +1,13 @@
 import { isSwitchable, type HaEntity, type HaSettings, type HaView } from '../../shared/homeAssistant.ts';
+import { rgbToXy } from '../../shared/color.ts';
 import type { Db } from './db.ts';
 import type { FetchResult } from './wled.ts';
 import { HaSocket } from './haSocket.ts';
 
-const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights', fps: 'haFps', inflight: 'haInflight', fade: 'haFade' } as const;
+const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights', fps: 'haFps', inflight: 'haInflight', fade: 'haFade', direct: 'haDirect' } as const;
+
+/** Zigbee clusters and commands for a color sent straight to a ZHA light (see HomeAssistant.set). */
+const ZCL = { level: 0x0008, color: 0x0300, moveToLevelWithOnOff: 0x04, moveToColor: 0x07 } as const;
 
 /** How often a light in the layout may take a new color, per second (see HaFrames): the default, and the range. */
 export const HA_FPS = { default: 2, min: 1, max: 20 } as const;
@@ -76,6 +80,8 @@ export class HomeAssistant {
   private db: Db;
   private states = new Map<string, HaEntity>();
   private places = new Map<string, Place>();
+  /** ZHA lights: the device's IEEE address and the endpoint with the color cluster (see readZha). */
+  private zha = new Map<string, { ieee: string; endpoint: number }>();
   private placesAt = 0;
   private status: HaView['status'] = null;
   /** When this app last switched each entity (Date.now()): a change soon after is its own. */
@@ -134,7 +140,7 @@ export class HomeAssistant {
   }
 
   view(): HaView {
-    return { ...this.settings(), hasToken: this.hasToken(), status: this.status, fps: this.fps(), inflight: this.inflight(), fade: this.fade(), entities: [...this.states.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+    return { ...this.settings(), hasToken: this.hasToken(), status: this.status, fps: this.fps(), inflight: this.inflight(), fade: this.fade(), direct: this.direct(), entities: [...this.states.values()].sort((a, b) => a.name.localeCompare(b.name)) };
   }
 
   /** How many colors a second a light in the layout may take (see HaFrames). */
@@ -159,7 +165,8 @@ export class HomeAssistant {
   }
 
   /** The way the lights in the layout take colors (see HaFrames). */
-  setFrames(f: { fps: number; inflight?: number; fade?: boolean }) {
+  setFrames(f: { fps: number; inflight?: number; fade?: boolean; direct?: boolean }) {
+    if (f.direct != null) this.db.setSetting(KEY.direct, f.direct ? '1' : '0');
     this.setFps(f.fps);
     if (f.inflight != null) this.db.setSetting(KEY.inflight, Math.min(HA_INFLIGHT_MAX, Math.max(1, Math.round(f.inflight))));
     if (f.fade != null) this.db.setSetting(KEY.fade, f.fade ? '1' : '0');
@@ -234,7 +241,7 @@ export class HomeAssistant {
     const changed: HaEntity[] = [];
     const next = new Map<string, HaEntity>();
     for (const s of list) {
-      const e = entityOf(s, this.places.get(s.entity_id));
+      const e = { ...entityOf(s, this.places.get(s.entity_id)), zigbee: this.zha.has(s.entity_id) };
       const prev = this.states.get(e.id);
       if (prev && prev.state !== e.state) changed.push(e);
       next.set(e.id, e);
@@ -252,6 +259,59 @@ export class HomeAssistant {
     this.places = new Map(
       r.data.filter((row): row is unknown[] => Array.isArray(row) && typeof row[0] === 'string').map((row) => [row[0] as string, { area: str(row[1]), device: str(row[2]), integration: str(row[3]) }])
     );
+    if ([...this.places.values()].some((p) => p.integration === 'zha')) await this.readZha();
+  }
+
+  /**
+   * ZHA's devices (its zha/devices command, on the WebSocket): for each light, the device's IEEE
+   * address and the endpoint that has the color cluster, so a color can go to it as one Zigbee
+   * command (see set, direct).
+   */
+  private async readZha() {
+    const r = await this.ws()?.send({ type: 'zha/devices' });
+    if (!r?.ok || !Array.isArray(r.result)) return;
+    const next = new Map<string, { ieee: string; endpoint: number }>();
+    const num = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' ? parseInt(v, v.startsWith('0x') ? 16 : 10) : NaN);
+    for (const d of r.result as { ieee?: string; entities?: { entity_id?: string }[]; signature?: { endpoints?: Record<string, { input_clusters?: unknown[] }> } }[]) {
+      if (typeof d?.ieee !== 'string') continue;
+      const eps = Object.entries(d.signature?.endpoints ?? {}).map(([k, v]) => ({ id: num(k), clusters: (v?.input_clusters ?? []).map(num) }));
+      const ep = eps.find((e) => e.clusters.includes(ZCL.color)) ?? eps.find((e) => e.clusters.includes(ZCL.level));
+      if (!ep || !Number.isFinite(ep.id)) continue;
+      for (const e of d.entities ?? []) if (typeof e?.entity_id === 'string' && e.entity_id.startsWith('light.')) next.set(e.entity_id, { ieee: d.ieee, endpoint: ep.id });
+    }
+    this.zha = next;
+  }
+
+  /** True when a color can go straight to the light as a Zigbee command (a ZHA light). */
+  canDirect(id: string): boolean {
+    return this.zha.has(id);
+  }
+
+  /** True: lights in the layout get their colors as Zigbee commands when they can (see set). */
+  direct(): boolean {
+    return this.db.getSetting(KEY.direct) === '1';
+  }
+
+  /**
+   * A color straight to a ZHA light, as Zigbee commands: move to color (xy), and the level when
+   * one is given, at once, instead of light.turn_on, which sends each in turn and waits for each.
+   * Home Assistant's state of the light may lag behind (it learns from the light's reports).
+   */
+  private async zigbee(id: string, rgb: [number, number, number] | null, bri: number | null, transition: number): Promise<FetchResult<unknown>> {
+    const z = this.zha.get(id)!;
+    const t = Math.max(0, Math.round(transition * 10));
+    const send = (cluster: number, command: number, params: Record<string, number>) =>
+      this.ws()!.call('zha', 'issue_zigbee_cluster_command', null, { ieee: z.ieee, endpoint_id: z.endpoint, cluster_id: cluster, cluster_type: 'in', command_type: 'server', command, params });
+    const work: Promise<{ ok: boolean; error?: string } | null>[] = [];
+    if (rgb) {
+      const [x, y] = rgbToXy(rgb);
+      work.push(send(ZCL.color, ZCL.moveToColor, { color_x: Math.round(x * 65535), color_y: Math.round(y * 65535), transition_time: t }));
+    }
+    if (bri != null) work.push(send(ZCL.level, ZCL.moveToLevelWithOnOff, { level: Math.max(1, Math.min(254, Math.round(bri))), transition_time: t }));
+    const results = await Promise.all(work);
+    const bad = results.find((r) => !r || !r.ok);
+    if (!bad) return { ok: true, status: 200, data: null };
+    return { ok: false, status: 0, error: bad.error ?? 'No connection to Home Assistant' };
   }
 
   /**
@@ -261,8 +321,15 @@ export class HomeAssistant {
   async set(
     id: string,
     on: boolean,
-    opts: { bri?: number | null; rgb?: [number, number, number] | null; transition?: number; via?: 'ws' | 'rest' } = {}
+    opts: { bri?: number | null; rgb?: [number, number, number] | null; transition?: number; via?: 'ws' | 'rest'; direct?: boolean } = {}
   ): Promise<FetchResult<unknown>> {
+    // A light that is on, a color, and Zigbee commands asked for: straight to the light.
+    if (opts.direct && on && opts.via !== 'rest' && this.zha.has(id) && this.states.get(id)?.state === 'on' && (opts.rgb || opts.bri != null)) {
+      this.writes.set(id, Date.now());
+      const r = await this.zigbee(id, opts.rgb ?? null, opts.bri ?? null, opts.transition ?? 0);
+      this.writes.set(id, Date.now());
+      return r;
+    }
     const [domain] = id.split('.');
     const e = this.states.get(id);
     const body: Record<string, unknown> = { entity_id: id };

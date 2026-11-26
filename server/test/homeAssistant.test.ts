@@ -96,7 +96,7 @@ describe('home assistant settings', () => {
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ url: ha.url, hasToken: true, status: { ok: true, version: '2026.11.3', location: 'Home' } });
     expect(r.json.entities.map((e: { id: string }) => e.id)).toEqual(['switch.fan', 'light.garage', 'light.porch', 'switch.roof_psu', 'switch.tree_psu']);
-    expect(r.json.entities.find((e: { id: string }) => e.id === 'light.porch')).toMatchObject({ color: true, dimmable: true, outlet: false, area: 'Front yard', device: 'Porch bulb', integration: 'hue' });
+    expect(r.json.entities.find((e: { id: string }) => e.id === 'light.porch')).toMatchObject({ color: true, dimmable: true, outlet: false, area: 'Front yard', device: 'Porch bulb', integration: 'zha', zigbee: true });
     expect(r.json.entities.find((e: { id: string }) => e.id === 'switch.roof_psu')).toMatchObject({ outlet: true, area: 'Garage' });
     expect(r.json.entities.find((e: { id: string }) => e.id === 'switch.fan')).toMatchObject({ area: '', device: '' });
     expect(r.text).not.toContain(ha.token);
@@ -258,9 +258,9 @@ describe('home assistant lights in the layout', () => {
     pipeline.add(source);
     pipeline.wake();
     await until(() => ha.states.get('light.porch')!.state === 'on');
-    // Full color, at the brightness of the mix, with a fade as long as the gap (2 a second).
+    // Full color, at the light's own level (none set: full), with a fade as long as the gap (2 a second).
     expect(ha.states.get('light.porch')!.attributes.rgb_color).toEqual([255, 0, 0]);
-    expect(ha.states.get('light.porch')!.attributes.brightness).toBe(150);
+    expect(ha.states.get('light.porch')!.attributes.brightness).toBe(255);
     expect(ha.calls.at(-1)!.body.transition).toBe(0.5);
     pipeline.remove(source);
     await until(() => got.some((g) => (g as unknown[])[1] === null));
@@ -282,7 +282,7 @@ describe('home assistant lights in the layout', () => {
     clock += 400;
     frames.frame('ha:light.porch', [0, 0, 150], false);
     await until(() => ha.calls.length === sent + 1);
-    // Only the color: the brightness did not change (on Zigbee it is a command of its own).
+    // Only the color, though the mix is dimmer: the brightness is the light's own (on Zigbee it is a command of its own).
     expect(ha.calls.at(-1)!.body).toMatchObject({ rgb_color: [0, 0, 255] });
     expect(ha.calls.at(-1)!.body.brightness).toBeUndefined();
 
@@ -313,6 +313,33 @@ describe('home assistant lights in the layout', () => {
     expect(ha.calls.at(-1)).toMatchObject({ service: 'light.turn_on', via: 'ws', body: { rgb_color: [0, 0, 255] } });
     expect((await t.home.set('light.porch', false, { via: 'rest' })).ok).toBe(true);
     expect(ha.calls.at(-1)).toMatchObject({ service: 'light.turn_off', via: 'rest' });
+    t.home.close();
+  });
+
+  it('take a color as one Zigbee command when they are ZHA lights that are on', async () => {
+    const { rgbToXy } = await import('../../shared/color.ts');
+    const [x, y] = rgbToXy([255, 0, 0]);
+    expect(x).toBeCloseTo(0.64, 2);
+    expect(y).toBeCloseTo(0.33, 2);
+    await connect();
+    ha.calls.length = 0;
+    // Off: light.turn_on first, which switches it on with its color and level.
+    expect((await t.home.set('light.porch', true, { rgb: [255, 0, 0], bri: 200, transition: 0.1, direct: true })).ok).toBe(true);
+    expect(ha.calls.at(-1)!.service).toBe('light.turn_on');
+    // On: the color, and the level, straight to the light: the color cluster on its endpoint (11).
+    expect((await t.home.set('light.porch', true, { rgb: [255, 0, 0], bri: 100, transition: 0.1, direct: true })).ok).toBe(true);
+    const sent = ha.calls.slice(-2).map((c) => c.body);
+    expect(sent).toContainEqual({ ieee: '00:17:88:01:0b:2a:3c:4d', endpoint_id: 11, cluster_id: 0x0300, cluster_type: 'in', command_type: 'server', command: 7, params: { color_x: Math.round(x * 65535), color_y: Math.round(y * 65535), transition_time: 1 } });
+    expect(sent).toContainEqual(expect.objectContaining({ cluster_id: 0x0008, command: 4, params: { level: 100, transition_time: 1 } }));
+    // Not asked for, or not a ZHA light: light.turn_on.
+    await t.home.set('light.porch', true, { rgb: [0, 255, 0] });
+    expect(ha.calls.at(-1)!.service).toBe('light.turn_on');
+    await t.home.set('light.garage', true, { bri: 50, direct: true });
+    expect(ha.calls.at(-1)!.service).toBe('light.turn_on');
+    const r = await t.call('POST', '/api/admin/ha/speedtest', { entity: 'light.porch', fps: 10, seconds: 2, direct: true });
+    expect(r.json).toMatchObject({ direct: true, errors: 0 });
+    expect(ha.calls.filter((c) => c.service === 'zha.issue_zigbee_cluster_command').length).toBeGreaterThan(15);
+    expect((await t.call('PUT', '/api/admin/ha/rate', { fps: 10, direct: true })).json).toMatchObject({ fps: 10, direct: true });
     t.home.close();
   });
 

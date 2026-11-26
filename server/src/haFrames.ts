@@ -28,8 +28,10 @@ export interface HaFrameStats {
  * (HomeAssistant.fps) with a fade as long as the gap between two (unless fade is off), and
  * only so many commands on their way to a light at once (HomeAssistant.inflight, 1 unless a
  * speed test found more is faster), so a slow light gets the newest color and never a queue of
- * old ones. The brightness goes only when it changed (on Zigbee it is a command of
- * its own). A light that only goes on and off (a switch) is on while its objects are lit,
+ * old ones. The brightness is the light's own level (its slider on the Devices page), sent
+ * when it comes on and when the level changes, never with each color (on Zigbee it is a
+ * command of its own): a dim part of an effect shows at that level, a dark one switches the
+ * light off. A light that only goes on and off (a switch) is on while its objects are lit,
  * checked every few seconds.
  */
 export class HaFrames {
@@ -88,8 +90,10 @@ export class HaFrames {
     if (last && now - last.at < every) return;
     const top = Math.max(...rgb);
     const on = top >= DARK;
-    const bri = Math.max(1, Math.round((top * (this.level(id) ?? 255)) / 255));
-    // The color at full strength: the brightness says how bright.
+    // The light's own level (its slider on the Devices page), not the mix's: frames carry only
+    // the color, so each one is a single command.
+    const bri = this.level(id) ?? 255;
+    // The color at full strength: how bright it is, is the level's.
     const color = on ? (rgb.map((c) => Math.round((c * 255) / top)) as Rgb) : rgb;
     if (last && last.on === on && (!on || (Math.abs(last.rgb[0] - color[0]) + Math.abs(last.rgb[1] - color[1]) + Math.abs(last.rgb[2] - color[2]) < SAME && Math.abs(last.bri - bri) < SAME_BRI))) return;
     if ((this.busy.get(id) ?? 0) >= this.ha.inflight()) {
@@ -102,7 +106,7 @@ export class HaFrames {
     const transition = this.ha.fade() ? Math.round(every / 100) / 10 : 0;
     const started = performance.now();
     void this.ha
-      .set(entity, on, on ? { rgb: color, bri: sendBri ? bri : null, transition } : { transition })
+      .set(entity, on, on ? { rgb: color, bri: sendBri ? bri : null, transition, direct: this.ha.direct() } : { transition })
       .then((r) => {
         const s = this.stat(id);
         const ms = performance.now() - started;

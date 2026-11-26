@@ -13,6 +13,8 @@ export interface HaEntity {
   dimmable: boolean;
   /** A switch that says it is a plug (device class outlet). */
   outlet: boolean;
+  /** A ZHA light: a color can go straight to it as a Zigbee command (see HomeAssistant.set). */
+  zigbee?: boolean;
   /** Its area in Home Assistant, its device, and the integration it comes from ('' when none). */
   area: string;
   device: string;
@@ -45,6 +47,8 @@ export interface HaView extends HaSettings {
   inflight: number;
   /** Each color fades in over the gap to the next (else it changes at once). */
   fade: boolean;
+  /** Colors go to ZHA lights as Zigbee commands (else light.turn_on). */
+  direct: boolean;
 }
 
 /** What a speed test of one light found (see HomeAssistant speed test). */
@@ -53,6 +57,8 @@ export interface HaSpeedResult {
   via: 'ws' | 'rest';
   inflight: number;
   fade: boolean;
+  /** Sent as Zigbee commands (a ZHA light), else light.turn_on. */
+  direct: boolean;
   /** Colors a second asked for, and how many it took. */
   fps: number;
   achieved: number;

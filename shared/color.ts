@@ -94,3 +94,20 @@ export function seededRandom(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+/**
+ * A color's CIE 1931 xy (sRGB primaries, D65), as Zigbee lights take a color: bytes in, each
+ * of x and y from 0 to 1. Black is the white point.
+ */
+export function rgbToXy([r, g, b]: Rgb8): [number, number] {
+  const lin = (c: number) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const [R, G, B] = [lin(r), lin(g), lin(b)];
+  const X = 0.4124 * R + 0.3576 * G + 0.1805 * B;
+  const Y = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+  const Z = 0.0193 * R + 0.1192 * G + 0.9505 * B;
+  const sum = X + Y + Z;
+  return sum > 0 ? [X / sum, Y / sum] : [0.3127, 0.329];
+}
