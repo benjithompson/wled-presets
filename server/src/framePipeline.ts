@@ -1,6 +1,29 @@
 import { buildStage, deviceLed, type Layout, type Stage } from '../../shared/layout.ts';
 import { FrameLoop } from './frameLoop.ts';
 import { takesFrames, type DeviceTarget, type LightSender } from './lightSender.ts';
+import { isHaId } from '../../shared/homeAssistant.ts';
+
+/**
+ * Where the color of a Home Assistant light goes (see HaFrames): one color for each frame, the
+ * mix of its objects' LEDs, or null when it no longer gets frames. `wakes`: see LightFrame.
+ */
+export type HaSink = (id: string, rgb: [number, number, number] | null, wakes: boolean) => void;
+
+/** The mean color of a device map's LEDs in a frame (a Home Assistant light shows one color). */
+export function meanColor(frame: LightFrame, m: DeviceMap): [number, number, number] {
+  const { bytes, k = 1 } = frame;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  const n = m.pairs.length / 2;
+  for (let p = 0; p < m.pairs.length; p += 2) {
+    const src = m.pairs[p] * 3;
+    r += bytes[src];
+    g += bytes[src + 1];
+    b += bytes[src + 2];
+  }
+  return n ? [Math.round((r / n) * k), Math.round((g / n) * k), Math.round((b / n) * k)] : [0, 0, 0];
+}
 
 /**
  * The one way frames reach the lights. Everything that draws (games, scenes, the layout and
@@ -138,6 +161,9 @@ export class FramePipeline {
   private ownerOf: FrameSource | null = null;
   private buffers = new Map<string, Uint8Array>();
   private sent = new WeakMap<FrameSource, number>();
+  /** Home Assistant lights in the layout get their color here (see HaSink). */
+  haSink: HaSink | null = null;
+  private haSending = new Set<string>();
 
   constructor(devices: () => DeviceTarget[], sender: LightSender) {
     this.devices = devices;
@@ -230,9 +256,16 @@ export class FramePipeline {
   private show(frame: LightFrame | null, owner: FrameSource | null) {
     const devices = new Map(this.devices().map((d) => [d.id, d]));
     const next = new Set<string>();
+    const haNext = new Set<string>();
     if (frame) {
       for (const m of frame.maps) {
         if (frame.devices && !frame.devices.has(m.deviceId)) continue;
+        if (isHaId(m.deviceId)) {
+          if (!this.haSink) continue;
+          this.haSink(m.deviceId, meanColor(frame, m), !!frame.wakes);
+          haNext.add(m.deviceId);
+          continue;
+        }
         const d = devices.get(m.deviceId);
         if (!d || !takesFrames(d, frame.wakes)) continue;
         const buf = renderDevice(frame, m, d.info?.leds?.count ?? 0, this.buffers.get(d.id));
@@ -247,7 +280,9 @@ export class FramePipeline {
       const d = devices.get(id);
       if (!next.has(id) && d) this.sender.end(d);
     }
+    for (const id of this.haSending) if (!haNext.has(id)) this.haSink?.(id, null, false);
+    this.haSending = haNext;
     this.sending = next;
-    this.ownerOf = next.size ? owner : null;
+    this.ownerOf = next.size || haNext.size ? owner : null;
   }
 }

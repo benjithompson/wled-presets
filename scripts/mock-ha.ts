@@ -6,15 +6,18 @@ import http from 'node:http';
 
 export interface MockEntity {
   state: string;
-  attributes: { friendly_name: string; supported_color_modes?: string[]; brightness?: number; rgb_color?: number[] };
+  attributes: { friendly_name: string; supported_color_modes?: string[]; brightness?: number; rgb_color?: number[]; device_class?: string };
+  /** Not in a state: where it is (the site reads it with a template). */
+  place?: { area: string; device: string; integration: string };
 }
 
 export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456789') {
   const states = new Map<string, MockEntity>([
-    ['switch.roof_psu', { state: 'on', attributes: { friendly_name: 'Roof PSU' } }],
-    ['switch.tree_psu', { state: 'on', attributes: { friendly_name: 'Tree PSU' } }],
-    ['light.porch', { state: 'off', attributes: { friendly_name: 'Porch', supported_color_modes: ['hs', 'color_temp'] } }],
-    ['light.garage', { state: 'off', attributes: { friendly_name: 'Garage', supported_color_modes: ['brightness'] } }],
+    ['switch.roof_psu', { state: 'on', attributes: { friendly_name: 'Roof PSU', device_class: 'outlet' }, place: { area: 'Garage', device: 'Roof plug', integration: 'tplink' } }],
+    ['switch.tree_psu', { state: 'on', attributes: { friendly_name: 'Tree PSU', device_class: 'outlet' }, place: { area: 'Front yard', device: 'Tree plug', integration: 'tplink' } }],
+    ['light.porch', { state: 'off', attributes: { friendly_name: 'Porch', supported_color_modes: ['hs', 'color_temp'] }, place: { area: 'Front yard', device: 'Porch bulb', integration: 'hue' } }],
+    ['light.garage', { state: 'off', attributes: { friendly_name: 'Garage', supported_color_modes: ['brightness'] }, place: { area: 'Garage', device: 'Garage dimmer', integration: 'zwave_js' } }],
+    ['switch.fan', { state: 'off', attributes: { friendly_name: 'Fan' } }],
     ['sensor.outside', { state: '3.5', attributes: { friendly_name: 'Outside' } }]
   ]);
   const calls: { service: string; body: Record<string, unknown> }[] = [];
@@ -31,7 +34,13 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
       if (req.method === 'GET' && req.url === '/api/config') return json(200, { version: '2026.11.3', location_name: 'Home' });
-      if (req.method === 'GET' && req.url === '/api/states') return json(200, [...states].map(([entity_id, s]) => ({ entity_id, ...s })));
+      if (req.method === 'GET' && req.url === '/api/states') return json(200, [...states].map(([entity_id, s]) => ({ entity_id, state: s.state, attributes: s.attributes })));
+      // The site's one template (PLACES_TEMPLATE), answered as Home Assistant would render it.
+      if (req.method === 'POST' && req.url === '/api/template') {
+        const rows = [...states].filter(([id]) => /^(light|switch)\./.test(id)).map(([id, s]) => [id, s.place?.area ?? '', s.place?.device ?? '', s.place?.integration ?? '']);
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end(JSON.stringify(rows));
+      }
       const m = /^\/api\/services\/(\w+)\/(turn_on|turn_off)$/.exec(req.url ?? '');
       if (req.method === 'POST' && m) {
         const body = raw ? JSON.parse(raw) : {};
@@ -43,7 +52,7 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
         if (on && typeof body.brightness === 'number') e.attributes.brightness = body.brightness;
         if (on && Array.isArray(body.rgb_color)) e.attributes.rgb_color = body.rgb_color;
         hooks.onSwitch?.(body.entity_id, on);
-        return json(200, [{ entity_id: body.entity_id, ...e }]);
+        return json(200, [{ entity_id: body.entity_id, state: e.state, attributes: e.attributes }]);
       }
       json(404, { message: 'Not found' });
     });

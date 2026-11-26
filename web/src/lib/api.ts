@@ -163,7 +163,9 @@ export const api = {
   /** Home Assistant (see HaSettings). The token goes in, and never comes back. */
   homeAssistant: () => request<HaView>('/api/admin/ha'),
   /** token: undefined keeps the one kept; null removes it. */
-  saveHomeAssistant: (s: HaSettings & { token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
+  saveHomeAssistant: (s: Omit<HaSettings, 'lights'> & { lights?: string[]; token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
+  /** The Home Assistant lights the site controls (entity ids). */
+  saveHaLights: (lights: string[]) => request<HaView>('/api/admin/ha/lights', { method: 'PUT', body: { lights } }),
   testHomeAssistant: () => request<HaView>('/api/admin/ha/test', { method: 'POST' }),
   /** The schedule that switches every light on and off (see LightSchedule). */
   lightSchedule: () => request<LightSchedule>('/api/admin/lights/schedule'),

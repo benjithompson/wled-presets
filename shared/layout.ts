@@ -18,8 +18,10 @@ import type { LightType } from './lights.ts';
  *   in a zigzag across it (see Zigzag).
  * custom: your own shape (a star, a wreath, an arch…), drawn in the object designer. Its
  *   design can be saved to the library and placed many times.
+ * bulb: a single light on a point (a floodlight, a lamp, a smart bulb): its LEDs are all
+ *   there, so it shows one color. Its radius is only how big it is drawn.
  */
-export const FIXTURE_KINDS = ['roof', 'line', 'bush', 'tree', 'semicircle', 'custom'] as const;
+export const FIXTURE_KINDS = ['roof', 'line', 'bush', 'tree', 'semicircle', 'custom', 'bulb'] as const;
 export type FixtureKind = (typeof FIXTURE_KINDS)[number];
 /** Bush: fill, ring, spiral. Tree: spiral, strands, wave (back and forth over its front, see wavePasses). */
 export const FIXTURE_PATTERNS = ['fill', 'ring', 'spiral', 'strands', 'wave'] as const;
@@ -423,6 +425,7 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 export function fixturePixels(f: Fixture, scale = DEFAULT_SCALE): Point3[] {
   const n = Math.max(0, Math.floor(f.pixels));
   if (n === 0) return [];
+  if (f.kind === 'bulb') return Array.from({ length: n }, () => p3(f.points[0] ?? { x: 0, y: 0 }));
   if (f.kind === 'tree') return treePixels(f, n).map(tiltOf(f));
   if (f.kind === 'semicircle') return semicirclePixels(f, n).map(tiltOf(f));
   if (f.kind === 'custom') {
@@ -602,6 +605,8 @@ const TREE_RADIUS = 80;
 const TREE_HEIGHT = 240;
 /** A bush's or a semicircle's radius. */
 const SHAPE_RADIUS = 60;
+/** A bulb's, as it is drawn. */
+const BULB_RADIUS = 12;
 
 /** A tree's radius at its base, and its height. */
 export const treeSize = (f: Pick<Fixture, 'radius' | 'height'>) => ({ r: f.radius ?? TREE_RADIUS, h: f.height ?? TREE_HEIGHT });
@@ -613,7 +618,7 @@ export function semicircleSize(f: Pick<Fixture, 'radius' | 'height'>) {
 }
 
 /** A shape's radius: a bush's, a tree's at its base, a semicircle's. */
-export const radiusOf = (f: Pick<Fixture, 'kind' | 'radius'>) => f.radius ?? (f.kind === 'tree' ? TREE_RADIUS : SHAPE_RADIUS);
+export const radiusOf = (f: Pick<Fixture, 'kind' | 'radius'>) => f.radius ?? (f.kind === 'tree' ? TREE_RADIUS : f.kind === 'bulb' ? BULB_RADIUS : SHAPE_RADIUS);
 
 /** A shape's height: a tree's, a semicircle's (its radius unless set), a bush's as it looks from the front. */
 export function heightOf(f: Pick<Fixture, 'kind' | 'radius' | 'height'>) {
@@ -2385,7 +2390,8 @@ export const GAME_ROLE_RGB: Record<FixtureKind, [number, number, number]> = {
   tree: [30, 200, 180],
   line: [150, 110, 255],
   semicircle: [150, 110, 255],
-  custom: [150, 110, 255]
+  custom: [150, 110, 255],
+  bulb: [150, 110, 255]
 };
 /** LEDs that games leave out. */
 export const GAME_OUT_RGB: [number, number, number] = [70, 0, 0];

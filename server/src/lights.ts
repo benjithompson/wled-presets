@@ -654,7 +654,7 @@ export class Lights {
       else result.applied.push(id);
     }
     result.effects = played.objects;
-    if (this.ha) merge(result, await this.haShow(mergeLooks(this.sceneReach()(scene).looks).colors));
+    if (this.ha) merge(result, await this.haShow(mergeLooks(this.sceneReach()(scene).looks).colors, streamed));
     // A preset brings its own brightness: the admin's level goes on after it (WLED applies a
     // preset a moment after the request), and on the devices that play effects.
     const leveled = devices.filter((d) => result.applied.includes(d.id) && this.levelOf(d.id) != null);
@@ -815,10 +815,11 @@ export class Lights {
    * The Home Assistant lights that are on show colors: a scene's (one each, in turn) or one
    * color. With none, they come on as they are.
    */
-  private async haShow(colors: string[]): Promise<ApplyResult> {
+  private async haShow(colors: string[], streamed: ReadonlySet<string> = new Set()): Promise<ApplyResult> {
     const out: ApplyResult = { applied: [], skipped: [], failed: [] };
     const ha = this.ha;
-    const ids = this.haLights().filter((id) => !this.isOff(id));
+    // A light in the layout that plays the scene's effects gets them as frames instead (see HaFrames).
+    const ids = this.haLights().filter((id) => !this.isOff(id) && !streamed.has(id));
     if (!ha || !ids.length) return out;
     const rgbs = colors.map(parseHex).filter((c): c is NonNullable<typeof c> => !!c);
     const results = await Promise.all(

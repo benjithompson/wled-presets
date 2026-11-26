@@ -11,6 +11,12 @@ export interface HaEntity {
   color: boolean;
   /** It takes a brightness. */
   dimmable: boolean;
+  /** A switch that says it is a plug (device class outlet). */
+  outlet: boolean;
+  /** Its area in Home Assistant, its device, and the integration it comes from ('' when none). */
+  area: string;
+  device: string;
+  integration: string;
 }
 
 /**

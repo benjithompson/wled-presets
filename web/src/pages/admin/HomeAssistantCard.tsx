@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, KeyRound, Plug, RefreshCw, XCircle } from 'lucide-react';
+import { CheckCircle2, KeyRound, Lightbulb, Plug, RefreshCw, X, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import type { HaEntity, HaSettings, HaView } from '../../../../shared/homeAssistant.ts';
 import type { DeviceWithStatus } from '../../../../shared/types.ts';
-import { Badge, Button, Card, CardHeader, Field, Input, Select, Spinner, Switch } from '../../components/ui.tsx';
+import { Badge, Button, Card, CardHeader, Dialog, Field, Input, Spinner } from '../../components/ui.tsx';
+import { EntityIcon, EntityTable, kindOf } from './EntityTable.tsx';
 import { api } from '../../lib/api.ts';
 import { errorText } from '../../lib/utils.ts';
 import { OVERVIEW } from './AdminLayout.tsx';
@@ -26,6 +28,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
   const { data } = useHomeAssistant();
   const [form, setForm] = useState<HaSettings | null>(null);
   const [token, setToken] = useState('');
+  const [picking, setPicking] = useState<DeviceWithStatus | null>(null);
   useEffect(() => {
     if (data && !form) setForm({ url: data.url || 'http://192.168.29.29:8123', plugs: data.plugs, lights: data.lights });
   }, [data, form]);
@@ -36,7 +39,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
     void qc.invalidateQueries({ queryKey: ['admin', 'lights'] });
   };
   const save = useMutation({
-    mutationFn: (t: string | null | undefined) => api.saveHomeAssistant({ ...form!, ...(t !== undefined ? { token: t } : {}) }),
+    mutationFn: (t: string | null | undefined) => api.saveHomeAssistant({ url: form!.url, plugs: form!.plugs, ...(t !== undefined ? { token: t } : {}) }),
     onSuccess: (v, t) => {
       done(v);
       setToken('');
@@ -57,10 +60,9 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
     );
   }
 
-  const changed = token.trim() !== '' || JSON.stringify(form) !== JSON.stringify({ url: data.url, plugs: data.plugs, lights: data.lights });
-  const plugs = data.entities.filter((e) => e.id.startsWith('switch.') || e.id.startsWith('light.'));
+  const changed = token.trim() !== '' || JSON.stringify({ url: form.url, plugs: form.plugs }) !== JSON.stringify({ url: data.url, plugs: data.plugs });
   const usedAsPlug = new Set(Object.values(form.plugs));
-  const lightChoices = data.entities.filter((e) => !usedAsPlug.has(e.id));
+  const byId = new Map(data.entities.map((e) => [e.id, e]));
   const missing = [...Object.values(form.plugs), ...form.lights].filter((id) => data.entities.length && !data.entities.some((e) => e.id === id));
   const setPlug = (deviceId: string, entity: string) => {
     const next = { ...form.plugs };
@@ -68,7 +70,6 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
     else delete next[deviceId];
     setForm({ ...form, plugs: next, lights: form.lights.filter((l) => l !== entity) });
   };
-  const toggleLight = (id: string, on: boolean) => setForm({ ...form, lights: on ? [...form.lights, id] : form.lights.filter((l) => l !== id) });
 
   return (
     <Card className="mt-10">
@@ -125,38 +126,71 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
               <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">
                 The plug that powers a controller and its lights. Switching the device off turns WLED off, then the plug; on turns the plug on, and the controller gets what plays once it has started.
               </p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {devices.map((d) => (
-                  <Field key={d.id} label={d.name}>
-                    {(id) => (
-                      <Select id={id} value={form.plugs[d.id] ?? ''} onChange={(e) => setPlug(d.id, e.target.value)}>
-                        <option value="">No plug</option>
-                        {plugs.map((e) => (
-                          <option key={e.id} value={e.id} disabled={usedAsPlug.has(e.id) && form.plugs[d.id] !== e.id}>
-                            {e.name} ({e.id})
-                          </option>
-                        ))}
-                      </Select>
-                    )}
-                  </Field>
-                ))}
+              <div className="mt-3 overflow-hidden rounded-xl ring-1 ring-stone-200 dark:ring-stone-800">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-stone-50/70 text-xs text-stone-500 dark:bg-stone-900 dark:text-stone-400">
+                    <tr>
+                      <th className="py-2 pr-2 pl-3 font-medium">Controller</th>
+                      <th className="hidden px-2 py-2 font-medium sm:table-cell">Plug</th>
+                      <th className="hidden px-2 py-2 font-medium sm:table-cell">State</th>
+                      <th className="py-2 pr-3 pl-2">
+                        <span className="sr-only">Change</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-100 dark:divide-stone-800/70">
+                    {devices.map((d) => {
+                      const id = form.plugs[d.id];
+                      const e = id ? byId.get(id) : undefined;
+                      return (
+                        <tr key={d.id}>
+                          <td className="py-2.5 pr-2 pl-3 max-sm:max-w-0">
+                            <div className="truncate font-medium">{d.name}</div>
+                            <div className="truncate text-xs text-stone-500 sm:hidden">{id ? `${e?.name ?? id}${e ? ` · ${e.state}` : ''}` : 'No plug'}</div>
+                          </td>
+                          <td className="hidden max-w-0 px-2 py-2.5 sm:table-cell">
+                            {id ? (
+                              <div className="flex min-w-0 items-center gap-2">
+                                {e ? <EntityIcon e={e} /> : null}
+                                <div className="min-w-0">
+                                  <div className="truncate">{e?.name ?? id}</div>
+                                  <div className="truncate font-mono text-xs text-stone-500">
+                                    {id}
+                                    {e?.area ? <span className="font-sans">{` · ${e.area}`}</span> : null}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-stone-400">No plug</span>
+                            )}
+                          </td>
+                          <td className="hidden px-2 py-2.5 sm:table-cell">{e ? <span className="text-xs text-stone-500 capitalize">{e.state}</span> : null}</td>
+                          <td className="py-2 pr-3 pl-2 text-right whitespace-nowrap">
+                            <Button size="sm" onClick={() => setPicking(d)}>
+                              {id ? 'Change' : 'Choose'}
+                            </Button>
+                            {id ? (
+                              <Button size="sm" variant="ghost" className="ml-1" aria-label={`Remove the plug of ${d.name}`} onClick={() => setPlug(d.id, '')}>
+                                <X />
+                              </Button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </section>
 
-            <section>
-              <h3 className="text-sm font-medium">Lights</h3>
-              <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">
-                They switch with all lights and the schedule, have their own switch under Devices, and take the colors of scenes and visitors' colors when they can show color.
-              </p>
-              <ul className="mt-3 grid gap-x-6 gap-y-1 sm:grid-cols-2">
-                {lightChoices.map((e) => (
-                  <li key={e.id} className="flex items-center justify-between gap-3 py-1.5">
-                    <EntityName e={e} />
-                    <Switch label={`Use ${e.name}`} checked={form.lights.includes(e.id)} onChange={(on) => toggleLight(e.id, on)} />
-                  </li>
-                ))}
-              </ul>
-            </section>
+            <p className="text-sm text-stone-500 dark:text-stone-400">
+              <Lightbulb className="mr-1.5 -mt-0.5 inline size-4 text-stone-400" />
+              Lights to control are added on the{' '}
+              <Link to="/admin/devices" className="font-medium text-stone-900 underline underline-offset-2 dark:text-white">
+                Devices page
+              </Link>
+              {data.lights.length ? ` (${data.lights.length} added)` : ''}.
+            </p>
           </>
         ) : data.hasToken && data.status?.ok ? (
           <p className="text-sm text-stone-500">Home Assistant has no lights or switches.</p>
@@ -181,20 +215,64 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
           </Button>
         </div>
       </form>
+      <PlugPicker
+        device={picking}
+        entities={data.entities}
+        plugs={form.plugs}
+        devices={devices}
+        onClose={() => setPicking(null)}
+        onPick={(entity) => {
+          if (picking) setPlug(picking.id, entity);
+          setPicking(null);
+        }}
+      />
     </Card>
   );
 }
 
-function EntityName({ e }: { e: HaEntity }) {
+/**
+ * Picks the plug that powers one controller, from Home Assistant's switches and lights: plugs
+ * first, then switches, grouped by area, with a search. One plug powers one controller.
+ */
+function PlugPicker({
+  device,
+  entities,
+  plugs,
+  devices,
+  onClose,
+  onPick
+}: {
+  device: DeviceWithStatus | null;
+  entities: HaEntity[];
+  plugs: Record<string, string>;
+  devices: DeviceWithStatus[];
+  onClose: () => void;
+  onPick: (entity: string) => void;
+}) {
+  const owner = (id: string) => devices.find((d) => plugs[d.id] === id && d.id !== device?.id);
+  const current = device ? plugs[device.id] : undefined;
   return (
-    <span className="min-w-0">
-      <span className="block truncate text-sm">{e.name}</span>
-      <span className="block truncate font-mono text-xs text-stone-500">
-        {e.id}
-        {e.color ? ' · color' : e.dimmable ? ' · dims' : ''}
-        {e.state === 'unavailable' ? ' · unavailable' : ''}
-      </span>
-    </span>
+    <Dialog open={!!device} onClose={onClose} size="xl" title={device ? `Power plug for ${device.name}` : ''} description="The switch or plug in Home Assistant that powers this controller and its lights.">
+      {device ? (
+        <div className="pb-4">
+          <EntityTable
+            entities={entities}
+            initialKind={entities.some((e) => e.outlet) ? 'outlet' : 'all'}
+            rank={(e) => (e.id === current ? -1 : kindOf(e) === 'outlet' ? 0 : kindOf(e) === 'switch' ? 1 : 2)}
+            action={(e) => {
+              const taken = owner(e.id);
+              if (e.id === current) return <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Chosen</span>;
+              if (taken) return <span className="text-xs text-stone-500">Powers {taken.name}</span>;
+              return (
+                <Button size="sm" onClick={() => onPick(e.id)}>
+                  Use
+                </Button>
+              );
+            }}
+          />
+        </div>
+      ) : null}
+    </Dialog>
   );
 }
 

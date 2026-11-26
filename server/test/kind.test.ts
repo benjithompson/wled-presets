@@ -88,3 +88,20 @@ describe('a shape saved without its size', () => {
     expect(changeKind(tree, 'semicircle')).toMatchObject({ radius: 80, height: 240 });
   });
 });
+
+describe('bulbs', () => {
+  const bulb: Fixture = { id: 'p', name: 'Porch light', kind: 'bulb', points: [{ x: 300, y: 500, z: 12 }], radius: 12, pixels: 1, deviceId: 'ha:light.porch', startPixel: 0, reversed: false };
+
+  it('have every LED on their one point', () => {
+    expect(fixturePixels(bulb)).toEqual([{ x: 300, y: 500, z: 12 }]);
+    expect(fixturePixels({ ...bulb, pixels: 3 })).toEqual(Array(3).fill({ x: 300, y: 500, z: 12 }));
+    expect(radiusOf({ kind: 'bulb' })).toBe(12);
+  });
+
+  it('are kept with the layout, on a Home Assistant light', () => {
+    const layout = { ...sampleLayout(), fixtures: [...sampleLayout().fixtures, bulb] };
+    const parsed = layoutSchema.safeParse(layout);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.fixtures.at(-1)).toMatchObject({ kind: 'bulb', deviceId: 'ha:light.porch', pixels: 1 });
+  });
+});

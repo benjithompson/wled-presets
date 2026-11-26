@@ -78,3 +78,19 @@ export function shapeFrom(d: ShapeDraft, layout: Layout, zMin: number, id: strin
   const base = front ? atDepth(0.5 * s) : onGround(ground);
   return { ...common, name: `Semicircle ${count + 1}`, kind: 'semicircle', points: [base], radius: r, strands: 8, zigzag: 'down', pixels: lt?.perStrand ?? 100 };
 }
+
+/**
+ * A bulb placed with a click: a single light (see FixtureKind). From the front it hangs on the
+ * spot, just in front of the wall; from above it stands on the ground (a path light, say).
+ */
+export function bulbFrom(side: ViewSide, at: UV, layout: Layout, zMin: number, id: string, cam?: FrontCam | null): Fixture {
+  const s = layoutScale(layout);
+  const r = Math.max(6, Math.round(0.12 * s));
+  const count = layout.fixtures.filter((f) => f.kind === 'bulb').length;
+  let point: Point;
+  if (side === 'front') {
+    const p = cam ? unproject(cam, at.u, at.v, r) : { x: at.u, y: at.v };
+    point = { x: Math.round(p.x), y: Math.round(p.y), z: r };
+  } else point = { x: at.u, y: Math.round(layoutGround(layout) - r), z: Math.round(at.v + zMin) };
+  return { id, name: `Bulb ${count + 1}`, kind: 'bulb', points: [point], radius: r, pixels: 1, deviceId: null, startPixel: 0, reversed: false };
+}

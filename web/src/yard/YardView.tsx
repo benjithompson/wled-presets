@@ -287,6 +287,10 @@ export function YardView({
                 if (i) ctx.lineTo(X(q.u), Y(q.v));
                 else ctx.moveTo(X(q.u), Y(q.v));
               });
+          } else if (f.kind === 'bulb') {
+            // A bulb is one LED: its ring shows where it is, in every view.
+            if (!hl) ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+            ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 4 * dpr : 0), r * sy + (hl ? 4 * dpr : 0), 0, 0, Math.PI * 2);
           } else if (top) {
             // From above, bushes and trees are circles.
             ctx.ellipse(X(c.u), Y(c.v), r * sx + (hl ? 6 * dpr : 0), r * sy + (hl ? 6 * dpr : 0), 0, 0, Math.PI * 2);

@@ -582,7 +582,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     /** Left out: the token kept stays. Null removes it. */
     token: z.string().trim().min(20, 'That is too short for a long-lived access token').max(2000).regex(/^\S+$/, 'A token has no spaces').nullable().optional(),
     plugs: z.record(z.string().max(64), entityId).default({}),
-    lights: z.array(entityId).max(64).default([])
+    /** Left out: the lights in use stay (they are added on the Devices page). */
+    lights: z.array(entityId).max(64).optional()
   });
   const needHa = () => {
     if (!ha) throw new HttpError(404, 'No Home Assistant here');
@@ -596,10 +597,28 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const input = await body(c, haInput);
     for (const id of Object.keys(input.plugs)) if (!db.getDevice(id)) throw new HttpError(400, 'Unknown device');
     const before = h.settings();
-    h.save({ url: input.url, plugs: input.plugs, lights: input.lights }, input.token);
+    // A plug is not also a light.
+    const plugs = new Set(Object.values(input.plugs));
+    h.save({ url: input.url, plugs: input.plugs, lights: (input.lights ?? before.lights).filter((id) => !plugs.has(id)) }, input.token);
     const token = input.token === undefined ? '' : input.token === null ? ', token removed' : ', new token';
     lights.log('info', 'settings', `Home Assistant settings changed${token}`, { before, after: h.settings() }, actor(c));
     if (h.connected()) await h.test();
+    bus.emit('devices');
+    bus.emit('state');
+    return c.json(h.view());
+  });
+
+  // The lights to use (see HaSettings.lights): added and removed on the Devices page.
+  admin.put('/ha/lights', async (c) => {
+    const h = needHa();
+    const { lights: next } = await body(c, z.object({ lights: z.array(entityId).max(64) }));
+    const before = h.settings();
+    const plugs = new Set(Object.values(before.plugs));
+    if (next.some((id) => plugs.has(id))) throw new HttpError(400, 'That one is the power plug of a controller');
+    h.save({ ...before, lights: next });
+    const added = next.filter((id) => !before.lights.includes(id));
+    const removed = before.lights.filter((id) => !next.includes(id));
+    if (added.length || removed.length) lights.log('info', 'settings', `Home Assistant lights${added.length ? ` added: ${added.join(', ')}` : ''}${removed.length ? `${added.length ? ';' : ''} removed: ${removed.join(', ')}` : ''}`, null, actor(c));
     bus.emit('devices');
     bus.emit('state');
     return c.json(h.view());
