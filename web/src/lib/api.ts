@@ -3,6 +3,7 @@ import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type { LineAdmin, LineSettings } from '../../../shared/line.ts';
 import type { LightSchedule } from '../../../shared/schedule.ts';
+import type { HaSettings, HaView } from '../../../shared/homeAssistant.ts';
 import type { WledConfig, WledSettings } from '../../../shared/wledConfig.ts';
 import type {
   AudioFile,
@@ -159,6 +160,11 @@ export const api = {
   lightControls: () => request<LightControls>('/api/admin/lights'),
   setPower: (on: boolean, deviceId: string | null = null) =>
     request<{ controls: LightControls; result: ApplyResult }>('/api/admin/lights/power', { method: 'PUT', body: { on, deviceId } }),
+  /** Home Assistant (see HaSettings). The token goes in, and never comes back. */
+  homeAssistant: () => request<HaView>('/api/admin/ha'),
+  /** token: undefined keeps the one kept; null removes it. */
+  saveHomeAssistant: (s: HaSettings & { token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
+  testHomeAssistant: () => request<HaView>('/api/admin/ha/test', { method: 'POST' }),
   /** The schedule that switches every light on and off (see LightSchedule). */
   lightSchedule: () => request<LightSchedule>('/api/admin/lights/schedule'),
   saveLightSchedule: (s: LightSchedule) => request<LightSchedule>('/api/admin/lights/schedule', { method: 'PUT', body: s }),

@@ -22,6 +22,8 @@ export interface DeviceWithStatus extends Device {
    * level it comes back on at). Null while it is offline, or has not said yet.
    */
   power: { on: boolean; bri: number } | null;
+  /** The Home Assistant plug that powers it, and whether it is on (null: unknown). */
+  plug?: { entity: string; name: string; on: boolean | null };
 }
 
 /** Subset of WLED /json/info that the UI shows. */

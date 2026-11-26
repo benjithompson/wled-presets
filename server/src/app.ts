@@ -27,6 +27,8 @@ import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, type SceneTransitionChoic
 import type { GameHost } from './game/host.ts';
 import type { RoofView } from './roofView.ts';
 import type { LightScheduler } from './lightSchedule.ts';
+import { cleanHaUrl, type HomeAssistant } from './homeAssistant.ts';
+import { isSwitchable } from '../../shared/homeAssistant.ts';
 import { isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
@@ -51,6 +53,8 @@ export interface AppDeps {
   yard?: RoofView;
   /** Switches the lights on and off at set times (see LightSchedule). */
   schedule?: LightScheduler;
+  /** Home Assistant: plugs that power the controllers, and other lights (see HaSettings). */
+  ha?: HomeAssistant;
 }
 
 const deviceInput = z.object({
@@ -207,7 +211,7 @@ class HttpError extends Error {
   }
 }
 
-export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof, yard, schedule }: AppDeps) {
+export function createApp({ config, db, bus, lights, discover = discoverWled, host, preview, roof, yard, schedule, ha }: AppDeps) {
   const app = new Hono();
   const auth = createAuth(db, { secureCookie: config.secureCookie });
   const passkeys = createPasskeys(db);
@@ -552,7 +556,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   const deviceTarget = z.string().min(1).max(64).nullable().default(null);
   const knownDevice = (id: string | null) => {
-    if (id && !db.getDevice(id)) throw new HttpError(404, 'Unknown device');
+    if (id && !db.getDevice(id) && !lights.haLights().includes(id)) throw new HttpError(404, 'Unknown device');
   };
 
   admin.put('/lights/power', async (c) => {
@@ -565,6 +569,47 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       line?.clear('the lights were switched off');
     }
     return c.json({ controls: lights.controls(), result });
+  });
+
+  // Home Assistant (see HaSettings). The token goes one way: in, never back out, never logged.
+  const entityId = z.string().max(255).refine(isSwitchable, 'Pick a light or a switch');
+  const haInput = z.object({
+    url: z.string().max(300).transform((v, ctx) => {
+      const u = cleanHaUrl(v);
+      if (u == null) ctx.addIssue({ code: 'custom', message: 'Use an address such as http://192.168.29.29:8123' });
+      return u ?? '';
+    }),
+    /** Left out: the token kept stays. Null removes it. */
+    token: z.string().trim().min(20, 'That is too short for a long-lived access token').max(2000).regex(/^\S+$/, 'A token has no spaces').nullable().optional(),
+    plugs: z.record(z.string().max(64), entityId).default({}),
+    lights: z.array(entityId).max(64).default([])
+  });
+  const needHa = () => {
+    if (!ha) throw new HttpError(404, 'No Home Assistant here');
+    return ha;
+  };
+
+  admin.get('/ha', (c) => c.json(needHa().view()));
+
+  admin.put('/ha', async (c) => {
+    const h = needHa();
+    const input = await body(c, haInput);
+    for (const id of Object.keys(input.plugs)) if (!db.getDevice(id)) throw new HttpError(400, 'Unknown device');
+    const before = h.settings();
+    h.save({ url: input.url, plugs: input.plugs, lights: input.lights }, input.token);
+    const token = input.token === undefined ? '' : input.token === null ? ', token removed' : ', new token';
+    lights.log('info', 'settings', `Home Assistant settings changed${token}`, { before, after: h.settings() }, actor(c));
+    if (h.connected()) await h.test();
+    bus.emit('devices');
+    bus.emit('state');
+    return c.json(h.view());
+  });
+
+  admin.post('/ha/test', async (c) => {
+    const h = needHa();
+    await h.test();
+    bus.emit('devices');
+    return c.json(h.view());
   });
 
   // The schedule that switches every light on and off (see LightSchedule).
