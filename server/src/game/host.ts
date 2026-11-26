@@ -113,7 +113,29 @@ export class GameHost implements FrameSource {
   private layout: Layout;
   private frame: Frame;
   private bytes: Uint8Array<ArrayBuffer>;
-  private game: Game;
+  private current!: Game;
+  /** The game that runs, and who started it, since when (for the activity log). */
+  private run: { game: string; name: string; who: Visitor; at: number } | null = null;
+  /**
+   * What a visitor did with the games, for the activity log: started one, and how long they
+   * played. The host calls it for everyone; the log keeps the visitors' (not the admins').
+   */
+  activity: ((who: Visitor, message: string, details: Record<string, unknown>) => void) | null = null;
+
+  /** The game that plays now. Another one in its place ends the run of the last (see run). */
+  private get game(): Game {
+    return this.current;
+  }
+
+  private set game(g: Game) {
+    const run = this.run;
+    if (run && g !== this.current) {
+      this.run = null;
+      const seconds = Math.round((Date.now() - run.at) / 1000);
+      this.activity?.(run.who, `played ${run.name} for ${seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 60)} min`}`, { game: run.game, seconds });
+    }
+    this.current = g;
+  }
   private clients = new Map<WebSocket, Viewer & { id: string; visitor: Visitor }>();
   /**
    * The line for the lights: one turn at a time (see line.ts). Off until configured: then the
@@ -509,6 +531,11 @@ export class GameHost implements FrameSource {
     this.overSince = null;
     this.awaySince = null;
     this.log(`Game started: ${g.name}`);
+    const who = [...this.clients.values()].find((c) => c.id === player)?.visitor;
+    if (who) {
+      this.run = { game: g.id, name: g.name, who, at: Date.now() };
+      this.activity?.(who, `started ${g.name}`, { game: g.id });
+    }
   }
 
   /** The line gave the next player their turn: their game starts on the page they opened last. */

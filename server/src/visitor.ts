@@ -88,3 +88,9 @@ export function admitUpgrade(req: IncomingMessage, opts: { trustProxy: TrustProx
   const ip = upgradeIp(req, opts.trustProxy);
   return opts.limit.take(ip, isLoopbackIp(ip));
 }
+
+/**
+ * A visitor's short tag in the activity log: the start of their id, the same on every visit
+ * from that browser, so one person's picks can be followed without telling who they are.
+ */
+export const visitorTag = (id: string) => id.replace(/^c:/, '').slice(0, 6);

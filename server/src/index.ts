@@ -10,7 +10,7 @@ import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
 import { migrateV1Settings, readGameArea, readHiddenGames, readLineSettings, readSettings } from './settings.ts';
-import { admitUpgrade, upgradeVisitor } from './visitor.ts';
+import { admitUpgrade, upgradeVisitor, visitorTag } from './visitor.ts';
 import type { Server } from 'node:http';
 import { GameHost } from './game/host.ts';
 import { readLayout } from './layoutStore.ts';
@@ -56,6 +56,12 @@ pipeline.haSink = haFrames.frame;
 const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout', msg));
 useScoreStore(databaseScores(db.raw));
 const host = new GameHost(readLayout(db), (msg) => lights.log('info', 'game', msg), pipeline);
+// Visitors' games in the activity log (an admin's are not: they test).
+host.activity = (who, message, details) => {
+  if (who.admin) return;
+  const tag = visitorTag(who.id);
+  lights.log('info', 'visitor', `Visitor ${tag}: ${message}`, { visitor: tag, ...details }, who.actor);
+};
 host.setGameArea(readGameArea(db));
 host.setHiddenGames(readHiddenGames(db));
 // One turn at a time with the lights: everyone else waits in line.
