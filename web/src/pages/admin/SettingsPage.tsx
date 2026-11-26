@@ -8,6 +8,7 @@ import { api } from '../../lib/api.ts';
 import { errorText, relativeTime } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { PasskeysCard } from './PasskeysCard.tsx';
+import { HomeAssistantCard } from './HomeAssistantCard.tsx';
 
 export function SettingsPage() {
   const qc = useQueryClient();
@@ -168,6 +169,7 @@ export function SettingsPage() {
         </div>
       </form>
 
+      <HomeAssistantCard devices={data.devices.filter((d) => d.enabled)} />
       <PasswordCard />
       <PasskeysCard />
     </>

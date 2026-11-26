@@ -12,6 +12,8 @@ import { baseUrl, lastWrite, wled, type FetchResult, type PowerState } from './w
 import { mergeLooks, type PresetLook } from './presetLook.ts';
 import type { Peek } from './roofView.ts';
 import { WledPeek } from './wledPeek.ts';
+import type { HomeAssistant } from './homeAssistant.ts';
+import { entityOf, haId, isHaId } from '../../shared/homeAssistant.ts';
 
 /**
  * A change a device reports this soon after this app told it something may be that request
@@ -22,6 +24,13 @@ const SETTLE_MS = 2500;
 
 /** WLED's brightness (1 to 255) in percent, as the switches count it. */
 const percent = (bri: number) => Math.max(1, Math.round((bri / 255) * 100));
+
+/** Adds what one batch of commands did to another's result. */
+function merge(into: ApplyResult, more: ApplyResult) {
+  into.applied.push(...more.applied);
+  into.skipped.push(...more.skipped);
+  into.failed.push(...more.failed);
+}
 
 export type PresetImport = { deviceId: string; ok: true; count: number } | { deviceId: string; ok: false; error: string };
 
@@ -91,6 +100,15 @@ export class Lights {
    * and moves on once the lights are free again.
    */
   holdPlaylist: () => boolean = () => false;
+  /**
+   * Home Assistant, when it is used: plugs that power WLED controllers, and other lights that
+   * switch with these (see HaSettings).
+   */
+  ha: HomeAssistant | null = null;
+  /** How long a device has to fade out before its plug cuts the power (shorter in tests). */
+  plugDelayMs = 1500;
+  /** Devices whose plug was switched on: when they answer, they get the switches and what plays. */
+  private booting = new Set<string>();
   /** When the schedule switches the lights on next (ISO), or null: told to visitors while they are off. */
   lightsOnAt: () => string | null = () => null;
 
@@ -294,7 +312,7 @@ export class Lights {
     const devices = this.enabledDevices();
     this.syncWatchers(devices);
     // A device busy with real-time frames over Wi-Fi can answer slowly; allow 3 s.
-    const results = await Promise.all(devices.map((d) => this.readInfo(d)));
+    const [results] = await Promise.all([Promise.all(devices.map((d) => this.readInfo(d))), this.followHa().catch(() => {})]);
     let changed = false;
     const seen = new Set<string>();
     devices.forEach((d, i) => {
@@ -343,7 +361,16 @@ export class Lights {
     return this.db.listDevices().map((d) => {
       const s = this.status.get(d.id);
       const p = d.enabled && s?.online ? this.seen.get(d.id) : undefined;
-      return { ...d, online: d.enabled ? (s?.online ?? null) : null, info: s?.info ?? null, lastSeen: s?.lastSeen ?? null, power: p ? { on: p.on, bri: p.bri } : null };
+      const plug = this.plugOf(d.id);
+      const e = plug ? this.ha?.entity(plug) : undefined;
+      return {
+        ...d,
+        online: d.enabled ? (s?.online ?? null) : null,
+        info: s?.info ?? null,
+        lastSeen: s?.lastSeen ?? null,
+        power: p ? { on: p.on, bri: p.bri } : null,
+        ...(plug ? { plug: { entity: plug, name: e?.name ?? plug, on: e?.state === 'on' ? true : e?.state === 'off' ? false : null } } : {})
+      };
     });
   }
 
@@ -444,8 +471,9 @@ export class Lights {
     const now = Date.now();
     const prev = this.seen.get(d.id);
     this.seen.set(d.id, { ...power, at: now });
-    if (this.missed.delete(d.id)) {
-      void this.sendSwitches(d);
+    const booted = this.booting.delete(d.id);
+    if (this.missed.delete(d.id) || booted) {
+      void this.sendSwitches(d).then(() => (booted ? this.restoreLook(d) : undefined));
     } else {
       // Before the first report: what the switches say.
       const before = prev ?? { on: !this.isOff(d.id), bri: this.levelOf(d.id), at: now - this.settleMs };
@@ -494,17 +522,16 @@ export class Lights {
     for (const f of result.failed) this.missed.add(f.deviceId);
   }
 
-  publicState(): PublicState {
-    const settings = readSettings(this.db);
-    const enabled = this.enabledDevices();
-    const isOnline = (id: string) => this.status.get(id)?.online === true;
-    const enabledIds = new Set(enabled.map((d) => d.id));
+  /**
+   * What a scene plays: its looks, and the devices it reaches. `reach` works it out for any
+   * scene, with the layout, sequences and presets read once.
+   */
+  private sceneReach() {
+    const enabledIds = new Set(this.enabledDevices().map((d) => d.id));
     const presets = this.db.listDevicePresets();
     const layout = readLayout(this.db);
     const sequences = new Map(this.db.listSequences().map((q) => [q.id, q]));
-    const list = this.db.listScenes();
-    /** What a scene plays: its looks, and the devices it reaches. */
-    const reach = (s: Scene): { looks: PresetLook[]; devices: string[] } => {
+    return (s: Scene): { looks: PresetLook[]; devices: string[] } => {
       // Effects (or a sequence) on objects that are in the layout, and the devices they are on.
       const seq = s.sequenceId ? sequences.get(s.sequenceId) : undefined;
       const objects = new Set(seq ? sequenceObjects(seq, layout) : effectObjects(layout, Object.keys(s.effects ?? {})));
@@ -517,6 +544,14 @@ export class Lights {
       }
       return { looks, devices: [...mapped, ...fxDevices] };
     };
+  }
+
+  publicState(): PublicState {
+    const settings = readSettings(this.db);
+    const enabled = this.enabledDevices();
+    const isOnline = (id: string) => this.status.get(id)?.online === true;
+    const list = this.db.listScenes();
+    const reach = this.sceneReach();
     const scenes = list.map((s) => {
       // A playlist looks like the scenes it plays, and is online when one of them is.
       const parts = s.playlist ? playlistSteps(s.playlist, list).map((p) => reach(p.scene)) : [reach(s)];
@@ -619,6 +654,7 @@ export class Lights {
       else result.applied.push(id);
     }
     result.effects = played.objects;
+    if (this.ha) merge(result, await this.haShow(mergeLooks(this.sceneReach()(scene).looks).colors));
     // A preset brings its own brightness: the admin's level goes on after it (WLED applies a
     // preset a moment after the request), and on the devices that play effects.
     const leveled = devices.filter((d) => result.applied.includes(d.id) && this.levelOf(d.id) != null);
@@ -636,6 +672,7 @@ export class Lights {
     this.effectPlayer?.(null);
     const devices = this.onDevices();
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb, this.levelOf(device.id)) })));
+    merge(result, await this.haShow([color]));
     if (result.applied.length > 0) {
       this.db.setSetting(KEY.currentScene, '');
       this.db.setSetting(KEY.currentColor, color);
@@ -670,8 +707,24 @@ export class Lights {
 
   /** True when there are lights and an admin switched every one of them off. */
   allOff(): boolean {
-    const enabled = this.enabledDevices();
-    return enabled.length > 0 && enabled.every((d) => this.isOff(d.id));
+    const ids = [...this.enabledDevices().map((d) => d.id), ...this.haLights()];
+    return ids.length > 0 && ids.every((id) => this.isOff(id));
+  }
+
+  /** The Home Assistant lights the site switches, as "ha:" ids (none without Home Assistant). */
+  haLights(): string[] {
+    return this.ha?.connected() ? this.ha.settings().lights.map(haId) : [];
+  }
+
+  /** The Home Assistant plug that powers a device, or null. */
+  plugOf(deviceId: string): string | null {
+    return this.ha?.connected() ? (this.ha.settings().plugs[deviceId] ?? null) : null;
+  }
+
+  /** A device's name, or a Home Assistant light's. */
+  private nameOf(id: string): string {
+    if (isHaId(id)) return this.ha?.entity(entityOf(id))?.name ?? entityOf(id);
+    return this.db.getDevice(id)?.name ?? id;
   }
 
   /** The devices in use (an admin can disable one in the device list). */
@@ -697,23 +750,131 @@ export class Lights {
    */
   async setPower(on: boolean, deviceId: string | readonly string[] | null, actor?: Actor, why?: string): Promise<ApplyResult> {
     const all = this.db.listDevices();
+    const ha = this.haLights();
     const picked = deviceId == null ? null : new Set(typeof deviceId === 'string' ? [deviceId] : deviceId);
     const target = picked ? all.filter((d) => picked.has(d.id)) : all;
-    const ids = new Set(target.map((d) => d.id));
+    const haTarget = picked ? ha.filter((id) => picked.has(id)) : ha;
+    const ids = new Set([...target.map((d) => d.id), ...haTarget]);
+    const known = new Set([...all.map((d) => d.id), ...ha]);
     const c = this.controls();
     const off = on ? c.off.filter((id) => !ids.has(id)) : [...new Set([...c.off, ...ids])];
-    this.saveControls({ ...c, off: off.filter((id) => all.some((d) => d.id === id)) });
+    this.saveControls({ ...c, off: off.filter((id) => known.has(id)) });
     if (!on && this.allOff()) this.cancelRevert();
     const devices = target.filter((d) => d.enabled);
-    const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.power(device, on, this.levelOf(device.id)) })));
+    const result = await this.fanOut(devices.map((device) => ({ device, run: () => this.powerDevice(device, on) })));
     // A device that was getting frames is given back on the next frame, switched off (after any
     // frame still on its way: see LightSender.giveBack).
     this.noteMissed(result);
-    const what = !picked ? 'All lights' : target.length === 1 || typeof deviceId === 'string' ? `"${target[0]?.name ?? deviceId}"` : `${target.length} lights`;
+    merge(result, await this.haSwitch(haTarget, on));
+    const what = !picked ? 'All lights' : ids.size === 1 ? `"${this.nameOf([...ids][0])}"` : `${ids.size} lights`;
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}${why ? ` ${why}` : ''}`, result, actor);
     this.bus.emit('devices');
     this.bus.emit('state');
     return result;
+  }
+
+  /**
+   * Switches a device on or off, and its plug when it has one: the plug first when on (the
+   * controller then boots, and gets the switches and what plays when it answers), and last when
+   * off, once the lights have faded out.
+   */
+  private async powerDevice(d: Device, on: boolean): Promise<FetchResult<unknown>> {
+    const plug = this.plugOf(d.id);
+    if (!plug || !this.ha) return wled.power(d, on, this.levelOf(d.id));
+    const done = { ok: true as const, status: 200, data: null };
+    const failed = (r: { status: number; error: string }) => ({ ok: false as const, status: r.status, error: `Power plug: ${r.error}` });
+    if (on) {
+      if (this.ha.entity(plug)?.state === 'on' && this.status.get(d.id)?.online) return wled.power(d, true, this.levelOf(d.id));
+      const p = await this.ha.set(plug, true);
+      if (!p.ok) return failed(p);
+      this.booting.add(d.id);
+      // A controller that has its own power as well answers at once.
+      if (this.status.get(d.id)?.online) void wled.power(d, true, this.levelOf(d.id)).then((r) => r.ok && this.booting.delete(d.id));
+      return done;
+    }
+    this.booting.delete(d.id);
+    const r = await wled.power(d, false);
+    if (r.ok) await new Promise((res) => setTimeout(res, this.plugDelayMs));
+    // Switched on again meanwhile: the power stays.
+    if (!this.isOff(d.id)) return r;
+    const p = await this.ha.set(plug, false);
+    return p.ok ? done : failed(p);
+  }
+
+  /** Switches Home Assistant lights on (at their level) or off. */
+  private async haSwitch(ids: string[], on: boolean): Promise<ApplyResult> {
+    const out: ApplyResult = { applied: [], skipped: [], failed: [] };
+    const ha = this.ha;
+    if (!ha || !ids.length) return out;
+    const results = await Promise.all(ids.map((id) => ha.set(entityOf(id), on, { bri: this.levelOf(id) })));
+    results.forEach((r, i) => (r.ok ? out.applied.push(ids[i]) : out.failed.push({ deviceId: ids[i], error: r.error })));
+    return out;
+  }
+
+  /**
+   * The Home Assistant lights that are on show colors: a scene's (one each, in turn) or one
+   * color. With none, they come on as they are.
+   */
+  private async haShow(colors: string[]): Promise<ApplyResult> {
+    const out: ApplyResult = { applied: [], skipped: [], failed: [] };
+    const ha = this.ha;
+    const ids = this.haLights().filter((id) => !this.isOff(id));
+    if (!ha || !ids.length) return out;
+    const rgbs = colors.map(parseHex).filter((c): c is NonNullable<typeof c> => !!c);
+    const results = await Promise.all(
+      ids.map((id, i) => ha.set(entityOf(id), true, { bri: this.levelOf(id), rgb: rgbs.length ? (rgbs[i % rgbs.length] as [number, number, number]) : null, transition: 1 }))
+    );
+    results.forEach((r, i) => (r.ok ? out.applied.push(ids[i]) : out.failed.push({ deviceId: ids[i], error: r.error })));
+    return out;
+  }
+
+  /** A device that booted (its plug came on) shows what plays now: the color, or its preset. */
+  private async restoreLook(d: Device) {
+    if (this.isOff(d.id)) return;
+    const color = parseHex(this.db.getSetting(KEY.currentColor) || '');
+    if (color) return void (await wled.applyColor(d, color as [number, number, number], this.levelOf(d.id)));
+    const presetId = this.showingScene()?.devicePresets[d.id];
+    if (!presetId) return;
+    await wled.applyPreset(d, presetId);
+    const bri = this.levelOf(d.id);
+    if (bri != null) setTimeout(() => void wled.brightness(d, bri), 150).unref?.();
+  }
+
+  /**
+   * Home Assistant's lights and plugs, read with each status check. A light or plug switched in
+   * Home Assistant (or by its own button) is switched that way here too, as for WLED's own app.
+   */
+  private async followHa() {
+    const ha = this.ha;
+    if (!ha?.connected()) return;
+    const { ok, changed } = await ha.refresh();
+    if (!ok || !changed.length) return;
+    const { plugs } = ha.settings();
+    const lights = new Set(this.haLights());
+    let c = this.controls();
+    const switched: string[] = [];
+    for (const e of changed) {
+      if (e.state !== 'on' && e.state !== 'off') continue;
+      // This app's own switch, coming back.
+      if (Date.now() - ha.lastWrite(e.id) < this.settleMs + this.pollMs) continue;
+      const on = e.state === 'on';
+      const ids = [...Object.entries(plugs).filter(([, p]) => p === e.id).map(([id]) => id), ...(lights.has(haId(e.id)) ? [haId(e.id)] : [])];
+      for (const id of ids) {
+        if (on !== c.off.includes(id)) continue;
+        c = { ...c, off: on ? c.off.filter((x) => x !== id) : [...c.off, id] };
+        if (on && !isHaId(id)) this.booting.add(id);
+        switched.push(`"${this.nameOf(id)}" switched ${on ? 'on' : 'off'}`);
+      }
+    }
+    this.bus.emit('devices');
+    if (!switched.length) return;
+    this.saveControls(c);
+    this.log('info', 'power', `${switched.join(', ')} in Home Assistant`);
+    this.bus.emit('state');
+    if (this.allOff()) {
+      this.cancelRevert();
+      this.onAllOff?.();
+    }
   }
 
   /**
@@ -735,7 +896,9 @@ export class Lights {
     });
     const result = await this.fanOut(work);
     this.noteMissed(result);
-    const what = deviceId ? `"${devices[0]?.name ?? deviceId}"` : 'All lights';
+    const haIds = this.haLights().filter((id) => !this.isOff(id) && (!deviceId || id === deviceId) && this.levelOf(id) != null);
+    merge(result, await this.haSwitch(haIds, true));
+    const what = deviceId ? `"${this.nameOf(deviceId)}"` : 'All lights';
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what}: brightness ${pct == null ? (deviceId ? 'follows all lights' : 'set by each scene') : `${pct}%`}`, result, actor);
     this.bus.emit('devices');
     return result;
