@@ -160,6 +160,15 @@ describe('lights in home assistant', () => {
     (t.lights as unknown as { pollMs: number }).pollMs = 0;
     await wait(5);
     ha.states.get('light.porch')!.state = 'off';
+    // Once two checks say so: off for a moment, then on again, is not switched off.
+    await t.lights.refreshStatus();
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    ha.states.get('light.porch')!.state = 'on';
+    await t.lights.refreshStatus();
+    await t.lights.refreshStatus();
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    ha.states.get('light.porch')!.state = 'off';
+    await t.lights.refreshStatus();
     await t.lights.refreshStatus();
     expect(t.lights.isOff('ha:light.porch')).toBe(true);
   });
@@ -215,6 +224,7 @@ describe('plugs that power a controller', () => {
     await wait(5);
     ha.states.get('switch.roof_psu')!.state = 'off';
     await t.lights.refreshStatus();
+    await t.lights.refreshStatus();
     expect(t.lights.isOff(ids[0])).toBe(true);
     expect(t.lights.isOff(ids[1])).toBe(false);
   });
@@ -265,9 +275,11 @@ describe('home assistant lights that misbehave', () => {
     await t.lights.refreshStatus();
     ha.states.get('light.porch')!.state = 'off';
     await t.lights.refreshStatus();
+    await t.lights.refreshStatus();
     expect(t.lights.isOff('ha:light.porch')).toBe(false);
     // Switched off from on: followed.
     ha.states.get('light.garage')!.state = 'off';
+    await t.lights.refreshStatus();
     await t.lights.refreshStatus();
     expect(t.lights.isOff('ha:light.garage')).toBe(true);
   });
@@ -283,7 +295,7 @@ describe('home assistant lights that misbehave', () => {
     t.home.close();
   });
 
-  it('in the layout come on through light.turn_on, then take Zigbee colors', async () => {
+  it('in the layout come on through light.turn_on, then take Zigbee colors, and dim right down when dark', async () => {
     const { HaFrames } = await import('../src/haFrames.ts');
     await connect();
     t.home.setFrames({ fps: 10, direct: true });
@@ -298,15 +310,16 @@ describe('home assistant lights that misbehave', () => {
     frames.frame('ha:light.porch', [0, 0, 255], false);
     await until(() => ha.calls.length === 2);
     expect(ha.calls[1]).toMatchObject({ service: 'zha.issue_zigbee_cluster_command', body: { cluster_id: 0x0300 } });
-    // Dark a while: off through light.turn_off; lit again: on through light.turn_on.
+    // Dark: the level right down, as a Zigbee command (move to level, which never switches it off); lit: the level back.
     clock += 200;
     frames.frame('ha:light.porch', [0, 0, 0], false);
-    clock += 1600;
-    frames.frame('ha:light.porch', [0, 0, 0], false);
-    await until(() => ha.calls.at(-1)?.service === 'light.turn_off');
+    await until(() => ha.calls.length === 3);
+    expect(ha.calls[2]).toMatchObject({ service: 'zha.issue_zigbee_cluster_command', body: { cluster_id: 0x0008, command: 0, params: { level: 1 } } });
     clock += 200;
     frames.frame('ha:light.porch', [0, 255, 0], false);
-    await until(() => ha.calls.at(-1)?.service === 'light.turn_on');
+    await until(() => ha.calls.length === 5);
+    expect(ha.calls.slice(3).map((c) => c.body.cluster_id as number).sort((a, b) => a - b)).toEqual([0x0008, 0x0300]);
+    expect(ha.calls.some((c) => c.service === 'light.turn_off')).toBe(false);
     frames.close();
     t.home.close();
   });
@@ -371,18 +384,20 @@ describe('home assistant lights in the layout', () => {
     await until(() => ha.calls.length === sent + 2);
     expect(ha.calls.at(-1)!.body.transition).toBe(0.1);
 
-    // Dark for a moment: it keeps its color. Dark a while: off. Switched off by an admin: nothing is sent.
+    // Dark: never off, its last color right down (only the brightness goes). Dark again: nothing more.
     clock += 100;
     const lit = ha.calls.length;
     frames.frame('ha:light.porch', [0, 0, 0], false);
+    await until(() => ha.calls.length === lit + 1);
+    expect(ha.calls.at(-1)).toMatchObject({ service: 'light.turn_on', body: { brightness: 1 } });
+    expect(ha.calls.at(-1)!.body.rgb_color).toBeUndefined();
+    expect(ha.states.get('light.porch')!.state).toBe('on');
     clock += 1000;
     frames.frame('ha:light.porch', [0, 0, 0], false);
     await wait(50);
-    expect(ha.calls.length).toBe(lit);
-    expect(ha.states.get('light.porch')!.state).toBe('on');
-    clock += 600;
-    frames.frame('ha:light.porch', [0, 0, 0], false);
-    await until(() => ha.states.get('light.porch')!.state === 'off');
+    expect(ha.calls.length).toBe(lit + 1);
+    // Switched off by an admin: nothing is sent.
+    await t.home.set('light.porch', false);
     off.add('ha:light.porch');
     clock += 100;
     frames.frame('ha:light.porch', [0, 255, 0], false);

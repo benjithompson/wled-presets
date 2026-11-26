@@ -112,6 +112,11 @@ export class Lights {
   plugDelayMs = 1500;
   /** Devices whose plug was switched on: when they answer, they get the switches and what plays. */
   private booting = new Set<string>();
+  /**
+   * Switches seen in Home Assistant, by entity, waiting for the next check to say the same
+   * (see followHa): a Zigbee light can say off for a moment and on again.
+   */
+  private haSeen = new Map<string, 'on' | 'off'>();
   /** When the schedule switches the lights on next (ISO), or null: told to visitors while they are off. */
   lightsOnAt: () => string | null = () => null;
 
@@ -855,24 +860,35 @@ export class Lights {
 
   /**
    * Home Assistant's lights and plugs, read with each status check. A light or plug switched in
-   * Home Assistant (or by its own button) is switched that way here too, as for WLED's own app.
+   * Home Assistant (or by its own button) is switched that way here too, as for WLED's own app,
+   * once two checks in a row say so: a Zigbee light that says off for a moment, then on again,
+   * is not taken as switched off.
    */
   private async followHa() {
     const ha = this.ha;
     if (!ha?.connected()) return;
     const { ok, changed } = await ha.refresh();
-    if (!ok || !changed.length) return;
-    const { plugs } = ha.settings();
-    const lights = new Set(this.haLights());
-    let c = this.controls();
-    const switched: string[] = [];
+    if (!ok) return;
+    // The ones seen last time that still say the same now.
+    const confirmed = [...this.haSeen].filter(([id, state]) => ha.entity(id)?.state === state && Date.now() - ha.lastWrite(id) >= this.settleMs + this.pollMs);
+    this.haSeen.clear();
     for (const e of changed) {
       // Only on to off and back: a light coming back from unavailable (a Zigbee light that missed
       // a few checks) says what it is, which is no one switching it.
       if ((e.state !== 'on' && e.state !== 'off') || (e.from !== 'on' && e.from !== 'off')) continue;
       // This app's own switch, coming back.
       if (Date.now() - ha.lastWrite(e.id) < this.settleMs + this.pollMs) continue;
-      const on = e.state === 'on';
+      this.haSeen.set(e.id, e.state);
+    }
+    if (changed.length) this.bus.emit('devices');
+    if (!confirmed.length) return;
+    const { plugs } = ha.settings();
+    const lights = new Set(this.haLights());
+    let c = this.controls();
+    const switched: string[] = [];
+    for (const [entity, state] of confirmed) {
+      const e = { id: entity };
+      const on = state === 'on';
       const ids = [...Object.entries(plugs).filter(([, p]) => p === e.id).map(([id]) => id), ...(lights.has(haId(e.id)) ? [haId(e.id)] : [])];
       for (const id of ids) {
         if (on !== c.off.includes(id)) continue;
@@ -881,7 +897,6 @@ export class Lights {
         switched.push(`"${this.nameOf(id)}" switched ${on ? 'on' : 'off'}`);
       }
     }
-    this.bus.emit('devices');
     if (!switched.length) return;
     this.saveControls(c);
     this.log('info', 'power', `${switched.join(', ')} in Home Assistant`);
