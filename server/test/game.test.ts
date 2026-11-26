@@ -403,6 +403,29 @@ describe('game host', () => {
     server.close();
   });
 
+  it('tells the activity log who started a game, and how long they played', async () => {
+    const server = http.createServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const host = new GameHost(sampleLayout(), () => {});
+    const seen: { who: string; message: string; details: Record<string, unknown> }[] = [];
+    host.activity = (who, message, details) => seen.push({ who: who.id, message, details });
+    host.attach(server, '/api/play', () => ({ id: 'v-visitor-1234', actor: { ip: '203.0.113.9', userAgent: 'phone' } }));
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/play`);
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'start', game: 'catcher' }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(seen).toEqual([{ who: 'v-visitor-1234', message: 'started Comet Catcher', details: { game: 'catcher' } }]);
+    host.endGame('a color was chosen');
+    expect(seen[1]).toMatchObject({ who: 'v-visitor-1234', message: expect.stringMatching(/^played Comet Catcher for \d+ s$/), details: { game: 'catcher' } });
+    // Ended once: nothing more.
+    host.endGame('again');
+    expect(seen).toHaveLength(2);
+    ws.close();
+    host.stop();
+    server.close();
+  });
+
   it('streams compressed frames 30 times a second to a browser that asks, and nothing while the yard is still', async () => {
     const zlib = await import('node:zlib');
     const server = http.createServer();

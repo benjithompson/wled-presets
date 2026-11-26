@@ -9,7 +9,9 @@ import { LOGS } from './AdminLayout.tsx';
 
 const FILTERS: { value: string | null; label: string }[] = [
   { value: null, label: 'All' },
+  { value: 'visitor', label: 'Visitors' },
   { value: 'applied', label: 'Applied' },
+  { value: 'game', label: 'Games' },
   { value: 'auto_revert', label: 'Auto-revert' },
   { value: 'config', label: 'Config' },
   { value: 'settings', label: 'Settings' },

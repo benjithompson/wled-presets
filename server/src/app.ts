@@ -20,7 +20,7 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simp
 import { ConnectionLimit, limitBody, rateLimit } from './rateLimit.ts';
 import { cleanGameArea, readGameArea, readHiddenGames, readSettings, writeGameArea, writeHiddenGames, writeLineSettings, writeSettings } from './settings.ts';
 import { GAME_CATALOG } from '../../shared/games.ts';
-import { visitorCookie, visitorId } from './visitor.ts';
+import { visitorCookie, visitorId, visitorTag } from './visitor.ts';
 import type { Visitor } from './line.ts';
 import { DEFAULT_LINE, ordinal } from '../../shared/line.ts';
 import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, type SceneTransitionChoice } from '../../shared/transitions.ts';
@@ -265,6 +265,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   // A visitor id for the line for the lights.
   app.use('*', visitorCookie(config.secureCookie));
   const visitor = (c: Context): Visitor => ({ id: visitorId(c), admin: !!auth.currentUser(c), actor: actor(c) });
+  /** Who changes the lights from the public page: a visitor who is not an admin is logged as one (see Actor.visitor). */
+  const publicActor = (c: Context) => {
+    const v = visitor(c);
+    return v.admin ? actor(c) : { ...actor(c), visitor: visitorTag(v.id) };
+  };
   /** The line for the lights: with no game host (tests), there is none and the last choice wins. */
   const line = host?.line ?? null;
 
@@ -389,7 +394,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     line.subscribe(() => bus.emit('line'));
     line.onShow = (want, who) => {
       takeLights(want.kind === 'scene' ? 'a scene from the line' : 'a color from the line');
-      void (want.kind === 'scene' ? lights.applyScene(want.id, who.actor) : lights.applyColor(want.hex, who.actor)).catch(() => {});
+      const by = who.admin ? who.actor : { ...who.actor, visitor: visitorTag(who.id) };
+      void (want.kind === 'scene' ? lights.applyScene(want.id, by) : lights.applyColor(want.hex, by)).catch(() => {});
     };
   }
 
@@ -426,7 +432,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const queued = askLine(c, { kind: 'scene', id }, name);
     if (queued) return queued;
     takeLights('a scene');
-    const result = await lights.applyScene(id, actor(c));
+    const result = await lights.applyScene(id, publicActor(c));
     if (!result) throw new HttpError(404, 'Unknown scene');
     if (result.applied.length === 0 && !result.effects) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
@@ -439,7 +445,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const queued = askLine(c, { kind: 'color', hex }, `Color ${hex}`);
     if (queued) return queued;
     takeLights('a color');
-    const result = await lights.applyColor(color, actor(c));
+    const result = await lights.applyColor(color, publicActor(c));
     if (!result || result.applied.length === 0) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
   });

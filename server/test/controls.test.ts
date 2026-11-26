@@ -446,3 +446,18 @@ describe('WLED peek', () => {
     expect(peek.step).toBe(1);
   });
 });
+
+describe('activity of visitors', () => {
+  it('logs a visitor who changes the lights as one, with a tag, and an admin as before', async () => {
+    // An admin's color: applied.
+    expect((await t.call('POST', '/api/color', { color: '#ff0000' })).status).toBe(200);
+    let logs = t.db.listLogs(5, null);
+    expect(logs[0]).toMatchObject({ action: 'applied', message: expect.stringMatching(/^Color #ff0000/) });
+    // A visitor's: their own entry, under Visitors.
+    t.signOut();
+    expect((await t.call('POST', '/api/color', { color: '#00ff00' })).status).toBe(200);
+    logs = t.db.listLogs(5, 'visitor');
+    expect(logs[0]).toMatchObject({ action: 'visitor', message: expect.stringMatching(/^Visitor [\w-]{6}: color #00ff00 applied/) });
+    expect((logs[0].details as { visitor: string }).visitor).toMatch(/^[\w-]{6}$/);
+  });
+});
