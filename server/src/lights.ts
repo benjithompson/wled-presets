@@ -404,9 +404,13 @@ export class Lights {
     return (this.live ??= this.devicesWithStatus().map((d) => (d.enabled && this.isOff(d.id) ? { ...d, enabled: false, switchedOff: true } : d)));
   }
 
+  /** The frames a second the sender sends a device now (see LightSender.sending): set by the server. */
+  sendingTo: ((d: Device & { info: DeviceInfo | null }) => { fps: number; held: boolean } | null) | null = null;
+
   devicesWithStatus(): DeviceWithStatus[] {
     return this.db.listDevices().map((d) => {
       const s = this.status.get(d.id);
+      const sending = d.enabled ? (this.sendingTo?.({ ...d, info: s?.info ?? null }) ?? null) : null;
       const p = d.enabled && s?.online ? this.seen.get(d.id) : undefined;
       const plug = this.plugOf(d.id);
       const e = plug ? this.ha?.entity(plug) : undefined;
@@ -416,7 +420,8 @@ export class Lights {
         info: s?.info ?? null,
         lastSeen: s?.lastSeen ?? null,
         power: p ? { on: p.on, bri: p.bri } : null,
-        ...(plug ? { plug: { entity: plug, name: e?.name ?? plug, on: e?.state === 'on' ? true : e?.state === 'off' ? false : null } } : {})
+        ...(plug ? { plug: { entity: plug, name: e?.name ?? plug, on: e?.state === 'on' ? true : e?.state === 'off' ? false : null } } : {}),
+        ...(sending ? { sending } : {})
       };
     });
   }

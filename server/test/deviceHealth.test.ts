@@ -71,6 +71,19 @@ describe('a device that falls behind', () => {
     expect(sender.rate(device)).toBe(20);
     sender.close();
   });
+
+  it('says how many frames a second it sends a device now, and whether it is held', () => {
+    const sender = new LightSender();
+    sender.maxFps = 30;
+    sender.clockHz = 60;
+    const device = { id: 'w', name: 'Windows', host: '127.0.0.1', port: 1, enabled: true, info: { leds: { count: 150 }, outputs: [{ len: 150, type: 22 }] } };
+    expect(sender.sending(device)).toBeNull();
+    sender.send(device, new Uint8Array(450));
+    expect(sender.sending(device)).toEqual({ fps: 30, held: false });
+    sender.hold.checked('w', 'Windows', { ok: true, ms: 100, fps: 5 }, 30, 30, 60);
+    expect(sender.sending(device)).toEqual({ fps: 20, held: true });
+    sender.close();
+  });
 });
 
 describe('status checks of a slow device', () => {

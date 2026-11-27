@@ -171,6 +171,18 @@ export class LightSender {
     f.shown = rgb;
   }
 
+  /**
+   * The most frames a second this device gets now (null: no frames lately), and whether its
+   * hold makes that fewer than it would get. A still picture is sent less often (see RESEND_MS).
+   */
+  sending(d: DeviceTarget): { fps: number; held: boolean } | null {
+    const link = this.links.get(d.id);
+    if (!link || Date.now() - link.lastFrame >= IDLE_MS) return null;
+    if (link.mode === 'http') return { fps: HTTP_FPS, held: false };
+    const fps = this.rate(d);
+    return { fps: Math.round(fps * 10) / 10, held: fps < sendFps(d.info, this.maxFps, this.clockHz) };
+  }
+
   /** The frames a second this device is sent while it gets frames: its strip's, the admin's limit, or its hold. */
   rate(d: DeviceTarget): number {
     return sendFps(d.info, Math.min(this.maxFps, this.hold.limit(d.id)), this.clockHz);

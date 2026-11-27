@@ -57,6 +57,13 @@ describe('device rows', () => {
     expect(rows.map((r) => r.fps)).toEqual([42, 42, null, null, null, null]);
   });
 
+  it('shows the frames the site sends a device while it gets them, else its own rate', () => {
+    const [streaming, idle] = buildRows(sources({ devices: [device('a', { sending: { fps: 30, held: false } }), device('b')] }));
+    // WLED counts 42 for 30 frames that come in bunches: the column says 30.
+    expect(streaming).toMatchObject({ fps: 30, shows: 42, sending: { fps: 30, held: false } });
+    expect(idle).toMatchObject({ fps: 42, shows: 42, sending: null });
+  });
+
   it('adds the Home Assistant lights, held off here winning over what Home Assistant says', () => {
     const ha = view([entity('light.porch', { area: 'Porch' }), entity('light.held'), entity('light.out', { state: 'unavailable' }), entity('light.idle')], ['light.porch', 'light.held', 'light.out', 'light.gone', 'light.idle'], ['light.idle']);
     const rows = buildRows(sources({ ha, off: new Set(['ha:light.held']), fixtures: [{ name: 'Lamp', deviceId: 'ha:light.porch' }] }));

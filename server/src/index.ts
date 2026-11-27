@@ -55,6 +55,8 @@ const applyFrameRate = () => {
   sender.clockHz = frameClock(limit);
   pipeline.setRate(sender.clockHz);
 };
+// The console shows the frames a second each device is sent now.
+lights.sendingTo = (d) => sender.sending(d);
 // A device that falls behind while it gets frames gets fewer (see FrameRateHold).
 lights.onChecked = (d, c) => {
   const live = lights.liveDevices().find((x) => x.id === d.id);
