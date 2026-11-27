@@ -29,7 +29,7 @@ import type { RoofView } from './roofView.ts';
 import type { LightScheduler } from './lightSchedule.ts';
 import { cleanHaUrl, HA_FPS, HA_INFLIGHT_MAX, type HomeAssistant } from './homeAssistant.ts';
 import { haSpeedTest } from './haSpeedTest.ts';
-import { isSwitchable } from '../../shared/homeAssistant.ts';
+import { haId, isSwitchable } from '../../shared/homeAssistant.ts';
 import { isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
@@ -635,6 +635,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
       ...before.disabled.filter((id) => !after.disabled.includes(id) && next.includes(id)).map((id) => `"${name(id)}" enabled`)
     ].filter(Boolean);
     if (changes.length) lights.log('info', 'settings', `Home Assistant lights: ${changes.join('; ')}`, null, actor(c));
+    const again = before.disabled.filter((id) => !after.disabled.includes(id) && next.includes(id)).map(haId);
+    await lights.haEnabledAgain(again);
     bus.emit('devices');
     bus.emit('state');
     return c.json(h.view());

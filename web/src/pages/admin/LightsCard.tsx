@@ -34,7 +34,8 @@ export function LightsCard({ devices }: { devices: DeviceWithStatus[] }) {
   const isOn = (d: DeviceWithStatus) => (d.power ? d.power.on : !off.has(d.id));
   // A device whose plug is off does not answer, and that is as it should be.
   const unplugged = (d: DeviceWithStatus) => d.online === false && !!d.plug && d.plug.on === false;
-  const haOn = (id: string, state: string) => (state === 'on' ? true : state === 'off' ? false : !off.has(haId(id)));
+  // Held off by the site: off here, whatever Home Assistant says (no colors go to it).
+  const haOn = (id: string, state: string) => (off.has(haId(id)) ? false : state === 'on' ? true : state === 'off' ? false : true);
   // Lights that answer say how they are; an offline one cannot.
   const reachable = enabled.filter((d) => d.online !== false || unplugged(d));
   const haReachable = haLights.filter((e) => e.state !== 'unavailable');

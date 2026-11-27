@@ -264,6 +264,38 @@ describe('a disabled home assistant light', () => {
   });
 });
 
+describe('a home assistant light enabled again', () => {
+  it('is as the other lights: switched on while it was disabled, it is on, and shows the color', async () => {
+    await connect();
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    expect(t.lights.isOff('ha:light.porch')).toBe(true);
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.porch'] });
+    ha.calls.length = 0;
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    // Nothing went to it, but its switch is on with the rest.
+    expect(ha.calls.some((c) => c.body.entity_id === 'light.porch')).toBe(false);
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    await t.call('POST', '/api/color', { color: '#00ff00' });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] });
+    expect(ha.states.get('light.porch')).toMatchObject({ state: 'on', attributes: { rgb_color: [0, 255, 0] } });
+  });
+
+  it('held off while the others are on (from before this version) comes on with them', async () => {
+    await connect();
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.porch'] });
+    const c = t.lights.controls();
+    (t.lights as unknown as { saveControls: (c: unknown) => void }).saveControls({ ...c, off: [...c.off, 'ha:light.porch'] });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] });
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    // All off: one enabled again stays off.
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.porch'] });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] });
+    expect(t.lights.isOff('ha:light.porch')).toBe(true);
+  });
+});
+
 describe('home assistant lights that misbehave', () => {
   it('coming back from unavailable are not taken as switched off', async () => {
     await connect();

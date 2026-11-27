@@ -770,9 +770,11 @@ export class Lights {
     const picked = deviceId == null ? null : new Set(typeof deviceId === 'string' ? [deviceId] : deviceId);
     const target = picked ? all.filter((d) => picked.has(d.id)) : all;
     const haTarget = picked ? ha.filter((id) => picked.has(id)) : ha;
-    const ids = new Set([...target.map((d) => d.id), ...haTarget]);
-    // A disabled light keeps its switch for when it is enabled again, as a disabled device does.
-    const known = new Set([...all.map((d) => d.id), ...(this.ha?.settings().lights.map(haId) ?? [])]);
+    // A disabled light keeps its switch for when it is enabled again, as a disabled device does,
+    // and all lights switch it too (nothing is sent to it): enabled again, it is as the rest.
+    const haAll = this.ha?.connected() ? this.ha.settings().lights.map(haId) : [];
+    const ids = new Set([...target.map((d) => d.id), ...(picked ? haTarget : haAll)]);
+    const known = new Set([...all.map((d) => d.id), ...haAll]);
     const c = this.controls();
     const off = on ? c.off.filter((id) => !ids.has(id)) : [...new Set([...c.off, ...ids])];
     this.saveControls({ ...c, off: off.filter((id) => known.has(id)) });
@@ -832,11 +834,11 @@ export class Lights {
    * The Home Assistant lights that are on show colors: a scene's (one each, in turn) or one
    * color. With none, they come on as they are.
    */
-  private async haShow(colors: string[], streamed: ReadonlySet<string> = new Set()): Promise<ApplyResult> {
+  private async haShow(colors: string[], streamed: ReadonlySet<string> = new Set(), only?: ReadonlySet<string>): Promise<ApplyResult> {
     const out: ApplyResult = { applied: [], skipped: [], failed: [] };
     const ha = this.ha;
     // A light in the layout that plays the scene's effects gets them as frames instead (see HaFrames).
-    const ids = this.haLights().filter((id) => !this.isOff(id) && !streamed.has(id));
+    const ids = this.haLights().filter((id) => !this.isOff(id) && !streamed.has(id) && (!only || only.has(id)));
     if (!ha || !ids.length) return out;
     const rgbs = colors.map(parseHex).filter((c): c is NonNullable<typeof c> => !!c);
     const results = await Promise.all(
@@ -844,6 +846,28 @@ export class Lights {
     );
     results.forEach((r, i) => (r.ok ? out.applied.push(ids[i]) : out.failed.push({ deviceId: ids[i], error: r.error })));
     return out;
+  }
+
+  /**
+   * Home Assistant lights enabled again ("ha:" ids): each one's switch is as the other lights'
+   * (on when any of them is on, so one held off while it was disabled does not stay dark), and
+   * one that is on shows what plays now: the color, or the scene's colors (effects reach it as
+   * frames by themselves).
+   */
+  async haEnabledAgain(ids: string[]): Promise<void> {
+    if (!ids.length) return;
+    const back = new Set(ids);
+    const others = [...this.enabledDevices().map((d) => d.id), ...this.haLights().filter((id) => !back.has(id))];
+    const c = this.controls();
+    if (others.some((id) => !c.off.includes(id)) && c.off.some((id) => back.has(id))) this.saveControls({ ...c, off: c.off.filter((id) => !back.has(id)) });
+    const on = ids.filter((id) => !this.isOff(id));
+    if (!on.length) return;
+    const color = this.db.getSetting(KEY.currentColor) || '';
+    const scene = this.showingScene();
+    const colors = color ? [color] : scene ? mergeLooks(this.sceneReach()(scene).looks).colors : [];
+    await this.haShow(colors, new Set(), new Set(on));
+    this.bus.emit('devices');
+    this.bus.emit('state');
   }
 
   /** A device that booted (its plug came on) shows what plays now: the color, or its preset. */
