@@ -17,6 +17,7 @@ import { kindOf } from './EntityTable.tsx';
 import { FrameSettingsDialog, SpeedTestDialog, useSaveLights } from './HaLightDialogs.tsx';
 import { useHomeAssistant } from './HomeAssistantCard.tsx';
 import {
+  asSwitched,
   buildRows,
   commandsText,
   filterRows,
@@ -115,7 +116,7 @@ export function DeviceTable({
 }) {
   const qc = useQueryClient();
   const { data: controls } = useLightControls();
-  const { power, brightness } = useLightMutations();
+  const { power, brightness, switchOf } = useLightMutations();
   const { data: ha } = useHomeAssistant();
   const { data: layout } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
   const saveHa = useSaveLights();
@@ -148,7 +149,9 @@ export function DeviceTable({
 
   const off = useMemo(() => new Set(controls?.off ?? []), [controls]);
   const haConnected = !!ha?.url && ha.hasToken;
-  const rows = buildRows({ devices, ha, off, fixtures: layout?.fixtures ?? [] });
+  // A switch shows at once, as asked, while it is on its way.
+  const rows = buildRows({ devices, ha, off, fixtures: layout?.fixtures ?? [] }).map((r) => asSwitched(r, switchOf(r.key)));
+  const allSwitch = switchOf(null);
   const shown = sortRows(filterRows(rows, filter), sort);
   const groups = groupRows(shown, group);
   const areas = [...new Set(rows.map((r) => r.area).filter(Boolean))].sort();
@@ -163,7 +166,15 @@ export function DeviceTable({
   const offline = enabled.length - reachable.length;
   const allOff = reachable.length ? lit === 0 : enabled.every((r) => off.has(r.key));
   const all = controls?.brightness.all ?? null;
-  const summary = !reachable.length ? 'Offline' : allOff ? 'Off' : lit < reachable.length ? `${reachable.length - lit} of ${reachable.length} off` : 'On';
+  const summary = allSwitch?.busy
+    ? `Turning ${allSwitch.on ? 'on' : 'off'}…`
+    : !reachable.length
+      ? 'Offline'
+      : allOff
+        ? 'Off'
+        : lit < reachable.length
+          ? `${reachable.length - lit} of ${reachable.length} off`
+          : 'On';
 
   const setHaEnabled = (r: DeviceRow, on: boolean) =>
     ha &&
@@ -196,7 +207,8 @@ export function DeviceTable({
         size="sm"
         on={on}
         label={gone ? `${r.name} (offline)` : r.name}
-        disabled={!controls || power.isPending || (gone && !d?.plug)}
+        busy={r.switching}
+        disabled={!controls || (gone && !d?.plug)}
         onToggle={() => power.mutate({ on: gone && d?.plug ? off.has(r.key) : !on, deviceId: r.key })}
       />
     );
@@ -398,7 +410,7 @@ export function DeviceTable({
 
       {enabled.length ? (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-b border-stone-100 px-4 py-4 sm:px-5 dark:border-stone-800">
-          <PowerButton on={!allOff} label="All lights" disabled={!controls || power.isPending} onToggle={() => power.mutate({ on: allOff })} />
+          <PowerButton on={allSwitch ? allSwitch.on : !allOff} busy={allSwitch?.busy} label="All lights" disabled={!controls} onToggle={() => power.mutate({ on: allOff })} />
           <div className="min-w-0">
             <p className="font-medium">All lights</p>
             <p className="text-sm text-stone-500 dark:text-stone-400">

@@ -10,6 +10,8 @@ export type Status = 'on' | 'off' | 'offline' | 'disabled';
 export interface DeviceRow {
   /** Its id in the lights' switches: a WLED device's id, or ha:<entity id>. */
   key: string;
+  /** A switch for it (its own, or all lights') is on its way: status says what it was asked (see asSwitched). */
+  switching?: boolean;
   source: Source;
   name: string;
   /** Host (and port when not 80) of a WLED device; entity id of a Home Assistant light. */
@@ -209,4 +211,16 @@ export function groupRows(rows: DeviceRow[], by: GroupBy): [string, DeviceRow[]]
   const rank = (g: string) =>
     by === 'source' ? (g === 'WLED' ? 0 : 1) : by === 'status' ? Object.values(STATUS_NAME).indexOf(g) : by === 'integration' ? (g === 'WLED' ? 0 : 1) : g === 'No area' ? 1 : 0;
   return [...groups].sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+/**
+ * A row as its switch shows (see useLightMutations' switchOf): while a switch is on its way, or
+ * just done, the state asked for, at once. A light that does not answer stays offline, unless
+ * it was switched on its own and has a plug, which powers it up.
+ */
+export function asSwitched(r: DeviceRow, s: { on: boolean; busy: boolean; own: boolean } | null): DeviceRow {
+  if (!s || !r.enabled) return r;
+  if (r.status === 'offline' && !(s.own && r.device?.plug)) return r;
+  const text = s.busy ? (s.on ? 'Turning on…' : 'Turning off…') : s.on ? 'On' : 'Off';
+  return { ...r, status: s.on ? 'on' : 'off', statusText: text, switching: s.busy };
 }
