@@ -1,50 +1,36 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, House, Pencil, Play, Plus, Radar, RefreshCw, Router, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { House, Plus, Radar, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, DiscoveredDevice } from '../../../../shared/types.ts';
-import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Spinner, StatusDot, Switch } from '../../components/ui.tsx';
-import { MoreButton } from '../../components/mobile.tsx';
+import { Badge, Button, ConfirmDialog, Dialog, Field, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
 import { api, type DeviceInput, type PresetImport } from '../../lib/api.ts';
-import { cn, errorText, relativeTime } from '../../lib/utils.ts';
+import { cn, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
-import { LightsCard } from './LightsCard.tsx';
+import { DeviceTable } from './DeviceTable.tsx';
+import { AddHaLightsDialog } from './HaLightDialogs.tsx';
 import { ScheduleCard } from './ScheduleCard.tsx';
-import { HaLightsCard } from './HaLightsCard.tsx';
 import { useHomeAssistant } from './HomeAssistantCard.tsx';
 import { WledSettingsDialog } from './WledSettings.tsx';
 
 export function DevicesPage() {
   const qc = useQueryClient();
-  const { data, isLoading } = useOverview();
+  // Read often: a device's frame rate and Wi-Fi change between status checks.
+  const { data, isLoading } = useOverview(10_000);
   const [editing, setEditing] = useState<DeviceWithStatus | 'new' | null>(null);
   const [deleting, setDeleting] = useState<DeviceWithStatus | null>(null);
   const [configuring, setConfiguring] = useState<DeviceWithStatus | null>(null);
   const [discovering, setDiscovering] = useState(false);
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [addingHa, setAddingHa] = useState(false);
   const { data: ha } = useHomeAssistant();
   const haConnected = !!ha?.url && ha.hasToken;
   const refresh = () => qc.invalidateQueries({ queryKey: OVERVIEW });
 
-  const toggle = useMutation({
-    mutationFn: (d: DeviceWithStatus) => api.updateDevice(d.id, { name: d.name, host: d.host, port: d.port, enabled: !d.enabled }),
-    onSuccess: refresh,
-    onError: (e) => toast.error(errorText(e))
-  });
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteDevice(id),
     onSuccess: () => {
       toast.success('Device removed');
       setDeleting(null);
-      refresh();
-    },
-    onError: (e) => toast.error(errorText(e))
-  });
-  const syncOne = useMutation({
-    mutationFn: (id: string) => api.syncPresets(id),
-    onSuccess: (r) => {
-      toast.success(`Imported ${r.count} preset(s)`);
       refresh();
     },
     onError: (e) => toast.error(errorText(e))
@@ -60,20 +46,23 @@ export function DevicesPage() {
   });
 
   const devices = data?.devices ?? [];
-  const online = devices.filter((d) => d.online).length;
-  const enabled = devices.filter((d) => d.enabled).length;
+  const enabled = devices.filter((d) => d.enabled);
+  const online = enabled.filter((d) => d.online).length;
+  const haLights = haConnected ? ha.lights.length : 0;
 
   return (
     <>
       <PageHeader
         title="Devices"
         description={
-          devices.length ? `${online} of ${enabled} enabled device(s) online. Status refreshes every few seconds.` : 'The WLED controllers that this app sends commands to.'
+          devices.length || haLights
+            ? `${online} of ${enabled.length} enabled WLED device(s) online${haLights ? `, and ${haLights} Home Assistant light(s)` : ''}. Status refreshes every few seconds.`
+            : 'The WLED controllers and Home Assistant lights that this app controls.'
         }
         more={[
-          { label: syncAll.isPending ? 'Importing presets…' : 'Import all presets', icon: RefreshCw, run: () => syncAll.mutate(), disabled: !enabled || syncAll.isPending },
+          { label: syncAll.isPending ? 'Importing presets…' : 'Import all presets', icon: RefreshCw, run: () => syncAll.mutate(), disabled: !enabled.length || syncAll.isPending },
           { label: 'Discover', icon: Radar, run: () => setDiscovering(true) },
-          ...(haConnected ? [{ label: 'Add Home Assistant light', icon: House, run: () => setAddingHa(true) }] : [])
+          ...(haConnected ? [{ label: 'Add Home Assistant lights', icon: House, run: () => setAddingHa(true) }] : [])
         ]}
         actions={
           <Button variant="primary" onClick={() => setEditing('new')}>
@@ -82,127 +71,24 @@ export function DevicesPage() {
         }
       />
 
-      <LightsCard devices={devices} />
-      {enabled ? <ScheduleCard /> : null}
+      <DeviceTable
+        devices={devices}
+        presets={data?.devicePresets ?? {}}
+        maxFps={data?.settings.maxFps ?? 30}
+        loading={isLoading}
+        onAdd={() => setEditing('new')}
+        onDiscover={() => setDiscovering(true)}
+        onEdit={setEditing}
+        onConfigure={setConfiguring}
+        onRemove={setDeleting}
+      />
+      {enabled.length || haLights ? (
+        <div className="mt-6">
+          <ScheduleCard />
+        </div>
+      ) : null}
 
-      <Card>
-        {isLoading ? (
-          <div className="grid place-items-center py-16">
-            <Spinner />
-          </div>
-        ) : !devices.length ? (
-          <Empty
-            icon={<Router />}
-            title="No devices yet"
-            action={
-              <div className="flex flex-wrap justify-center gap-2">
-                <Button onClick={() => setDiscovering(true)}>
-                  <Radar /> Scan the network
-                </Button>
-                <Button variant="primary" onClick={() => setEditing('new')}>
-                  <Plus /> Add by address
-                </Button>
-              </div>
-            }
-          >
-            Scan the network to find WLED devices, or add one by its IP address.
-          </Empty>
-        ) : (
-          <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-            {devices.map((d) => {
-              const presets = data?.devicePresets[d.id] ?? [];
-              const open = expanded === d.id;
-              return (
-                <li key={d.id}>
-                  <div className="flex items-center gap-x-3 gap-y-2 py-3.5 pr-2 pl-4 sm:gap-x-4 sm:px-5">
-                    <StatusDot online={d.enabled ? d.online : null} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate font-medium">{d.name}</span>
-                        {!d.enabled ? <Badge>Disabled</Badge> : d.online === false ? <Badge tone="red">Offline</Badge> : null}
-                      </div>
-                      <p className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-stone-500 dark:text-stone-400">
-                        <span className="font-mono text-[13px]">
-                          {d.host}
-                          {d.port !== 80 ? `:${d.port}` : ''}
-                        </span>
-                        {d.info?.ver ? <span>WLED {d.info.ver}</span> : null}
-                        {d.info?.leds?.count ? <span>{d.info.leds.count} LEDs</span> : null}
-                        {d.online === false && d.lastSeen ? <span>Last seen {relativeTime(d.lastSeen)}</span> : null}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setExpanded(open ? null : d.id)}
-                        aria-expanded={open}
-                        className="-ml-2 inline-flex h-9 items-center gap-1 rounded-lg px-2 text-[13px] font-medium text-stone-600 md:hidden dark:text-stone-400"
-                      >
-                        {presets.length} preset{presets.length === 1 ? '' : 's'}
-                        <ChevronDown className={cn('size-3.5 transition', open && 'rotate-180')} />
-                      </button>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setExpanded(open ? null : d.id)}
-                        aria-expanded={open}
-                        className="inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-stone-600 hover:bg-stone-100 max-md:hidden dark:text-stone-400 dark:hover:bg-stone-800"
-                      >
-                        {presets.length} preset{presets.length === 1 ? '' : 's'}
-                        <ChevronDown className={cn('size-3.5 transition', open && 'rotate-180')} />
-                      </button>
-                      <Button size="sm" variant="ghost" title="WLED settings" aria-label={`WLED settings of ${d.name}`} onClick={() => setConfiguring(d)} className="max-md:hidden">
-                        <SlidersHorizontal />
-                      </Button>
-                      <Button size="sm" variant="ghost" aria-label={`Edit ${d.name}`} onClick={() => setEditing(d)} className="max-md:hidden">
-                        <Pencil />
-                      </Button>
-                      <Button size="sm" variant="ghost" aria-label={`Remove ${d.name}`} onClick={() => setDeleting(d)} className="hover:text-red-600 max-md:hidden dark:hover:text-red-400">
-                        <Trash2 />
-                      </Button>
-                      <span className="ml-1">
-                        <Switch label={`${d.name} enabled`} checked={d.enabled} onChange={() => toggle.mutate(d)} disabled={toggle.isPending} />
-                      </span>
-                      <MoreButton
-                        className="md:hidden"
-                        label={`More for ${d.name}`}
-                        title={d.name}
-                        items={[
-                          { label: 'WLED settings', icon: SlidersHorizontal, run: () => setConfiguring(d) },
-                          { label: 'Edit', icon: Pencil, run: () => setEditing(d) },
-                          { label: 'Import its presets', icon: RefreshCw, disabled: !d.enabled, run: () => syncOne.mutate(d.id) },
-                          { label: 'Remove', icon: Trash2, danger: true, run: () => setDeleting(d) }
-                        ]}
-                      />
-                    </div>
-                  </div>
-                  {open ? (
-                    <div className="border-t border-stone-100 bg-stone-50/60 px-4 py-4 sm:px-5 dark:border-stone-800 dark:bg-stone-950/40">
-                      <div className="mb-3 flex items-center justify-between gap-2">
-                        <p className="text-sm text-stone-500">Presets stored on this device. Play one to test it.</p>
-                        <Button size="sm" onClick={() => syncOne.mutate(d.id)} loading={syncOne.isPending && syncOne.variables === d.id} disabled={!d.enabled}>
-                          <RefreshCw /> Import
-                        </Button>
-                      </div>
-                      {presets.length ? (
-                        <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                          {presets.map((p) => (
-                            <PresetChip key={p.id} deviceId={d.id} id={p.id} name={p.name} disabled={!d.enabled || d.online === false} />
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-sm text-stone-500">No presets imported yet.</p>
-                      )}
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Card>
-
-      <HaLightsCard adding={addingHa} onAdding={setAddingHa} />
-
+      {haConnected ? <AddHaLightsDialog open={addingHa} view={ha} onClose={() => setAddingHa(false)} /> : null}
       {editing ? <DeviceDialog key={editing === 'new' ? 'new' : editing.id} device={editing === 'new' ? null : editing} onClose={() => setEditing(null)} /> : null}
       {configuring ? <WledSettingsDialog key={configuring.id} device={configuring} presets={data?.devicePresets[configuring.id] ?? []} onClose={() => setConfiguring(null)} /> : null}
       {discovering ? <DiscoverDialog defaultSubnets={data?.settings.discoverySubnets ?? []} onClose={() => setDiscovering(false)} /> : null}
@@ -219,28 +105,6 @@ export function DevicesPage() {
         Scenes stop sending commands to this device, and its links in every scene are deleted. The device itself does not change.
       </ConfirmDialog>
     </>
-  );
-}
-
-function PresetChip({ deviceId, id, name, disabled }: { deviceId: string; id: number; name: string; disabled: boolean }) {
-  const play = useMutation({
-    mutationFn: () => api.applyDevicePreset(deviceId, id),
-    onError: (e) => toast.error(errorText(e))
-  });
-  return (
-    <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 text-sm ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
-      <span className="w-6 shrink-0 text-xs text-stone-400 tabular-nums">{id}</span>
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      <button
-        type="button"
-        aria-label={`Play ${name}`}
-        disabled={disabled || play.isPending}
-        onClick={() => play.mutate()}
-        className="grid size-6 place-items-center rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-900 disabled:opacity-30 dark:hover:bg-stone-800 dark:hover:text-white"
-      >
-        {play.isPending ? <Spinner className="size-3.5" /> : <Play className="size-3.5" />}
-      </button>
-    </div>
   );
 }
 

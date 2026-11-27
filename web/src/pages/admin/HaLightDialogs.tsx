@@ -1,18 +1,20 @@
+// The Home Assistant lights' dialogs on the Devices page: adding lights, how the ones in the
+// layout take colors, and a speed test of one light. The lights themselves are rows of the
+// Devices table (see DeviceTable).
 import { useState } from 'react';
-import { Link } from 'react-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Gauge, House, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Gauge } from 'lucide-react';
 import { toast } from 'sonner';
-import { haId, type HaEntity, type HaSpeedResult, type HaView } from '../../../../shared/homeAssistant.ts';
-import { Badge, Button, Card, CardHeader, Dialog, Empty, Field, Select, Switch } from '../../components/ui.tsx';
+import type { HaEntity, HaSpeedResult, HaView } from '../../../../shared/homeAssistant.ts';
+import { Button, Dialog, Field, Select, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { OVERVIEW } from './AdminLayout.tsx';
-import { EntityIcon, EntityTable, kindOf } from './EntityTable.tsx';
-import { HA, useHomeAssistant } from './HomeAssistantCard.tsx';
+import { EntityTable } from './EntityTable.tsx';
+import { HA } from './HomeAssistantCard.tsx';
 
 /** Saves the Home Assistant lights in use, with the caches they touch kept fresh. */
-function useSaveLights() {
+export function useSaveLights() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: string[] | { lights: string[]; disabled: string[] }) => (Array.isArray(v) ? api.saveHaLights(v) : api.saveHaLights(v.lights, v.disabled)),
@@ -25,118 +27,8 @@ function useSaveLights() {
   });
 }
 
-/**
- * Home Assistant lights the site controls, as devices: added from Home Assistant's lights and
- * switches, each with where it is and what it does. In the layout, any object can be one of
- * them (its Device), so effects and games reach it too.
- */
-export function HaLightsCard({ adding, onAdding }: { adding: boolean; onAdding: (v: boolean) => void }) {
-  const { data: ha } = useHomeAssistant();
-  const { data: layout } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
-  const save = useSaveLights();
-  const [testing, setTesting] = useState<HaEntity | null>(null);
-  const [tuning, setTuning] = useState(false);
-  const connected = !!ha?.url && ha.hasToken;
-  if (!ha) return null;
-
-  const byId = new Map(ha.entities.map((e) => [e.id, e]));
-  const objectsOf = (id: string) => (layout?.fixtures ?? []).filter((f) => f.deviceId === haId(id)).map((f) => f.name);
-
-  return (
-    <Card className="mt-6">
-      <CardHeader
-        title="Home Assistant lights"
-        description="Lights from Home Assistant that the site controls: they switch with all lights and the schedule, take scene and visitor colors, and in the layout any object can be one (its Device)."
-        actions={
-          connected ? (
-            <>
-              <Button size="sm" variant="ghost" title="How the lights in the layout take colors" onClick={() => setTuning(true)}>
-                <SlidersHorizontal /> <span className="max-sm:hidden">{`${ha.fps}/s · ${ha.fade ? 'fade' : 'instant'}${ha.direct ? ' · Zigbee' : ''}`}</span>
-              </Button>
-              <Button size="sm" onClick={() => onAdding(true)}>
-                <Plus /> Add lights
-              </Button>
-            </>
-          ) : null
-        }
-      />
-      {!connected ? (
-        <Empty icon={<House />} title="Home Assistant is not connected">
-          Connect it under <Link to="/admin/settings" className="font-medium text-stone-900 underline underline-offset-2 dark:text-white">Settings → Home Assistant</Link>, then add its lights here.
-        </Empty>
-      ) : !ha.lights.length ? (
-        <Empty
-          icon={<House />}
-          title="No Home Assistant lights yet"
-          action={
-            <Button variant="primary" onClick={() => onAdding(true)}>
-              <Plus /> Add lights
-            </Button>
-          }
-        >
-          Pick lights and switches from Home Assistant to control them with the yard.
-        </Empty>
-      ) : (
-        <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-          {ha.lights.map((id) => {
-            const e = byId.get(id);
-            const objects = objectsOf(id);
-            const enabled = !ha.disabled.includes(id);
-            return (
-              <li key={id} className={cn('flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5', !enabled && 'opacity-60')}>
-                {e ? <EntityIcon e={e} className="size-5" /> : null}
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate font-medium">{e?.name ?? id}</span>
-                    {!enabled ? <Badge>Disabled</Badge> : !e ? <Badge tone="amber">Not in Home Assistant</Badge> : e.state === 'unavailable' ? <Badge tone="red">Unavailable</Badge> : null}
-                  </div>
-                  <p className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-stone-500 dark:text-stone-400">
-                    <span className="font-mono text-[13px]">{id}</span>
-                    {e?.area ? <span>{e.area}</span> : null}
-                    {e ? <span>{kindOf(e) === 'light' ? (e.color ? 'Color' : e.dimmable ? 'Dims' : 'On and off') : 'On and off'}</span> : null}
-                    <span>{objects.length ? `In the layout: ${objects.join(', ')}` : 'Not in the layout'}</span>
-                  </p>
-                </div>
-                {id.startsWith('light.') ? (
-                  <Button size="sm" variant="ghost" title="How fast can it change color?" onClick={() => setTesting(e ?? { id, name: id, state: '', color: true, dimmable: true, outlet: false, area: '', device: '', integration: '' })}>
-                    <Gauge /> <span className="max-sm:hidden">Speed test</span>
-                  </Button>
-                ) : null}
-                <Switch
-                  label={`${e?.name ?? id} enabled`}
-                  checked={enabled}
-                  disabled={save.isPending}
-                  onChange={(on) =>
-                    save.mutate(
-                      { lights: ha.lights, disabled: on ? ha.disabled.filter((x) => x !== id) : [...ha.disabled, id] },
-                      { onSuccess: () => toast.success(`${e?.name ?? id} ${on ? 'enabled' : 'disabled: the site leaves it alone'}`) }
-                    )
-                  }
-                />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`Remove ${e?.name ?? id}`}
-                  className="hover:text-red-600 dark:hover:text-red-400"
-                  disabled={save.isPending}
-                  onClick={() => save.mutate(ha.lights.filter((x) => x !== id), { onSuccess: () => toast.success(`${e?.name ?? id} removed`) })}
-                >
-                  <Trash2 />
-                </Button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {connected ? <AddHaLightsDialog open={adding} view={ha} onClose={() => onAdding(false)} /> : null}
-      {testing ? <SpeedTestDialog light={testing} view={ha} onClose={() => setTesting(null)} /> : null}
-      {tuning ? <FrameSettingsDialog view={ha} onClose={() => setTuning(false)} /> : null}
-    </Card>
-  );
-}
-
 /** Home Assistant's lights and switches, to pick the ones the site controls. Each switch saves at once. */
-function AddHaLightsDialog({ open, view, onClose }: { open: boolean; view: HaView; onClose: () => void }) {
+export function AddHaLightsDialog({ open, view, onClose }: { open: boolean; view: HaView; onClose: () => void }) {
   const save = useSaveLights();
   const [busy, setBusy] = useState<string | null>(null);
   const plugs = new Set(Object.values(view.plugs));
@@ -186,7 +78,7 @@ const RATES = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
  * instant change, and for ZHA lights Zigbee color commands or light.turn_on. A speed test finds
  * good values; this sets them without one.
  */
-function FrameSettingsDialog({ view, onClose }: { view: HaView; onClose: () => void }) {
+export function FrameSettingsDialog({ view, onClose }: { view: HaView; onClose: () => void }) {
   const qc = useQueryClient();
   const [fps, setFps] = useState(view.fps);
   const [inflight, setInflight] = useState(view.inflight);
@@ -266,7 +158,7 @@ function FrameSettingsDialog({ view, onClose }: { view: HaView; onClose: () => v
  * second, and how long Home Assistant took for each (for a Zigbee light, until the light said
  * it had it). Runs stay in the list to compare; one can become the rate for the layout.
  */
-function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaView; onClose: () => void }) {
+export function SpeedTestDialog({ light, view, onClose }: { light: HaEntity; view: HaView; onClose: () => void }) {
   const qc = useQueryClient();
   const [fps, setFps] = useState(10);
   const [via, setVia] = useState<'ws' | 'rest'>('ws');
