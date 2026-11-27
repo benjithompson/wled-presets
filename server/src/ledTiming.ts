@@ -9,8 +9,20 @@ import type { DeviceInfo } from '../../shared/types.ts';
  * sets the pace.
  */
 
-/** The fastest any device is sent frames: the pipeline's own rate. */
+/** The pipeline's clock, and so the fastest any device is sent frames, unless the admin's limit says otherwise (see frameClock). */
 export const MAX_FPS = 60;
+/** The slowest the clock runs: games and transitions move in steps this small or smaller. */
+const MIN_CLOCK = 40;
+
+/**
+ * The clock for a frame rate limit: the limit itself, or a whole multiple of it, at least
+ * MIN_CLOCK. Every device then gets every frame, or every second, third… one, so its frames are
+ * evenly spaced whatever the limit: 42 runs at 42, 25 at 50, 15 at 45, 10 at 40.
+ */
+export function frameClock(limit: number): number {
+  const n = Math.max(1, limit);
+  return n * Math.max(1, Math.ceil(MIN_CLOCK / n));
+}
 /** The time between frames that WLED and the LEDs need on top of the data (latch), in µs. */
 const LATCH_US = 300;
 
@@ -30,14 +42,14 @@ function wire(type: number): { bits: number; bitUs: number } | null {
  * The most frames a second a device can show, from its outputs (see DeviceInfo.outputs). With
  * the outputs unknown, all its LEDs count as one WS2812B output, which is the usual setup.
  */
-export function maxFps(info: DeviceInfo | null | undefined): number {
+export function maxFps(info: DeviceInfo | null | undefined, ceiling: number = MAX_FPS): number {
   const outputs = info?.outputs?.length ? info.outputs : info?.leds?.count ? [{ len: info.leds.count, type: 22 }] : [];
   let us = 0;
   for (const o of outputs) {
     const w = wire(o.type);
     if (w) us = Math.max(us, o.len * w.bits * w.bitUs);
   }
-  return us ? Math.min(MAX_FPS, 1e6 / (us + LATCH_US)) : MAX_FPS;
+  return us ? Math.min(ceiling, 1e6 / (us + LATCH_US)) : ceiling;
 }
 
 /**
@@ -48,9 +60,9 @@ export function maxFps(info: DeviceInfo | null | undefined): number {
  * its strip is done), so the lights judder; it would also take Wi-Fi airtime that a device with
  * a weak signal does not have. An even 30 looks smooth, with half the packets.
  */
-export function sendFps(info: DeviceInfo | null | undefined, limit: number = MAX_FPS): number {
-  const fps = Math.min(maxFps(info), Math.max(1, limit));
+export function sendFps(info: DeviceInfo | null | undefined, limit: number = MAX_FPS, clock: number = MAX_FPS): number {
+  const fps = Math.min(maxFps(info, clock), Math.max(1, limit));
   // Within a frame or two of the clock (outputs side by side, a tolerance in the estimate): all.
-  if (fps >= MAX_FPS - 2) return MAX_FPS;
-  return MAX_FPS / Math.ceil(MAX_FPS / fps);
+  if (fps >= clock - 2) return clock;
+  return clock / Math.ceil(clock / fps);
 }

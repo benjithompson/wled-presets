@@ -100,19 +100,16 @@ export interface Settings {
   /** How long the transition takes, in seconds. */
   sceneTransitionSeconds: number;
   /**
-   * The most frames a second any WLED device is sent (see FRAME_RATES): effects, sequences,
-   * games and the editors' previews. A device whose strip is slower gets fewer.
+   * The most frames a second any WLED device is sent (FRAME_RATE: any whole number in range):
+   * effects, sequences, games and the editors' previews. A device whose strip is slower gets
+   * fewer. The server's clock runs at a whole multiple of it (see frameClock), so the frames are
+   * evenly spaced whatever it is.
    */
   maxFps: number;
 }
 
-/**
- * The frame rates WLED devices can be limited to: the server's clock (60 a second) and even
- * shares of it, so every frame waits as long as the last and nothing judders.
- */
-export const FRAME_RATES = [60, 30, 20, 15, 12, 10] as const;
-/** The limit until an admin picks one: smooth, and half the packets of 60. */
-export const DEFAULT_FRAME_RATE = 30;
+/** The frame rate limit: the range, and the default (smooth, with half the packets of 60). */
+export const FRAME_RATE = { min: 1, max: 120, default: 30 } as const;
 
 export interface PublicScene {
   id: string;

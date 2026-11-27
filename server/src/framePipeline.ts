@@ -151,6 +151,11 @@ export interface FrameSource {
 
 export class FramePipeline {
   private loop = new FrameLoop(() => this.tick(), FRAME_HZ);
+
+  /** The clock's rate (see frameClock): sources move by the time between frames, so they keep their pace. */
+  setRate(hz: number) {
+    this.loop.setRate(hz);
+  }
   /** Most important first. */
   private sources: { source: FrameSource; priority: number }[] = [];
   private devices: () => DeviceTarget[];

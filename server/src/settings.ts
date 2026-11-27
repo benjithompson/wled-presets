@@ -1,5 +1,5 @@
 import type { GameArea } from '../../shared/layout.ts';
-import { DEFAULT_FRAME_RATE, FRAME_RATES, type LightControls, type Settings } from '../../shared/types.ts';
+import { FRAME_RATE, type LightControls, type Settings } from '../../shared/types.ts';
 import type { Db } from './db.ts';
 import { DEFAULT_LINE, type LineSettings } from '../../shared/line.ts';
 import { cleanSchedule, type LightSchedule } from '../../shared/schedule.ts';
@@ -46,10 +46,10 @@ export function sceneTransitionOf(s: Pick<Settings, 'sceneTransition' | 'sceneTr
   return s.sceneTransition === 'none' ? null : { type: s.sceneTransition, seconds: s.sceneTransitionSeconds };
 }
 
-/** A frame rate limit from FRAME_RATES, else the default. */
+/** A frame rate limit: a whole number in FRAME_RATE's range, else the default. */
 export function frameRate(v: unknown): number {
-  const n = Number(v);
-  return (FRAME_RATES as readonly number[]).includes(n) ? n : DEFAULT_FRAME_RATE;
+  const n = v === '' || v == null ? NaN : Number(v);
+  return Number.isInteger(n) && n >= FRAME_RATE.min && n <= FRAME_RATE.max ? n : FRAME_RATE.default;
 }
 
 export const DEFAULT_TITLE = 'Lights';

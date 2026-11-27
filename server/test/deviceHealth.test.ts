@@ -53,6 +53,15 @@ describe('a device that falls behind', () => {
     expect(hold.limit('w')).toBe(10);
   });
 
+  it('steps by even shares of the clock it runs on', () => {
+    const hold = new FrameRateHold();
+    expect(hold.checked('w', 'Windows', { ok: true, ms: 100, fps: 5 }, 42, 42, 42)).toMatch(/sending it 21 /);
+    expect(hold.checked('w', 'Windows', { ok: true, ms: 100, fps: 5 }, 21, 42, 42)).toMatch(/sending it 14 /);
+    expect(hold.checked('w', 'Windows', { ok: true, ms: 100, fps: 5 }, 14, 42, 42)).toMatch(/sending it 10.5 /);
+    expect(hold.checked('w', 'Windows', { ok: true, ms: 100, fps: 5 }, 10.5, 42, 42)).toBeNull();
+    expect(hold.limit('w')).toBe(10.5);
+  });
+
   it('gets fewer frames from the sender, and the link says why', () => {
     const sender = new LightSender();
     sender.maxFps = 30;
@@ -109,8 +118,9 @@ describe('the connection to a device', () => {
       await wait(200);
       expect(peek.connected).toBe(true);
       mock.behave.deaf = true;
-      await until(() => !peek.connected);
-      expect(powers.at(-1)).toBeNull();
+      // Its power is no longer known: the connection closed.
+      await until(() => powers.length > 1 && powers.at(-1) === null);
+      expect(peek.connected).toBe(false);
     } finally {
       peek.close();
       await mock.close();

@@ -487,8 +487,45 @@ describe('how fast a device can show frames', () => {
     expect(sendFps(null, 15)).toBe(15);
     // A strip slower than the limit: its own rate.
     expect(sendFps({ outputs: [{ len: 1500, type: 22 }] }, 30)).toBe(20);
-    // A limit that is not an even share: the next one below it.
-    expect(sendFps(null, 25)).toBe(20);
+    // A limit that is not an even share of 60: the clock runs at a multiple of it instead, so
+    // every device gets it, evenly spaced.
+    const { frameClock } = await import('../src/ledTiming.ts');
+    expect(frameClock(42)).toBe(42);
+    expect(frameClock(25)).toBe(50);
+    expect(frameClock(30)).toBe(60);
+    expect(frameClock(15)).toBe(45);
+    expect(frameClock(100)).toBe(100);
+    expect(frameClock(1)).toBe(40);
+    expect(sendFps(null, 42, 42)).toBe(42);
+    expect(sendFps(null, 25, 50)).toBe(25);
+    expect(sendFps({ outputs: [{ len: 150, type: 22 }] }, 100, 100)).toBe(100);
+    // A strip slower than the limit: an even share of the clock (1,500 LEDs show about 22: 42 / 2).
+    expect(sendFps({ outputs: [{ len: 1500, type: 22 }] }, 42, 42)).toBe(21);
+  });
+
+  it('sends a device 42 frames a second when the limit and the clock are 42', async () => {
+    const mock = await startMockWled(0, 'Windows', 150);
+    await new Promise((r) => setTimeout(r, 50));
+    const sender = new LightSender();
+    sender.maxFps = 42;
+    sender.clockHz = 42;
+    const device = { id: 'w', name: 'Windows', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 150 }, outputs: [{ len: 150, type: 22 }], udpport: mock.port, ddpport: mock.ddpPort() } };
+    const { FrameLoop } = await import('../src/frameLoop.ts');
+    let i = 0;
+    // Bright enough to show (see blackLevel), and different each time.
+    const loop = new FrameLoop(() => sender.send(device, new Uint8Array(150 * 3).fill(20 + (i++ % 200))), 42);
+    try {
+      loop.start();
+      await new Promise((r) => setTimeout(r, 1000));
+      loop.stop();
+      await new Promise((r) => setTimeout(r, 60));
+      expect(mock.realtime.ddpFrames).toBeGreaterThanOrEqual(38);
+      expect(mock.realtime.ddpFrames).toBeLessThanOrEqual(45);
+    } finally {
+      loop.stop();
+      sender.close();
+      await mock.close();
+    }
   });
 
   it('sends a short strip only as many frames as the limit allows', async () => {

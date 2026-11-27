@@ -6,7 +6,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { streamSSE } from 'hono/streaming';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { z } from 'zod';
-import { FRAME_RATES, type BackupFile, type DiscoveredDevice, type Scene, type SessionInfo } from '../../shared/types.ts';
+import { FRAME_RATE, type BackupFile, type DiscoveredDevice, type Scene, type SessionInfo } from '../../shared/types.ts';
 import { createAuth, isExamplePassword, sameOrigin, type AuthEnv } from './auth.ts';
 import { isLoopbackIp, requestIp, requestIsDirectLan, requestIsLocal, viaHttps, warnUntrustedProxy } from './clientIp.ts';
 import type { AppConfig } from './config.ts';
@@ -98,10 +98,7 @@ const settingsInput = z.object({
   sceneTransition: z.enum(['none', ...TRANSITION_CHOICES.map((t) => t.id)] as [SceneTransitionChoice, ...SceneTransitionChoice[]]).optional(),
   sceneTransitionSeconds: z.number().finite().min(SCENE_TRANSITION_SECONDS.min).max(SCENE_TRANSITION_SECONDS.max).optional(),
   /** Left out: kept as it is. */
-  maxFps: z
-    .number()
-    .refine((n) => (FRAME_RATES as readonly number[]).includes(n), `Pick one of ${FRAME_RATES.join(', ')}`)
-    .optional()
+  maxFps: z.number().int('Use a whole number').min(FRAME_RATE.min).max(FRAME_RATE.max).optional()
 });
 
 const scheduleTime = z.object({

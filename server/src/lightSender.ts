@@ -119,6 +119,8 @@ export class LightSender {
   private log: (level: 'info' | 'warn', msg: string) => void;
   /** The most frames a second any device is sent (the admin's limit, see Settings.maxFps). */
   maxFps: number = MAX_FPS;
+  /** The pipeline's clock (see frameClock): a device gets every frame of it, or an even share. */
+  clockHz: number = MAX_FPS;
   /** Devices that fell behind, held to fewer frames (see FrameRateHold). */
   readonly hold = new FrameRateHold();
 
@@ -160,7 +162,7 @@ export class LightSender {
       // second or third frame of the clock (see sendFps); the clock's ticks jitter by a few ms,
       // hence the margin.
       const fps = this.rate(d);
-      if (fps < MAX_FPS && now - link.sentAt < 1000 / fps - 4) return;
+      if (fps < this.clockHz && now - link.sentAt < 1000 / fps - 4) return;
     }
     const sent = link.mode === 'http' ? this.sendHttp(d, link, rgb) : (this.udp.sendDdp(d.host, d.info?.ddpport ?? DDP_PORT, rgb), true);
     if (!sent) return;
@@ -171,7 +173,7 @@ export class LightSender {
 
   /** The frames a second this device is sent while it gets frames: its strip's, the admin's limit, or its hold. */
   rate(d: DeviceTarget): number {
-    return sendFps(d.info, Math.min(this.maxFps, this.hold.limit(d.id)));
+    return sendFps(d.info, Math.min(this.maxFps, this.hold.limit(d.id)), this.clockHz);
   }
 
   /**
@@ -181,7 +183,7 @@ export class LightSender {
   checked(d: DeviceTarget, c: DeviceCheck) {
     const link = this.links.get(d.id);
     const sending = link && link.mode === 'udp' && Date.now() - link.lastFrame < IDLE_MS ? this.rate(d) : 0;
-    const change = this.hold.checked(d.id, d.name, c, sending, this.maxFps);
+    const change = this.hold.checked(d.id, d.name, c, sending, this.maxFps, this.clockHz);
     if (change) this.log(change.includes('behind') ? 'warn' : 'info', change);
   }
 
@@ -199,7 +201,7 @@ export class LightSender {
     const l = this.links.get(deviceId);
     if (!l) return null;
     const held = this.hold.all()[deviceId];
-    return { mode: l.mode, note: held ? `${l.note} It fell behind, so it gets ${held} frames a second until it keeps up.` : l.note };
+    return { mode: l.mode, note: held ? `${l.note} It fell behind, so it gets ${Math.round(held * 10) / 10} frames a second until it keeps up.` : l.note };
   }
 
   /**

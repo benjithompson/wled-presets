@@ -17,6 +17,7 @@ import { readLayout } from './layoutStore.ts';
 import { LayoutPreview } from './layoutPreview.ts';
 import { FramePipeline } from './framePipeline.ts';
 import { LightSender } from './lightSender.ts';
+import { frameClock } from './ledTiming.ts';
 import { RoofView } from './roofView.ts';
 import { LightScheduler } from './lightSchedule.ts';
 import { HomeAssistant } from './homeAssistant.ts';
@@ -47,10 +48,13 @@ if (db.countUsers() === 0) {
 }
 
 const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg));
-// The admin's frame rate limit (Settings → Lights), now and whenever it changes.
-const applyFrameRate = () => (sender.maxFps = readSettings(db).maxFps);
-applyFrameRate();
-lights.settingsHook = applyFrameRate;
+// The admin's frame rate limit (Settings → Frame rate), now and whenever it changes: the clock follows it (see frameClock).
+const applyFrameRate = () => {
+  const limit = readSettings(db).maxFps;
+  sender.maxFps = limit;
+  sender.clockHz = frameClock(limit);
+  pipeline.setRate(sender.clockHz);
+};
 // A device that falls behind while it gets frames gets fewer (see FrameRateHold).
 lights.onChecked = (d, c) => {
   const live = lights.liveDevices().find((x) => x.id === d.id);
@@ -59,6 +63,8 @@ lights.onChecked = (d, c) => {
 // Everything that draws on the lights goes through one pipeline: the editors' previews win
 // over games and scenes.
 const pipeline = new FramePipeline(() => lights.liveDevices(), sender);
+applyFrameRate();
+lights.settingsHook = applyFrameRate;
 // Home Assistant lights in the layout take the colors of their objects, about once a second.
 const haFrames = new HaFrames(ha, (id, wakes) => lights.haEnabled(id) && (wakes || !lights.isOff(id)), (id) => lights.levelOf(id));
 pipeline.haSink = haFrames.frame;

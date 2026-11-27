@@ -1,8 +1,7 @@
-import { FRAME_RATES } from '../../shared/types.ts';
 import { MAX_FPS } from './ledTiming.ts';
 
-/** The lowest rate a device is held to. */
-const FLOOR = FRAME_RATES[FRAME_RATES.length - 1];
+/** A device is not held below this many frames a second. */
+const FLOOR = 10;
 /** A check that took longer than this: the device is busy (it answers between frames). */
 export const SLOW_MS = 2000;
 /** An answer this quick, and the frames shown: the device keeps up. */
@@ -26,8 +25,8 @@ export interface DeviceCheck {
  * the frames it is sent queues them, and then everything it does slows down: the LEDs show a
  * handful a second, it takes seconds to answer, and only a restart brings it back. So when a
  * status check finds a device that gets frames answering slowly, or showing well under half of
- * them, it is sent the next lower rate (FRAME_RATES), then lower again at the next check if it
- * still lags. After a minute of keeping up it gets the next higher rate, until it is free again.
+ * them, it is sent the next lower even share of the clock (60: 30, 20, 15, 12, 10), then lower
+ * again at the next check if it still lags, never below FLOOR. After a minute of keeping up it gets the next higher rate, until it is free again.
  */
 export class FrameRateHold {
   private held = new Map<string, { fps: number; good: number }>();
@@ -44,14 +43,14 @@ export class FrameRateHold {
 
   /**
    * A status check of a device. `sending`: the frames a second it gets now (0: none, so it is
-   * not judged by its frames). `cap`: the most any device gets (the admin's limit). Returns what
-   * changed, for the log, or null.
+   * not judged by its frames). `cap`: the most any device gets (the admin's limit). `clock`: the
+   * pipeline's rate, whose even shares it can be sent. Returns what changed, for the log, or null.
    */
-  checked(id: string, name: string, c: DeviceCheck, sending: number, cap: number): string | null {
+  checked(id: string, name: string, c: DeviceCheck, sending: number, cap: number, clock: number = MAX_FPS): string | null {
     const h = this.held.get(id);
     if (!sending) {
       // Not getting frames: nothing of ours to blame. A held one that answers quickly counts toward its release.
-      if (h && c.ok && c.ms < QUICK_MS) return this.good(id, name, h, cap);
+      if (h && c.ok && c.ms < QUICK_MS) return this.good(id, name, h, cap, clock);
       return null;
     }
     // A quick "no": switched off at the wall, say. Not behind, not keeping up.
@@ -62,30 +61,33 @@ export class FrameRateHold {
     const shows = c.ok && typeof c.fps === 'number' ? c.fps : null;
     const behind = c.ms > SLOW_MS || (shows != null && shows < sending * BEHIND);
     if (behind) {
-      const next = [...FRAME_RATES].find((r) => r < sending) ?? FLOOR;
-      if (h && h.fps <= next) {
-        h.good = 0;
+      // The next even share of the clock below what it gets: every second frame, every third…
+      const next = clock / (Math.round(clock / Math.min(sending, clock)) + 1);
+      if (next < FLOOR - 0.01 || (h && h.fps <= next)) {
+        if (h) h.good = 0;
         return null;
       }
       this.held.set(id, { fps: next, good: 0 });
       const why = !c.ok ? `no answer in ${(c.ms / 1000).toFixed(1)} s` : shows != null && shows < sending * BEHIND ? `shows ${shows} of ${sending} frames a second` : `takes ${(c.ms / 1000).toFixed(1)} s to answer`;
-      return `"${name}" is falling behind (${why}): sending it ${next} frames a second until it keeps up`;
+      return `"${name}" is falling behind (${why}): sending it ${fmt(next)} frames a second until it keeps up`;
     }
     if (!h) return null;
-    if (c.ok && c.ms < QUICK_MS && (shows == null || shows >= sending * KEEPING_UP)) return this.good(id, name, h, cap);
+    if (c.ok && c.ms < QUICK_MS && (shows == null || shows >= sending * KEEPING_UP)) return this.good(id, name, h, cap, clock);
     h.good = 0;
     return null;
   }
 
-  private good(id: string, name: string, h: { fps: number; good: number }, cap: number): string | null {
+  private good(id: string, name: string, h: { fps: number; good: number }, cap: number, clock: number): string | null {
     if (++h.good < RECOVER_CHECKS) return null;
-    const up = [...FRAME_RATES].reverse().find((r) => r > h.fps) ?? MAX_FPS;
-    if (up >= Math.min(cap, MAX_FPS)) {
+    // The next even share above: every frame of the clock at most.
+    const every = Math.max(1, Math.round(clock / h.fps) - 1);
+    const up = clock / every;
+    if (up >= Math.min(cap, clock) - 0.01) {
       this.held.delete(id);
-      return `"${name}" keeps up again: it gets every frame (up to ${Math.min(cap, MAX_FPS)} a second) again`;
+      return `"${name}" keeps up again: it gets up to ${fmt(Math.min(cap, clock))} frames a second again`;
     }
     this.held.set(id, { fps: up, good: 0 });
-    return `"${name}" keeps up: sending it ${up} frames a second`;
+    return `"${name}" keeps up: sending it ${fmt(up)} frames a second`;
   }
 
   /** Forgets a device (removed). */
@@ -93,3 +95,5 @@ export class FrameRateHold {
     this.held.delete(id);
   }
 }
+
+const fmt = (fps: number) => String(Math.round(fps * 10) / 10);
