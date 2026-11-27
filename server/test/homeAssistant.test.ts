@@ -174,6 +174,28 @@ describe('lights in home assistant', () => {
   });
 });
 
+describe('home assistant events', () => {
+  it('show a light switched in home assistant at once, and the site follows it at the next check', async () => {
+    await connect();
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.lights.refreshStatus();
+    await until(() => ha.watching() > 0);
+    t.lights.settleMs = 0;
+    (t.lights as unknown as { pollMs: number }).pollMs = 0;
+    await wait(5);
+    ha.states.get('light.porch')!.state = 'off';
+    ha.emit('light.porch');
+    // The console has it at once, with no check in between.
+    await until(() => t.home.entity('light.porch')?.state === 'off');
+    expect((await t.call('GET', '/api/admin/ha')).json.entities.find((e: { id: string }) => e.id === 'light.porch').state).toBe('off');
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    await wait(5);
+    await t.lights.refreshStatus();
+    expect(t.lights.isOff('ha:light.porch')).toBe(true);
+    t.home.close();
+  });
+});
+
 describe('plugs that power a controller', () => {
   it('cut the power after the lights go off, and give it back before', async () => {
     await connect();
@@ -261,6 +283,38 @@ describe('a disabled home assistant light', () => {
     // Enabled again: the site switches it.
     expect((await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] })).json.disabled).toEqual([]);
     expect(t.lights.haLights()).toEqual(['ha:light.porch', 'ha:light.garage']);
+  });
+});
+
+describe('a home assistant light enabled again', () => {
+  it('is as the other lights: switched on while it was disabled, it is on, and shows the color', async () => {
+    await connect();
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    expect(t.lights.isOff('ha:light.porch')).toBe(true);
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.porch'] });
+    ha.calls.length = 0;
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    // Nothing went to it, but its switch is on with the rest.
+    expect(ha.calls.some((c) => c.body.entity_id === 'light.porch')).toBe(false);
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    await t.call('POST', '/api/color', { color: '#00ff00' });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] });
+    expect(ha.states.get('light.porch')).toMatchObject({ state: 'on', attributes: { rgb_color: [0, 255, 0] } });
+  });
+
+  it('held off while the others are on (from before this version) comes on with them', async () => {
+    await connect();
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.porch'] });
+    const c = t.lights.controls();
+    (t.lights as unknown as { saveControls: (c: unknown) => void }).saveControls({ ...c, off: [...c.off, 'ha:light.porch'] });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] });
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    // All off: one enabled again stays off.
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: ['light.porch'] });
+    await t.call('PUT', '/api/admin/ha/lights', { lights: ['light.porch', 'light.garage'], disabled: [] });
+    expect(t.lights.isOff('ha:light.porch')).toBe(true);
   });
 });
 

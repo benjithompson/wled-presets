@@ -91,6 +91,11 @@ export class HomeAssistant {
   private writes = new Map<string, number>();
   /** How long a request may take (shorter in tests). */
   timeoutMs = 5000;
+  /**
+   * Called when a light or switch changes state (on, off, unavailable), with what it was: as
+   * Home Assistant says it, at once (its state_changed events), and from each refresh.
+   */
+  onChange: ((e: HaEntity & { from: string }) => void) | null = null;
 
   constructor(db: Db) {
     this.db = db;
@@ -185,7 +190,25 @@ export class HomeAssistant {
     const url = this.settings().url;
     const token = this.db.getSetting(KEY.token);
     if (!url || !token) return null;
-    return (this.socket ??= new HaSocket(url, token));
+    if (!this.socket) {
+      this.socket = new HaSocket(url, token);
+      // Every change as it happens: the console shows it at once, and the site follows it.
+      this.socket.subscribe({ type: 'subscribe_events', event_type: 'state_changed' }, (ev) => this.onEvent(ev));
+    }
+    return this.socket;
+  }
+
+  /** A state_changed event: a light or switch the site knows took a new state. */
+  private onEvent(ev: unknown) {
+    const data = (ev as { data?: { entity_id?: unknown; new_state?: HaState | null } } | null)?.data;
+    const id = data?.entity_id;
+    if (typeof id !== 'string' || !isSwitchable(id)) return;
+    const prev = this.states.get(id);
+    if (!prev) return;
+    if (!data?.new_state) return void this.states.delete(id);
+    const e = { ...entityOf({ ...data.new_state, entity_id: id }, this.places.get(id)), zigbee: this.zha.has(id) };
+    this.states.set(id, e);
+    if (prev.state !== e.state) this.onChange?.({ ...e, from: prev.state });
   }
 
   close() {
@@ -235,6 +258,8 @@ export class HomeAssistant {
 
   /** Reads the state of every light and switch. Returns the ones that changed since the last read, and what each was. */
   async refresh(): Promise<{ ok: boolean; changed: (HaEntity & { from: string })[] }> {
+    // The WebSocket, for its events (made once, and again after new settings).
+    this.ws();
     const r = await this.request<HaState[]>('/api/states');
     if (!r.ok) {
       this.status = { ok: false, error: r.error };
@@ -253,6 +278,7 @@ export class HomeAssistant {
       next.set(e.id, e);
     }
     this.states = next;
+    for (const e of changed) this.onChange?.(e);
     return { ok: true, changed };
   }
 
@@ -368,7 +394,13 @@ export class HomeAssistant {
     const viaWs = opts.via === 'rest' ? null : await this.ws()?.call(domain, `turn_${on ? 'on' : 'off'}`, id, data);
     const r: FetchResult<unknown> = viaWs ? (viaWs.ok ? { ok: true, status: 200, data: null } : { ok: false, status: 0, error: viaWs.error }) : await this.request(`/api/services/${domain}/turn_${on ? 'on' : 'off'}`, body);
     this.writes.set(id, Date.now());
-    if (r.ok && e) this.states.set(id, { ...e, state: on ? 'on' : 'off' });
+    if (r.ok && e) {
+      const now = this.states.get(id) ?? e;
+      const next = { ...now, state: on ? 'on' : 'off' };
+      this.states.set(id, next);
+      // The console shows it at once (the site's own switch: not followed, see Lights.haChanged).
+      if (now.state !== next.state) this.onChange?.({ ...next, from: now.state });
+    }
     if (!r.ok) this.reread(id);
     return r;
   }

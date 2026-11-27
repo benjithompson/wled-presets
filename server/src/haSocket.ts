@@ -5,6 +5,8 @@ const RETRY_MS = 5000;
 
 type Answer = { ok: true; result: unknown } | { ok: false; error: string };
 type Pending = { resolve: (r: Answer) => void; timer: NodeJS.Timeout };
+/** A subscription (subscribe_events, say): made again on each new connection. */
+type Sub = { msg: Record<string, unknown>; onEvent: (event: unknown) => void };
 
 /**
  * One WebSocket to Home Assistant (its /api/websocket), for switching lights fast: a command is
@@ -19,6 +21,10 @@ export class HaSocket {
   private pending = new Map<number, Pending>();
   private retryAt = 0;
   private closed = false;
+  private subs: Sub[] = [];
+  /** The live subscriptions on this connection, by message id. */
+  private subIds = new Map<number, Sub>();
+  private reconnect: NodeJS.Timeout | null = null;
   private url: string;
   private token: string;
   timeoutMs = 5000;
@@ -58,6 +64,9 @@ export class HaSocket {
         else if (m.type === 'auth_ok') {
           clearTimeout(timer);
           finish(true);
+          for (const sub of this.subs) this.sendSub(ws, sub);
+        } else if (m.type === 'event' && typeof m.id === 'number') {
+          this.subIds.get(m.id)?.onEvent((m as { event?: unknown }).event);
         } else if (m.type === 'auth_invalid') {
           clearTimeout(timer);
           finish(false);
@@ -90,7 +99,34 @@ export class HaSocket {
       p.resolve({ ok: false, error: 'The connection to Home Assistant closed' });
     }
     this.pending.clear();
+    this.subIds.clear();
     ws.terminate();
+    // Subscribed: connect again by itself, so no event is missed for long.
+    if (this.subs.length && !this.closed && !this.reconnect) {
+      this.reconnect = setTimeout(() => {
+        this.reconnect = null;
+        void this.connect();
+      }, RETRY_MS + 100);
+      this.reconnect.unref?.();
+    }
+  }
+
+  private sendSub(ws: WebSocket, sub: Sub) {
+    const id = this.next++;
+    this.subIds.set(id, sub);
+    ws.send(JSON.stringify({ ...sub.msg, id }));
+  }
+
+  /**
+   * Subscribes (a message such as { type: 'subscribe_events', event_type: 'state_changed' }):
+   * each event goes to onEvent, now and on every connection after this one. Connects at once,
+   * and keeps the connection up.
+   */
+  subscribe(msg: Record<string, unknown>, onEvent: (event: unknown) => void) {
+    const sub = { msg, onEvent };
+    this.subs.push(sub);
+    if (this.open && this.ws) this.sendSub(this.ws, sub);
+    else void this.connect();
   }
 
   /**
@@ -121,6 +157,8 @@ export class HaSocket {
 
   close() {
     this.closed = true;
+    if (this.reconnect) clearTimeout(this.reconnect);
+    this.reconnect = null;
     if (this.ws) this.drop(this.ws);
   }
 }
