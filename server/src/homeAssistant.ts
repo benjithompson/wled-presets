@@ -1,8 +1,9 @@
-import { isSwitchable, type HaEntity, type HaSettings, type HaView } from '../../shared/homeAssistant.ts';
+import { isSwitchable, type HaCommandStats, type HaEntity, type HaSettings, type HaView } from '../../shared/homeAssistant.ts';
 import { rgbToXy } from '../../shared/color.ts';
 import type { Db } from './db.ts';
 import type { FetchResult } from './wled.ts';
 import { HaSocket } from './haSocket.ts';
+import { KEY as SETTING } from './settings.ts';
 
 const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights', disabled: 'haDisabled', fps: 'haFps', inflight: 'haInflight', fade: 'haFade', direct: 'haDirect' } as const;
 
@@ -31,8 +32,8 @@ export type HaSetOpts = {
 /** A command's answer. Not answered in time, it also has the answer to come (`late`): Home Assistant may still do it. */
 export type HaResult = FetchResult<unknown> & { late?: Promise<FetchResult<unknown>> };
 
-/** One light's commands: the ones on their way, and the one waiting (the newest asked; see set). */
-type Lane = { going: number; off: boolean; next: Queued | null };
+/** One light's commands: the ones on their way (when each went), and the one waiting (the newest asked; see set). */
+type Lane = { going: number; off: boolean; next: Queued | null; since: number[] };
 type Queued = { on: boolean; opts: HaSetOpts; done: ((r: FetchResult<unknown>) => void)[] };
 
 /**
@@ -184,7 +185,17 @@ export class HomeAssistant {
   }
 
   view(): HaView {
-    return { ...this.settings(), hasToken: this.hasToken(), status: this.status, fps: this.fps(), inflight: this.inflight(), fade: this.fade(), direct: this.direct(), entities: [...this.states.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+    return {
+      ...this.settings(),
+      hasToken: this.hasToken(),
+      status: this.status,
+      fps: this.fps(),
+      inflight: this.inflight(),
+      fade: this.fade(),
+      direct: this.direct(),
+      entities: [...this.states.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      ...(this.db.getSetting(SETTING.debugHa) === '1' ? { commands: this.commandStats() } : {})
+    };
   }
 
   /** How many colors a second a light in the layout may take (see HaFrames). */
@@ -398,6 +409,40 @@ export class HomeAssistant {
   }
 
   private lanes = new Map<string, Lane>();
+  /** How each entity answered its commands (see HaCommandStats), without what is on its way now. */
+  private answers = new Map<string, Omit<HaCommandStats, 'going' | 'waiting' | 'goingMs'>>();
+
+  /** How each light takes its commands, by entity id: what it answered, and what is on its way and waiting now. */
+  commandStats(): Record<string, HaCommandStats> {
+    const now = performance.now();
+    const ids = new Set([...this.answers.keys(), ...this.lanes.keys()]);
+    return Object.fromEntries(
+      [...ids].map((id) => {
+        const lane = this.lanes.get(id);
+        const a = this.answers.get(id) ?? { answered: 0, late: 0, failed: 0, lastMs: 0, avgMs: 0, maxMs: 0 };
+        const oldest = lane?.since.length ? Math.min(...lane.since) : null;
+        return [id, { ...a, going: lane?.going ?? 0, waiting: lane?.next ? 1 : 0, goingMs: oldest == null ? 0 : Math.round(now - oldest) }];
+      })
+    );
+  }
+
+  /** The command times count again from now. */
+  resetCommandStats() {
+    this.answers.clear();
+  }
+
+  private noteAnswer(id: string, ms: number, ok: boolean) {
+    const a = this.answers.get(id) ?? { answered: 0, late: 0, failed: 0, lastMs: 0, avgMs: 0, maxMs: 0 };
+    const n = a.answered + 1;
+    this.answers.set(id, {
+      answered: n,
+      late: a.late + (ms > this.timeoutMs ? 1 : 0),
+      failed: a.failed + (ok ? 0 : 1),
+      lastMs: Math.round(ms),
+      avgMs: Math.round(a.answered ? a.avgMs * 0.8 + ms * 0.2 : ms),
+      maxMs: Math.max(a.maxMs, Math.round(ms))
+    });
+  }
 
   /**
    * Switches an entity on or off. A light takes a brightness (1 to 255), a color and a
@@ -433,7 +478,7 @@ export class HomeAssistant {
 
   private queue(id: string, q: Queued) {
     let lane = this.lanes.get(id);
-    if (!lane) this.lanes.set(id, (lane = { going: 0, off: false, next: null }));
+    if (!lane) this.lanes.set(id, (lane = { going: 0, off: false, next: null, since: [] }));
     if (!lane.next && this.free(lane, q)) return this.go(id, lane, q);
     lane.next = lane.next ? join(lane.next, q.on, q.opts, q.done[0]) : q;
   }
@@ -446,10 +491,14 @@ export class HomeAssistant {
   private go(id: string, lane: Lane, q: Queued) {
     lane.going++;
     if (!q.on) lane.off = true;
+    const started = performance.now();
+    lane.since.push(started);
     void this.send(id, q.on, q.opts)
       .catch((e: unknown): FetchResult<unknown> => ({ ok: false, status: 0, error: (e as Error)?.message || 'Home Assistant failed' }))
       .then((r) => {
         lane.going--;
+        lane.since.splice(lane.since.indexOf(started), 1);
+        this.noteAnswer(id, performance.now() - started, r.ok);
         if (!q.on) lane.off = false;
         for (const done of q.done) done(r);
         const next = lane.next;

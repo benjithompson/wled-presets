@@ -18,6 +18,7 @@ import { FrameSettingsDialog, SpeedTestDialog, useSaveLights } from './HaLightDi
 import { useHomeAssistant } from './HomeAssistantCard.tsx';
 import {
   buildRows,
+  commandsText,
   filterRows,
   groupRows,
   isFiltering,
@@ -331,6 +332,18 @@ export function DeviceTable({
         {!r.objects.length ? 'Not in the layout' : r.objects.length <= 2 ? `In the layout: ${r.objects.join(', ')}` : `${r.objects.length} objects in the layout`}
       </span>
     );
+    if (r.ha?.commands) {
+      const c = commandsText(r.ha.commands);
+      bits.push(
+        <span
+          key="commands"
+          className={cn('w-full tabular-nums', c.behind && 'text-amber-600 dark:text-amber-400')}
+          title="Debug (Settings → Debug): how long Home Assistant takes to answer the site's commands to this light. Each light takes one at a time; one asked meanwhile waits (the newest). Late: answered after the site stopped waiting (5 s)."
+        >
+          {c.text}
+        </span>
+      );
+    }
     return bits;
   };
 

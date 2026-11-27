@@ -183,6 +183,21 @@ export function SettingsPage() {
           </div>
         </Card>
 
+        <Card>
+          <CardHeader title="Debug" description="Extra detail for finding out why a light is slow or acts on its own. Leave it off otherwise." />
+          <div className="p-5">
+            <label className="flex items-center justify-between gap-4">
+              <span>
+                <span className="block text-sm font-medium">Home Assistant command times</span>
+                <span className="block text-xs text-stone-500">
+                  The Devices page shows, under each Home Assistant light, how long it takes to answer the site's commands, how many are on their way or waiting, and how many came late or failed. It counts from when this is switched on.
+                </span>
+              </span>
+              <Switch label="Home Assistant command times" checked={form.debugHa} onChange={(v) => set('debugHa', v)} />
+            </label>
+          </div>
+        </Card>
+
         {/* On a phone the button stays at the bottom of the screen while the settings are in view. */}
         <div
           className="flex justify-end max-md:sticky max-md:bottom-0 max-md:z-20 max-md:-mx-4 max-md:border-t max-md:border-stone-200 max-md:bg-stone-50/90 max-md:px-4 max-md:pt-3 max-md:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] max-md:backdrop-blur-lg dark:max-md:border-stone-800 dark:max-md:bg-stone-950/90"

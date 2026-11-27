@@ -111,6 +111,8 @@ export interface Settings {
    * evenly spaced whatever it is.
    */
   maxFps: number;
+  /** Debug: the Devices page shows how fast each Home Assistant light answers, and what waits for it. */
+  debugHa: boolean;
 }
 
 /** The frame rate limit: the range, and the default (smooth, with half the packets of 60). */

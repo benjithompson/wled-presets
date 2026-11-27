@@ -1,7 +1,7 @@
 // The Devices page's table: every light the site controls, WLED devices and Home Assistant
 // lights alike, as rows to filter, group and sort (see DeviceTable).
 import type { DeviceWithStatus } from '../../../../shared/types.ts';
-import { haId, type HaEntity, type HaView } from '../../../../shared/homeAssistant.ts';
+import { haId, type HaCommandStats, type HaEntity, type HaView } from '../../../../shared/homeAssistant.ts';
 
 export type Source = 'wled' | 'ha';
 /** How a row stands: lit, dark, not answering, or left alone by the site. */
@@ -38,8 +38,31 @@ export interface DeviceRow {
   /** The layout's objects that use it. */
   objects: string[];
   device?: DeviceWithStatus;
-  /** A Home Assistant light: its entity id, and what Home Assistant says of it (none: gone from it). */
-  ha?: { id: string; entity: HaEntity | undefined };
+  /**
+   * A Home Assistant light: its entity id, what Home Assistant says of it (none: gone from it),
+   * and how it takes the site's commands (only with Settings → Debug on).
+   */
+  ha?: { id: string; entity: HaEntity | undefined; commands?: HaCommandStats };
+}
+
+const NO_COMMANDS: HaCommandStats = { answered: 0, late: 0, failed: 0, lastMs: 0, avgMs: 0, maxMs: 0, going: 0, waiting: 0, goingMs: 0 };
+
+/** A time in ms, short: 320 ms, 4.8 s, 42 s. */
+const short = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`);
+
+/**
+ * How a Home Assistant light takes its commands, in a few words (see HaCommandStats), and
+ * whether it is behind: slow to answer, or commands waiting for it.
+ */
+export function commandsText(c: HaCommandStats): { text: string; behind: boolean } {
+  const bits: string[] = [];
+  if (c.answered) bits.push(`answers in ${short(c.lastMs)} (avg ${short(c.avgMs)}, max ${short(c.maxMs)})`);
+  if (c.going) bits.push(`${c.going} on its way${c.goingMs >= 1000 ? ` for ${short(c.goingMs)}` : ''}`);
+  if (c.waiting) bits.push(`${c.waiting} waiting`);
+  if (c.late) bits.push(`${c.late} of ${c.answered} late`);
+  if (c.failed) bits.push(`${c.failed} failed`);
+  const text = bits.length ? `Commands: ${bits.join(' · ')}` : 'Commands: none yet';
+  return { text, behind: c.avgMs > 2000 || c.goingMs > 5000 || c.waiting > 0 || c.failed > 0 };
 }
 
 /** What the rows are built from. `off`: the lights switched off here (LightControls.off). */
@@ -111,7 +134,7 @@ export function buildRows({ devices, ha, off, fixtures }: RowSources): DeviceRow
         sending: null,
         shows: null,
         objects: objectsOf(haId(id)),
-        ha: { id, entity: e }
+        ha: { id, entity: e, ...(ha.commands ? { commands: ha.commands[id] ?? NO_COMMANDS } : {}) }
       });
     }
   }

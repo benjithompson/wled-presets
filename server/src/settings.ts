@@ -24,6 +24,7 @@ export const KEY = {
   sceneTransition: 'sceneTransition',
   sceneTransitionSeconds: 'sceneTransitionSeconds',
   maxFps: 'lightsMaxFps',
+  debugHa: 'debugHa',
   schedule: 'lightSchedule',
   /** When the schedule's time that acted last was (ISO); '' or none: act on the latest one as the schedule says (just saved or never run). */
   scheduleApplied: 'lightScheduleApplied',
@@ -75,7 +76,8 @@ export function readSettings(db: Db): Settings {
     discoverySubnets: subnets,
     sceneTransition: isSceneTransition(db.getSetting(KEY.sceneTransition)) ? (db.getSetting(KEY.sceneTransition) as SceneTransitionChoice) : DEFAULT_SCENE_TRANSITION,
     sceneTransitionSeconds: sceneTransitionSeconds(db.getSetting(KEY.sceneTransitionSeconds)),
-    maxFps: frameRate(db.getSetting(KEY.maxFps))
+    maxFps: frameRate(db.getSetting(KEY.maxFps)),
+    debugHa: db.getSetting(KEY.debugHa) === '1'
   };
 }
 
@@ -89,6 +91,7 @@ export function writeSettings(db: Db, s: Settings) {
   db.setSetting(KEY.sceneTransition, s.sceneTransition);
   db.setSetting(KEY.sceneTransitionSeconds, sceneTransitionSeconds(s.sceneTransitionSeconds));
   db.setSetting(KEY.maxFps, frameRate(s.maxFps));
+  db.setSetting(KEY.debugHa, s.debugHa ? '1' : '0');
 }
 
 /** A v1 install had a hard-coded page title. Keep it, so the public page looks the same after upgrade. */
