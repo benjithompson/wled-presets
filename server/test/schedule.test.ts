@@ -127,7 +127,7 @@ describe('scheduler', () => {
   let ids: string[] = [];
   beforeEach(async () => {
     for (const m of mocks) Object.assign(m.state, { on: true, bri: 128 });
-    clock = at('2026-11-25T15:00:00Z'); // 10:00 in New York
+    clock = at('2026-11-25T23:00:00Z'); // 18:00 in New York: after sunset, so the lights are on
     ended = 0;
     busy = false;
     t = await setup();
@@ -149,7 +149,7 @@ describe('scheduler', () => {
 
   it('switches the lights off and on at its times, and tells visitors when they come back on', async () => {
     await t.call('PUT', '/api/admin/lights/schedule', NY);
-    // Saving acts on nothing that is not due.
+    // On now, as the schedule says: saving changes nothing.
     expect(t.lights.allOff()).toBe(false);
 
     clock = at('2026-11-26T04:00:30Z'); // just after 23:00
@@ -182,6 +182,46 @@ describe('scheduler', () => {
     await t.schedule.check();
     expect(t.lights.isOff(ids[0])).toBe(false);
     expect(t.lights.isOff(ids[1])).toBe(true);
+  });
+
+  it('puts the lights as it says for now when it is saved', async () => {
+    clock = at('2026-11-26T15:00:00Z'); // 10:00: between 23:00 and sunset
+    await t.call('PUT', '/api/admin/lights/schedule', NY);
+    expect(t.lights.allOff()).toBe(true);
+    expect(ended).toBe(1);
+    expect((await t.call('GET', '/api/state')).json).toMatchObject({ lightsOff: true, lightsWake: true });
+    // Saved again in the night: nothing more happens.
+    await t.call('PUT', '/api/admin/lights/schedule', { ...NY, idleMinutes: 20 });
+    expect(ended).toBe(1);
+    // On from 09:00 now: it is no longer the night, and they come on.
+    await t.call('PUT', '/api/admin/lights/schedule', { ...NY, on: { at: 'time', offset: 0, time: '09:00' } });
+    expect(t.lights.allOff()).toBe(false);
+    expect(mocks.every((m) => m.state.on === true)).toBe(true);
+    // Switched off by hand in the day, they stay off through a save that keeps it the day.
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    await t.call('PUT', '/api/admin/lights/schedule', { ...NY, on: { at: 'time', offset: 0, time: '08:00' } });
+    expect(t.lights.allOff()).toBe(true);
+  });
+
+  it('does each time once across restarts: an admin switch holds, and a time it never did happens', async () => {
+    await t.call('PUT', '/api/admin/lights/schedule', NY);
+    clock = at('2026-11-26T04:01:00Z');
+    await t.schedule.check();
+    expect(t.lights.allOff()).toBe(true);
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    const restart = () => {
+      t.schedule.stop();
+      t.schedule = new LightScheduler(t.db, t.lights, new Bus(), { now: () => clock, afterOff: () => ended++ });
+      t.schedule.start();
+      return t.schedule.check();
+    };
+    clock = at('2026-11-26T15:00:00Z');
+    await restart();
+    expect(t.lights.allOff()).toBe(false);
+    // From a version that did not keep which time it did: the time it is, is done.
+    t.db.setSetting('lightScheduleApplied', '');
+    await restart();
+    expect(t.lights.allOff()).toBe(true);
   });
 
   it('catches up on the latest time it missed, once', async () => {
