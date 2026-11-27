@@ -14,7 +14,7 @@ import type { Peek } from './roofView.ts';
 import { WledPeek } from './wledPeek.ts';
 import { visitorLabel } from './visitor.ts';
 import type { HomeAssistant } from './homeAssistant.ts';
-import { entityOf, haId, isHaId } from '../../shared/homeAssistant.ts';
+import { entityOf, haId, isHaId, type HaEntity } from '../../shared/homeAssistant.ts';
 
 /**
  * A change a device reports this soon after this app told it something may be that request
@@ -107,16 +107,26 @@ export class Lights {
    * Home Assistant, when it is used: plugs that power WLED controllers, and other lights that
    * switch with these (see HaSettings).
    */
-  ha: HomeAssistant | null = null;
+  private home: HomeAssistant | null = null;
+  get ha(): HomeAssistant | null {
+    return this.home;
+  }
+  set ha(h: HomeAssistant | null) {
+    if (this.home) this.home.onChange = null;
+    this.home = h;
+    if (h) h.onChange = (e) => this.haChanged(e);
+  }
   /** How long a device has to fade out before its plug cuts the power (shorter in tests). */
   plugDelayMs = 1500;
   /** Devices whose plug was switched on: when they answer, they get the switches and what plays. */
   private booting = new Set<string>();
   /**
-   * Switches seen in Home Assistant, by entity, waiting for the next check to say the same
-   * (see followHa): a Zigbee light can say off for a moment and on again.
+   * Switches seen in Home Assistant, by entity, and when: followed once they have held for a
+   * while (see followHa), as a Zigbee light can say off for a moment and on again.
    */
-  private haSeen = new Map<string, 'on' | 'off'>();
+  private haSeen = new Map<string, { state: 'on' | 'off'; at: number; check: number }>();
+  /** followHa's checks, counted: one seen in a check is followed at a later one. */
+  private haCheck = 0;
   /** When the schedule switches the lights on next (ISO), or null: told to visitors while they are off. */
   lightsOnAt: () => string | null = () => null;
 
@@ -883,28 +893,40 @@ export class Lights {
   }
 
   /**
-   * Home Assistant's lights and plugs, read with each status check. A light or plug switched in
-   * Home Assistant (or by its own button) is switched that way here too, as for WLED's own app,
-   * once two checks in a row say so: a Zigbee light that says off for a moment, then on again,
-   * is not taken as switched off.
+   * A light or switch changed in Home Assistant (its event, or a refresh): the console shows it
+   * at once. Switched on or off by someone else, it waits in haSeen for followHa.
+   */
+  private haChanged(e: HaEntity & { from: string }) {
+    this.bus.emit('devices');
+    // Only on to off and back: a light coming back from unavailable (a Zigbee light that missed
+    // a few checks) says what it is, which is no one switching it.
+    if ((e.state !== 'on' && e.state !== 'off') || (e.from !== 'on' && e.from !== 'off')) return void this.haSeen.delete(e.id);
+    // This app's own switch, coming back.
+    if (Date.now() - (this.ha?.lastWrite(e.id) ?? 0) < this.settleMs + this.pollMs) return;
+    this.haSeen.set(e.id, { state: e.state, at: Date.now(), check: this.haCheck });
+  }
+
+  /**
+   * Home Assistant's lights and plugs, read with each status check (and told by its events in
+   * between). A light or plug switched in Home Assistant (or by its own button) is switched that
+   * way here too, as for WLED's own app, once it has held until the next check, and for most of
+   * a check's interval: a Zigbee light that says off for a moment, then on again, is not taken
+   * as switched off.
    */
   private async followHa() {
     const ha = this.ha;
     if (!ha?.connected()) return;
-    const { ok, changed } = await ha.refresh();
+    const check = ++this.haCheck;
+    const start = Date.now();
+    const { ok } = await ha.refresh();
     if (!ok) return;
-    // The ones seen last time that still say the same now.
-    const confirmed = [...this.haSeen].filter(([id, state]) => ha.entity(id)?.state === state && Date.now() - ha.lastWrite(id) >= this.settleMs + this.pollMs);
-    this.haSeen.clear();
-    for (const e of changed) {
-      // Only on to off and back: a light coming back from unavailable (a Zigbee light that missed
-      // a few checks) says what it is, which is no one switching it.
-      if ((e.state !== 'on' && e.state !== 'off') || (e.from !== 'on' && e.from !== 'off')) continue;
-      // This app's own switch, coming back.
-      if (Date.now() - ha.lastWrite(e.id) < this.settleMs + this.pollMs) continue;
-      this.haSeen.set(e.id, e.state);
+    const hold = Math.min(this.pollMs, 10_000) * 0.8;
+    const confirmed: [string, 'on' | 'off'][] = [];
+    for (const [id, seen] of this.haSeen) {
+      if (seen.check >= check || start - seen.at < hold) continue;
+      this.haSeen.delete(id);
+      if (ha.entity(id)?.state === seen.state && Date.now() - ha.lastWrite(id) >= this.settleMs + this.pollMs) confirmed.push([id, seen.state]);
     }
-    if (changed.length) this.bus.emit('devices');
     if (!confirmed.length) return;
     const { plugs } = ha.settings();
     const lights = new Set(this.haLights());

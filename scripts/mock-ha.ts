@@ -37,7 +37,9 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
     if (domain === 'homeassistant' && name === 'update_entity') return e ?? null;
     if (!e || !String(body.entity_id).startsWith(`${domain}.`)) return null;
     const on = name === 'turn_on';
+    const was = e.state;
     e.state = on ? 'on' : 'off';
+    if (was !== e.state) emit(String(body.entity_id));
     if (on && typeof body.brightness === 'number') e.attributes.brightness = body.brightness;
     if (on && Array.isArray(body.rgb_color)) e.attributes.rgb_color = body.rgb_color;
     hooks.onSwitch?.(String(body.entity_id), on);
@@ -45,6 +47,13 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
   };
   /** Called after a service switched an entity: a plug powering a controller, say. */
   const hooks: { onSwitch?: (entity: string, on: boolean) => void } = {};
+  /** The WebSocket subscriptions to state_changed: each connection and its message id. */
+  const watchers = new Set<{ ws: { send: (s: string) => void }; id: number }>();
+  /** Tells the subscribers an entity's state, as Home Assistant's state_changed event does. */
+  const emit = (entityId: string) => {
+    const e = states.get(entityId);
+    for (const w of watchers) w.ws.send(JSON.stringify({ id: w.id, type: 'event', event: { event_type: 'state_changed', data: { entity_id: entityId, new_state: e ? { entity_id: entityId, state: e.state, attributes: e.attributes } : null } } }));
+  };
 
   const server = http.createServer((req, res) => {
     const json = (status: number, v: unknown) => {
@@ -91,6 +100,12 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
         return;
       }
       if (!authed) return;
+      if (m.type === 'subscribe_events' && m.event_type === 'state_changed') {
+        const w = { ws, id: m.id };
+        watchers.add(w);
+        ws.on('close', () => watchers.delete(w));
+        return void ws.send(JSON.stringify({ id: m.id, type: 'result', success: true, result: null }));
+      }
       if (m.type === 'zha/devices') return void ws.send(JSON.stringify({ id: m.id, type: 'result', success: true, result: zhaDevices }));
       // A Zigbee command straight to a ZHA light: the light takes it, Home Assistant's state is left as it was.
       if (m.type === 'call_service' && m.domain === 'zha' && m.service === 'issue_zigbee_cluster_command') {
@@ -110,7 +125,7 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
     });
   });
 
-  return new Promise<{ port: number; url: string; token: string; states: typeof states; calls: typeof calls; hooks: typeof hooks; timing: typeof timing; close: () => Promise<void> }>((resolve) => {
+  return new Promise<{ port: number; url: string; token: string; states: typeof states; calls: typeof calls; hooks: typeof hooks; timing: typeof timing; emit: typeof emit; watching: () => number; close: () => Promise<void> }>((resolve) => {
     server.listen(port, '127.0.0.1', () => {
       const actual = (server.address() as { port: number }).port;
       resolve({
@@ -120,6 +135,8 @@ export function startMockHa(port = 0, token = 'mock-home-assistant-token-0123456
         states,
         calls,
         hooks,
+        emit,
+        watching: () => watchers.size,
         timing,
         close: () => new Promise((r) => (wss.clients.forEach((c) => c.terminate()), wss.close(), server.close(() => r()), server.closeAllConnections()))
       });

@@ -174,6 +174,28 @@ describe('lights in home assistant', () => {
   });
 });
 
+describe('home assistant events', () => {
+  it('show a light switched in home assistant at once, and the site follows it at the next check', async () => {
+    await connect();
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.lights.refreshStatus();
+    await until(() => ha.watching() > 0);
+    t.lights.settleMs = 0;
+    (t.lights as unknown as { pollMs: number }).pollMs = 0;
+    await wait(5);
+    ha.states.get('light.porch')!.state = 'off';
+    ha.emit('light.porch');
+    // The console has it at once, with no check in between.
+    await until(() => t.home.entity('light.porch')?.state === 'off');
+    expect((await t.call('GET', '/api/admin/ha')).json.entities.find((e: { id: string }) => e.id === 'light.porch').state).toBe('off');
+    expect(t.lights.isOff('ha:light.porch')).toBe(false);
+    await wait(5);
+    await t.lights.refreshStatus();
+    expect(t.lights.isOff('ha:light.porch')).toBe(true);
+    t.home.close();
+  });
+});
+
 describe('plugs that power a controller', () => {
   it('cut the power after the lights go off, and give it back before', async () => {
     await connect();
