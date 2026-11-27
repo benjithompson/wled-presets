@@ -6,8 +6,8 @@ import type { Actor, Lights } from './lights.ts';
 import { KEY, readSchedule, writeSchedule } from './settings.ts';
 
 const HOUR_MS = 3_600_000;
-/** After the server was down, the latest time it missed in this long still happens. */
-const CATCH_UP_MS = 2 * 24 * HOUR_MS;
+/** How far back to look for the schedule's latest time (it has one a day, unless the sun does not rise or set). */
+const LOOK_BACK_MS = 8 * 24 * HOUR_MS;
 /** How often the lights, woken in the night, are checked for nobody using them. */
 const IDLE_CHECK_MS = 20_000;
 
@@ -22,7 +22,11 @@ export interface SchedulerOptions {
 /**
  * Switches the lights on and off at the schedule's times (see LightSchedule). Each time acts
  * once, when it comes: an admin's switch in between holds until the next one. A time missed
- * while the server was down happens when it starts (only the latest one).
+ * while the server was down happens when it starts (only the latest one): which one acted
+ * last is kept (KEY.scheduleApplied), so a restart neither skips one nor does one again.
+ *
+ * Saving the schedule puts the lights as it says for now: off if it is between its off and its
+ * on, and on again if they are off for its night and it is no longer the night.
  *
  * Off switches every light off, and remembers the lights that were off already; on switches
  * the rest on again, so a light an admin switched off on its own stays off.
@@ -61,11 +65,12 @@ export class LightScheduler {
     return readSchedule(this.db);
   }
 
-  /** Saves the schedule. Its times from now on count: one that just passed does not happen. */
+  /** Saves the schedule, and puts the lights as it says for now (see the class). */
   save(s: LightSchedule, actor?: Actor): Promise<void> {
     const before = this.get();
     writeSchedule(this.db, s);
-    this.db.setSetting(KEY.scheduleRan, new Date(this.now()).toISOString());
+    // Its latest time acts again, as when the schedule starts (see apply's `fresh`).
+    this.db.setSetting(KEY.scheduleApplied, '');
     const after = this.get();
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       const what = after.enabled ? `on at ${describeTime(after.on)}, off at ${describeTime(after.off)}${after.wake ? `, visitors wake them for ${after.idleMinutes} min at a time` : ''}` : 'off';
@@ -90,7 +95,7 @@ export class LightScheduler {
     // From before the night was kept: the night it is if the schedule's last time was off and the lights are off.
     if (this.db.getSetting(KEY.scheduleNight) == null) {
       const s = this.get();
-      const last = scheduleEvents(s, this.now() - CATCH_UP_MS, this.now()).at(-1);
+      const last = scheduleEvents(s, this.now() - LOOK_BACK_MS, this.now()).at(-1);
       this.setNight(last?.kind === 'off' && this.lights.allOff());
     }
     this.lastUsed = this.now();
@@ -204,10 +209,13 @@ export class LightScheduler {
     const s = this.get();
     if (!scheduleRuns(s) || this.stopped) return;
     const now = this.now();
-    const ran = Date.parse(this.db.getSetting(KEY.scheduleRan) ?? '');
-    this.db.setSetting(KEY.scheduleRan, new Date(now).toISOString());
-    const due = Number.isFinite(ran) ? scheduleEvents(s, Math.max(ran, now - CATCH_UP_MS), now).at(-1) : undefined;
-    if (due) await this.apply(due, s);
+    // The schedule's latest time, and whether it acted: once each, whenever the server ran.
+    const last = scheduleEvents(s, now - LOOK_BACK_MS, now).at(-1);
+    const mark = Date.parse(this.db.getSetting(KEY.scheduleApplied) ?? '');
+    if (last && !(mark >= last.at)) {
+      this.db.setSetting(KEY.scheduleApplied, new Date(last.at).toISOString());
+      await this.apply(last, s, !Number.isFinite(mark));
+    }
     // A timer at most an hour long: the clock may change (summer time, the server's clock set).
     const next = nextEvent(s, now);
     const wait = next ? Math.min(Math.max(next.at - now, 1000), HOUR_MS) : HOUR_MS;
@@ -217,8 +225,14 @@ export class LightScheduler {
     }
   }
 
-  private async apply(e: ScheduleEvent, s: LightSchedule) {
-    const why = `by the schedule (${describeTime(s[e.kind])})`;
+  /**
+   * Does one of the schedule's times. `fresh`: the schedule was just saved (or started with no
+   * record of what it did): the lights go as it says for now, unless they are already. Off
+   * when they are not off for its night, and on when they are.
+   */
+  private async apply(e: ScheduleEvent, s: LightSchedule, fresh = false) {
+    if (fresh && (e.kind === 'off') === this.night()) return;
+    const why = fresh ? `by the schedule (${e.kind} since ${describeTime(s[e.kind])})` : `by the schedule (${describeTime(s[e.kind])})`;
     const off = this.lights.controls().off;
     if (e.kind === 'off') {
       // Already off (an admin's switch): nothing to do, and on switches every light on.

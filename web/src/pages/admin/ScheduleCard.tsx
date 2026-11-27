@@ -91,7 +91,7 @@ export function ScheduleCard() {
     <Card className="mb-6">
       <CardHeader
         title="Schedule"
-        description="Switch every light on and off each day. Switching all of them by hand in between holds until the next time. While they are off, visitors see when they come back on."
+        description="Switch every light on and off each day. Saving puts the lights as it says for now; switching all of them by hand in between holds until the next time. While they are off, visitors see when they come back on."
         actions={<Switch label="Schedule on" checked={form.enabled} onChange={(enabled) => set({ enabled })} />}
       />
       <form

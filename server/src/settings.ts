@@ -25,7 +25,8 @@ export const KEY = {
   sceneTransitionSeconds: 'sceneTransitionSeconds',
   maxFps: 'lightsMaxFps',
   schedule: 'lightSchedule',
-  scheduleRan: 'lightScheduleRan',
+  /** When the schedule's time that acted last was (ISO); '' or none: act on the latest one as the schedule says (just saved or never run). */
+  scheduleApplied: 'lightScheduleApplied',
   scheduleHeld: 'lightScheduleHeld',
   /** '1' from the schedule's off until its on (or an admin's switch): visitors can wake the lights. */
   scheduleNight: 'lightScheduleNight'
