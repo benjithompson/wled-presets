@@ -454,7 +454,10 @@ function GameGrid({ games, off, hidden }: { games: (typeof GAME_CATALOG)[number]
  */
 function AdminBar({ lightsOff }: { lightsOff: boolean }) {
   const { data: controls } = useLightControls();
-  const { power, brightness } = useLightMutations();
+  const { power, brightness, switchOf } = useLightMutations();
+  // As asked at once, while the switch is on its way.
+  const s = switchOf(null);
+  const on = s ? s.on : !lightsOff;
   return (
     <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl bg-white/65 px-3 py-2 text-sm ring-1 ring-stone-900/10 backdrop-blur-md dark:bg-stone-900/45 dark:ring-white/10">
       <a
@@ -464,8 +467,8 @@ function AdminBar({ lightsOff }: { lightsOff: boolean }) {
         <Settings2 className="size-4" /> Admin console
       </a>
       <span className="inline-flex items-center gap-2">
-        <PowerButton size="sm" on={!lightsOff} label="All lights" disabled={power.isPending} onToggle={() => power.mutate({ on: lightsOff })} />
-        <span className="text-stone-600 dark:text-stone-300">{lightsOff ? 'Lights off' : 'Lights on'}</span>
+        <PowerButton size="sm" on={on} busy={s?.busy} label="All lights" onToggle={() => power.mutate({ on: !on })} />
+        <span className="text-stone-600 dark:text-stone-300">{s?.busy ? `Turning ${on ? 'on' : 'off'}…` : on ? 'Lights on' : 'Lights off'}</span>
       </span>
       <LevelSlider
         className="min-w-48 flex-1 sm:max-w-80"
