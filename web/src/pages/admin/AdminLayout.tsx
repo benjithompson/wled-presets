@@ -79,15 +79,6 @@ export function AdminLayout() {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
-            <a
-              href="/"
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Public page"
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white"
-            >
-              <span className="max-sm:hidden">Public page</span> <ExternalLink className="size-3.5 max-sm:size-[18px]" />
-            </a>
             <UserMenu username={session!.user!.username} />
           </div>
         </div>
@@ -279,12 +270,24 @@ function UserMenu({ username }: { username: string }) {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label="Menu: public page, theme, sign out"
         className="grid size-9 place-items-center rounded-full bg-stone-200/70 text-stone-700 transition hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
       >
         <UserRound className="size-[18px]" />
       </button>
       {open ? (
         <div role="menu" className="absolute right-0 mt-2 w-64 rounded-2xl bg-white p-2 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
+          <a
+            href="/"
+            target="_blank"
+            rel="noreferrer"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
+          >
+            <ExternalLink className="size-4" /> Public page
+          </a>
+          <div className="my-1 h-px bg-stone-100 dark:bg-stone-800" />
           <div className="px-3 pt-2 pb-3">
             <p className="text-xs text-stone-500">Signed in as</p>
             <p className="truncate font-medium">{username}</p>
