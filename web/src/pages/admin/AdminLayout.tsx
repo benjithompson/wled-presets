@@ -70,24 +70,27 @@ export function AdminLayout() {
             <span className="grid size-8 place-items-center rounded-xl bg-stone-900 text-accent-400 dark:bg-accent-400 dark:text-stone-950">
               <Lightbulb className="size-[18px]" />
             </span>
-            <span className="hidden sm:inline">WLED Presets</span>
+            <span className="hidden whitespace-nowrap sm:inline">WLED Presets</span>
           </NavLink>
           <NavMenu />
           <nav className="hidden items-center gap-1 lg:flex">
+            <a
+              href="/"
+              target="_blank"
+              rel="noreferrer"
+              title="Public page (opens in a new tab)"
+              className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800/70 dark:hover:text-white"
+            >
+              <ExternalLink className="size-4" />
+              {/* Only the icon until the bar has room for every page and this. */}
+              <span className="max-xl:sr-only">Public page</span>
+            </a>
+            <span aria-hidden className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-800" />
             {NAV.map((n) => (
               <NavItem key={n.to} {...n} />
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-2">
-            <a
-              href="/"
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Public page"
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white"
-            >
-              <span className="max-sm:hidden">Public page</span> <ExternalLink className="size-3.5 max-sm:size-[18px]" />
-            </a>
             <UserMenu username={session!.user!.username} />
           </div>
         </div>
@@ -231,6 +234,11 @@ function NavMenu() {
       </button>
       {open ? (
         <div role="menu" className="absolute left-0 mt-2 w-56 rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
+          <a href="/" target="_blank" rel="noreferrer" role="menuitem" onClick={() => setOpen(false)} className={cn(menuRow, menuRowIdle)}>
+            <ExternalLink className="size-4" />
+            Public page
+          </a>
+          <div className="my-1 h-px bg-stone-100 dark:bg-stone-800" />
           {NAV.map((n) => (
             <NavLink
               key={n.to}
