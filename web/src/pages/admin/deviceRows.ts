@@ -23,8 +23,18 @@ export interface DeviceRow {
   /** WLED, or the integration a Home Assistant light comes from. */
   integration: string;
   leds: number | null;
-  /** The frames a second a WLED device says it shows (null: offline, disabled, or not WLED). */
+  /**
+   * The frames a second in its FPS column: what the site sends a WLED device while it gets
+   * frames, else what the device says it shows on its own (null: offline, disabled, or not WLED).
+   */
   fps: number | null;
+  /** The most frames a second the site sends it now (null: none lately); held: fewer, as it fell behind. */
+  sending: { fps: number; held: boolean } | null;
+  /**
+   * The frames a second the device says it shows. WLED averages 1000 / the gap between frames,
+   * so frames that come over Wi-Fi in bunches read higher than they are.
+   */
+  shows: number | null;
   /** The layout's objects that use it. */
   objects: string[];
   device?: DeviceWithStatus;
@@ -51,6 +61,8 @@ export function buildRows({ devices, ha, off, fixtures }: RowSources): DeviceRow
   const rows: DeviceRow[] = devices.map((d) => {
     const [status, statusText] = wledStatus(d, off);
     const live = d.enabled && d.online === true;
+    const shows = live && typeof d.info?.leds?.fps === 'number' ? d.info.leds.fps : null;
+    const sending = live ? (d.sending ?? null) : null;
     return {
       key: d.id,
       source: 'wled',
@@ -62,7 +74,9 @@ export function buildRows({ devices, ha, off, fixtures }: RowSources): DeviceRow
       area: '',
       integration: 'WLED',
       leds: d.info?.leds?.count ?? null,
-      fps: live && typeof d.info?.leds?.fps === 'number' ? d.info.leds.fps : null,
+      fps: sending ? sending.fps : shows,
+      sending,
+      shows,
       objects: objectsOf(d.id),
       device: d
     };
@@ -94,6 +108,8 @@ export function buildRows({ devices, ha, off, fixtures }: RowSources): DeviceRow
         integration: e?.integration || 'Home Assistant',
         leds: null,
         fps: null,
+        sending: null,
+        shows: null,
         objects: objectsOf(haId(id)),
         ha: { id, entity: e }
       });

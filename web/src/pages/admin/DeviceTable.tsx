@@ -322,7 +322,7 @@ export function DeviceTable({
     const bits: ReactNode[] = [<span key="addr" className="font-mono">{r.address}</span>];
     if (d?.info?.ver) bits.push(<span key="ver">WLED {d.info.ver}</span>);
     if (d && r.enabled && d.online && typeof d.info?.wifi?.signal === 'number') bits.push(<span key="wifi">Wi-Fi {d.info.wifi.signal}%</span>);
-    if (r.fps != null) bits.push(<span key="fps" className="md:hidden">{r.fps} fps</span>);
+    if (r.fps != null) bits.push(<span key="fps" className="md:hidden">{r.sending ? `${r.fps} fps` : `${r.fps} fps on its own`}</span>);
     if (r.leds != null) bits.push(<span key="leds" className="lg:hidden">{r.leds} LEDs</span>);
     if (e) bits.push(<span key="kind">{kindOf(e) === 'light' ? (e.color ? 'Color' : e.dimmable ? 'Dims' : 'On and off') : kindOf(e) === 'outlet' ? 'Plug' : 'Switch'}</span>);
     if (r.area) bits.push(<span key="area" className="xl:hidden">{r.area}</span>);
@@ -471,7 +471,7 @@ export function DeviceTable({
               {head('name', 'Name', 'pl-1')}
               {head('status', 'Status', 'hidden w-24 sm:table-cell')}
               <th className="hidden w-48 px-2 py-2 font-medium md:table-cell xl:w-60">Brightness</th>
-              {head('fps', 'FPS', 'hidden w-14 text-right md:table-cell [&>button]:flex-row-reverse', `Frames a second a WLED device says it shows. They are sent at most ${maxFps} a second (Settings → Frame rate).`)}
+              {head('fps', 'FPS', 'hidden w-14 text-right md:table-cell [&>button]:flex-row-reverse', `Frames a second the site sends each WLED device while effects, games and previews play: at most ${maxFps} (Settings → Frame rate), fewer for a long strip or one that fell behind. Grey: the site sends it nothing now, and this is the device's own rate.`)}
               {head('leds', 'LEDs', 'hidden w-16 text-right lg:table-cell [&>button]:flex-row-reverse')}
               {head('area', 'Area', 'hidden w-28 xl:table-cell')}
               <th className="hidden w-20 px-2 py-2 font-medium sm:table-cell" title="Disabled: the site leaves it alone">
@@ -599,9 +599,31 @@ export function DeviceTable({
   );
 }
 
-/** A WLED device's frame rate, as it says; for a Home Assistant light in the layout, the most colors a second it takes. */
+/**
+ * A WLED device's frame rate: while the site sends it frames, how many a second (amber when it
+ * is held to fewer, or shows under half of them); else, greyed, the rate it says it runs at on
+ * its own. For a Home Assistant light in the layout, the most colors a second it takes.
+ */
 function fpsOf(r: DeviceRow, haFps: number | undefined) {
-  if (r.fps != null) return <span title="Frames a second it says it shows">{r.fps}</span>;
+  if (r.sending) {
+    const behind = r.shows != null && r.shows < r.sending.fps * 0.5;
+    const said = r.shows == null ? '' : ` The device counts ${r.shows}${behind ? ': it is not keeping up.' : ' (WLED counts high when frames arrive unevenly over Wi-Fi).'}`;
+    return (
+      <span
+        className={cn((r.sending.held || behind) && 'font-medium text-amber-600 dark:text-amber-400')}
+        title={`The site sends it up to ${r.sending.fps} frames a second${r.sending.held ? ', fewer than the limit: it fell behind, and gets more again once it keeps up' : ''}.${said}`}
+      >
+        {r.sending.fps}
+      </span>
+    );
+  }
+  if (r.shows != null) {
+    return (
+      <span className="text-stone-400" title="The site sends it no frames now: this is the rate it says it runs its own effects at, which the site's limit does not set">
+        {r.shows}
+      </span>
+    );
+  }
   if (r.ha && r.objects.length && r.enabled && haFps) {
     return (
       <span className="text-stone-400" title="Colors a second it takes at most while effects and games play (Home Assistant light settings)">

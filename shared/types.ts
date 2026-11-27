@@ -24,6 +24,11 @@ export interface DeviceWithStatus extends Device {
   power: { on: boolean; bri: number } | null;
   /** The Home Assistant plug that powers it, and whether it is on (null: unknown). */
   plug?: { entity: string; name: string; on: boolean | null };
+  /**
+   * The most frames a second the site sends it now, while effects, games or previews play
+   * (null: none lately). `held`: fewer than the limit, as it fell behind (see FrameRateHold).
+   */
+  sending?: { fps: number; held: boolean } | null;
 }
 
 /** Subset of WLED /json/info that the UI shows. */
