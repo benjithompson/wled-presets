@@ -1,6 +1,6 @@
 {
   "name": "wled-presets",
-  "version": "2.81.1",
+  "version": "2.81.2",
   "private": true,
   "type": "module",
   "description": "Public preset picker and admin console for WLED devices",
