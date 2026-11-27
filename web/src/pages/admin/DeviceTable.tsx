@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, ChevronDown, Gauge, Lightbulb, List as ListIcon, Pe
 import { toast } from 'sonner';
 import type { DevicePreset, DeviceWithStatus } from '../../../../shared/types.ts';
 import type { HaEntity } from '../../../../shared/homeAssistant.ts';
-import { LevelSlider, PowerButton, useLightControls, useLightMutations } from '../../components/LightControls.tsx';
+import { LevelSlider, PowerButton, switchText, useLightControls, useLightMutations } from '../../components/LightControls.tsx';
 import { Button, Card, CardHeader, ConfirmDialog, Empty, Input, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { MoreButton } from '../../components/mobile.tsx';
 import type { ActionItem } from '../../components/mobile.tsx';
@@ -15,9 +15,8 @@ import { useMedia } from '../../lib/useMedia.ts';
 import { OVERVIEW } from './AdminLayout.tsx';
 import { kindOf } from './EntityTable.tsx';
 import { FrameSettingsDialog, SpeedTestDialog, useSaveLights } from './HaLightDialogs.tsx';
-import { useHomeAssistant } from './HomeAssistantCard.tsx';
+import { HA, useHomeAssistant } from './HomeAssistantCard.tsx';
 import {
-  asSwitched,
   buildRows,
   commandsText,
   filterRows,
@@ -96,6 +95,7 @@ export function DeviceTable({
   devices,
   presets,
   maxFps,
+  debugHa,
   loading,
   onAdd,
   onDiscover,
@@ -107,6 +107,8 @@ export function DeviceTable({
   presets: Record<string, DevicePreset[]>;
   /** The admin's frame rate limit (Settings → Frame rate). */
   maxFps: number;
+  /** Settings → Debug: show how each Home Assistant light takes its commands. */
+  debugHa: boolean;
   loading: boolean;
   onAdd: () => void;
   onDiscover: () => void;
@@ -116,8 +118,10 @@ export function DeviceTable({
 }) {
   const qc = useQueryClient();
   const { data: controls } = useLightControls();
-  const { power, brightness, switchOf } = useLightMutations();
+  const { power, brightness, switchingTo } = useLightMutations();
   const { data: ha } = useHomeAssistant();
+  // Settings → Debug: how each Home Assistant light takes its commands, often enough to watch one fall behind.
+  const { data: commands } = useQuery({ queryKey: [...HA, 'commands'], queryFn: api.haCommands, enabled: debugHa, refetchInterval: 2000 });
   const { data: layout } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
   const saveHa = useSaveLights();
   const [filter, setFilter] = useState<RowFilter>(NO_FILTER);
@@ -149,9 +153,10 @@ export function DeviceTable({
 
   const off = useMemo(() => new Set(controls?.off ?? []), [controls]);
   const haConnected = !!ha?.url && ha.hasToken;
-  // A switch shows at once, as asked, while it is on its way.
-  const rows = buildRows({ devices, ha, off, fixtures: layout?.fixtures ?? [] }).map((r) => asSwitched(r, switchOf(r.key)));
-  const allSwitch = switchOf(null);
+  const rows = buildRows({ devices, ha, off, fixtures: layout?.fixtures ?? [], commands: debugHa ? commands : undefined });
+  const allTurning = switchingTo(null);
+  /** While a switch is on its way to the light: the state asked for. One offline without a plug takes none. */
+  const turningTo = (r: DeviceRow) => (!r.enabled || (r.status === 'offline' && !r.device?.plug) ? null : switchingTo(r.key));
   const shown = sortRows(filterRows(rows, filter), sort);
   const groups = groupRows(shown, group);
   const areas = [...new Set(rows.map((r) => r.area).filter(Boolean))].sort();
@@ -166,9 +171,10 @@ export function DeviceTable({
   const offline = enabled.length - reachable.length;
   const allOff = reachable.length ? lit === 0 : enabled.every((r) => off.has(r.key));
   const all = controls?.brightness.all ?? null;
-  const summary = allSwitch?.busy
-    ? `Turning ${allSwitch.on ? 'on' : 'off'}…`
-    : !reachable.length
+  const summary =
+    allTurning != null
+      ? switchText(allTurning)
+      : !reachable.length
       ? 'Offline'
       : allOff
         ? 'Off'
@@ -207,7 +213,7 @@ export function DeviceTable({
         size="sm"
         on={on}
         label={gone ? `${r.name} (offline)` : r.name}
-        busy={r.switching}
+        busy={turningTo(r) != null}
         disabled={!controls || (gone && !d?.plug)}
         onToggle={() => power.mutate({ on: gone && d?.plug ? off.has(r.key) : !on, deviceId: r.key })}
       />
@@ -410,7 +416,7 @@ export function DeviceTable({
 
       {enabled.length ? (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-b border-stone-100 px-4 py-4 sm:px-5 dark:border-stone-800">
-          <PowerButton on={allSwitch ? allSwitch.on : !allOff} busy={allSwitch?.busy} label="All lights" disabled={!controls} onToggle={() => power.mutate({ on: allOff })} />
+          <PowerButton on={!allOff} busy={allTurning != null} label="All lights" disabled={!controls} onToggle={() => power.mutate({ on: allOff })} />
           <div className="min-w-0">
             <p className="font-medium">All lights</p>
             <p className="text-sm text-stone-500 dark:text-stone-400">
@@ -532,13 +538,13 @@ export function DeviceTable({
                             <div className={cn('flex min-w-0 items-center gap-2', !r.enabled && 'opacity-60')}>
                               <RowIcon row={r} />
                               <span className="truncate font-medium">{r.name}</span>
-                              <StatusBadge row={r} className="sm:hidden" />
+                              <StatusBadge row={r} turning={turningTo(r)} className="sm:hidden" />
                             </div>
                             <div className={cn('mt-0.5 flex flex-wrap gap-x-2.5 text-xs text-stone-500 dark:text-stone-400', !r.enabled && 'opacity-60')}>{detailsOf(r)}</div>
                             <div className="mt-2 md:hidden">{levelOf(r)}</div>
                           </td>
                           <td className="hidden px-2 py-2.5 sm:table-cell">
-                            <StatusBadge row={r} />
+                            <StatusBadge row={r} turning={turningTo(r)} />
                           </td>
                           <td className="hidden px-2 py-2.5 md:table-cell">{levelOf(r)}</td>
                           <td className="hidden px-2 py-2.5 text-right tabular-nums md:table-cell">{fpsOf(r, ha?.fps)}</td>
@@ -666,12 +672,12 @@ const STATUS_TONE: Record<Status, string> = {
   disabled: 'bg-transparent text-stone-500 ring-1 ring-inset ring-stone-200 dark:text-stone-400 dark:ring-stone-700'
 };
 
-function StatusBadge({ row, className }: { row: DeviceRow; className?: string }) {
+function StatusBadge({ row, turning, className }: { row: DeviceRow; turning: boolean | null; className?: string }) {
   const d = row.device;
   const title = d?.online === false && d.lastSeen ? `Last seen ${relativeTime(d.lastSeen)}` : row.status === 'disabled' ? 'Gets no commands and is not checked' : undefined;
   return (
     <span className={cn('inline-flex shrink-0 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap', STATUS_TONE[row.status], className)} title={title}>
-      {row.statusText}
+      {turning != null ? switchText(turning) : row.statusText}
     </span>
   );
 }

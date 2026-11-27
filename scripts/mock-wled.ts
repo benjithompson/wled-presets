@@ -32,9 +32,10 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
    * How the device behaves, changed by tests: `answerMs`, every HTTP answer waits this long (a
    * device that has fallen behind); `fps`, the frames a second it says it shows (null: the DDP
    * frames of the last second); `deaf`, its WebSocket no longer answers pings (gone, the
-   * connection left open).
+   * connection left open); `quiet`, its WebSocket says nothing of a change asked over HTTP (a
+   * report that comes late).
    */
-  const behave: { answerMs: number; fps: number | null; deaf: boolean } = { answerMs: 0, fps: null, deaf: false };
+  const behave: { answerMs: number; fps: number | null; deaf: boolean; quiet: boolean } = { answerMs: 0, fps: null, deaf: false, quiet: false };
   const shown: number[] = [];
   const udp = dgram.createSocket('udp4');
   udp.on('message', (msg) => {
@@ -141,7 +142,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         const preset = typeof body?.ps === 'number' ? (presets[String(body.ps)] as { seg?: Record<string, unknown>[] } | undefined) : undefined;
         if (preset?.seg) state.seg = [{ id: 0, col: [[255, 160, 80]], fx: 0, ...(preset.seg[0] as object) }];
         if (Array.isArray(body?.seg) && body.seg[0]?.col) state.seg = [{ ...state.seg[0], ...body.seg[0] }];
-        broadcastState();
+        if (!behave.quiet) broadcastState();
         return json({ success: true });
       }
       if (req.url === '/json/state') return json(state);

@@ -1,7 +1,7 @@
 // The Devices page's table: every light the site controls, WLED devices and Home Assistant
 // lights alike, as rows to filter, group and sort (see DeviceTable).
 import type { DeviceWithStatus } from '../../../../shared/types.ts';
-import { haId, type HaCommandStats, type HaEntity, type HaView } from '../../../../shared/homeAssistant.ts';
+import { haId, NO_COMMANDS, type HaCommandStats, type HaEntity, type HaView } from '../../../../shared/homeAssistant.ts';
 
 export type Source = 'wled' | 'ha';
 /** How a row stands: lit, dark, not answering, or left alone by the site. */
@@ -10,8 +10,6 @@ export type Status = 'on' | 'off' | 'offline' | 'disabled';
 export interface DeviceRow {
   /** Its id in the lights' switches: a WLED device's id, or ha:<entity id>. */
   key: string;
-  /** A switch for it (its own, or all lights') is on its way: status says what it was asked (see asSwitched). */
-  switching?: boolean;
   source: Source;
   name: string;
   /** Host (and port when not 80) of a WLED device; entity id of a Home Assistant light. */
@@ -47,8 +45,6 @@ export interface DeviceRow {
   ha?: { id: string; entity: HaEntity | undefined; commands?: HaCommandStats };
 }
 
-const NO_COMMANDS: HaCommandStats = { answered: 0, late: 0, failed: 0, lastMs: 0, avgMs: 0, maxMs: 0, going: 0, waiting: 0, goingMs: 0 };
-
 /** A time in ms, short: 320 ms, 4.8 s, 42 s. */
 const short = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`);
 
@@ -73,6 +69,8 @@ export interface RowSources {
   ha: HaView | undefined;
   off: ReadonlySet<string>;
   fixtures: { name: string; deviceId: string | null }[];
+  /** How each Home Assistant light takes its commands, by entity id (only with Settings → Debug on). */
+  commands?: Record<string, HaCommandStats>;
 }
 
 /** A device whose plug is off does not answer, and that is as it should be. */
@@ -81,7 +79,7 @@ export const unplugged = (d: DeviceWithStatus) => d.online === false && !!d.plug
 /** On, as the site counts it: held off here wins over what Home Assistant says. */
 export const haIsOn = (id: string, state: string, off: ReadonlySet<string>) => (off.has(haId(id)) ? false : state !== 'off');
 
-export function buildRows({ devices, ha, off, fixtures }: RowSources): DeviceRow[] {
+export function buildRows({ devices, ha, off, fixtures, commands }: RowSources): DeviceRow[] {
   const objectsOf = (id: string) => fixtures.filter((f) => f.deviceId === id).map((f) => f.name);
   const rows: DeviceRow[] = devices.map((d) => {
     const [status, statusText] = wledStatus(d, off);
@@ -136,7 +134,7 @@ export function buildRows({ devices, ha, off, fixtures }: RowSources): DeviceRow
         sending: null,
         shows: null,
         objects: objectsOf(haId(id)),
-        ha: { id, entity: e, ...(ha.commands ? { commands: ha.commands[id] ?? NO_COMMANDS } : {}) }
+        ha: { id, entity: e, ...(commands ? { commands: commands[id] ?? NO_COMMANDS } : {}) }
       });
     }
   }
@@ -211,16 +209,4 @@ export function groupRows(rows: DeviceRow[], by: GroupBy): [string, DeviceRow[]]
   const rank = (g: string) =>
     by === 'source' ? (g === 'WLED' ? 0 : 1) : by === 'status' ? Object.values(STATUS_NAME).indexOf(g) : by === 'integration' ? (g === 'WLED' ? 0 : 1) : g === 'No area' ? 1 : 0;
   return [...groups].sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
-}
-
-/**
- * A row as its switch shows (see useLightMutations' switchOf): while a switch is on its way, or
- * just done, the state asked for, at once. A light that does not answer stays offline, unless
- * it was switched on its own and has a plug, which powers it up.
- */
-export function asSwitched(r: DeviceRow, s: { on: boolean; busy: boolean; own: boolean } | null): DeviceRow {
-  if (!s || !r.enabled) return r;
-  if (r.status === 'offline' && !(s.own && r.device?.plug)) return r;
-  const text = s.busy ? (s.on ? 'Turning on…' : 'Turning off…') : s.on ? 'On' : 'Off';
-  return { ...r, status: s.on ? 'on' : 'off', statusText: text, switching: s.busy };
 }

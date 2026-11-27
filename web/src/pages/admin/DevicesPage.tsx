@@ -75,6 +75,7 @@ export function DevicesPage() {
         devices={devices}
         presets={data?.devicePresets ?? {}}
         maxFps={data?.settings.maxFps ?? 30}
+        debugHa={!!data?.settings.debugHa}
         loading={isLoading}
         onAdd={() => setEditing('new')}
         onDiscover={() => setDiscovering(true)}
