@@ -42,13 +42,14 @@ export function maxFps(info: DeviceInfo | null | undefined): number {
 
 /**
  * How many frames a second a device is sent: every frame of the pipeline's clock, or, for one
- * that cannot show them all, every second, third… frame, the most it can show. Sending 54 of
+ * that cannot show them all (or with a lower `limit`, the admin's, see Settings.maxFps), every
+ * second, third… frame, the most it can show. Sending 54 of
  * 60 would skip frames at uneven gaps, and WLED shows such frames unevenly too (it waits until
  * its strip is done), so the lights judder; it would also take Wi-Fi airtime that a device with
  * a weak signal does not have. An even 30 looks smooth, with half the packets.
  */
-export function sendFps(info: DeviceInfo | null | undefined): number {
-  const fps = maxFps(info);
+export function sendFps(info: DeviceInfo | null | undefined, limit: number = MAX_FPS): number {
+  const fps = Math.min(maxFps(info), Math.max(1, limit));
   // Within a frame or two of the clock (outputs side by side, a tolerance in the estimate): all.
   if (fps >= MAX_FPS - 2) return MAX_FPS;
   return MAX_FPS / Math.ceil(MAX_FPS / fps);

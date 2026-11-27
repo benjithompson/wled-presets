@@ -1,5 +1,5 @@
 import type { GameArea } from '../../shared/layout.ts';
-import type { LightControls, Settings } from '../../shared/types.ts';
+import { DEFAULT_FRAME_RATE, FRAME_RATES, type LightControls, type Settings } from '../../shared/types.ts';
 import type { Db } from './db.ts';
 import { DEFAULT_LINE, type LineSettings } from '../../shared/line.ts';
 import { cleanSchedule, type LightSchedule } from '../../shared/schedule.ts';
@@ -23,6 +23,7 @@ export const KEY = {
   brightness: 'lightsBrightness',
   sceneTransition: 'sceneTransition',
   sceneTransitionSeconds: 'sceneTransitionSeconds',
+  maxFps: 'lightsMaxFps',
   schedule: 'lightSchedule',
   scheduleRan: 'lightScheduleRan',
   scheduleHeld: 'lightScheduleHeld'
@@ -45,6 +46,12 @@ export function sceneTransitionOf(s: Pick<Settings, 'sceneTransition' | 'sceneTr
   return s.sceneTransition === 'none' ? null : { type: s.sceneTransition, seconds: s.sceneTransitionSeconds };
 }
 
+/** A frame rate limit from FRAME_RATES, else the default. */
+export function frameRate(v: unknown): number {
+  const n = Number(v);
+  return (FRAME_RATES as readonly number[]).includes(n) ? n : DEFAULT_FRAME_RATE;
+}
+
 export const DEFAULT_TITLE = 'Lights';
 export const DEFAULT_SUBTITLE = 'Tap a color or a scene.';
 
@@ -64,7 +71,8 @@ export function readSettings(db: Db): Settings {
     revertMinutes: Math.max(0, parseInt(db.getSetting(KEY.revertMinutes) || '0', 10) || 0),
     discoverySubnets: subnets,
     sceneTransition: isSceneTransition(db.getSetting(KEY.sceneTransition)) ? (db.getSetting(KEY.sceneTransition) as SceneTransitionChoice) : DEFAULT_SCENE_TRANSITION,
-    sceneTransitionSeconds: sceneTransitionSeconds(db.getSetting(KEY.sceneTransitionSeconds))
+    sceneTransitionSeconds: sceneTransitionSeconds(db.getSetting(KEY.sceneTransitionSeconds)),
+    maxFps: frameRate(db.getSetting(KEY.maxFps))
   };
 }
 
@@ -77,6 +85,7 @@ export function writeSettings(db: Db, s: Settings) {
   db.setSetting(KEY.subnets, JSON.stringify(s.discoverySubnets));
   db.setSetting(KEY.sceneTransition, s.sceneTransition);
   db.setSetting(KEY.sceneTransitionSeconds, sceneTransitionSeconds(s.sceneTransitionSeconds));
+  db.setSetting(KEY.maxFps, frameRate(s.maxFps));
 }
 
 /** A v1 install had a hard-coded page title. Keep it, so the public page looks the same after upgrade. */

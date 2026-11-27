@@ -481,6 +481,39 @@ describe('how fast a device can show frames', () => {
     expect(sendFps({ outputs: [{ len: 1500, type: 22 }] })).toBe(20);
   });
 
+  it('keeps every device within the admin’s frame rate limit, at an even share of the clock', async () => {
+    const { sendFps } = await import('../src/ledTiming.ts');
+    expect(sendFps({ outputs: [{ len: 150, type: 22 }] }, 30)).toBe(30);
+    expect(sendFps(null, 15)).toBe(15);
+    // A strip slower than the limit: its own rate.
+    expect(sendFps({ outputs: [{ len: 1500, type: 22 }] }, 30)).toBe(20);
+    // A limit that is not an even share: the next one below it.
+    expect(sendFps(null, 25)).toBe(20);
+  });
+
+  it('sends a short strip only as many frames as the limit allows', async () => {
+    const mock = await startMockWled(0, 'Windows', 150);
+    await new Promise((r) => setTimeout(r, 50));
+    const sender = new LightSender();
+    sender.maxFps = 15;
+    const device = { id: 'w', name: 'Windows', host: '127.0.0.1', port: mock.port, enabled: true, info: { leds: { count: 150 }, outputs: [{ len: 150, type: 22 }], udpport: mock.port, ddpport: mock.ddpPort() } };
+    const { FrameLoop } = await import('../src/frameLoop.ts');
+    let i = 0;
+    const loop = new FrameLoop(() => sender.send(device, new Uint8Array(150 * 3).fill(10 + (i++ % 200))), 60);
+    try {
+      loop.start();
+      await new Promise((r) => setTimeout(r, 1000));
+      loop.stop();
+      await new Promise((r) => setTimeout(r, 60));
+      expect(mock.realtime.ddpFrames).toBeGreaterThanOrEqual(13);
+      expect(mock.realtime.ddpFrames).toBeLessThanOrEqual(17);
+    } finally {
+      loop.stop();
+      sender.close();
+      await mock.close();
+    }
+  });
+
   it('sends a 600-LED output every other frame of the clock', async () => {
     const mock = await startMockWled(0, 'Quad', 950);
     await new Promise((r) => setTimeout(r, 50));

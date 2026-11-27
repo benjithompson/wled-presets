@@ -22,6 +22,8 @@ import { entityOf, haId, isHaId, type HaEntity } from '../../shared/homeAssistan
  * moment after the request, and tells its WebSocket at most about once a second.
  */
 const SETTLE_MS = 2500;
+/** A status check that took longer than this: the device is busy, and sits the next check or two out. */
+const SLOW_CHECK_MS = 2000;
 
 /** WLED's brightness (1 to 255) in percent, as the switches count it. */
 const percent = (bri: number) => Math.max(1, Math.round((bri / 255) * 100));
@@ -326,16 +328,42 @@ export class Lights {
     return this.refreshing;
   }
 
+  /**
+   * Devices that answered slowly (or not in time), and how many checks each sits out: a device
+   * that has fallen behind gets room to catch up instead of another request at every check.
+   * 1, then 2, then 3 checks in a row (about 10, 20, 30 s) while it stays slow.
+   */
+  private slowChecks = new Map<string, { wait: number; skip: number }>();
+  /** Told of each status check of a device (see LightSender.checked, which holds a device that falls behind to fewer frames). */
+  onChecked: ((d: Device, c: { ok: boolean; ms: number; fps?: number }) => void) | null = null;
+
   private async checkDevices(): Promise<void> {
-    const devices = this.enabledDevices();
-    this.syncWatchers(devices);
+    const all = this.enabledDevices();
+    this.syncWatchers(all);
+    // A slow one sits a check or two out (see slowChecks); its status stays as it was.
+    const devices = all.filter((d) => {
+      const s = this.slowChecks.get(d.id);
+      if (!s || s.skip <= 0) return true;
+      s.skip--;
+      return false;
+    });
     // A device busy with real-time frames over Wi-Fi can answer slowly; allow 3 s.
-    const [results] = await Promise.all([Promise.all(devices.map((d) => this.readInfo(d))), this.followHa().catch(() => {})]);
+    const timed = (d: Device) => {
+      const t0 = Date.now();
+      return this.readInfo(d).then((r) => ({ r, ms: Date.now() - t0 }));
+    };
+    const [checks] = await Promise.all([Promise.all(devices.map(timed)), this.followHa().catch(() => {})]);
+    const results = checks.map((c) => c.r);
     let changed = false;
-    const seen = new Set<string>();
+    const seen = new Set(all.map((d) => d.id));
     devices.forEach((d, i) => {
-      seen.add(d.id);
       const r = results[i];
+      const { ms } = checks[i];
+      if (ms > SLOW_CHECK_MS) {
+        const wait = Math.min(3, (this.slowChecks.get(d.id)?.wait ?? 0) + 1);
+        this.slowChecks.set(d.id, { wait, skip: wait });
+      } else this.slowChecks.delete(d.id);
+      this.onChecked?.(d, { ok: r.ok, ms, ...(r.ok && typeof r.data.info.leds?.fps === 'number' ? { fps: r.data.info.leds.fps } : {}) });
       const prev = this.status.get(d.id);
       const misses = r.ok ? 0 : (prev?.misses ?? 0) + 1;
       const next: Status = r.ok
@@ -349,6 +377,7 @@ export class Lights {
       // The state in the answer, for a device whose WebSocket does not work.
       else if (r.ok && r.data.power) this.observe(d, r.data.power, true);
     });
+    for (const id of this.slowChecks.keys()) if (!seen.has(id)) this.slowChecks.delete(id);
     for (const id of this.status.keys()) {
       if (!seen.has(id)) {
         this.status.delete(id);
@@ -1028,7 +1057,11 @@ export class Lights {
   }
 
   /** Call after settings change. A pending revert restarts with the new values. */
+  /** Told when the settings change (the frame rate limit goes to the sender). */
+  settingsHook: (() => void) | null = null;
+
   onSettingsChanged() {
+    this.settingsHook?.();
     if (this.db.getSetting(KEY.revertAt)) this.scheduleRevert();
     this.bus.emit('state');
   }

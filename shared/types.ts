@@ -32,7 +32,8 @@ export interface DeviceInfo {
   name?: string;
   mac?: string;
   arch?: string;
-  leds?: { count?: number };
+  /** fps: the frames a second it showed lately, as it says (see FrameRateHold). */
+  leds?: { count?: number; fps?: number };
   /** Port for real-time UDP. */
   udpport?: number;
   /** Not in real WLED (it always uses 4048): the DDP port of a fake device in development. */
@@ -98,7 +99,20 @@ export interface Settings {
   sceneTransition: SceneTransitionChoice;
   /** How long the transition takes, in seconds. */
   sceneTransitionSeconds: number;
+  /**
+   * The most frames a second any WLED device is sent (see FRAME_RATES): effects, sequences,
+   * games and the editors' previews. A device whose strip is slower gets fewer.
+   */
+  maxFps: number;
 }
+
+/**
+ * The frame rates WLED devices can be limited to: the server's clock (60 a second) and even
+ * shares of it, so every frame waits as long as the last and nothing judders.
+ */
+export const FRAME_RATES = [60, 30, 20, 15, 12, 10] as const;
+/** The limit until an admin picks one: smooth, and half the packets of 60. */
+export const DEFAULT_FRAME_RATE = 30;
 
 export interface PublicScene {
   id: string;

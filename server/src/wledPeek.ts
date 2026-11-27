@@ -1,8 +1,14 @@
 import WebSocket from 'ws';
 import { baseUrl, pickPower, type Endpoint, type PowerState } from './wled.ts';
 
-/** How long to wait before connecting again after the device closed the connection. */
+/** How long to wait before connecting again after the device closed the connection: at first, and at most (each failed try doubles it). */
 const RETRY_MS = 5000;
+const RETRY_MAX_MS = 60_000;
+/**
+ * How often the connection is pinged. No pong by the next ping: the device is gone (it lost
+ * power, or restarted) though the connection looks open, so it is dropped and made again.
+ */
+export const PING_MS = 15_000;
 /** Live colors that stopped coming this long ago are asked for again (WLED's own page may have taken them). */
 const ASK_AGAIN_MS = 5000;
 
@@ -36,6 +42,10 @@ export class WledPeek {
   private listener: ((s: PowerState | null) => void) | null;
   private askedAt = 0;
   private retry: NodeJS.Timeout | null = null;
+  private retryMs = RETRY_MS;
+  private pinger: NodeJS.Timeout | null = null;
+  /** How often to ping (shorter in tests). */
+  pingMs: number;
   private closed = false;
   private ep: Endpoint;
   private ledCount: () => number;
@@ -45,7 +55,8 @@ export class WledPeek {
    * `live`: ask for the colors from the start. `onPower`: each state the device reports, and
    * null when the connection drops.
    */
-  constructor(ep: Endpoint, ledCount: () => number, { live = true, onPower }: { live?: boolean; onPower?: (s: PowerState | null) => void } = {}) {
+  constructor(ep: Endpoint, ledCount: () => number, { live = true, onPower, pingMs = PING_MS }: { live?: boolean; onPower?: (s: PowerState | null) => void; pingMs?: number } = {}) {
+    this.pingMs = pingMs;
     this.ep = ep;
     this.ledCount = ledCount;
     this.live = live;
@@ -69,6 +80,7 @@ export class WledPeek {
     this.closed = true;
     this.listener = null;
     if (this.retry) clearTimeout(this.retry);
+    if (this.pinger) clearInterval(this.pinger);
     this.ws?.terminate();
     this.ws = null;
   }
@@ -82,7 +94,19 @@ export class WledPeek {
     if (this.closed) return;
     const ws = new WebSocket(`${baseUrl(this.ep).replace(/^http/, 'ws')}/ws`, { handshakeTimeout: 3000, maxPayload: 64 * 1024 });
     this.ws = ws;
-    ws.on('open', () => this.live && this.ask(true));
+    let alive = true;
+    ws.on('open', () => {
+      this.retryMs = RETRY_MS;
+      if (this.live) this.ask(true);
+      if (this.pinger) clearInterval(this.pinger);
+      this.pinger = setInterval(() => {
+        if (!alive) return void ws.terminate();
+        alive = false;
+        ws.ping();
+      }, this.pingMs);
+      this.pinger.unref?.();
+    });
+    ws.on('pong', () => (alive = true));
     ws.on('message', (data, isBinary) => {
       const buf = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
       if (isBinary) this.onLeds(buf);
@@ -91,13 +115,17 @@ export class WledPeek {
     ws.on('error', () => {});
     ws.on('close', () => {
       if (this.ws !== ws) return;
+      if (this.pinger) clearInterval(this.pinger);
+      this.pinger = null;
       this.ws = null;
       this.leds = null;
       const knew = this.on !== null;
       this.on = this.bri = null;
       if (knew) this.listener?.(null);
       if (!this.closed) {
-        this.retry = setTimeout(() => this.connect(), RETRY_MS);
+        // A device that does not answer is not asked again and again: each try waits twice as long.
+        this.retry = setTimeout(() => this.connect(), this.retryMs);
+        this.retryMs = Math.min(RETRY_MAX_MS, this.retryMs * 2);
         this.retry.unref?.();
       }
     });

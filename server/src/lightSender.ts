@@ -1,6 +1,7 @@
 import type { Device, DeviceInfo } from '../../shared/types.ts';
 import { MAX_FPS, sendFps } from './ledTiming.ts';
 import { DDP_PORT, RealtimeOut } from './realtime.ts';
+import { FrameRateHold, type DeviceCheck } from './frameRateHold.ts';
 import { wled } from './wled.ts';
 
 /** A pixel whose brightest channel is below this is sent as off. */
@@ -116,6 +117,10 @@ export class LightSender {
    */
   private gaveBack = new Map<string, { on: boolean; at: number }>();
   private log: (level: 'info' | 'warn', msg: string) => void;
+  /** The most frames a second any device is sent (the admin's limit, see Settings.maxFps). */
+  maxFps: number = MAX_FPS;
+  /** Devices that fell behind, held to fewer frames (see FrameRateHold). */
+  readonly hold = new FrameRateHold();
 
   constructor(log: (level: 'info' | 'warn', msg: string) => void = () => {}) {
     this.log = log;
@@ -154,7 +159,7 @@ export class LightSender {
       // It is still drawing the last one: a long strip cannot show every frame. It gets every
       // second or third frame of the clock (see sendFps); the clock's ticks jitter by a few ms,
       // hence the margin.
-      const fps = sendFps(d.info);
+      const fps = this.rate(d);
       if (fps < MAX_FPS && now - link.sentAt < 1000 / fps - 4) return;
     }
     const sent = link.mode === 'http' ? this.sendHttp(d, link, rgb) : (this.udp.sendDdp(d.host, d.info?.ddpport ?? DDP_PORT, rgb), true);
@@ -162,6 +167,22 @@ export class LightSender {
     link.sentAt = now;
     f.next = f.shown;
     f.shown = rgb;
+  }
+
+  /** The frames a second this device is sent while it gets frames: its strip's, the admin's limit, or its hold. */
+  rate(d: DeviceTarget): number {
+    return sendFps(d.info, Math.min(this.maxFps, this.hold.limit(d.id)));
+  }
+
+  /**
+   * A status check of a device (see FrameRateHold): one that falls behind while it gets frames
+   * over UDP gets fewer.
+   */
+  checked(d: DeviceTarget, c: DeviceCheck) {
+    const link = this.links.get(d.id);
+    const sending = link && link.mode === 'udp' && Date.now() - link.lastFrame < IDLE_MS ? this.rate(d) : 0;
+    const change = this.hold.checked(d.id, d.name, c, sending, this.maxFps);
+    if (change) this.log(change.includes('behind') ? 'warn' : 'info', change);
   }
 
   /**
@@ -176,7 +197,9 @@ export class LightSender {
 
   status(deviceId: string): LinkStatus | null {
     const l = this.links.get(deviceId);
-    return l ? { mode: l.mode, note: l.note } : null;
+    if (!l) return null;
+    const held = this.hold.all()[deviceId];
+    return { mode: l.mode, note: held ? `${l.note} It fell behind, so it gets ${held} frames a second until it keeps up.` : l.note };
   }
 
   /**

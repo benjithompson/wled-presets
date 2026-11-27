@@ -25,6 +25,9 @@ export class HaSocket {
   /** The live subscriptions on this connection, by message id. */
   private subIds = new Map<number, Sub>();
   private reconnect: NodeJS.Timeout | null = null;
+  private pinger: NodeJS.Timeout | null = null;
+  /** How often the connection is pinged: no pong by the next ping, and it is dropped (and made again). */
+  pingMs = 30_000;
   private url: string;
   private token: string;
   timeoutMs = 5000;
@@ -64,6 +67,15 @@ export class HaSocket {
         else if (m.type === 'auth_ok') {
           clearTimeout(timer);
           finish(true);
+          let alive = true;
+          ws.on('pong', () => (alive = true));
+          if (this.pinger) clearInterval(this.pinger);
+          this.pinger = setInterval(() => {
+            if (!alive) return void this.drop(ws);
+            alive = false;
+            ws.ping();
+          }, this.pingMs);
+          this.pinger.unref?.();
           for (const sub of this.subs) this.sendSub(ws, sub);
         } else if (m.type === 'event' && typeof m.id === 'number') {
           this.subIds.get(m.id)?.onEvent((m as { event?: unknown }).event);
@@ -91,6 +103,8 @@ export class HaSocket {
   /** The connection is gone: what waits on it fails, and the next command connects again (after a pause). */
   private drop(ws: WebSocket) {
     if (this.ws !== ws) return;
+    if (this.pinger) clearInterval(this.pinger);
+    this.pinger = null;
     this.ws = null;
     this.ready = null;
     this.retryAt = Date.now() + RETRY_MS;

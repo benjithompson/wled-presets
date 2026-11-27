@@ -101,7 +101,7 @@ export function pickInfo(d: any): DeviceInfo {
     name: d?.name,
     mac: d?.mac,
     arch: d?.arch,
-    leds: d?.leds ? { count: d.leds.count } : undefined,
+    leds: d?.leds ? { count: d.leds.count, ...(typeof d.leds.fps === 'number' ? { fps: d.leds.fps } : {}) } : undefined,
     wifi: d?.wifi ? { signal: d.wifi.signal } : undefined,
     udpport: typeof d?.udpport === 'number' ? d.udpport : undefined,
     ddpport: typeof d?.ddpport === 'number' ? d.ddpport : undefined

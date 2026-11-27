@@ -47,6 +47,15 @@ if (db.countUsers() === 0) {
 }
 
 const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg));
+// The admin's frame rate limit (Settings → Lights), now and whenever it changes.
+const applyFrameRate = () => (sender.maxFps = readSettings(db).maxFps);
+applyFrameRate();
+lights.settingsHook = applyFrameRate;
+// A device that falls behind while it gets frames gets fewer (see FrameRateHold).
+lights.onChecked = (d, c) => {
+  const live = lights.liveDevices().find((x) => x.id === d.id);
+  if (live) sender.checked(live, c);
+};
 // Everything that draws on the lights goes through one pipeline: the editors' previews win
 // over games and scenes.
 const pipeline = new FramePipeline(() => lights.liveDevices(), sender);

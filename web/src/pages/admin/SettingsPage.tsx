@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { Settings } from '../../../../shared/types.ts';
+import { FRAME_RATES, type Settings } from '../../../../shared/types.ts';
 import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, transitionInfo } from '../../../../shared/transitions.ts';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
@@ -145,6 +145,24 @@ export function SettingsPage() {
                   value={form.sceneTransitionSeconds}
                   onChange={(e) => set('sceneTransitionSeconds', Math.max(0, Number(e.target.value) || 0))}
                 />
+              )}
+            </Field>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="Frame rate" description="How many frames a second the WLED devices get while effects, sequences, games and the editors' previews play. Fewer leave a device more room: a controller that stutters or stops answering may keep up at a lower rate." />
+          <div className="grid gap-5 p-5 sm:grid-cols-2">
+            <Field label="Frames a second, at most" hint="A device whose LED strip is too long for this many gets fewer. Even shares of 60, so every frame lasts as long as the last.">
+              {(id) => (
+                <Select id={id} value={form.maxFps} onChange={(e) => set('maxFps', Number(e.target.value))}>
+                  {FRAME_RATES.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                      {n === 60 ? ' (most)' : ''}
+                    </option>
+                  ))}
+                </Select>
               )}
             </Field>
           </div>
