@@ -92,14 +92,16 @@ afterAll(async () => {
 describe('scheduler', () => {
   let clock = 0;
   let ended = 0;
+  let busy = false;
   let t: Awaited<ReturnType<typeof setup>>;
 
   async function setup() {
     const db = openDatabase(':memory:');
     const bus = new Bus();
     const lights = new Lights(db, bus);
-    const schedule = new LightScheduler(db, lights, bus, { now: () => clock, afterOff: () => ended++ });
+    const schedule = new LightScheduler(db, lights, bus, { now: () => clock, afterOff: () => ended++, busy: () => busy });
     lights.lightsOnAt = () => schedule.nextOnAt();
+    lights.nightWake = () => ({ wake: schedule.canWake(), idleMinutes: schedule.idleMinutes() });
     const config = { ...loadConfig({}), webDir: '/nonexistent', databasePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wled-test-')), 'db.sqlite') };
     const app = createApp({ config, db, bus, lights, schedule, discover: async () => [] });
     await createAuth(db, { secureCookie: false }).createUser('admin', 'correct horse battery');
@@ -127,6 +129,7 @@ describe('scheduler', () => {
     for (const m of mocks) Object.assign(m.state, { on: true, bri: 128 });
     clock = at('2026-11-25T15:00:00Z'); // 10:00 in New York
     ended = 0;
+    busy = false;
     t = await setup();
     expect((await t.call('POST', '/api/auth/login', { username: 'admin', password: 'correct horse battery' })).status).toBe(200);
     ids = [];
@@ -192,5 +195,106 @@ describe('scheduler', () => {
     clock = at('2026-11-26T14:00:00Z');
     await t.schedule.check();
     expect(t.lights.allOff()).toBe(false);
+  });
+
+  describe('in the night', () => {
+    const NIGHT = at('2026-11-26T04:00:30Z'); // just after 23:00, the schedule's off
+    const after = (min: number) => NIGHT + min * 60_000;
+    const pick = () => t.call('POST', '/api/color', { color: '#ff8800' });
+    const state = async () => (await t.call('GET', '/api/state')).json;
+    const night = async (s: LightSchedule = NY) => {
+      await t.call('PUT', '/api/admin/lights/schedule', s);
+      clock = NIGHT;
+      await t.schedule.check();
+      expect(t.lights.allOff()).toBe(true);
+    };
+
+    it("lets a visitor's pick switch the lights on, and switches them off again when nobody uses them", async () => {
+      await night();
+      expect(await state()).toMatchObject({ lightsOff: true, lightsWake: true, idleOffMinutes: null });
+      expect((await pick()).status).toBe(200);
+      expect(t.lights.allOff()).toBe(false);
+      expect(mocks.every((m) => m.state.on === true)).toBe(true);
+      expect(await state()).toMatchObject({ lightsOff: false, lightsWake: false, idleOffMinutes: 15, currentColor: '#ff8800' });
+
+      // Used again after 10 minutes: the 15 start again from there.
+      clock = after(10);
+      await t.schedule.checkIdle();
+      expect((await pick()).status).toBe(200);
+      clock = after(24);
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(false);
+      clock = after(26);
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(true);
+      expect(mocks.every((m) => m.state.on === false)).toBe(true);
+      expect(ended).toBe(2);
+      // Still the night: the next pick wakes them again.
+      expect(await state()).toMatchObject({ lightsOff: true, lightsWake: true });
+      expect((await pick()).status).toBe(200);
+      expect(t.lights.allOff()).toBe(false);
+
+      // The schedule's on ends the night: on, and no idle minutes.
+      clock = at('2026-11-26T22:00:00Z');
+      await t.schedule.check();
+      expect(await state()).toMatchObject({ lightsOff: false, idleOffMinutes: null });
+      clock = at('2026-11-26T23:00:00Z');
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(false);
+    });
+
+    it('keeps them on while someone plays, and counts the idle minutes from when they stop', async () => {
+      await night();
+      await pick();
+      busy = true;
+      clock = after(40);
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(false);
+      busy = false;
+      clock = after(54);
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(false);
+      clock = after(56);
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(true);
+    });
+
+    it('wakes only the lights the schedule switched off', async () => {
+      await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
+      await night();
+      await pick();
+      expect(t.lights.isOff(ids[0])).toBe(false);
+      expect(t.lights.isOff(ids[1])).toBe(true);
+    });
+
+    it("leaves them off when visitors may not wake them, or an admin switched them off", async () => {
+      await night({ ...NY, wake: false });
+      expect((await state()).lightsWake).toBe(false);
+      expect((await pick()).status).toBe(409);
+
+      await t.call('PUT', '/api/admin/lights/schedule', NY);
+      expect((await state()).lightsWake).toBe(true);
+      // The admin's switch holds until the schedule's next time.
+      await t.call('PUT', '/api/admin/lights/power', { on: false });
+      expect((await state()).lightsWake).toBe(false);
+      expect((await pick()).status).toBe(409);
+    });
+
+    it("leaves lights an admin switched on alone, until the schedule's next off", async () => {
+      await night();
+      await t.call('PUT', '/api/admin/lights/power', { on: true });
+      clock = after(120);
+      await t.schedule.checkIdle();
+      expect(t.lights.allOff()).toBe(false);
+      expect((await state()).idleOffMinutes).toBeNull();
+    });
+
+    it('keeps the idle minutes it is given', async () => {
+      expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, idleMinutes: 0 })).status).toBe(400);
+      expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, idleMinutes: 45 })).json.idleMinutes).toBe(45);
+      // Left out (an older page): kept as they are.
+      const { wake: _w, idleMinutes: _i, ...old } = NY;
+      expect((await t.call('PUT', '/api/admin/lights/schedule', old)).json).toMatchObject({ wake: true, idleMinutes: 45 });
+    });
   });
 });

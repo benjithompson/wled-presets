@@ -141,10 +141,14 @@ export interface PublicState {
   onlineDevices: number;
   totalDevices: number;
   revertAt: string | null;
-  /** An admin switched every light off: nothing plays until one switches them on again. */
+  /** Every light is switched off (by an admin or the schedule): nothing plays, unless `lightsWake`. */
   lightsOff: boolean;
   /** While the lights are off: when the schedule switches them on again (ISO), or null. */
   lightsOnAt: string | null;
+  /** Off for the schedule's night: a visitor's scene, color or game switches them on again. */
+  lightsWake: boolean;
+  /** Woken in the schedule's night: they go off again after this many minutes with nobody using them (else null). */
+  idleOffMinutes: number | null;
   /** Games an admin hid from visitors (by id). */
   hiddenGames: string[];
 }
@@ -180,6 +184,8 @@ export interface ApplyResult {
   effects?: number;
   skipped: string[];
   failed: { deviceId: string; error: string }[];
+  /** Devices starting up (their plug just switched on): they get it when they answer. */
+  starting?: string[];
 }
 
 export type LogLevel = 'info' | 'warn' | 'error';

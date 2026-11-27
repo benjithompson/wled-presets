@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LocateFixed, Moon, Sunrise, Sunset } from 'lucide-react';
 import { toast } from 'sonner';
-import { nextEvent, OFFSET_MINUTES, scheduleRuns, sunToday, type LightSchedule, type ScheduleTime } from '../../../../shared/schedule.ts';
+import { IDLE_MINUTES, nextEvent, OFFSET_MINUTES, scheduleRuns, sunToday, type LightSchedule, type ScheduleTime } from '../../../../shared/schedule.ts';
 import { Button, Card, CardHeader, Field, Input, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
 import { errorText, soonTime } from '../../lib/utils.ts';
@@ -20,7 +20,8 @@ const zones = (() => {
 /**
  * The schedule that switches every light on and off each day: at sunrise or sunset (moved by
  * minutes either way) or at a time on the clock. While the lights are off, visitors see when
- * they come back on.
+ * they come back on, and can wake them with a scene, a color or a game: they go off again
+ * after some minutes with nobody using them.
  */
 export function ScheduleCard() {
   const qc = useQueryClient();
@@ -90,7 +91,7 @@ export function ScheduleCard() {
     <Card className="mb-6">
       <CardHeader
         title="Schedule"
-        description="Switch every light on and off each day. Switching them by hand in between holds until the next time. While they are off, visitors see when they come back on."
+        description="Switch every light on and off each day. Switching all of them by hand in between holds until the next time. While they are off, visitors see when they come back on."
         actions={<Switch label="Schedule on" checked={form.enabled} onChange={(enabled) => set({ enabled })} />}
       />
       <form
@@ -103,6 +104,30 @@ export function ScheduleCard() {
         <div className="grid gap-5 sm:grid-cols-2">
           <TimeField label="Switch on" value={form.on} onChange={(on) => set({ on })} />
           <TimeField label="Switch off" value={form.off} onChange={(off) => set({ off })} />
+        </div>
+
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-3 rounded-xl border border-stone-200 px-4 py-3 dark:border-stone-800">
+          <div className="flex min-w-0 flex-1 basis-64 items-start gap-3">
+            <Switch label="Visitors can switch them on while they're off" checked={form.wake} onChange={(wake) => set({ wake })} />
+            <div className="min-w-0 text-sm">
+              <p className="font-medium text-stone-700 dark:text-stone-300">Visitors can switch them on while they're off</p>
+              <p className="text-xs text-stone-500 dark:text-stone-400">Picking a scene, a color or a game switches the lights back on. They go off again once nobody has used them for a while.</p>
+            </div>
+          </div>
+          {form.wake ? (
+            <label className="flex items-center gap-2 text-sm text-stone-600 dark:text-stone-300">
+              Off again after
+              <Input
+                type="number"
+                className="!w-20"
+                min={IDLE_MINUTES.min}
+                max={IDLE_MINUTES.max}
+                value={form.idleMinutes}
+                onChange={(e) => set({ idleMinutes: Math.min(IDLE_MINUTES.max, Math.max(IDLE_MINUTES.min, Math.round(Number(e.target.value) || IDLE_MINUTES.min))) })}
+              />
+              min unused
+            </label>
+          ) : null}
         </div>
 
         <div className="grid gap-5 sm:grid-cols-[1fr_1fr_1.4fr]">

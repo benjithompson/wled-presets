@@ -4,6 +4,10 @@ import { sunTimes } from './sun.ts';
  * The lights' schedule: every light switches on at one time of day and off at another, each at
  * sunrise or sunset (with an offset), or at a time on the clock. It acts when the time comes and
  * not between: an admin's switch in the meantime holds until the schedule's next time.
+ *
+ * Between its off and its on (the night), visitors can still switch the lights on again, by
+ * picking a scene, a color or a game (`wake`); after `idleMinutes` with nobody using them, they
+ * go off again.
  */
 export interface LightSchedule {
   enabled: boolean;
@@ -14,6 +18,10 @@ export interface LightSchedule {
   timeZone: string;
   on: ScheduleTime;
   off: ScheduleTime;
+  /** In the night, a visitor's scene, color or game switches the lights on again. */
+  wake: boolean;
+  /** Woken in the night, the lights go off again after this many minutes with nobody using them. */
+  idleMinutes: number;
 }
 
 export interface ScheduleTime {
@@ -32,6 +40,8 @@ export interface ScheduleEvent {
 
 /** Offsets go this far either side of sunrise or sunset. */
 export const OFFSET_MINUTES = 240;
+/** How long the lights, woken in the night, stay on with nobody using them: minutes. */
+export const IDLE_MINUTES = { min: 1, max: 240 };
 
 export const DEFAULT_SCHEDULE: LightSchedule = {
   enabled: false,
@@ -39,7 +49,9 @@ export const DEFAULT_SCHEDULE: LightSchedule = {
   longitude: null,
   timeZone: 'UTC',
   on: { at: 'sunset', offset: 0, time: '17:00' },
-  off: { at: 'time', offset: 0, time: '23:00' }
+  off: { at: 'time', offset: 0, time: '23:00' },
+  wake: true,
+  idleMinutes: 15
 };
 
 const DAY_MS = 86_400_000;
@@ -57,7 +69,7 @@ export function isTimeZone(tz: string): boolean {
 }
 
 /** True when the schedule has what it needs to run: switched on, and a place for the sun. */
-export function scheduleRuns(s: LightSchedule): boolean {
+export function scheduleRuns(s: Omit<LightSchedule, 'wake' | 'idleMinutes'>): boolean {
   const sun = s.on.at !== 'time' || s.off.at !== 'time';
   return s.enabled && isTimeZone(s.timeZone) && (!sun || (s.latitude != null && s.longitude != null));
 }
@@ -152,7 +164,9 @@ export function cleanSchedule(v: unknown): LightSchedule {
     longitude: num(o.longitude, 180),
     timeZone: typeof o.timeZone === 'string' && isTimeZone(o.timeZone) ? o.timeZone : DEFAULT_SCHEDULE.timeZone,
     on: time(o.on, DEFAULT_SCHEDULE.on),
-    off: time(o.off, DEFAULT_SCHEDULE.off)
+    off: time(o.off, DEFAULT_SCHEDULE.off),
+    wake: typeof o.wake === 'boolean' ? o.wake : DEFAULT_SCHEDULE.wake,
+    idleMinutes: typeof o.idleMinutes === 'number' && Number.isInteger(o.idleMinutes) && o.idleMinutes >= IDLE_MINUTES.min && o.idleMinutes <= IDLE_MINUTES.max ? o.idleMinutes : DEFAULT_SCHEDULE.idleMinutes
   };
 }
 
