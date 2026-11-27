@@ -70,10 +70,22 @@ export function AdminLayout() {
             <span className="grid size-8 place-items-center rounded-xl bg-stone-900 text-accent-400 dark:bg-accent-400 dark:text-stone-950">
               <Lightbulb className="size-[18px]" />
             </span>
-            <span className="hidden sm:inline">WLED Presets</span>
+            <span className="hidden whitespace-nowrap sm:inline">WLED Presets</span>
           </NavLink>
           <NavMenu />
           <nav className="hidden items-center gap-1 lg:flex">
+            <a
+              href="/"
+              target="_blank"
+              rel="noreferrer"
+              title="Public page (opens in a new tab)"
+              className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800/70 dark:hover:text-white"
+            >
+              <ExternalLink className="size-4" />
+              {/* Only the icon until the bar has room for every page and this. */}
+              <span className="max-xl:sr-only">Public page</span>
+            </a>
+            <span aria-hidden className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-800" />
             {NAV.map((n) => (
               <NavItem key={n.to} {...n} />
             ))}
@@ -222,6 +234,11 @@ function NavMenu() {
       </button>
       {open ? (
         <div role="menu" className="absolute left-0 mt-2 w-56 rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
+          <a href="/" target="_blank" rel="noreferrer" role="menuitem" onClick={() => setOpen(false)} className={cn(menuRow, menuRowIdle)}>
+            <ExternalLink className="size-4" />
+            Public page
+          </a>
+          <div className="my-1 h-px bg-stone-100 dark:bg-stone-800" />
           {NAV.map((n) => (
             <NavLink
               key={n.to}
@@ -270,24 +287,12 @@ function UserMenu({ username }: { username: string }) {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label="Menu: public page, theme, sign out"
         className="grid size-9 place-items-center rounded-full bg-stone-200/70 text-stone-700 transition hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
       >
         <UserRound className="size-[18px]" />
       </button>
       {open ? (
         <div role="menu" className="absolute right-0 mt-2 w-64 rounded-2xl bg-white p-2 shadow-xl ring-1 ring-stone-200 dark:bg-stone-900 dark:ring-stone-800">
-          <a
-            href="/"
-            target="_blank"
-            rel="noreferrer"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
-          >
-            <ExternalLink className="size-4" /> Public page
-          </a>
-          <div className="my-1 h-px bg-stone-100 dark:bg-stone-800" />
           <div className="px-3 pt-2 pb-3">
             <p className="text-xs text-stone-500">Signed in as</p>
             <p className="truncate font-medium">{username}</p>
