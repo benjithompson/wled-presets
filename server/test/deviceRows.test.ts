@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRows, filterRows, groupRows, NO_FILTER, sortRows, type RowSources } from '../../web/src/pages/admin/deviceRows.ts';
+import { buildRows, commandsText, filterRows, groupRows, NO_FILTER, sortRows, type RowSources } from '../../web/src/pages/admin/deviceRows.ts';
 import type { DeviceWithStatus } from '../../shared/types.ts';
 import type { HaEntity, HaView } from '../../shared/homeAssistant.ts';
 
@@ -75,6 +75,16 @@ describe('device rows', () => {
       ['ha:light.idle', 'disabled', 'Disabled']
     ]);
     expect(rows[0]).toMatchObject({ area: 'Porch', integration: 'zha', objects: ['Lamp'] });
+  });
+
+  it("says how a Home Assistant light takes its commands, with the debug view's times", () => {
+    const zero = { answered: 0, late: 0, failed: 0, lastMs: 0, avgMs: 0, maxMs: 0, going: 0, waiting: 0, goingMs: 0 };
+    const [row] = buildRows(sources({ ha: { ...view([entity('light.porch')], ['light.porch']), commands: { 'light.porch': { ...zero, answered: 40, late: 12, lastMs: 4800, avgMs: 3100, maxMs: 21000, going: 1, goingMs: 6200, waiting: 1 } } } }));
+    expect(commandsText(row.ha!.commands!)).toEqual({ text: 'Commands: answers in 4.8 s (avg 3.1 s, max 21 s) · 1 on its way for 6.2 s · 1 waiting · 12 of 40 late', behind: true });
+    expect(commandsText({ ...zero, answered: 5, lastMs: 180, avgMs: 210, maxMs: 400 })).toEqual({ text: 'Commands: answers in 180 ms (avg 210 ms, max 400 ms)', behind: false });
+    // A light with nothing sent yet, and no debug view at all.
+    expect(buildRows(sources({ ha: { ...view([entity('light.a')], ['light.a']), commands: {} } }))[0].ha!.commands).toEqual(zero);
+    expect(buildRows(sources({ ha: view([entity('light.a')], ['light.a']) }))[0].ha!.commands).toBeUndefined();
   });
 
   it('leaves Home Assistant out while it is not connected', () => {

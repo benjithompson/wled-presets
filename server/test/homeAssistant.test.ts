@@ -204,6 +204,26 @@ describe('lights in home assistant', () => {
     ha.timing.serviceMs = 0;
   });
 
+  it('show how each light takes its commands, while the debug setting is on', async () => {
+    await connect();
+    expect((await t.call('GET', '/api/admin/ha')).json.commands).toBeUndefined();
+    const settings = (await t.call('GET', '/api/admin/overview')).json.settings;
+    expect((await t.call('PUT', '/api/admin/settings', { ...settings, debugHa: true })).json.debugHa).toBe(true);
+    t.home.timeoutMs = 60;
+    ha.timing.serviceMs = 300;
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 40, deviceId: 'ha:light.porch' });
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 60, deviceId: 'ha:light.porch' });
+    // One on its way (no answer yet), one waiting behind it.
+    expect((await t.call('GET', '/api/admin/ha')).json.commands['light.porch']).toMatchObject({ answered: 0, going: 1, waiting: 1 });
+    await until(() => t.home.queued('light.porch') === 0, 3000);
+    const c = (await t.call('GET', '/api/admin/ha')).json.commands['light.porch'];
+    expect(c).toMatchObject({ answered: 2, late: 2, failed: 0, going: 0, waiting: 0 });
+    expect(c.avgMs).toBeGreaterThanOrEqual(250);
+    // Off again: not shown.
+    await t.call('PUT', '/api/admin/settings', { ...settings, debugHa: false });
+    expect((await t.call('GET', '/api/admin/ha')).json.commands).toBeUndefined();
+  });
+
   it("keep each change on its WLED device: WLED's sync would copy it to the others", async () => {
     await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
     await t.call('POST', '/api/color', { color: '#00ff00' });

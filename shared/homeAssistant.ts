@@ -51,6 +51,28 @@ export interface HaView extends HaSettings {
   fade: boolean;
   /** Colors go to ZHA lights as Zigbee commands (else light.turn_on). */
   direct: boolean;
+  /** How each light takes its commands, by entity id: only while Settings → Debug asks for it. */
+  commands?: Record<string, HaCommandStats>;
+}
+
+/** How one light takes the site's commands (see HomeAssistant.set), since the server started or the debug view was switched on. */
+export interface HaCommandStats {
+  /** Commands Home Assistant answered (or that waited LATE_MS for an answer and gave up). */
+  answered: number;
+  /** Of those, the ones answered after the site stopped waiting (its timeout, 5 s). */
+  late: number;
+  /** Of those, the ones that failed (Home Assistant refused it, or never answered). */
+  failed: number;
+  /** How long the last answer took, and the running mean, in ms. */
+  lastMs: number;
+  avgMs: number;
+  /** The longest an answer took, in ms. */
+  maxMs: number;
+  /** On their way now, and waiting behind them (at most one: the newest). */
+  going: number;
+  waiting: number;
+  /** How long the oldest command on its way has gone without an answer, in ms (0: none on its way). */
+  goingMs: number;
 }
 
 /** What a speed test of one light found (see HomeAssistant speed test). */

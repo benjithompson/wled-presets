@@ -98,7 +98,9 @@ const settingsInput = z.object({
   sceneTransition: z.enum(['none', ...TRANSITION_CHOICES.map((t) => t.id)] as [SceneTransitionChoice, ...SceneTransitionChoice[]]).optional(),
   sceneTransitionSeconds: z.number().finite().min(SCENE_TRANSITION_SECONDS.min).max(SCENE_TRANSITION_SECONDS.max).optional(),
   /** Left out: kept as it is. */
-  maxFps: z.number().int('Use a whole number').min(FRAME_RATE.min).max(FRAME_RATE.max).optional()
+  maxFps: z.number().int('Use a whole number').min(FRAME_RATE.min).max(FRAME_RATE.max).optional(),
+  /** Left out: kept as it is. */
+  debugHa: z.boolean().optional()
 });
 
 const scheduleTime = z.object({
@@ -1131,6 +1133,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     if (input.defaultSceneId && !db.getScene(input.defaultSceneId)) throw new HttpError(400, 'Default scene does not exist');
     const prev = readSettings(db);
     writeSettings(db, { ...prev, ...input });
+    // Switched on: the Home Assistant lights' command times count from now.
+    if (input.debugHa && !prev.debugHa) ha?.resetCommandStats();
     const changes = (Object.keys(input) as (keyof typeof input)[]).filter((k) => JSON.stringify(input[k]) !== JSON.stringify(prev[k]));
     if (changes.length) lights.log('info', 'settings', `Settings changed: ${changes.join(', ')}`, { before: prev, after: input }, actor(c));
     lights.onSettingsChanged();
