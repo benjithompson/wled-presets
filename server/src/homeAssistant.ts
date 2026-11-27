@@ -12,6 +12,39 @@ const ZCL = { level: 0x0008, color: 0x0300, moveToLevel: 0x00, moveToColor: 0x07
 /** After a command to a light fails, Home Assistant reads the light again, at most this often. */
 const REREAD_MS = 15_000;
 
+/**
+ * How long a command to one light keeps its place (see HomeAssistant.set) while Home Assistant
+ * has not answered it: a slow Zigbee light can take it long after. Then the next one goes.
+ */
+const LATE_MS = 30_000;
+
+/** What a command to a light asks: see HomeAssistant.set. */
+export type HaSetOpts = {
+  bri?: number | null;
+  rgb?: [number, number, number] | null;
+  transition?: number;
+  via?: 'ws' | 'rest';
+  direct?: boolean;
+  /** Commands on their way to the light at once (the speed test's own); else HomeAssistant.inflight. */
+  width?: number;
+};
+/** A command's answer. Not answered in time, it also has the answer to come (`late`): Home Assistant may still do it. */
+export type HaResult = FetchResult<unknown> & { late?: Promise<FetchResult<unknown>> };
+
+/** One light's commands: the ones on their way, and the one waiting (the newest asked; see set). */
+type Lane = { going: number; off: boolean; next: Queued | null };
+type Queued = { on: boolean; opts: HaSetOpts; done: ((r: FetchResult<unknown>) => void)[] };
+
+/**
+ * A command asked while another waits: the newer wins, and those who asked for the older get
+ * its answer. Coming on after coming on, it keeps the color and level asked before that it
+ * does not give itself.
+ */
+function join(q: Queued, on: boolean, opts: HaSetOpts, done: (r: FetchResult<unknown>) => void): Queued {
+  const merged = on && q.on ? { ...opts, rgb: opts.rgb ?? q.opts.rgb, bri: opts.bri ?? q.opts.bri, direct: !!opts.direct && !!q.opts.direct } : opts;
+  return { on, opts: merged, done: [...q.done, done] };
+}
+
 /** How often a light in the layout may take a new color, per second (see HaFrames): the default, and the range. */
 export const HA_FPS = { default: 2, min: 1, max: 20 } as const;
 /** Commands on their way to one light at once (see HaFrames): the most. */
@@ -225,7 +258,7 @@ export class HomeAssistant {
     return this.writes.get(id) ?? 0;
   }
 
-  private async request<T>(path: string, body?: unknown): Promise<FetchResult<T>> {
+  private async request<T>(path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<FetchResult<T>> {
     const url = this.settings().url;
     const token = this.db.getSetting(KEY.token);
     if (!url || !token) return { ok: false, status: 0, error: 'Home Assistant is not set up' };
@@ -234,7 +267,7 @@ export class HomeAssistant {
         method: body ? 'POST' : 'GET',
         headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
         redirect: 'error'
       });
       if (res.status === 401 || res.status === 403) return { ok: false, status: res.status, error: 'Home Assistant refused the token' };
@@ -334,7 +367,7 @@ export class HomeAssistant {
     const z = this.zha.get(id)!;
     const t = Math.max(0, Math.round(transition * 10));
     const send = (cluster: number, command: number, params: Record<string, number>) =>
-      this.ws()!.call('zha', 'issue_zigbee_cluster_command', null, { ieee: z.ieee, endpoint_id: z.endpoint, cluster_id: cluster, cluster_type: 'in', command_type: 'server', command, params });
+      this.ws()!.call('zha', 'issue_zigbee_cluster_command', null, { ieee: z.ieee, endpoint_id: z.endpoint, cluster_id: cluster, cluster_type: 'in', command_type: 'server', command, params }, LATE_MS);
     const work: Promise<{ ok: boolean; error?: string } | null>[] = [];
     if (rgb) {
       const [x, y] = rgbToXy(rgb);
@@ -364,15 +397,71 @@ export class HomeAssistant {
     void this.ws()?.call('homeassistant', 'update_entity', id, {});
   }
 
+  private lanes = new Map<string, Lane>();
+
   /**
    * Switches an entity on or off. A light takes a brightness (1 to 255), a color and a
    * transition (seconds) when it can; a switch only goes on or off.
+   *
+   * Each light takes its commands in turn: at most `inflight` on their way at once (one, unless
+   * a speed test found more is faster), an off alone, after every color before it. A command
+   * goes on its way until Home Assistant answers it, however late (up to LATE_MS): a slow light
+   * does a command long after it was asked, and more sent meanwhile would pile up in Home
+   * Assistant and play out for minutes after, with nothing asking for them. Commands asked
+   * meanwhile wait as one, the newest (see join).
+   *
+   * The answer comes within timeoutMs, as failed when Home Assistant has not answered by then,
+   * with its `late` answer to come.
    */
-  async set(
-    id: string,
-    on: boolean,
-    opts: { bri?: number | null; rgb?: [number, number, number] | null; transition?: number; via?: 'ws' | 'rest'; direct?: boolean } = {}
-  ): Promise<FetchResult<unknown>> {
+  set(id: string, on: boolean, opts: HaSetOpts = {}): Promise<HaResult> {
+    const done = new Promise<FetchResult<unknown>>((resolve) => this.queue(id, { on, opts, done: [resolve] }));
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ ok: false, status: 0, error: 'Home Assistant did not answer in time', late: done }), this.timeoutMs);
+      timer.unref?.();
+      void done.then((r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+    });
+  }
+
+  /** Commands on their way to the light, or waiting: for tests. */
+  queued(id: string): number {
+    const lane = this.lanes.get(id);
+    return lane ? lane.going + (lane.next ? 1 : 0) : 0;
+  }
+
+  private queue(id: string, q: Queued) {
+    let lane = this.lanes.get(id);
+    if (!lane) this.lanes.set(id, (lane = { going: 0, off: false, next: null }));
+    if (!lane.next && this.free(lane, q)) return this.go(id, lane, q);
+    lane.next = lane.next ? join(lane.next, q.on, q.opts, q.done[0]) : q;
+  }
+
+  /** May this command go now? An off goes alone, after the commands before it. */
+  private free(lane: Lane, q: Queued) {
+    return !lane.off && (q.on ? lane.going < (q.opts.width ?? this.inflight()) : lane.going === 0);
+  }
+
+  private go(id: string, lane: Lane, q: Queued) {
+    lane.going++;
+    if (!q.on) lane.off = true;
+    void this.send(id, q.on, q.opts)
+      .catch((e: unknown): FetchResult<unknown> => ({ ok: false, status: 0, error: (e as Error)?.message || 'Home Assistant failed' }))
+      .then((r) => {
+        lane.going--;
+        if (!q.on) lane.off = false;
+        for (const done of q.done) done(r);
+        const next = lane.next;
+        if (next && this.free(lane, next)) {
+          lane.next = null;
+          this.go(id, lane, next);
+        } else if (!lane.going && !lane.next) this.lanes.delete(id);
+      });
+  }
+
+  /** One command, sent: done when Home Assistant answers (or LATE_MS passes). */
+  private async send(id: string, on: boolean, opts: HaSetOpts): Promise<FetchResult<unknown>> {
     // A light that is on, a color, and Zigbee commands asked for: straight to the light.
     if (opts.direct && on && opts.via !== 'rest' && this.zha.has(id) && this.states.get(id)?.state === 'on' && (opts.rgb || opts.bri != null)) {
       this.writes.set(id, Date.now());
@@ -391,8 +480,8 @@ export class HomeAssistant {
     this.writes.set(id, Date.now());
     // Over the WebSocket when it is open (or opens), else REST.
     const { entity_id: _, ...data } = body;
-    const viaWs = opts.via === 'rest' ? null : await this.ws()?.call(domain, `turn_${on ? 'on' : 'off'}`, id, data);
-    const r: FetchResult<unknown> = viaWs ? (viaWs.ok ? { ok: true, status: 200, data: null } : { ok: false, status: 0, error: viaWs.error }) : await this.request(`/api/services/${domain}/turn_${on ? 'on' : 'off'}`, body);
+    const viaWs = opts.via === 'rest' ? null : await this.ws()?.call(domain, `turn_${on ? 'on' : 'off'}`, id, data, LATE_MS);
+    const r: FetchResult<unknown> = viaWs ? (viaWs.ok ? { ok: true, status: 200, data: null } : { ok: false, status: 0, error: viaWs.error }) : await this.request(`/api/services/${domain}/turn_${on ? 'on' : 'off'}`, body, LATE_MS);
     this.writes.set(id, Date.now());
     if (r.ok && e) {
       const now = this.states.get(id) ?? e;

@@ -72,6 +72,7 @@ beforeEach(async () => {
   }
   ha.calls.length = 0;
   ha.hooks.onSwitch = undefined;
+  ha.timing.serviceMs = 0;
   for (const [id, s] of [['switch.roof_psu', 'on'], ['switch.tree_psu', 'on'], ['light.porch', 'off'], ['light.garage', 'off']]) ha.states.get(id)!.state = s;
   t = await setup();
   expect((await t.call('POST', '/api/auth/login', { username: 'admin', password: 'correct horse battery' })).status).toBe(200);
@@ -166,7 +167,6 @@ describe('lights in home assistant', () => {
     const { HaFrames } = await import('../src/haFrames.ts');
     await t.call('PUT', '/api/admin/lights/power', { on: true });
     const frames = new HaFrames(t.home, (id) => !t.lights.isOff(id), () => null);
-    t.lights.haFramesIdle = (id) => frames.idle(id);
     // The color takes a while; the off alone would be done first, and the light would end on.
     ha.timing.serviceMs = 150;
     frames.frame('ha:light.porch', [255, 0, 0], false);
@@ -178,6 +178,30 @@ describe('lights in home assistant', () => {
     const order = ha.calls.filter((c) => c.body.entity_id === 'light.porch').slice(-2).map((c) => c.service);
     expect(order).toEqual(['light.turn_on', 'light.turn_off']);
     expect(porch.state).toBe('off');
+  });
+
+  it('take their commands in turn: a slow light gets the newest, not a pile of old ones', async () => {
+    await connect();
+    await t.lights.refreshStatus();
+    t.lights.haRetryMs = [50, 50];
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: 'ha:light.porch' });
+    const before = ha.calls.length;
+    // The light answers long after the site stops waiting (a weak Zigbee link).
+    t.home.timeoutMs = 60;
+    ha.timing.serviceMs = 400;
+    for (let level = 10; level <= 100; level += 10) {
+      const r = await t.call('PUT', '/api/admin/lights/brightness', { level, deviceId: 'ha:light.porch' });
+      expect(r.status).toBe(200);
+    }
+    await until(() => t.home.queued('light.porch') === 0, 5000);
+    const sent = ha.calls.slice(before).filter((c) => c.body.entity_id === 'light.porch');
+    // Ten changes in about a second: the light got the one on its way, then the newest, not ten and their retries.
+    expect(sent.length).toBeLessThanOrEqual(4);
+    expect(ha.states.get('light.porch')!.attributes.brightness).toBe(255);
+    // Each was done in the end, late: nothing went again.
+    await wait(200);
+    expect(t.db.listLogs(20, null).some((l) => l.message.includes('again'))).toBe(false);
+    ha.timing.serviceMs = 0;
   });
 
   it("keep each change on its WLED device: WLED's sync would copy it to the others", async () => {
