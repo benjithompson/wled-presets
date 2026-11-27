@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Clock, Eye, EyeOff, Gamepad2, Loader2, Palette, Power, Settings2, Sparkles, Users, WifiOff, type LucideIcon } from 'lucide-react';
+import { Clock, Eye, EyeOff, Gamepad2, Loader2, Moon, Palette, Power, Settings2, Sparkles, Users, WifiOff, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PublicScene, PublicState } from '../../../shared/types.ts';
 import { useMedia } from '../lib/useMedia.ts';
@@ -110,14 +110,15 @@ export function PublicPage() {
     history.replaceState(history.state, '', '/');
     const s = findScene(ref, state.scenes);
     if (!s) toast.error("That scene isn't here anymore. Pick another one!");
-    else if (state.lightsOff) toast.info(`The lights are switched off right now, so ${s.name} can't play.${state.lightsOnAt ? ` They come back on ${soonTime(state.lightsOnAt, { at: true })}.` : ''}`);
+    else if (state.lightsOff && !state.lightsWake) toast.info(`The lights are switched off right now, so ${s.name} can't play.${state.lightsOnAt ? ` They come back on ${soonTime(state.lightsOnAt, { at: true })}.` : ''}`);
     else if (!s.online) toast.info(`${s.name} can't play right now: its lights are offline.`);
     else if (state.currentSceneId !== s.id) scene.mutate(s.id);
   }, [state, scene]);
 
   // Right after a change of theirs, a visitor waits a few seconds before the next (a throttle).
   const cooling = useCountdown(line?.cooldown ?? null);
-  const off = !!state?.lightsOff;
+  // Off for the schedule's night, a visitor's pick switches them on again: nothing is locked.
+  const off = !!state?.lightsOff && !state.lightsWake;
   const locked = !!cooling || off;
   const busy = pending !== null || locked;
   const theme = useTheme();
@@ -144,7 +145,7 @@ export function PublicPage() {
           </div>
         </header>
 
-        {admin ? <AdminBar lightsOff={off} /> : null}
+        {admin ? <AdminBar lightsOff={!!state?.lightsOff} /> : null}
         {state ? <StatusLine state={state} line={line} /> : null}
         {line ? <LineBanner line={line} /> : null}
 
@@ -610,9 +611,11 @@ function StatusLine({ state, line }: { state: PublicState; line: LineView | null
         {state.totalDevices === 0
           ? 'No lights set up'
           : state.lightsOff
-            ? state.lightsOnAt
-              ? `The lights are off until ${soonTime(state.lightsOnAt)}`
-              : 'The lights are switched off for now'
+            ? state.lightsWake
+              ? `The lights are resting${state.lightsOnAt ? ` until ${soonTime(state.lightsOnAt)}` : ''}: pick something to switch them on`
+              : state.lightsOnAt
+                ? `The lights are off until ${soonTime(state.lightsOnAt)}`
+                : 'The lights are switched off for now'
             : !state.anyOnline
             ? 'Lights are offline'
             : all
@@ -622,6 +625,12 @@ function StatusLine({ state, line }: { state: PublicState; line: LineView | null
               : `${state.onlineDevices} of ${state.totalDevices} lights online`}
       </span>
       <NowPlaying state={state} line={line} />
+      {state.idleOffMinutes != null ? (
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-white/60 px-3 py-1 text-stone-500 ring-1 ring-stone-200 dark:bg-white/5 dark:text-stone-400 dark:ring-stone-800">
+          <Moon className="size-3.5" />
+          Off again after {state.idleOffMinutes} min with nobody playing
+        </span>
+      ) : null}
       {state.revertAt && new Date(state.revertAt).getTime() > Date.now() ? (
         <span className="inline-flex items-center gap-1.5 rounded-full bg-white/60 px-3 py-1 text-stone-500 ring-1 ring-stone-200 dark:bg-white/5 dark:text-stone-400 dark:ring-stone-800">
           <Clock className="size-3.5" />

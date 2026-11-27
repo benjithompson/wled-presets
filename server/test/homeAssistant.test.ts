@@ -238,6 +238,29 @@ describe('plugs that power a controller', () => {
     expect(t.lights.isOff(ids[0])).toBe(false);
   }, 10_000);
 
+  it('give a color picked while the controller starts up to it when it answers', async () => {
+    await connect();
+    await t.lights.refreshStatus();
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[0] });
+    const port = roof.port;
+    await roof.close();
+    await t.lights.refreshStatus();
+    await t.lights.refreshStatus();
+    let booted: Wled | null = null;
+    ha.hooks.onSwitch = (entity, on) => {
+      if (entity === 'switch.roof_psu' && on) setTimeout(() => void startMockWled(port, 'Roof').then((m) => (booted = roof = m)), 100);
+    };
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: ids[0] });
+    // Picked before the controller answers: it is starting, not failed, and gets the color.
+    const r = await t.call('POST', '/api/color', { color: '#0000ff' });
+    expect(r.status).toBe(200);
+    expect(r.json.starting).toEqual([ids[0]]);
+    expect(r.json.failed).toEqual([]);
+    await until(() => booted !== null);
+    await t.lights.refreshStatus();
+    await until(() => roof.requests.some((q) => q.method === 'POST' && JSON.stringify(q.body).includes('[0,0,255]')));
+  }, 10_000);
+
   it('follow a plug switched off in home assistant', async () => {
     await connect();
     await t.lights.refreshStatus();

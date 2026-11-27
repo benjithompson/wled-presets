@@ -30,7 +30,7 @@ import type { LightScheduler } from './lightSchedule.ts';
 import { cleanHaUrl, HA_FPS, HA_INFLIGHT_MAX, type HomeAssistant } from './homeAssistant.ts';
 import { haSpeedTest } from './haSpeedTest.ts';
 import { haId, isSwitchable } from '../../shared/homeAssistant.ts';
-import { isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
+import { IDLE_MINUTES, isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -113,7 +113,10 @@ const scheduleInput = z
     longitude: z.number().finite().min(-180).max(180).nullable(),
     timeZone: z.string().max(64).refine(isTimeZone, 'Unknown time zone'),
     on: scheduleTime,
-    off: scheduleTime
+    off: scheduleTime,
+    /** Left out (an older page): kept as they are. */
+    wake: z.boolean().optional(),
+    idleMinutes: z.number().int('Use a whole number of minutes').min(IDLE_MINUTES.min).max(IDLE_MINUTES.max).optional()
   })
   .refine((s) => !s.enabled || scheduleRuns(s), 'Set where the lights are: sunrise and sunset need it')
   .refine((s) => !(s.on.at === s.off.at && (s.on.at === 'time' ? s.on.time === s.off.time : s.on.offset === s.off.offset)), 'The lights cannot switch on and off at the same time');
@@ -419,6 +422,18 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
   };
 
   const LIGHTS_OFF = 'The lights are switched off right now.';
+  /**
+   * A visitor's pick while every light is off: in the schedule's night it switches them on
+   * again (see LightScheduler.wake), else it is refused. Either way the lights count as used.
+   */
+  const wakeFor = async (what: string) => {
+    if (lights.allOff()) {
+      const woke = schedule?.wake(what);
+      if (!woke) throw new HttpError(409, LIGHTS_OFF);
+      await woke;
+    }
+    schedule?.used();
+  };
 
   // Changing the lights is for this site's own pages: another site's page cannot do it with its
   // visitors' browsers (each one a new visitor, from a new address, in line).
@@ -430,25 +445,25 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const id = c.req.param('id');
     const name = lights.publicState().scenes.find((s) => s.id === id)?.name;
     if (!name) throw new HttpError(404, 'Unknown scene');
-    if (lights.allOff()) throw new HttpError(409, LIGHTS_OFF);
+    await wakeFor(`a visitor's scene "${name}"`);
     const queued = askLine(c, { kind: 'scene', id }, name);
     if (queued) return queued;
     takeLights('a scene');
     const result = await lights.applyScene(id, publicActor(c));
     if (!result) throw new HttpError(404, 'Unknown scene');
-    if (result.applied.length === 0 && !result.effects) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
+    if (result.applied.length === 0 && !result.effects && !result.starting?.length) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
   });
 
   app.post('/api/color', applyLimiter, async (c) => {
     const { color } = await body(c, z.object({ color: z.string().regex(/^#?[0-9a-fA-F]{6}$/, 'Use a hex color like #ff8800') }));
     const hex = `#${color.replace('#', '').toLowerCase()}`;
-    if (lights.allOff()) throw new HttpError(409, LIGHTS_OFF);
+    await wakeFor(`a visitor's color ${hex}`);
     const queued = askLine(c, { kind: 'color', hex }, `Color ${hex}`);
     if (queued) return queued;
     takeLights('a color');
     const result = await lights.applyColor(color, publicActor(c));
-    if (!result || result.applied.length === 0) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
+    if (!result || (result.applied.length === 0 && !result.starting?.length)) return c.json({ error: 'No light responded. Check that the lights are on.', ...result }, 502);
     return c.json(result);
   });
 
@@ -572,6 +587,8 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const { on, deviceId } = await body(c, z.object({ on: z.boolean(), deviceId: deviceTarget }));
     knownDevice(deviceId);
     const result = await lights.setPower(on, deviceId, actor(c));
+    // The admin's switch of all the lights holds until the schedule's next time: no waking in the night.
+    if (deviceId == null || lights.allOff()) schedule?.handSwitched();
     if (!on && lights.allOff()) {
       // Nothing plays on lights that are off: the game ends and the line empties.
       host?.endGame('the lights were switched off');
@@ -705,7 +722,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   admin.put('/lights/schedule', async (c) => {
     if (!schedule) throw new HttpError(404, 'No schedule here');
-    await schedule.save(await body(c, scheduleInput), actor(c));
+    await schedule.save({ ...schedule.get(), ...(await body(c, scheduleInput)) }, actor(c));
     return c.json(schedule.get());
   });
 

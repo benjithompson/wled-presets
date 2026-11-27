@@ -87,8 +87,13 @@ host.line.configure(readLineSettings(db));
 lights.setEffectPlayer((show, transition) => host.playShow(show, transition));
 // A playlist waits while a game has the lights.
 lights.holdPlaylist = () => host.playingGame;
-// No game starts on lights that are switched off.
-host.closed = () => (lights.allOff() ? 'The lights are switched off right now.' : null);
+// No game starts on lights that are switched off, except in the schedule's night: there it
+// switches them on again (see LightScheduler.wake).
+host.closed = () => {
+  if (!lights.allOff()) return schedule.used(), null;
+  const woke = schedule.wake("a visitor's game");
+  return woke ? (void woke.catch(() => {}), null) : 'The lights are switched off right now.';
+};
 // Lights switched off on the devices themselves end the game, as the admin's switch does.
 lights.onAllOff = () => {
   host.endGame('the lights were switched off');
@@ -103,8 +108,13 @@ const viewSources = {
   simFrame: () => host.simFrame()
 };
 // The schedule switches every light on and off at its times; visitors are told when they come on.
-const schedule = new LightScheduler(db, lights, bus, { afterOff: () => lights.onAllOff?.() });
+// In its night, visitors wake the lights, and they go off again when nobody uses them.
+const schedule = new LightScheduler(db, lights, bus, {
+  afterOff: () => lights.onAllOff?.(),
+  busy: () => host.playingGame || host.line.holder() != null || host.line.waitingCount() > 0
+});
 lights.lightsOnAt = () => schedule.nextOnAt();
+lights.nightWake = () => ({ wake: schedule.canWake(), idleMinutes: schedule.idleMinutes() });
 const roof = new RoofView(viewSources, (d) => lights.peek(d));
 // The same, for every LED of the yard: the Live tab (visitors at most 60 of these, see app.ts).
 const yard = new RoofView(viewSources, (d) => lights.peek(d), { shape: 'yard', maxViewers: 80 });

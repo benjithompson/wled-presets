@@ -131,6 +131,8 @@ export class Lights {
   private haCheck = 0;
   /** When the schedule switches the lights on next (ISO), or null: told to visitors while they are off. */
   lightsOnAt: () => string | null = () => null;
+  /** The schedule's night: whether a visitor's pick wakes the lights, and woken, their idle minutes (see LightScheduler). */
+  nightWake: () => { wake: boolean; idleMinutes: number | null } = () => ({ wake: false, idleMinutes: null });
 
   /** The playlist that plays now: its scene, the step it is on, and the timer to the next one. */
   private playlist: { id: string; step: number; showing: string | null; timer: NodeJS.Timeout | null } | null = null;
@@ -601,7 +603,9 @@ export class Lights {
   publicState(): PublicState {
     const settings = readSettings(this.db);
     const enabled = this.enabledDevices();
-    const isOnline = (id: string) => this.status.get(id)?.online === true;
+    const night = this.nightState();
+    // Online, or on its way: starting up, or off at its plug for the night (a visitor's pick switches it on).
+    const isOnline = (id: string) => this.status.get(id)?.online === true || this.booting.has(id) || (night.lightsWake && this.plugOf(id) != null);
     const list = this.db.listScenes();
     const reach = this.sceneReach();
     const scenes = list.map((s) => {
@@ -626,8 +630,15 @@ export class Lights {
       revertAt: this.db.getSetting(KEY.revertAt) || null,
       lightsOff: this.allOff(),
       lightsOnAt: this.allOff() ? this.lightsOnAt() : null,
+      ...night,
       hiddenGames: readHiddenGames(this.db)
     };
+  }
+
+  private nightState() {
+    const n = this.nightWake();
+    const off = this.allOff();
+    return { lightsWake: off && n.wake, idleOffMinutes: off ? null : n.idleMinutes };
   }
 
   // ---------- Commands ----------
@@ -664,7 +675,7 @@ export class Lights {
     const played = { objects: result.effects ?? 0 };
     const sent = result.applied.length + result.failed.length;
 
-    if (result.applied.length > 0 || played.objects > 0) {
+    if (result.applied.length > 0 || played.objects > 0 || result.starting?.length) {
       this.db.setSetting(KEY.currentScene, scene.id);
       this.db.setSetting(KEY.currentColor, '');
       const { defaultSceneId } = readSettings(this.db);
@@ -694,18 +705,23 @@ export class Lights {
     const streamed = new Set(played.devices.filter((id) => !this.isOff(id)));
     const work = [];
     const skipped: string[] = [];
+    // A device starting up gets the scene when it answers (see restoreLook).
+    const starting: string[] = [];
     for (const device of devices) {
       const presetId = scene.devicePresets[device.id];
       if (streamed.has(device.id)) continue;
       if (!presetId) skipped.push(device.id);
+      else if (this.booting.has(device.id)) starting.push(device.id);
       else work.push({ device, run: () => wled.applyPreset(device, presetId) });
     }
     const result = await this.fanOut(work);
     result.skipped = skipped;
     for (const id of streamed) {
-      if (this.status.get(id)?.online === false) result.failed.push({ deviceId: id, error: 'Not responding' });
+      if (this.booting.has(id)) starting.push(id);
+      else if (this.status.get(id)?.online === false) result.failed.push({ deviceId: id, error: 'Not responding' });
       else result.applied.push(id);
     }
+    if (starting.length) result.starting = starting;
     result.effects = played.objects;
     if (this.ha) merge(result, await this.haShow(mergeLooks(this.sceneReach()(scene).looks).colors, streamed));
     // A preset brings its own brightness: the admin's level goes on after it (WLED applies a
@@ -724,9 +740,12 @@ export class Lights {
     this.stopPlaylist();
     this.effectPlayer?.(null);
     const devices = this.onDevices();
-    const result = await this.fanOut(devices.map((device) => ({ device, run: () => wled.applyColor(device, rgb, this.levelOf(device.id)) })));
+    // A device starting up gets the color when it answers (see restoreLook).
+    const starting = devices.filter((d) => this.booting.has(d.id)).map((d) => d.id);
+    const result = await this.fanOut(devices.filter((d) => !this.booting.has(d.id)).map((device) => ({ device, run: () => wled.applyColor(device, rgb, this.levelOf(device.id)) })));
+    if (starting.length) result.starting = starting;
     merge(result, await this.haShow([color]));
-    if (result.applied.length > 0) {
+    if (result.applied.length > 0 || starting.length) {
       this.db.setSetting(KEY.currentScene, '');
       this.db.setSetting(KEY.currentColor, color);
       this.scheduleRevert();

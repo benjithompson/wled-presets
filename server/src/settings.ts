@@ -26,7 +26,9 @@ export const KEY = {
   maxFps: 'lightsMaxFps',
   schedule: 'lightSchedule',
   scheduleRan: 'lightScheduleRan',
-  scheduleHeld: 'lightScheduleHeld'
+  scheduleHeld: 'lightScheduleHeld',
+  /** '1' from the schedule's off until its on (or an admin's switch): visitors can wake the lights. */
+  scheduleNight: 'lightScheduleNight'
 } as const;
 
 /** What a new install does between scenes: a short crossfade. */
