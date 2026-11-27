@@ -214,6 +214,14 @@ describe('devices and scenes', () => {
     expect((await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransition: 'sideways' })).status).toBe(400);
     expect((await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransitionSeconds: 60 })).status).toBe(400);
 
+    // The frame rate limit: 30 until set, any whole number from 1 to 120, kept when left out.
+    expect(settings.maxFps).toBe(30);
+    expect((await t.call('PUT', '/api/admin/settings', { ...settings, maxFps: 42 })).json.maxFps).toBe(42);
+    expect((await t.call('PUT', '/api/admin/settings', { ...settings, maxFps: 15 })).json.maxFps).toBe(15);
+    for (const bad of [0, 121, 2.5]) expect((await t.call('PUT', '/api/admin/settings', { ...settings, maxFps: bad })).status).toBe(400);
+    const { maxFps: ___, ...noFps } = settings;
+    expect((await t.call('PUT', '/api/admin/settings', noFps)).json.maxFps).toBe(15);
+
     await t.call('PUT', '/api/admin/settings', { ...settings, sceneTransition: 'none' });
     await t.call('POST', `/api/scenes/${scene.id}/apply`);
     expect(transitions.at(-1)).toBeNull();

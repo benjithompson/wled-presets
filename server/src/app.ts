@@ -6,7 +6,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { streamSSE } from 'hono/streaming';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { z } from 'zod';
-import type { BackupFile, DiscoveredDevice, Scene, SessionInfo } from '../../shared/types.ts';
+import { FRAME_RATE, type BackupFile, type DiscoveredDevice, type Scene, type SessionInfo } from '../../shared/types.ts';
 import { createAuth, isExamplePassword, sameOrigin, type AuthEnv } from './auth.ts';
 import { isLoopbackIp, requestIp, requestIsDirectLan, requestIsLocal, viaHttps, warnUntrustedProxy } from './clientIp.ts';
 import type { AppConfig } from './config.ts';
@@ -96,7 +96,9 @@ const settingsInput = z.object({
   discoverySubnets: z.array(z.string().trim().refine(isValidCidr, 'Use CIDR form, for example 192.168.1.0/24')).max(16),
   /** Left out: kept as it is. */
   sceneTransition: z.enum(['none', ...TRANSITION_CHOICES.map((t) => t.id)] as [SceneTransitionChoice, ...SceneTransitionChoice[]]).optional(),
-  sceneTransitionSeconds: z.number().finite().min(SCENE_TRANSITION_SECONDS.min).max(SCENE_TRANSITION_SECONDS.max).optional()
+  sceneTransitionSeconds: z.number().finite().min(SCENE_TRANSITION_SECONDS.min).max(SCENE_TRANSITION_SECONDS.max).optional(),
+  /** Left out: kept as it is. */
+  maxFps: z.number().int('Use a whole number').min(FRAME_RATE.min).max(FRAME_RATE.max).optional()
 });
 
 const scheduleTime = z.object({

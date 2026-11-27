@@ -28,6 +28,14 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
   const requests: { method: string; url: string; body: unknown }[] = [];
   // Real-time UDP (DNRGB), on the same number as the HTTP port so several mocks can run.
   const realtime = { packets: 0, httpFrames: 0, ddpPackets: 0, ddpFrames: 0, leds: new Uint8Array(ledCount * 3), at: 0 };
+  /**
+   * How the device behaves, changed by tests: `answerMs`, every HTTP answer waits this long (a
+   * device that has fallen behind); `fps`, the frames a second it says it shows (null: the DDP
+   * frames of the last second); `deaf`, its WebSocket no longer answers pings (gone, the
+   * connection left open).
+   */
+  const behave: { answerMs: number; fps: number | null; deaf: boolean } = { answerMs: 0, fps: null, deaf: false };
+  const shown: number[] = [];
   const udp = dgram.createSocket('udp4');
   udp.on('message', (msg) => {
     if (dropUdp || msg[0] !== 4 || msg.length < 4) return;
@@ -51,6 +59,8 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
       realtime.leds.set(pending);
       realtime.ddpFrames++;
       realtime.at = Date.now();
+      shown.push(realtime.at);
+      while (shown.length && shown[0] < realtime.at - 1000) shown.shift();
     }
   });
   ddp.on('error', () => {});
@@ -73,12 +83,14 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
   };
   let ddpPort = 0;
   let actualPort = port;
-  const info = () => ({ ver: '0.15.0', name, mac: `aabbcc${port}`, arch: 'esp32', leds: { count: ledCount }, wifi: { signal: 80 }, udpport: actualPort, ddpport: ddpPort, live: realtime.at > 0 && Date.now() - realtime.at < 2500 });
+  const fpsNow = () => behave.fps ?? shown.filter((t) => t >= Date.now() - 1000).length;
+  const info = () => ({ ver: '0.15.0', name, mac: `aabbcc${port}`, arch: 'esp32', leds: { count: ledCount, fps: fpsNow() }, wifi: { signal: 80 }, udpport: actualPort, ddpport: ddpPort, live: realtime.at > 0 && Date.now() - realtime.at < 2500 });
 
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
-    req.on('end', () => {
+    req.on('end', () => void setTimeout(() => answer(), behave.answerMs));
+    const answer = () => {
       const body = raw ? JSON.parse(raw) : null;
       requests.push({ method: req.method!, url: req.url!, body });
       const json = (data: unknown) => {
@@ -143,11 +155,11 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         return json({ packets: realtime.packets, ddpPackets: realtime.ddpPackets, ddpFrames: realtime.ddpFrames, httpFrames: realtime.httpFrames, ageMs: realtime.at ? Date.now() - realtime.at : null, lit: lit.length, firstLit: lit[0] ?? null, lastLit: lit.at(-1) ?? null, colors: Object.fromEntries(lit.filter((i, k) => k === 0 || k === lit.length - 1 || i % 50 === 0).map((i) => [i, color(i)])) });
       }
       res.writeHead(404).end();
-    });
+    };
   });
   // WLED's WebSocket: the state on connect and on each change, and with {"lv": true} the LED
   // colors ("L", version 1, then RGB per LED) about 8 times a second, as WLED's "Peek" gets them.
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, autoPong: false });
   const live = new Set<WebSocket>();
   const broadcastState = () => {
     for (const ws of wss.clients) ws.send(JSON.stringify({ state }));
@@ -166,6 +178,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
         }
       });
       ws.on('close', () => live.delete(ws));
+      ws.on('ping', (data) => !behave.deaf && ws.pong(data));
     });
   });
   const peekTimer = setInterval(() => {
@@ -203,7 +216,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
     broadcastState();
   };
 
-  return new Promise<{ port: number; ddpPort: () => number; state: typeof state; requests: typeof requests; realtime: typeof realtime; press: typeof press; cfg: typeof cfg; close: () => Promise<void> }>((resolve) => {
+  return new Promise<{ port: number; ddpPort: () => number; state: typeof state; requests: typeof requests; realtime: typeof realtime; press: typeof press; cfg: typeof cfg; behave: typeof behave; sockets: () => number; close: () => Promise<void> }>((resolve) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         console.error(`Port ${port} is already in use. Another copy of the mock is probably running. Stop it, or pass another base port: node scripts/mock-wled.ts 4 9201`);
@@ -216,7 +229,7 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
       actualPort = actual;
       udp.bind(actual, '127.0.0.1');
       ddp.bind(0, '127.0.0.1', () => (ddpPort = ddp.address().port));
-      resolve({ port: actual, ddpPort: () => ddpPort, state, requests, realtime, press, cfg, close: () => new Promise((r) => (clearInterval(peekTimer), wss.clients.forEach((c) => c.terminate()), udp.close(), ddp.close(), server.close(() => r()), server.closeAllConnections())) });
+      resolve({ port: actual, ddpPort: () => ddpPort, state, requests, realtime, press, cfg, behave, sockets: () => wss.clients.size, close: () => new Promise((r) => (clearInterval(peekTimer), wss.clients.forEach((c) => c.terminate()), udp.close(), ddp.close(), server.close(() => r()), server.closeAllConnections())) });
     });
   });
 }

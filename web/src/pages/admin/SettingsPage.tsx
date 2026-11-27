@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { Settings } from '../../../../shared/types.ts';
+import { FRAME_RATE, type Settings } from '../../../../shared/types.ts';
 import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, transitionInfo } from '../../../../shared/transitions.ts';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
@@ -47,6 +47,7 @@ export function SettingsPage() {
     save.mutate({
       ...form,
       sceneTransitionSeconds: Math.min(SCENE_TRANSITION_SECONDS.max, Math.max(SCENE_TRANSITION_SECONDS.min, form.sceneTransitionSeconds || SCENE_TRANSITION_SECONDS.default)),
+      maxFps: Math.min(FRAME_RATE.max, Math.max(FRAME_RATE.min, Math.round(form.maxFps) || FRAME_RATE.default)),
       discoverySubnets: subnets
         .split(/[,\s]+/)
         .map((s) => s.trim())
@@ -144,6 +145,29 @@ export function SettingsPage() {
                   disabled={form.sceneTransition === 'none'}
                   value={form.sceneTransitionSeconds}
                   onChange={(e) => set('sceneTransitionSeconds', Math.max(0, Number(e.target.value) || 0))}
+                />
+              )}
+            </Field>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="Frame rate" description="How many frames a second the WLED devices get while effects, sequences, games and the editors' previews play. Fewer leave a device more room: a controller that stutters or stops answering may keep up at a lower rate." />
+          <div className="grid gap-5 p-5 sm:grid-cols-2">
+            <Field
+              label="Frames a second, at most"
+              hint={`Any whole number from ${FRAME_RATE.min} to ${FRAME_RATE.max}. A device whose LED strip is too long for this many gets fewer, and one that falls behind gets fewer until it keeps up.`}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  inputMode="numeric"
+                  min={FRAME_RATE.min}
+                  max={FRAME_RATE.max}
+                  step={1}
+                  value={Number.isFinite(form.maxFps) ? form.maxFps : ''}
+                  onChange={(e) => set('maxFps', e.target.value === '' ? NaN : Math.round(Number(e.target.value)))}
                 />
               )}
             </Field>
