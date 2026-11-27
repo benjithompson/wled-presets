@@ -3,7 +3,7 @@ import type { GameArea, Layout, OutputInfo } from '../../../shared/layout.ts';
 import type { Sequence, SequenceSummary } from '../../../shared/sequence.ts';
 import type { LineAdmin, LineSettings } from '../../../shared/line.ts';
 import type { LightSchedule } from '../../../shared/schedule.ts';
-import type { HaSettings, HaSpeedResult, HaView } from '../../../shared/homeAssistant.ts';
+import type { HaCommandStats, HaSettings, HaSpeedResult, HaView } from '../../../shared/homeAssistant.ts';
 import type { WledConfig, WledSettings } from '../../../shared/wledConfig.ts';
 import type {
   AudioFile,
@@ -162,6 +162,7 @@ export const api = {
     request<{ controls: LightControls; result: ApplyResult }>('/api/admin/lights/power', { method: 'PUT', body: { on, deviceId } }),
   /** Home Assistant (see HaSettings). The token goes in, and never comes back. */
   homeAssistant: () => request<HaView>('/api/admin/ha'),
+  haCommands: () => request<Record<string, HaCommandStats>>('/api/admin/ha/commands'),
   /** token: undefined keeps the one kept; null removes it. */
   saveHomeAssistant: (s: Omit<HaSettings, 'lights' | 'disabled'> & { lights?: string[]; token?: string | null }) => request<HaView>('/api/admin/ha', { method: 'PUT', body: s }),
   /** The Home Assistant lights the site controls (entity ids). */

@@ -69,7 +69,6 @@ applyFrameRate();
 lights.settingsHook = applyFrameRate;
 // Home Assistant lights in the layout take the colors of their objects, about once a second.
 const haFrames = new HaFrames(ha, (id, wakes) => lights.haEnabled(id) && (wakes || !lights.isOff(id)), (id) => lights.levelOf(id));
-// A light switched off goes off after the colors on their way to it, not before.
 pipeline.haSink = haFrames.frame;
 const preview = new LayoutPreview(pipeline, (msg) => lights.log('info', 'layout', msg));
 useScoreStore(databaseScores(db.raw));

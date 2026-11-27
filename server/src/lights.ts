@@ -127,7 +127,6 @@ export class Lights {
    * someone's choice, and followed (see followHa).
    */
   haRetryMs = [2000, 6000];
-  private retryTimers = new Set<NodeJS.Timeout>();
   private stopped = false;
   /** Devices whose plug was switched on: when they answer, they get the switches and what plays. */
   private booting = new Set<string>();
@@ -291,8 +290,6 @@ export class Lights {
   stop() {
     this.stopped = true;
     this.stopPlaylist();
-    for (const t of this.retryTimers) clearTimeout(t);
-    this.retryTimers.clear();
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.revertTimer) clearTimeout(this.revertTimer);
     for (const w of this.watchers.values()) w.peek.close();
@@ -584,7 +581,7 @@ export class Lights {
 
   /** Sends the device what the switches say: off, or on at its level. */
   private sendSwitches(d: Device) {
-    return this.isOff(d.id) ? wled.power(d, false) : wled.power(d, true, this.levelOf(d.id));
+    return this.switchWled(d, !this.isOff(d.id));
   }
 
   /** Devices that did not get a switch get it when they answer again (see observe). */
@@ -884,25 +881,38 @@ export class Lights {
    */
   private async powerDevice(d: Device, on: boolean): Promise<FetchResult<unknown>> {
     const plug = this.plugOf(d.id);
-    if (!plug || !this.ha) return wled.power(d, on, this.levelOf(d.id));
+    if (!plug || !this.ha) return this.switchWled(d, on);
     const done = { ok: true as const, status: 200, data: null };
     const failed = (r: { status: number; error: string }) => ({ ok: false as const, status: r.status, error: `Power plug: ${r.error}` });
     if (on) {
-      if (this.ha.entity(plug)?.state === 'on' && this.status.get(d.id)?.online) return wled.power(d, true, this.levelOf(d.id));
+      if (this.ha.entity(plug)?.state === 'on' && this.status.get(d.id)?.online) return this.switchWled(d, true);
       const p = await this.ha.set(plug, true);
       if (!p.ok) return failed(p);
       this.booting.add(d.id);
       // A controller that has its own power as well answers at once.
-      if (this.status.get(d.id)?.online) void wled.power(d, true, this.levelOf(d.id)).then((r) => r.ok && this.booting.delete(d.id));
+      if (this.status.get(d.id)?.online) void this.switchWled(d, true).then((r) => r.ok && this.booting.delete(d.id));
       return done;
     }
     this.booting.delete(d.id);
-    const r = await wled.power(d, false);
+    const r = await this.switchWled(d, false);
     if (r.ok) await new Promise((res) => setTimeout(res, this.plugDelayMs));
     // Switched on again meanwhile: the power stays.
     if (!this.isOff(d.id)) return r;
     const p = await this.ha.set(plug, false);
     return p.ok ? done : failed(p);
+  }
+
+  /**
+   * Switches a WLED device on (at its level) or off, and keeps what it took: the device shows
+   * its new state as soon as it answers, not once its WebSocket or the next check says so.
+   * The report that follows is this request's (see observe).
+   */
+  private async switchWled(d: Device, on: boolean): Promise<FetchResult<unknown>> {
+    const bri = on ? this.levelOf(d.id) : null;
+    const r = await wled.power(d, on, bri);
+    const seen = this.seen.get(d.id);
+    if (r.ok && seen) this.seen.set(d.id, { on, bri: bri || seen.bri, at: Date.now() });
+    return r;
   }
 
   /**
@@ -917,29 +927,26 @@ export class Lights {
     const ha = this.ha;
     if (!ha || !ids.length) return out;
     const results = await Promise.all(ids.map((id) => ha.set(entityOf(id), on, { bri: this.levelOf(id) })));
-    results.forEach((r, i) => (r.ok ? out.applied.push(ids[i]) : out.failed.push({ deviceId: ids[i], error: r.error })));
-    const delay = this.haRetryMs[attempt];
-    const failed = results.flatMap((r, i) => (r.ok ? [] : [{ id: ids[i], answer: r.late ?? Promise.resolve(r) }]));
-    if (failed.length && delay != null) void this.haRetry(failed, on, what, attempt, delay);
+    const failed: { id: string; answer: Promise<{ ok: boolean }> }[] = [];
+    results.forEach((r, i) => {
+      if (r.ok) return void out.applied.push(ids[i]);
+      out.failed.push({ deviceId: ids[i], error: r.error });
+      failed.push({ id: ids[i], answer: r.late ?? Promise.resolve(r) });
+    });
+    if (failed.length && this.haRetryMs[attempt] != null) void this.haRetry(failed, on, what, attempt);
     return out;
   }
 
-  /** Sends the commands that failed again (see haSwitch), after `delay`. */
-  private async haRetry(failed: { id: string; answer: Promise<{ ok: boolean }> }[], on: boolean, what: 'switch' | 'brightness', attempt: number, delay: number) {
+  /** Sends the commands that failed again (see haSwitch), haRetryMs[attempt] after. */
+  private async haRetry(failed: { id: string; answer: Promise<{ ok: boolean }> }[], on: boolean, what: 'switch' | 'brightness', attempt: number) {
     const answers = await Promise.all(failed.map((f) => f.answer));
     const still = failed.filter((_, i) => !answers[i].ok).map((f) => f.id);
     if (!still.length || this.stopped) return;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        this.retryTimers.delete(timer);
-        resolve();
-      }, delay);
-      timer.unref?.();
-      this.retryTimers.add(timer);
-    });
+    await new Promise((resolve) => setTimeout(resolve, this.haRetryMs[attempt]).unref?.());
+    if (this.stopped) return;
     // Only the lights whose switch is still as it was, and that the site still switches.
     const again = still.filter((id) => this.isOff(id) === !on && this.haEnabled(id));
-    if (!again.length || this.stopped) return;
+    if (!again.length) return;
     const r = await this.haSwitch(again, on, what, attempt + 1);
     const names = again.map((id) => `"${this.nameOf(id)}"`).join(', ');
     this.log(r.failed.length ? 'warn' : 'info', 'power', `${names}${what === 'brightness' ? ': brightness sent again' : ` switched ${on ? 'on' : 'off'} again`}, as it failed before${this.failedText(r)}`, r);

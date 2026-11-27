@@ -51,8 +51,6 @@ export interface HaView extends HaSettings {
   fade: boolean;
   /** Colors go to ZHA lights as Zigbee commands (else light.turn_on). */
   direct: boolean;
-  /** How each light takes its commands, by entity id: only while Settings → Debug asks for it. */
-  commands?: Record<string, HaCommandStats>;
 }
 
 /** How one light takes the site's commands (see HomeAssistant.set), since the server started or the debug view was switched on. */
@@ -74,6 +72,9 @@ export interface HaCommandStats {
   /** How long the oldest command on its way has gone without an answer, in ms (0: none on its way). */
   goingMs: number;
 }
+
+/** A light that has had no command yet. */
+export const NO_COMMANDS: HaCommandStats = { answered: 0, late: 0, failed: 0, lastMs: 0, avgMs: 0, maxMs: 0, going: 0, waiting: 0, goingMs: 0 };
 
 /** What a speed test of one light found (see HomeAssistant speed test). */
 export interface HaSpeedResult {

@@ -15,8 +15,7 @@ export const HA = ['admin', 'lights', 'ha'];
 
 /** Home Assistant as the server sees it: settings, whether a token is kept, and its lights. */
 export function useHomeAssistant() {
-  // With the debug view's command times (Settings → Debug), often enough to watch a light fall behind.
-  return useQuery({ queryKey: HA, queryFn: api.homeAssistant, refetchInterval: (q) => (q.state.data?.commands ? 2000 : 15_000) });
+  return useQuery({ queryKey: HA, queryFn: api.homeAssistant, refetchInterval: 15_000 });
 }
 
 /**

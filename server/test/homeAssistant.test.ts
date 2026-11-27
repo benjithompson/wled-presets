@@ -15,6 +15,11 @@ import { startMockHa } from '../../scripts/mock-ha.ts';
 type Wled = Awaited<ReturnType<typeof startMockWled>>;
 type Ha = Awaited<ReturnType<typeof startMockHa>>;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Commands on their way to a Home Assistant light, or waiting. */
+const queued = (id: string) => {
+  const c = t.home.commandStats()[id];
+  return c ? c.going + c.waiting : 0;
+};
 async function until(ok: () => boolean, ms = 3000) {
   const end = Date.now() + ms;
   while (!ok()) {
@@ -73,6 +78,7 @@ beforeEach(async () => {
   ha.calls.length = 0;
   ha.hooks.onSwitch = undefined;
   ha.timing.serviceMs = 0;
+  roof.behave.quiet = false;
   for (const [id, s] of [['switch.roof_psu', 'on'], ['switch.tree_psu', 'on'], ['light.porch', 'off'], ['light.garage', 'off']]) ha.states.get(id)!.state = s;
   t = await setup();
   expect((await t.call('POST', '/api/auth/login', { username: 'admin', password: 'correct horse battery' })).status).toBe(200);
@@ -193,7 +199,7 @@ describe('lights in home assistant', () => {
       const r = await t.call('PUT', '/api/admin/lights/brightness', { level, deviceId: 'ha:light.porch' });
       expect(r.status).toBe(200);
     }
-    await until(() => t.home.queued('light.porch') === 0, 5000);
+    await until(() => queued('light.porch') === 0, 5000);
     const sent = ha.calls.slice(before).filter((c) => c.body.entity_id === 'light.porch');
     // Ten changes in about a second: the light got the one on its way, then the newest, not ten and their retries.
     expect(sent.length).toBeLessThanOrEqual(4);
@@ -204,24 +210,34 @@ describe('lights in home assistant', () => {
     ha.timing.serviceMs = 0;
   });
 
-  it('show how each light takes its commands, while the debug setting is on', async () => {
+  it('say how each light takes its commands, counted from when the debug setting is switched on', async () => {
     await connect();
-    expect((await t.call('GET', '/api/admin/ha')).json.commands).toBeUndefined();
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: 'ha:light.porch' });
+    expect((await t.call('GET', '/api/admin/ha/commands')).json['light.porch']).toMatchObject({ answered: 1 });
     const settings = (await t.call('GET', '/api/admin/overview')).json.settings;
     expect((await t.call('PUT', '/api/admin/settings', { ...settings, debugHa: true })).json.debugHa).toBe(true);
+    expect((await t.call('GET', '/api/admin/ha/commands')).json).toEqual({});
     t.home.timeoutMs = 60;
     ha.timing.serviceMs = 300;
     await t.call('PUT', '/api/admin/lights/brightness', { level: 40, deviceId: 'ha:light.porch' });
     await t.call('PUT', '/api/admin/lights/brightness', { level: 60, deviceId: 'ha:light.porch' });
     // One on its way (no answer yet), one waiting behind it.
-    expect((await t.call('GET', '/api/admin/ha')).json.commands['light.porch']).toMatchObject({ answered: 0, going: 1, waiting: 1 });
-    await until(() => t.home.queued('light.porch') === 0, 3000);
-    const c = (await t.call('GET', '/api/admin/ha')).json.commands['light.porch'];
+    expect((await t.call('GET', '/api/admin/ha/commands')).json['light.porch']).toMatchObject({ answered: 0, going: 1, waiting: 1 });
+    await until(() => queued('light.porch') === 0, 3000);
+    const c = (await t.call('GET', '/api/admin/ha/commands')).json['light.porch'];
     expect(c).toMatchObject({ answered: 2, late: 2, failed: 0, going: 0, waiting: 0 });
     expect(c.avgMs).toBeGreaterThanOrEqual(250);
-    // Off again: not shown.
-    await t.call('PUT', '/api/admin/settings', { ...settings, debugHa: false });
-    expect((await t.call('GET', '/api/admin/ha')).json.commands).toBeUndefined();
+  });
+
+  it('show a WLED device switched as soon as it answers, before its own report', async () => {
+    await t.lights.refreshStatus();
+    await until(() => t.lights.devicesWithStatus().every((d) => d.power?.on === true));
+    // Its WebSocket says nothing of it (yet).
+    roof.behave.quiet = true;
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[0] });
+    expect(t.lights.devicesWithStatus().find((d) => d.id === ids[0])!.power).toMatchObject({ on: false });
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: ids[0] });
+    expect(t.lights.devicesWithStatus().find((d) => d.id === ids[0])!.power).toMatchObject({ on: true });
   });
 
   it("keep each change on its WLED device: WLED's sync would copy it to the others", async () => {
@@ -582,7 +598,6 @@ describe('home assistant lights in the layout', () => {
     frames.frame('ha:light.porch', [0, 255, 0], false);
     await wait(50);
     expect(ha.states.get('light.porch')!.state).toBe('off');
-    expect(frames.report()['ha:light.porch'].sent).toBeGreaterThanOrEqual(4);
     frames.close();
   });
 

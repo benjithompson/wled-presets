@@ -1,24 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useMutationState, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { Loader2, Power, Sun, SunDim } from 'lucide-react';
 import { toast } from 'sonner';
-import type { LightControls } from '../../../shared/types.ts';
-import { api } from '../lib/api.ts';
+import { haId, type HaView } from '../../../shared/homeAssistant.ts';
+import type { LightControls, PublicState } from '../../../shared/types.ts';
+import { api, type Overview } from '../lib/api.ts';
 import { cn, errorText } from '../lib/utils.ts';
 
 export const LIGHTS = ['admin', 'lights'];
 const POWER = ['lights', 'power'];
-/** The key of all lights' switch (see useLightMutations' switchOf). */
-const ALL = '*';
-/**
- * How long a light keeps showing the switch it was given once the command is done, while what
- * it says of itself catches up (a WLED device's WebSocket, the next check).
- */
-const SETTLE_MS = 4000;
+// The caches a switch changes (HA and OVERVIEW as the admin pages name them, the public page's state).
+const HA = ['admin', 'lights', 'ha'];
+const OVERVIEW = ['admin', 'overview'];
+const PUBLIC = ['public-state'];
 
 type PowerVars = { on: boolean; deviceId?: string | null };
-/** A switch on its way or just done: the state asked for, whether it is still on its way, and whether it was this light's own (not all lights'). */
-export type Switching = { on: boolean; busy: boolean; own: boolean };
+
+/** What a light that is being switched says meanwhile. */
+export const switchText = (on: boolean) => (on ? 'Turning on…' : 'Turning off…');
 
 /** The admin's power and brightness switches (see LightControls). */
 export function useLightControls(enabled = true) {
@@ -27,8 +26,9 @@ export function useLightControls(enabled = true) {
 
 /**
  * Power and brightness changes for every light or one device, with the caches they touch kept
- * fresh. `switchOf` says how a light's switch shows at once: as asked, while the command is on
- * its way (and a moment after, see SETTLE_MS), so a press shows straight away.
+ * fresh. A switch shows at once: the page's data says the lights are as asked while the
+ * command is on its way (and goes back if it fails), and `switchingTo` says which lights it is
+ * still on its way to, for a spinner.
  */
 export function useLightMutations() {
   const qc = useQueryClient();
@@ -36,45 +36,47 @@ export function useLightMutations() {
     qc.setQueryData(LIGHTS, r.controls);
     if (r.result.failed.length) toast.warning(`${r.result.failed.length} light(s) did not answer: ${r.result.failed[0].error}`);
     // Still on its way until the page has what the lights say now.
-    await Promise.all([qc.invalidateQueries({ queryKey: ['admin', 'overview'] }), qc.invalidateQueries({ queryKey: ['public-state'] })]);
+    await Promise.all([OVERVIEW, HA, PUBLIC].map((queryKey) => qc.invalidateQueries({ queryKey, exact: true })));
   };
-  const [settled, setSettled] = useState<ReadonlyMap<string, { on: boolean; at: number }>>(new Map());
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
-  useEffect(() => () => timers.current.forEach(clearTimeout), []);
   const power = useMutation({
     mutationKey: POWER,
     mutationFn: ({ on, deviceId = null }: PowerVars) => api.setPower(on, deviceId),
-    onSuccess: async (r, { on, deviceId = null }) => {
-      const key = deviceId ?? ALL;
-      const at = Date.now();
-      setSettled((m) => new Map(m).set(key, { on, at }));
-      const timer = setTimeout(() => {
-        timers.current.delete(timer);
-        setSettled((m) => (m.get(key)?.at === at ? new Map([...m].filter(([k]) => k !== key)) : m));
-      }, SETTLE_MS);
-      timers.current.add(timer);
-      await done(r);
+    onMutate: async ({ on, deviceId = null }) => {
+      const keys = [LIGHTS, OVERVIEW, HA, PUBLIC];
+      await Promise.all(keys.map((queryKey) => qc.cancelQueries({ queryKey, exact: true })));
+      const before = keys.map((k): [QueryKey, unknown] => [k, qc.getQueryData(k)]);
+      // As the server switches them (Lights.setPower): one light, or every one it knows.
+      const every = () => [...(qc.getQueryData<Overview>(OVERVIEW)?.devices.map((d) => d.id) ?? []), ...(qc.getQueryData<HaView>(HA)?.lights.map(haId) ?? [])];
+      const ids = new Set(deviceId != null ? [deviceId] : on ? [] : every());
+      qc.setQueryData<LightControls>(LIGHTS, (c) => c && { ...c, off: on ? (deviceId == null ? [] : c.off.filter((id) => !ids.has(id))) : [...new Set([...c.off, ...ids])] });
+      // A WLED device says its own power: the one that answers shows it switched.
+      qc.setQueryData<Overview>(OVERVIEW, (o) => {
+        if (!o) return o;
+        const devices = o.devices.map((d) => (d.power && (deviceId == null || d.id === deviceId) ? { ...d, power: { ...d.power, on } } : d));
+        return { ...o, devices, state: deviceId == null ? { ...o.state, lightsOff: !on } : o.state };
+      });
+      // A Home Assistant light that was off comes on (off, the switches above say so).
+      if (on) qc.setQueryData<HaView>(HA, (v) => v && { ...v, entities: v.entities.map((e) => (e.state === 'off' && (deviceId == null ? v.lights.includes(e.id) : haId(e.id) === deviceId) ? { ...e, state: 'on' } : e)) });
+      if (deviceId == null) qc.setQueryData<PublicState>(PUBLIC, (s) => s && { ...s, lightsOff: !on });
+      return { before };
     },
-    onError: (e) => toast.error(errorText(e))
+    onSuccess: done,
+    onError: (e, _v, ctx) => {
+      for (const [k, v] of ctx?.before ?? []) qc.setQueryData(k, v);
+      toast.error(errorText(e));
+    }
   });
   // Every switch on its way, from any part of the page, oldest first.
   const pending = useMutationState({ filters: { mutationKey: POWER, status: 'pending' }, select: (m) => m.state.variables as PowerVars });
-  /** How a light's switch (null: all lights') shows now, when a switch is on its way or just done; null: as the light says. */
-  const switchOf = (deviceId: string | null = null): Switching | null => {
-    const own = pending.findLast((v) => (v.deviceId ?? null) === deviceId);
-    const all = deviceId != null ? pending.findLast((v) => v.deviceId == null) : undefined;
-    if (own || all) return { on: (own ?? all)!.on, busy: true, own: !!own };
-    const mine = settled.get(deviceId ?? ALL);
-    const every = deviceId != null ? settled.get(ALL) : undefined;
-    const last = mine && (!every || mine.at >= every.at) ? mine : every;
-    return last ? { on: last.on, busy: false, own: last === mine } : null;
-  };
+  /** While a switch is on its way to a light (its own, or all lights'; null: all lights' own), the state asked for; else null. */
+  const switchingTo = (deviceId: string | null = null): boolean | null =>
+    (pending.findLast((v) => (v.deviceId ?? null) === deviceId) ?? (deviceId != null ? pending.findLast((v) => v.deviceId == null) : undefined))?.on ?? null;
   const brightness = useMutation({
     mutationFn: ({ level, deviceId = null }: { level: number | null; deviceId?: string | null }) => api.setBrightness(level, deviceId),
     onSuccess: done,
     onError: (e) => toast.error(errorText(e))
   });
-  return { power, brightness, switchOf };
+  return { power, brightness, switchingTo };
 }
 
 /** A round power button: lit when the lights are on; `busy` spins while its switch is on its way. */

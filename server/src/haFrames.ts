@@ -14,23 +14,12 @@ const SAME_BRI = 6;
 /** The level a light shows a dark part of an effect at (1 to 255): as dark as it goes, still on. */
 export const DIM_LEVEL = 1;
 
-/** What the colors of one light did: for the console, to see how fast it goes. */
-export interface HaFrameStats {
-  sent: number;
-  failed: number;
-  /** Frames that came while a command was still on its way (the light was not ready). */
-  waited: number;
-  /** How long the last commands took, in ms (a running mean). */
-  latency: number;
-}
-
 /**
  * Home Assistant lights in the layout show what the effects and games draw on their objects,
  * as fast as they can take it: one color (the mix of the object's LEDs), up to `fps` a second
- * (HomeAssistant.fps) with a fade as long as the gap between two (unless fade is off), and
- * only so many commands on their way to a light at once (HomeAssistant.inflight, 1 unless a
- * speed test found more is faster), so a slow light gets the newest color and never a queue of
- * old ones. The brightness is the light's own level (its slider on the Devices page), sent
+ * (HomeAssistant.fps) with a fade as long as the gap between two (unless fade is off). A slow
+ * light gets the newest color and never a queue of old ones: HomeAssistant.set gives each
+ * light its commands in turn, the newest waiting. The brightness is the light's own level (its slider on the Devices page), sent
  * when it comes on and when the level changes, never with each color (on Zigbee it is a
  * command of its own): a dim part of an effect shows at that level. A dark one dims the light
  * right down (DIM_LEVEL) with its last color, and never switches it off: switching a Zigbee
@@ -43,9 +32,6 @@ export class HaFrames {
   private ha: HomeAssistant;
   private latest = new Map<string, Rgb>();
   private sent = new Map<string, { rgb: Rgb; bri: number; on: boolean; at: number }>();
-  /** Commands on their way, per light. */
-  private busy = new Map<string, number>();
-  private stats = new Map<string, HaFrameStats>();
   /** May this light show frames now (not switched off, or an editor wakes it)? */
   private allowed: (id: string, wakes: boolean) => boolean;
   /** The admin's brightness for the light, as WLED counts it (1 to 255), or null. */
@@ -73,18 +59,7 @@ export class HaFrames {
     this.flush(id);
   };
 
-  /** How each light's colors went (see HaFrameStats), by "ha:" id. */
-  report(): Record<string, HaFrameStats> {
-    return Object.fromEntries(this.stats);
-  }
-
-  private stat(id: string) {
-    let s = this.stats.get(id);
-    if (!s) this.stats.set(id, (s = { sent: 0, failed: 0, waited: 0, latency: 0 }));
-    return s;
-  }
-
-  /** Sends the light its newest color, when it is due and ready. */
+  /** Sends the light its newest color, when it is due. */
   flush(id: string) {
     const rgb = this.latest.get(id);
     if (!rgb || !this.allowed(id, this.wakes.get(id) ?? false)) return;
@@ -106,31 +81,10 @@ export class HaFrames {
     const sendColor = !last || Math.abs(last.rgb[0] - color[0]) + Math.abs(last.rgb[1] - color[1]) + Math.abs(last.rgb[2] - color[2]) >= SAME;
     const sendBri = !last || !last.on || Math.abs(last.bri - bri) >= SAME_BRI;
     if (last && last.on === on && (isSwitch || (!sendColor && !sendBri))) return;
-    if ((this.busy.get(id) ?? 0) >= this.ha.inflight()) {
-      this.stat(id).waited++;
-      return;
-    }
     this.sent.set(id, { rgb: sendColor || !last ? color : last.rgb, bri: sendBri || !last ? bri : last.bri, on, at: now });
-    this.busy.set(id, (this.busy.get(id) ?? 0) + 1);
     const transition = this.ha.fade() ? Math.round(every / 100) / 10 : 0;
-    const started = performance.now();
-    void this.ha
-      // Coming on: through light.turn_on, so Home Assistant knows it is on (a Zigbee color command does not tell it).
-      .set(entity, on, on ? { rgb: sendColor || !last?.on ? color : null, bri: sendBri ? bri : null, transition, direct: this.ha.direct() && !!last?.on } : { transition })
-      .then((r) => {
-        const s = this.stat(id);
-        const ms = performance.now() - started;
-        s.latency = s.sent ? s.latency * 0.8 + ms * 0.2 : ms;
-        s.sent++;
-        if (!r.ok) s.failed++;
-      })
-      .finally(() => {
-        const n = (this.busy.get(id) ?? 1) - 1;
-        if (n > 0) this.busy.set(id, n);
-        else this.busy.delete(id);
-        // A newer color may have come meanwhile: it goes now, if it is due.
-        this.flush(id);
-      });
+    // Coming on: through light.turn_on, so Home Assistant knows it is on (a Zigbee color command does not tell it).
+    void this.ha.set(entity, on, on ? { rgb: sendColor || !last?.on ? color : null, bri: sendBri ? bri : null, transition, direct: this.ha.direct() && !!last?.on } : { transition });
   }
 
   close() {
