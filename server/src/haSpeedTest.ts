@@ -33,7 +33,7 @@ export async function haSpeedTest(
     const rgb = hsvBytes((t / 3) % 1, 1);
     const at = performance.now();
     void ha
-      .set(entity, true, { rgb: [rgb[0], rgb[1], rgb[2]], bri: sent === 0 ? 255 : null, transition, via, direct })
+      .set(entity, true, { rgb: [rgb[0], rgb[1], rgb[2]], bri: sent === 0 ? 255 : null, transition, via, direct, width: inflight })
       .then((r) => {
         latencies.push(performance.now() - at);
         sent++;

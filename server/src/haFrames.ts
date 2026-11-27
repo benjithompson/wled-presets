@@ -73,22 +73,6 @@ export class HaFrames {
     this.flush(id);
   };
 
-  /** Waiting for a light's colors on their way to be done (see idle). */
-  private idlers = new Map<string, (() => void)[]>();
-
-  /**
-   * Resolves once no color is on its way to the light (at most `maxMs` later): a command sent
-   * after it is then done after it, not side by side with it in Home Assistant.
-   */
-  idle(id: string, maxMs = 3000): Promise<void> {
-    if (!this.busy.get(id)) return Promise.resolve();
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, maxMs);
-      timer.unref?.();
-      this.idlers.set(id, [...(this.idlers.get(id) ?? []), () => (clearTimeout(timer), resolve())]);
-    });
-  }
-
   /** How each light's colors went (see HaFrameStats), by "ha:" id. */
   report(): Record<string, HaFrameStats> {
     return Object.fromEntries(this.stats);
@@ -143,11 +127,7 @@ export class HaFrames {
       .finally(() => {
         const n = (this.busy.get(id) ?? 1) - 1;
         if (n > 0) this.busy.set(id, n);
-        else {
-          this.busy.delete(id);
-          for (const done of this.idlers.get(id) ?? []) done();
-          this.idlers.delete(id);
-        }
+        else this.busy.delete(id);
         // A newer color may have come meanwhile: it goes now, if it is due.
         this.flush(id);
       });

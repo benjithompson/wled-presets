@@ -145,9 +145,10 @@ export class HaSocket {
 
   /**
    * Sends one command (a message with a type) and resolves with Home Assistant's answer; null
-   * when there is no connection.
+   * when there is no connection. No answer within `waitMs`: it resolves as failed, though Home
+   * Assistant may still do it later.
    */
-  async send(msg: Record<string, unknown>): Promise<Answer | null> {
+  async send(msg: Record<string, unknown>, waitMs = this.timeoutMs): Promise<Answer | null> {
     if (!(await this.connect()) || !this.ws) return null;
     const ws = this.ws;
     const id = this.next++;
@@ -155,7 +156,7 @@ export class HaSocket {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         resolve({ ok: false, error: 'Home Assistant did not answer in time' });
-      }, this.timeoutMs);
+      }, waitMs);
       this.pending.set(id, { resolve, timer });
       ws.send(JSON.stringify({ ...msg, id }));
     });
@@ -165,8 +166,8 @@ export class HaSocket {
    * Calls a service (light.turn_on, say), on one entity or none. Resolves when Home Assistant has
    * done it; null when there is no connection (use REST instead).
    */
-  call(domain: string, service: string, entityId: string | null, data: Record<string, unknown>): Promise<Answer | null> {
-    return this.send({ type: 'call_service', domain, service, service_data: data, ...(entityId ? { target: { entity_id: entityId } } : {}) });
+  call(domain: string, service: string, entityId: string | null, data: Record<string, unknown>, waitMs?: number): Promise<Answer | null> {
+    return this.send({ type: 'call_service', domain, service, service_data: data, ...(entityId ? { target: { entity_id: entityId } } : {}) }, waitMs);
   }
 
   close() {

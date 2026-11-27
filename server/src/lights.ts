@@ -122,13 +122,13 @@ export class Lights {
   plugDelayMs = 1500;
   /**
    * A Home Assistant light's power switch that failed is sent again this long after (ms), once
-   * each, while its switch stays as it was. Only a failed command: a light switched in Home
-   * Assistant meanwhile is someone's choice, and followed (see followHa).
+   * each, while its switch stays as it was. Only a failed command: one Home Assistant answers
+   * late, and did, is not sent again; and a light switched in Home Assistant meanwhile is
+   * someone's choice, and followed (see followHa).
    */
   haRetryMs = [2000, 6000];
   private retryTimers = new Set<NodeJS.Timeout>();
-  /** Resolves when no effects color is on its way to this Home Assistant light (see HaFrames.idle): set by the server. */
-  haFramesIdle: ((id: string) => Promise<void>) | null = null;
+  private stopped = false;
   /** Devices whose plug was switched on: when they answer, they get the switches and what plays. */
   private booting = new Set<string>();
   /**
@@ -281,6 +281,7 @@ export class Lights {
   // ---------- Status monitor ----------
 
   start(intervalMs: number) {
+    this.stopped = false;
     this.pollMs = intervalMs;
     void this.refreshStatus();
     this.pollTimer = setInterval(() => void this.refreshStatus(), intervalMs);
@@ -288,6 +289,7 @@ export class Lights {
   }
 
   stop() {
+    this.stopped = true;
     this.stopPlaylist();
     for (const t of this.retryTimers) clearTimeout(t);
     this.retryTimers.clear();
@@ -904,38 +906,43 @@ export class Lights {
   }
 
   /**
-   * Switches Home Assistant lights on (at their level) or off. Off goes after any effects color
-   * still on its way to the light, which would otherwise come on again after it (Home Assistant
-   * does commands side by side). A command that failed goes again (see haRetryMs).
+   * Switches Home Assistant lights on (at their level) or off; `what` says which, for the log
+   * (a brightness is sent as an on). Each light takes its commands in turn (see
+   * HomeAssistant.set): an off goes after any effects color still on its way, which would
+   * otherwise come on again after it. A command that failed goes again (see haRetryMs), once
+   * Home Assistant's late answer, if one comes, says it did fail.
    */
-  private async haSwitch(ids: string[], on: boolean, attempt = 0): Promise<ApplyResult> {
+  private async haSwitch(ids: string[], on: boolean, what: 'switch' | 'brightness' = 'switch', attempt = 0): Promise<ApplyResult> {
     const out: ApplyResult = { applied: [], skipped: [], failed: [] };
     const ha = this.ha;
     if (!ha || !ids.length) return out;
-    const results = await Promise.all(
-      ids.map(async (id) => {
-        if (!on) await this.haFramesIdle?.(id);
-        return ha.set(entityOf(id), on, { bri: this.levelOf(id) });
-      })
-    );
+    const results = await Promise.all(ids.map((id) => ha.set(entityOf(id), on, { bri: this.levelOf(id) })));
     results.forEach((r, i) => (r.ok ? out.applied.push(ids[i]) : out.failed.push({ deviceId: ids[i], error: r.error })));
     const delay = this.haRetryMs[attempt];
-    if (out.failed.length && delay != null) {
-      const failed = out.failed.map((f) => f.deviceId);
+    const failed = results.flatMap((r, i) => (r.ok ? [] : [{ id: ids[i], answer: r.late ?? Promise.resolve(r) }]));
+    if (failed.length && delay != null) void this.haRetry(failed, on, what, attempt, delay);
+    return out;
+  }
+
+  /** Sends the commands that failed again (see haSwitch), after `delay`. */
+  private async haRetry(failed: { id: string; answer: Promise<{ ok: boolean }> }[], on: boolean, what: 'switch' | 'brightness', attempt: number, delay: number) {
+    const answers = await Promise.all(failed.map((f) => f.answer));
+    const still = failed.filter((_, i) => !answers[i].ok).map((f) => f.id);
+    if (!still.length || this.stopped) return;
+    await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         this.retryTimers.delete(timer);
-        // Only the lights whose switch is still as it was, and that the site still switches.
-        const again = failed.filter((id) => this.isOff(id) === !on && this.haEnabled(id));
-        if (!again.length) return;
-        void this.haSwitch(again, on, attempt + 1).then((r) => {
-          const names = again.map((id) => `"${this.nameOf(id)}"`).join(', ');
-          this.log(r.failed.length ? 'warn' : 'info', 'power', `${names} switched ${on ? 'on' : 'off'} again, as it failed before${this.failedText(r)}`, r);
-        });
+        resolve();
       }, delay);
       timer.unref?.();
       this.retryTimers.add(timer);
-    }
-    return out;
+    });
+    // Only the lights whose switch is still as it was, and that the site still switches.
+    const again = still.filter((id) => this.isOff(id) === !on && this.haEnabled(id));
+    if (!again.length || this.stopped) return;
+    const r = await this.haSwitch(again, on, what, attempt + 1);
+    const names = again.map((id) => `"${this.nameOf(id)}"`).join(', ');
+    this.log(r.failed.length ? 'warn' : 'info', 'power', `${names}${what === 'brightness' ? ': brightness sent again' : ` switched ${on ? 'on' : 'off'} again`}, as it failed before${this.failedText(r)}`, r);
   }
 
   /**
@@ -1071,7 +1078,7 @@ export class Lights {
     const result = await this.fanOut(work);
     this.noteMissed(result);
     const haIds = this.haLights().filter((id) => !this.isOff(id) && (!deviceId || id === deviceId) && this.levelOf(id) != null);
-    merge(result, await this.haSwitch(haIds, true));
+    merge(result, await this.haSwitch(haIds, true, 'brightness'));
     const what = deviceId ? `"${this.nameOf(deviceId)}"` : 'All lights';
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what}: brightness ${pct == null ? (deviceId ? 'follows all lights' : 'set by each scene') : `${pct}%`}`, result, actor);
     this.bus.emit('devices');
