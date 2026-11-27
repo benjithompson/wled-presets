@@ -141,25 +141,62 @@ describe('lights in home assistant', () => {
     expect((await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: 'ha:light.nope' })).status).toBe(404);
   });
 
-  it('get the switch again when they did not take it', async () => {
+  it('get a power switch again only when it failed, and go off after the colors on their way', async () => {
     await connect();
     await t.lights.refreshStatus();
-    t.lights.verifyMs = [100, 200];
+    t.lights.haRetryMs = [100];
     await t.call('PUT', '/api/admin/lights/power', { on: true });
+    // Home Assistant fails the porch light's off; a moment later it takes it.
+    const porch = ha.states.get('light.porch')!;
+    ha.states.delete('light.porch');
+    const r = await t.call('PUT', '/api/admin/lights/power', { on: false });
+    ha.states.set('light.porch', porch);
+    expect(r.json.result.failed.map((f: { deviceId: string }) => f.deviceId)).toEqual(['ha:light.porch']);
+    expect(t.db.listLogs(5, null).find((l) => l.message.startsWith('All lights switched off'))?.message).toContain('not taken by "Porch" (Unknown entity)');
+    await until(() => porch.state === 'off');
+    expect(t.db.listLogs(5, null)[0].message).toBe('"Porch" switched off again, as it failed before');
+
+    // Switched on in Home Assistant by someone: no check sends the site's off again.
+    const calls = ha.calls.length;
+    porch.state = 'on';
+    await wait(300);
+    expect(ha.calls.length).toBe(calls);
+
+    // A color from the effects on its way: the off waits for it, so it ends off.
+    const { HaFrames } = await import('../src/haFrames.ts');
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    const frames = new HaFrames(t.home, (id) => !t.lights.isOff(id), () => null);
+    t.lights.haFramesIdle = (id) => frames.idle(id);
+    // The color takes a while; the off alone would be done first, and the light would end on.
+    ha.timing.serviceMs = 150;
+    frames.frame('ha:light.porch', [255, 0, 0], false);
+    await wait(40);
+    ha.timing.serviceMs = 0;
     await t.call('PUT', '/api/admin/lights/power', { on: false });
-    expect(ha.states.get('light.porch')!.state).toBe('off');
-    expect(tree.state.on).toBe(false);
-    // A color still on its way comes on after the off; the tree's off was lost on the way.
-    ha.states.get('light.porch')!.state = 'on';
-    tree.state.on = true;
-    await until(() => ha.states.get('light.porch')!.state === 'off' && tree.state.on === false);
-    const log = t.db.listLogs(20, null).find((l) => l.message.startsWith('Switched again'));
-    expect(log?.message).toContain('"Porch" off');
-    expect(log?.message).toContain('"Tree" off');
-    // Every change the site makes to a WLED stays on that device: WLED's sync would copy it to the others.
-    const posts = tree.requests.filter((q) => q.method === 'POST' && q.url === '/json/state');
+    // Both done, whatever their order.
+    await wait(300);
+    const order = ha.calls.filter((c) => c.body.entity_id === 'light.porch').slice(-2).map((c) => c.service);
+    expect(order).toEqual(['light.turn_on', 'light.turn_off']);
+    expect(porch.state).toBe('off');
+  });
+
+  it("keep each change on its WLED device: WLED's sync would copy it to the others", async () => {
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
+    await t.call('POST', '/api/color', { color: '#00ff00' });
+    const posts = roof.requests.filter((q) => q.method === 'POST' && q.url === '/json/state');
     expect(posts.length).toBeGreaterThan(0);
     expect(posts.every((q) => (q.body as { udpn?: { nn?: boolean } }).udpn?.nn === true)).toBe(true);
+  });
+
+  it('give a device that missed a switch the switch at the next check, though its WebSocket says nothing', async () => {
+    await t.lights.refreshStatus();
+    await until(() => t.lights.devicesWithStatus().every((d) => d.power != null));
+    (t.lights as unknown as { missed: Set<string> }).missed.add(ids[1]);
+    await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
+    tree.state.on = true;
+    (t.lights as unknown as { missed: Set<string> }).missed.add(ids[1]);
+    await t.lights.refreshStatus();
+    await until(() => tree.state.on === false);
   });
 
   it('take a visitor color when they can show one', async () => {
