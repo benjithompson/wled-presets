@@ -146,8 +146,13 @@ export const wled = {
     const r = await requestJson<{ live?: boolean }>(`${baseUrl(ep)}/json/info`, { timeoutMs });
     return r.ok ? { ...r, data: !!r.data?.live } : r;
   },
+  /**
+   * Changes the device's state. "nn" (no notification): WLED's sync would otherwise send the
+   * change to every other WLED in its sync group (on by default), and they would copy it: one
+   * device switched on here switched on the rest, which the site had switched off.
+   */
   setState(ep: Endpoint, state: Record<string, unknown>, timeoutMs = 2000) {
-    return requestJson(`${baseUrl(ep)}/json/state`, { method: 'POST', body: state, timeoutMs });
+    return requestJson(`${baseUrl(ep)}/json/state`, { method: 'POST', body: { ...state, udpn: { nn: true } }, timeoutMs });
   },
 
   applyPreset(ep: Endpoint, presetId: number) {

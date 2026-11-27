@@ -120,6 +120,13 @@ export class Lights {
   }
   /** How long a device has to fade out before its plug cuts the power (shorter in tests). */
   plugDelayMs = 1500;
+  /**
+   * After a power switch, when each light is checked for having taken it (ms after the switch):
+   * one that did not gets it again. A command can fail, or be overtaken by one still on its way
+   * (a Home Assistant light's color from the effects), and the light would stay as it was.
+   */
+  verifyMs = [4000, 15_000, 45_000];
+  private verifyTimers = new Set<NodeJS.Timeout>();
   /** Devices whose plug was switched on: when they answer, they get the switches and what plays. */
   private booting = new Set<string>();
   /**
@@ -280,6 +287,8 @@ export class Lights {
 
   stop() {
     this.stopPlaylist();
+    for (const t of this.verifyTimers) clearTimeout(t);
+    this.verifyTimers.clear();
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.revertTimer) clearTimeout(this.revertTimer);
     for (const w of this.watchers.values()) w.peek.close();
@@ -514,8 +523,12 @@ export class Lights {
   private observe(d: Device, power: PowerState | null, fromPoll = false) {
     const watcher = this.watchers.get(d.id)?.peek;
     // The WebSocket says each change as it happens: an answer to a check that was on its way
-    // meanwhile may be older.
-    if (fromPoll && watcher?.connected) return;
+    // meanwhile may be older. A device that missed a switch gets it now, though: its WebSocket
+    // says nothing until something changes, and then it would never get it.
+    if (fromPoll && watcher?.connected) {
+      if (power && this.missed.delete(d.id)) void this.sendSwitches(d);
+      return;
+    }
     if (!power) {
       // Gone, or only the connection: a check tells.
       void this.refreshStatus();
@@ -849,10 +862,76 @@ export class Lights {
     this.noteMissed(result);
     merge(result, await this.haSwitch(haTarget, on));
     const what = !picked ? 'All lights' : ids.size === 1 ? `"${this.nameOf([...ids][0])}"` : `${ids.size} lights`;
-    this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}${why ? ` ${why}` : ''}`, result, actor);
+    this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}${why ? ` ${why}` : ''}${this.failedText(result)}`, result, actor);
     this.bus.emit('devices');
     this.bus.emit('state');
+    this.verifyPower([...devices.map((d) => d.id), ...haTarget]);
     return result;
+  }
+
+  /** The lights a command did not reach, and why, for the log's line (the console's log shows only that). */
+  private failedText(r: ApplyResult): string {
+    return r.failed.length ? `; not taken by ${r.failed.map((f) => `"${this.nameOf(f.deviceId)}" (${f.error})`).join(', ')}` : '';
+  }
+
+  /**
+   * Checks, a while after a power switch, that each light is as its switch says now, and sends
+   * the switch again to one that is not (see verifyMs). A light switched again since is checked
+   * against its new switch; a controller starting up, or behind a plug that is off, is left alone.
+   */
+  private verifyPower(ids: string[], attempt = 0) {
+    const delay = this.verifyMs[attempt];
+    if (!ids.length || delay == null) return;
+    const timer = setTimeout(() => {
+      this.verifyTimers.delete(timer);
+      void this.checkPower(ids).then((left) => this.verifyPower(left, attempt + 1));
+    }, delay);
+    timer.unref?.();
+    this.verifyTimers.add(timer);
+  }
+
+  /** One check of verifyPower: sends the switch again where it did not take. Returns the lights to check again. */
+  private async checkPower(ids: string[]): Promise<string[]> {
+    const ha = this.ha;
+    const haIds = ids.filter((id) => isHaId(id) && this.haEnabled(id));
+    if (haIds.length && ha) await ha.refresh().catch(() => {});
+    const again: string[] = [];
+    const unsure: string[] = [];
+    await Promise.all(
+      ids.map(async (id) => {
+        const want = !this.isOff(id);
+        if (isHaId(id)) {
+          if (!haIds.includes(id)) return;
+          // A switch in the layout is off in the effects' dark frames (see HaFrames): only its off is checked.
+          if (want && entityOf(id).startsWith('switch.')) return;
+          const state = ha?.entity(entityOf(id))?.state;
+          if (state !== 'on' && state !== 'off') return void unsure.push(id);
+          if ((state === 'on') !== want) again.push(id);
+          return;
+        }
+        const d = this.db.getDevice(id);
+        if (!d?.enabled || this.booting.has(id)) return;
+        // Off at its plug: it is off.
+        const plug = this.plugOf(id);
+        if (!want && plug && ha?.entity(plug)?.state === 'off') return;
+        const r = await wled.state(d, 3000);
+        if (!r.ok) return void unsure.push(id);
+        if ((r.data.on !== false) !== want) again.push(id);
+      })
+    );
+    if (again.length) {
+      const result: ApplyResult = { applied: [], skipped: [], failed: [] };
+      const devices = again.map((id) => this.db.getDevice(id)).filter((d): d is Device => !!d);
+      merge(result, await this.fanOut(devices.map((device) => ({ device, run: () => this.powerDevice(device, !this.isOff(device.id)) }))));
+      this.noteMissed(result);
+      const haAgain = again.filter(isHaId);
+      merge(result, await this.haSwitch(haAgain.filter((id) => !this.isOff(id)), true));
+      merge(result, await this.haSwitch(haAgain.filter((id) => this.isOff(id)), false));
+      const names = again.map((id) => `"${this.nameOf(id)}" ${this.isOff(id) ? 'off' : 'on'}`).join(', ');
+      this.log('warn', 'power', `Switched again, as they had not taken it: ${names}${this.failedText(result)}`, result);
+      this.bus.emit('devices');
+    }
+    return [...again, ...unsure];
   }
 
   /**

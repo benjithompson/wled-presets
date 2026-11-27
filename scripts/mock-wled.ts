@@ -134,7 +134,9 @@ export function startMockWled(port: number, name: string, ledCount = 150, { drop
           };
           return void (frameMs ? setTimeout(show, frameMs) : show());
         }
-        Object.assign(state, body);
+        // "udpn" asks WLED about its sync for this request: not state.
+        const { udpn: _udpn, ...change } = body ?? {};
+        Object.assign(state, change);
         // A preset's segments show (WLED applies the preset).
         const preset = typeof body?.ps === 'number' ? (presets[String(body.ps)] as { seg?: Record<string, unknown>[] } | undefined) : undefined;
         if (preset?.seg) state.seg = [{ id: 0, col: [[255, 160, 80]], fx: 0, ...(preset.seg[0] as object) }];

@@ -141,6 +141,27 @@ describe('lights in home assistant', () => {
     expect((await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: 'ha:light.nope' })).status).toBe(404);
   });
 
+  it('get the switch again when they did not take it', async () => {
+    await connect();
+    await t.lights.refreshStatus();
+    t.lights.verifyMs = [100, 200];
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    expect(ha.states.get('light.porch')!.state).toBe('off');
+    expect(tree.state.on).toBe(false);
+    // A color still on its way comes on after the off; the tree's off was lost on the way.
+    ha.states.get('light.porch')!.state = 'on';
+    tree.state.on = true;
+    await until(() => ha.states.get('light.porch')!.state === 'off' && tree.state.on === false);
+    const log = t.db.listLogs(20, null).find((l) => l.message.startsWith('Switched again'));
+    expect(log?.message).toContain('"Porch" off');
+    expect(log?.message).toContain('"Tree" off');
+    // Every change the site makes to a WLED stays on that device: WLED's sync would copy it to the others.
+    const posts = tree.requests.filter((q) => q.method === 'POST' && q.url === '/json/state');
+    expect(posts.length).toBeGreaterThan(0);
+    expect(posts.every((q) => (q.body as { udpn?: { nn?: boolean } }).udpn?.nn === true)).toBe(true);
+  });
+
   it('take a visitor color when they can show one', async () => {
     await connect();
     await t.call('PUT', '/api/admin/lights/power', { on: true });
