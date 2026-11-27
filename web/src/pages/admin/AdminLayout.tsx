@@ -11,8 +11,9 @@ import { cn } from '../../lib/utils.ts';
 export const OVERVIEW = ['admin', 'overview'];
 export const LOGS = ['admin', 'logs'];
 
-export function useOverview() {
-  return useQuery({ queryKey: OVERVIEW, queryFn: api.overview });
+/** `refetchInterval`: ms between reads, for a page that shows what changes on its own (a device's frame rate). */
+export function useOverview(refetchInterval?: number) {
+  return useQuery({ queryKey: OVERVIEW, queryFn: api.overview, refetchInterval });
 }
 
 const NAV = [
