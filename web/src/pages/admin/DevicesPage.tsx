@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { House, Plus, Radar, RefreshCw } from 'lucide-react';
+import { House, Lightbulb, Plus, Radar, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, DiscoveredDevice } from '../../../../shared/types.ts';
 import { Badge, Button, ConfirmDialog, Dialog, Field, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
+import type { ActionItem } from '../../components/mobile.tsx';
+import { Tabs, TabPanel, useTab } from '../../components/tabs.tsx';
 import { api, type DeviceInput, type PresetImport } from '../../lib/api.ts';
 import { cn, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
@@ -13,8 +15,19 @@ import { HomeAssistantCard, useHomeAssistant } from './HomeAssistantCard.tsx';
 import { DeviceSettingsCard } from './DeviceSettingsCard.tsx';
 import { WledSettingsDialog } from './WledSettings.tsx';
 
+const TABS = [
+  { id: 'devices', label: 'Lights', icon: Lightbulb },
+  { id: 'ha', label: 'Home Assistant', icon: House },
+  { id: 'settings', label: 'Settings', icon: SlidersHorizontal }
+] as const;
+
+/**
+ * Admin → Devices: the lights (WLED controllers and Home Assistant lights), the connection to
+ * Home Assistant, and how the server sends to them, a tab each.
+ */
 export function DevicesPage() {
   const qc = useQueryClient();
+  const [tab, setTab] = useTab(TABS);
   // Read often: a device's frame rate and Wi-Fi change between status checks.
   const { data, isLoading } = useOverview(10_000);
   const [editing, setEditing] = useState<DeviceWithStatus | 'new' | null>(null);
@@ -49,6 +62,15 @@ export function DevicesPage() {
   const enabled = devices.filter((d) => d.enabled);
   const online = enabled.filter((d) => d.online).length;
   const haLights = haConnected ? ha.lights.length : 0;
+  // The header's buttons are for the lights' tab.
+  const more: ActionItem[] | undefined =
+    tab === 'devices'
+      ? [
+          { label: syncAll.isPending ? 'Importing presets…' : 'Import all presets', icon: RefreshCw, run: () => syncAll.mutate(), disabled: !enabled.length || syncAll.isPending },
+          { label: 'Discover', icon: Radar, run: () => setDiscovering(true) },
+          ...(haConnected ? [{ label: 'Add Home Assistant lights', icon: House, run: () => setAddingHa(true) }] : [])
+        ]
+      : undefined;
 
   return (
     <>
@@ -59,32 +81,37 @@ export function DevicesPage() {
             ? `${online} of ${enabled.length} enabled WLED device(s) online${haLights ? `, and ${haLights} Home Assistant light(s)` : ''}. Status refreshes every few seconds.`
             : 'The WLED controllers and Home Assistant lights that this app controls.'
         }
-        more={[
-          { label: syncAll.isPending ? 'Importing presets…' : 'Import all presets', icon: RefreshCw, run: () => syncAll.mutate(), disabled: !enabled.length || syncAll.isPending },
-          { label: 'Discover', icon: Radar, run: () => setDiscovering(true) },
-          ...(haConnected ? [{ label: 'Add Home Assistant lights', icon: House, run: () => setAddingHa(true) }] : [])
-        ]}
+        more={more}
         actions={
-          <Button variant="primary" onClick={() => setEditing('new')}>
-            <Plus /> Add WLED device
-          </Button>
+          tab === 'devices' ? (
+            <Button variant="primary" onClick={() => setEditing('new')}>
+              <Plus /> Add WLED device
+            </Button>
+          ) : null
         }
       />
 
-      <DeviceTable
-        devices={devices}
-        presets={data?.devicePresets ?? {}}
-        maxFps={data?.settings.maxFps ?? 30}
-        debugHa={!!data?.settings.debugHa}
-        loading={isLoading}
-        onAdd={() => setEditing('new')}
-        onDiscover={() => setDiscovering(true)}
-        onEdit={setEditing}
-        onConfigure={setConfiguring}
-        onRemove={setDeleting}
-      />
-      <HomeAssistantCard devices={enabled} />
-      <DeviceSettingsCard />
+      <Tabs tabs={TABS} value={tab} onChange={setTab} label="Devices" />
+      <TabPanel id={tab}>
+        {tab === 'devices' ? (
+          <DeviceTable
+            devices={devices}
+            presets={data?.devicePresets ?? {}}
+            maxFps={data?.settings.maxFps ?? 30}
+            debugHa={!!data?.settings.debugHa}
+            loading={isLoading}
+            onAdd={() => setEditing('new')}
+            onDiscover={() => setDiscovering(true)}
+            onEdit={setEditing}
+            onConfigure={setConfiguring}
+            onRemove={setDeleting}
+          />
+        ) : tab === 'ha' ? (
+          <HomeAssistantCard devices={enabled} />
+        ) : (
+          <DeviceSettingsCard />
+        )}
+      </TabPanel>
 
       {haConnected ? <AddHaLightsDialog open={addingHa} view={ha} onClose={() => setAddingHa(false)} /> : null}
       {editing ? <DeviceDialog key={editing === 'new' ? 'new' : editing.id} device={editing === 'new' ? null : editing} onClose={() => setEditing(null)} /> : null}

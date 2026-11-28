@@ -1,28 +1,44 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
+import { Globe, KeyRound, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
+import { Tabs, TabPanel, useTab } from '../../components/tabs.tsx';
 import { api } from '../../lib/api.ts';
 import { errorText } from '../../lib/utils.ts';
 import { PasskeysCard } from './PasskeysCard.tsx';
 import { LineCard } from './LineCard.tsx';
 import { useSettingsDraft } from './settingsDraft.ts';
 
+const TABS = [
+  { id: 'public', label: 'Public page', icon: Globe },
+  { id: 'turns', label: 'Taking turns', icon: Users },
+  { id: 'account', label: 'Your account', icon: KeyRound }
+] as const;
+
 /**
  * Admin → Settings: the site itself. What visitors see and how they share the lights, and the
- * admin's own account. Settings for one part of the site are on its page: scenes' playback on
- * Scenes, the schedule on Schedule, the frame rate and Home Assistant on Devices.
+ * admin's own account, a tab each. Settings for one part of the site are on its page: scenes'
+ * playback on Scenes, the schedule on Schedule, the frame rate and Home Assistant on Devices.
  */
 export function SettingsPage() {
+  const [tab, setTab] = useTab(TABS);
   return (
     <>
-      <PageHeader title="Settings" description="The public page, taking turns, and your account. The rest are where they belong: playing scenes on Scenes, on and off times on Schedule, frame rate and Home Assistant on Devices." />
-      <h2 className="mb-3 text-xs font-semibold tracking-wide text-stone-500 uppercase">Visitors</h2>
-      <PublicPageCard />
-      <LineCard />
-      <h2 className="mt-10 mb-3 text-xs font-semibold tracking-wide text-stone-500 uppercase">Your account</h2>
-      <PasswordCard />
-      <PasskeysCard />
+      <PageHeader title="Settings" description="What visitors see, how they take turns with the lights, and your account. Settings for one part of the site are on its own page." />
+      <Tabs tabs={TABS} value={tab} onChange={setTab} label="Settings" />
+      <TabPanel id={tab}>
+        {tab === 'public' ? (
+          <PublicPageCard />
+        ) : tab === 'turns' ? (
+          <LineCard />
+        ) : (
+          <>
+            <PasswordCard />
+            <PasskeysCard />
+          </>
+        )}
+      </TabPanel>
     </>
   );
 }

@@ -1,12 +1,14 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, ChevronDown, Gauge, Lightbulb, List as ListIcon, Pencil, Play, Plug, Plus, Power, Radar, RefreshCw, RotateCcw, Router, Search, SlidersHorizontal, ToggleRight, Trash2, X } from 'lucide-react';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 import type { DevicePreset, DeviceWithStatus } from '../../../../shared/types.ts';
 import type { HaEntity } from '../../../../shared/homeAssistant.ts';
 import { LevelSlider, PowerButton, switchText, useLightControls, useLightMutations } from '../../components/LightControls.tsx';
 import { Button, Card, CardHeader, ConfirmDialog, Empty, Input, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { MoreButton } from '../../components/mobile.tsx';
+import { tabLink } from '../../components/tabs.tsx';
 import type { ActionItem } from '../../components/mobile.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText, relativeTime } from '../../lib/utils.ts';
@@ -104,9 +106,9 @@ export function DeviceTable({
 }: {
   devices: DeviceWithStatus[];
   presets: Record<string, DevicePreset[]>;
-  /** The admin's frame rate limit (Settings → Frame rate). */
+  /** The admin's frame rate limit (Devices → Settings → Frame rate). */
   maxFps: number;
-  /** Settings → Debug: show how each Home Assistant light takes its commands. */
+  /** Devices → Settings → Show Home Assistant command times: how each Home Assistant light takes its commands. */
   debugHa: boolean;
   loading: boolean;
   onAdd: () => void;
@@ -119,7 +121,7 @@ export function DeviceTable({
   const { data: controls } = useLightControls();
   const { power, brightness, switchingTo } = useLightMutations();
   const { data: ha } = useHomeAssistant();
-  // Settings → Debug: how each Home Assistant light takes its commands, often enough to watch one fall behind.
+  // Devices → Settings: how each Home Assistant light takes its commands, often enough to watch one fall behind.
   const { data: commands } = useQuery({ queryKey: [...HA, 'commands'], queryFn: api.haCommands, enabled: debugHa, refetchInterval: 2000 });
   const { data: layout } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
   const saveHa = useSaveLights();
@@ -355,7 +357,7 @@ export function DeviceTable({
         <span
           key="commands"
           className={cn('w-full tabular-nums', c.behind && 'text-amber-600 dark:text-amber-400')}
-          title="Debug (Settings → Debug): how long Home Assistant takes to answer the site's commands to this light. Each light takes one at a time; one asked meanwhile waits (the newest). Late: answered after the site stopped waiting (5 s)."
+          title="Devices → Settings → Show Home Assistant command times: how long Home Assistant takes to answer the site's commands to this light. Each light takes one at a time; one asked meanwhile waits (the newest). Late: answered after the site stopped waiting (5 s)."
         >
           {c.text}
         </span>
@@ -501,7 +503,7 @@ export function DeviceTable({
               {head('name', 'Name', 'pl-1')}
               {head('status', 'Status', 'hidden w-24 sm:table-cell')}
               <th className="hidden w-48 px-2 py-2 font-medium md:table-cell xl:w-60">Brightness</th>
-              {head('fps', 'FPS', 'hidden w-14 text-right md:table-cell [&>button]:flex-row-reverse', `Frames a second the site sends each WLED device while effects, games and previews play: at most ${maxFps} (Settings → Frame rate), fewer for a long strip or one that fell behind. Grey: the site sends it nothing now, and this is the device's own rate.`)}
+              {head('fps', 'FPS', 'hidden w-14 text-right md:table-cell [&>button]:flex-row-reverse', `Frames a second the site sends each WLED device while effects, games and previews play: at most ${maxFps} (Devices → Settings → Frame rate), fewer for a long strip or one that fell behind. Grey: the site sends it nothing now, and this is the device's own rate.`)}
               {head('leds', 'LEDs', 'hidden w-16 text-right lg:table-cell [&>button]:flex-row-reverse')}
               {head('area', 'Area', 'hidden w-28 xl:table-cell')}
               <th className="hidden w-20 px-2 py-2 font-medium sm:table-cell" title="Disabled: the site leaves it alone">
@@ -589,10 +591,17 @@ export function DeviceTable({
         <span>
           {haConnected ? null : (
             <>
-              Connect Home Assistant (below) to add its lights here.{' '}
+              <Link to="?tab=ha" className={tabLink}>
+                Connect Home Assistant
+              </Link>{' '}
+              to add its lights here.{' '}
             </>
           )}
-          {`WLED devices get at most ${maxFps} frames a second.`}
+          WLED devices get at most{' '}
+          <Link to="?tab=settings" className={tabLink}>
+            {maxFps} frames a second
+          </Link>
+          .
         </span>
       </div>
 

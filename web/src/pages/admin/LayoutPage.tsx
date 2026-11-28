@@ -162,7 +162,8 @@ import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { useMedia } from '../../lib/useMedia.ts';
 import { ActionSheet, BottomSheet, type SheetSize } from '../../components/mobile.tsx';
 import { HoldRing } from '../../components/HoldRing.tsx';
-import { OVERVIEW, PageMenu, useOverview } from './AdminLayout.tsx';
+import { OVERVIEW, useOverview } from './AdminLayout.tsx';
+import { PageMenu } from './AdminHeader.tsx';
 
 // three.js is large: load the 3D view only when it is opened.
 const Scene3D = lazy(() => import('../../yard/Scene3D.tsx').then((m) => ({ default: m.Scene3D })));

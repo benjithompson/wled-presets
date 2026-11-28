@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Clock, Eye, EyeOff, Gamepad2, Loader2, Moon, Palette, Power, Settings2, Sparkles, Users, WifiOff, type LucideIcon } from 'lucide-react';
+import { Clock, Eye, EyeOff, Gamepad2, Loader2, Moon, Palette, Power, Sparkles, Users, WifiOff, type LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PublicScene, PublicState } from '../../../shared/types.ts';
 import { useMedia } from '../lib/useMedia.ts';
@@ -25,6 +25,7 @@ import { cn, errorText, relativeTime, soonTime } from '../lib/utils.ts';
 import { colorName } from '../lib/colorName.ts';
 import { Roofline, useRoofStream } from '../components/Roofline.tsx';
 import { LiveYard } from '../yard/LiveYard.tsx';
+import { AdminHeader } from './admin/AdminHeader.tsx';
 import { LevelSlider, PowerButton, switchText, useLightControls, useLightMutations } from '../components/LightControls.tsx';
 
 const KEY = ['public-state'];
@@ -32,7 +33,7 @@ const KEY = ['public-state'];
 export function PublicPage() {
   const qc = useQueryClient();
   const { data: state, isLoading, error } = useQuery({ queryKey: KEY, queryFn: api.state, refetchInterval: 60_000 });
-  // Signed in as an admin: a bar with the way back to the console, and the lights' switches.
+  // Signed in as an admin: the admin pages' header, and a bar with the lights' switches.
   const { data: session } = useQuery({ queryKey: ['session'], queryFn: api.session, staleTime: 60_000 });
   const admin = !!session?.user;
   const roof = useRoofStream();
@@ -132,8 +133,15 @@ export function PublicPage() {
     <div className="relative min-h-dvh select-none [-webkit-touch-callout:none] [&_input]:select-text [&_textarea]:select-text">
       <LightField look={look} dark={dark} speed={speed} />
       <Roofline roof={roof} dark={dark} />
+      {admin ? <AdminHeader /> : null}
 
-      <div className="relative mx-auto max-w-5xl px-4 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(2rem,env(safe-area-inset-bottom))] sm:px-8 sm:pt-[max(2rem,env(safe-area-inset-top))] sm:pb-[max(3rem,env(safe-area-inset-bottom))]">
+      <div
+        className={cn(
+          'relative mx-auto max-w-5xl px-4 pb-[max(2rem,env(safe-area-inset-bottom))] sm:px-8 sm:pb-[max(3rem,env(safe-area-inset-bottom))]',
+          // Under the header, which keeps clear of a phone's notch itself.
+          admin ? 'pt-5 sm:pt-8' : 'pt-[max(1.25rem,env(safe-area-inset-top))] sm:pt-[max(2rem,env(safe-area-inset-top))]'
+        )}
+      >
         <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-balance sm:text-4xl">{state?.title ?? ' '}</h1>
@@ -448,9 +456,8 @@ function GameGrid({ games, off, hidden }: { games: (typeof GAME_CATALOG)[number]
 }
 
 /**
- * For a signed-in admin: the way back to the admin console, the live view of the whole layout,
- * and the switches for every light (power and brightness), so the lights can be put out without
- * leaving the page.
+ * For a signed-in admin (under the admin pages' header): the switches for every light (power and
+ * brightness), so the lights can be put out without leaving the page.
  */
 function AdminBar({ lightsOff }: { lightsOff: boolean }) {
   const { data: controls } = useLightControls();
@@ -458,12 +465,6 @@ function AdminBar({ lightsOff }: { lightsOff: boolean }) {
   const turning = switchingTo(null);
   return (
     <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl bg-white/65 px-3 py-2 text-sm ring-1 ring-stone-900/10 backdrop-blur-md dark:bg-stone-900/45 dark:ring-white/10">
-      <a
-        href="/admin"
-        className="inline-flex items-center gap-1.5 rounded-full bg-stone-900 px-3 py-1.5 font-medium text-white shadow-sm hover:bg-stone-800 dark:bg-accent-400 dark:text-stone-950 dark:hover:bg-accent-300"
-      >
-        <Settings2 className="size-4" /> Admin console
-      </a>
       <span className="inline-flex items-center gap-2">
         <PowerButton size="sm" on={!lightsOff} busy={turning != null} label="All lights" onToggle={() => power.mutate({ on: lightsOff })} />
         <span className="text-stone-600 dark:text-stone-300">{turning != null ? switchText(turning) : lightsOff ? 'Lights off' : 'Lights on'}</span>
