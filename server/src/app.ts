@@ -30,7 +30,7 @@ import type { LightScheduler } from './lightSchedule.ts';
 import { cleanHaUrl, HA_FPS, HA_INFLIGHT_MAX, type HomeAssistant } from './homeAssistant.ts';
 import { haSpeedTest } from './haSpeedTest.ts';
 import { haId, isSwitchable } from '../../shared/homeAssistant.ts';
-import { IDLE_MINUTES, isClockTime, isTimeZone, OFFSET_MINUTES, scheduleRuns } from '../../shared/schedule.ts';
+import { activePeriods, IDLE_MINUTES, isClockTime, isTimeZone, MAX_PERIODS, OFFSET_MINUTES, PERIOD_NAME_MAX, sameTime, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -108,20 +108,29 @@ const scheduleTime = z.object({
   offset: z.number().int().min(-OFFSET_MINUTES).max(OFFSET_MINUTES),
   time: z.string().refine(isClockTime, 'Use a time such as 23:00')
 });
+const schedulePeriod = z.object({
+  id: z.string().regex(/^[\w-]{1,40}$/, 'Bad period id'),
+  name: z.string().trim().max(PERIOD_NAME_MAX),
+  enabled: z.boolean(),
+  days: z.array(z.number().int().min(0).max(6)).max(7),
+  on: scheduleTime,
+  off: scheduleTime
+});
 const scheduleInput = z
   .object({
     enabled: z.boolean(),
     latitude: z.number().finite().min(-90).max(90).nullable(),
     longitude: z.number().finite().min(-180).max(180).nullable(),
     timeZone: z.string().max(64).refine(isTimeZone, 'Unknown time zone'),
-    on: scheduleTime,
-    off: scheduleTime,
+    periods: z.array(schedulePeriod).max(MAX_PERIODS, `At most ${MAX_PERIODS} schedules`),
     /** Left out (an older page): kept as they are. */
     wake: z.boolean().optional(),
     idleMinutes: z.number().int('Use a whole number of minutes').min(IDLE_MINUTES.min).max(IDLE_MINUTES.max).optional()
   })
+  .refine((s) => new Set(s.periods.map((p) => p.id)).size === s.periods.length, 'Two schedules have the same id')
+  .refine((s) => !s.enabled || activePeriods(s).length > 0, 'Switch on at least one schedule, on at least one day')
   .refine((s) => !s.enabled || scheduleRuns(s), 'Set where the lights are: sunrise and sunset need it')
-  .refine((s) => !(s.on.at === s.off.at && (s.on.at === 'time' ? s.on.time === s.off.time : s.on.offset === s.off.offset)), 'The lights cannot switch on and off at the same time');
+  .refine((s) => !s.periods.some((p) => p.enabled && sameTime(p.on, p.off)), 'The lights cannot switch on and off at the same time');
 
 /** An RGB color, each part 0..255. */
 const rgbInput = z.tuple([z.number().int().min(0).max(255), z.number().int().min(0).max(255), z.number().int().min(0).max(255)]);

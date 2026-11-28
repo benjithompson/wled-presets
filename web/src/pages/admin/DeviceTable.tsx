@@ -1,5 +1,4 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
-import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, ChevronDown, Gauge, Lightbulb, List as ListIcon, Pencil, Play, Plug, Plus, Power, Radar, RefreshCw, RotateCcw, Router, Search, SlidersHorizontal, ToggleRight, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -590,11 +589,7 @@ export function DeviceTable({
         <span>
           {haConnected ? null : (
             <>
-              Connect Home Assistant under{' '}
-              <Link to="/admin/settings" className="font-medium text-stone-700 underline underline-offset-2 dark:text-stone-300">
-                Settings
-              </Link>{' '}
-              to add its lights here.{' '}
+              Connect Home Assistant (below) to add its lights here.{' '}
             </>
           )}
           {`WLED devices get at most ${maxFps} frames a second.`}

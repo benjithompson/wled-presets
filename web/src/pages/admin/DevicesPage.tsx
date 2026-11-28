@@ -9,8 +9,8 @@ import { cn, errorText } from '../../lib/utils.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
 import { DeviceTable } from './DeviceTable.tsx';
 import { AddHaLightsDialog } from './HaLightDialogs.tsx';
-import { ScheduleCard } from './ScheduleCard.tsx';
-import { useHomeAssistant } from './HomeAssistantCard.tsx';
+import { HomeAssistantCard, useHomeAssistant } from './HomeAssistantCard.tsx';
+import { DeviceSettingsCard } from './DeviceSettingsCard.tsx';
 import { WledSettingsDialog } from './WledSettings.tsx';
 
 export function DevicesPage() {
@@ -83,11 +83,8 @@ export function DevicesPage() {
         onConfigure={setConfiguring}
         onRemove={setDeleting}
       />
-      {enabled.length || haLights ? (
-        <div className="mt-6">
-          <ScheduleCard />
-        </div>
-      ) : null}
+      <HomeAssistantCard devices={enabled} />
+      <DeviceSettingsCard />
 
       {haConnected ? <AddHaLightsDialog open={addingHa} view={ha} onClose={() => setAddingHa(false)} /> : null}
       {editing ? <DeviceDialog key={editing === 'new' ? 'new' : editing.id} device={editing === 'new' ? null : editing} onClose={() => setEditing(null)} /> : null}
