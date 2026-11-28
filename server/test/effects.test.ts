@@ -521,3 +521,109 @@ describe('3-D effects that know the yard’s objects', () => {
     expect(darker).toBeGreaterThan(200);
   });
 });
+
+describe('3-D effects that play the yard object by object', () => {
+  // The sample yard with two trees, a sunrise and a lamp.
+  const layout = sampleLayout();
+  const base = { deviceId: null, startPixel: 0, reversed: false };
+  layout.fixtures.push(
+    { ...base, id: 'tree-l', name: 'Left tree', kind: 'tree', points: [{ x: 110, y: 820, z: 120 }], radius: 60, height: 300, pattern: 'spiral', turns: 8, pixels: 200 },
+    { ...base, id: 'tree-r', name: 'Right tree', kind: 'tree', points: [{ x: 1490, y: 820, z: 120 }], radius: 60, height: 300, pattern: 'spiral', turns: 8, pixels: 200 },
+    { ...base, id: 'sun', name: 'Sunrise', kind: 'semicircle', points: [{ x: 1000, y: 820, z: 200 }], radius: 110, strands: 8, pixels: 150 },
+    { ...base, id: 'lamp', name: 'Lamp', kind: 'bulb', points: [{ x: 640, y: 600, z: 10 }], radius: 20, pixels: 1 }
+  );
+  const stage = buildStage(layout);
+  const objects = stage.fixtures.map((f) => Array.from({ length: f.count }, (_, i) => f.offset + i));
+  const play = (effect: Parameters<typeof defaultSettings>[0], seconds: number, each: (out: Float32Array, t: number) => void, patch: Partial<EffectSettings> = {}) => {
+    const scene = new EffectScene(stage, layout, { [YARD]: { ...defaultSettings(effect), brightness: 1, ...patch } });
+    const out = new Float32Array(stage.pixelCount * 3);
+    for (let f = 1; f <= seconds * 30; f++) {
+      scene.update(1 / 30, out);
+      each(out, f / 30);
+    }
+  };
+  const sum = (out: Float32Array, i: number) => out[i * 3] + out[i * 3 + 1] + out[i * 3 + 2];
+  /** How white an LED is: its weakest color. */
+  const white = (out: Float32Array, i: number) => Math.min(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]);
+
+  it('carillon: notes strike key after key, low on the left and high on the right', () => {
+    // A strike flashes white where it lands.
+    const rang = new Set<number>();
+    let strikes = 0;
+    let was = false;
+    play('carillon', 20, (out) => {
+      const now = objects.map((leds) => leds.some((i) => white(out, i) > 0.5));
+      now.forEach((on, o) => on && rang.add(o));
+      const any = now.some(Boolean);
+      if (any && !was) strikes++;
+      was = any;
+    });
+    expect(rang.size).toBeGreaterThanOrEqual(5);
+    expect(strikes).toBeGreaterThan(20);
+    // The same tune, played the other way round, strikes its first note at the other end.
+    const first = (reverse: boolean) => {
+      const r = new EffectRunner('carillon', 160, 3);
+      const out = r.render(1 / 60, { ...defaultSettings('carillon'), intensity: 0, brightness: 1, reverse });
+      let at = 0;
+      for (let i = 0; i < 160; i++) if (out[i * 3] + out[i * 3 + 1] + out[i * 3 + 2] > out[at * 3] + out[at * 3 + 1] + out[at * 3 + 2]) at = i;
+      return at;
+    };
+    expect(Math.abs(first(false) + first(true) - 159)).toBeLessThan(12);
+  });
+
+  it('roller coaster: one train rides through every object, one or two at a time', () => {
+    const order: number[] = [];
+    let most = 0;
+    play('coaster', 60, (out) => {
+      // The front car's headlight is white.
+      const on = objects.map((leds) => leds.some((i) => white(out, i) > 0.5));
+      on.forEach((x, o) => x && !order.includes(o) && order.push(o));
+      most = Math.max(most, on.filter(Boolean).length);
+    });
+    expect(order.length).toBe(objects.length);
+    expect(most).toBeLessThanOrEqual(2);
+  });
+
+  it('prize wheel: the light spins round every object, stops on one, and its color floods the yard', () => {
+    const passed = new Set<number>();
+    let flooded = 0;
+    play('wheel', 12, (out, t) => {
+      if (t < 3) objects.forEach((leds, o) => leds.some((i) => sum(out, i) > 0.9) && passed.add(o));
+      let lit = 0;
+      for (let i = 0; i < stage.pixelCount; i++) if (sum(out, i) > 0.4) lit++;
+      flooded = Math.max(flooded, lit / stage.pixelCount);
+    });
+    expect(passed.size).toBe(objects.length);
+    expect(flooded).toBeGreaterThan(0.6);
+  });
+
+  it('clockwork: the drive reaches the objects one after another', () => {
+    // Each object flashes white as the drive reaches it.
+    const reached = new Map<number, number>();
+    play('clockwork', 6, (out, t) => {
+      objects.forEach((leds, o) => !reached.has(o) && leds.some((i) => white(out, i) > 0.6) && reached.set(o, t));
+    });
+    expect(reached.size).toBe(objects.length);
+    const times = [...reached.values()].sort((a, b) => a - b);
+    expect(new Set(times).size).toBeGreaterThanOrEqual(3);
+    expect(times.filter((t) => t === times[0]).length).toBe(1);
+  });
+
+  it('talent show: one object performs at a time, each gets its turn, and all perform in the finale', () => {
+    const performed = new Set<number>();
+    let crowded = 0;
+    let finale = 0;
+    const acts = objects.length * 5.3;
+    play('talent', acts + 5, (out, t) => {
+      const on = objects.map((leds) => leds.some((i) => sum(out, i) > 0.4)).map((x, o) => (x ? o : -1)).filter((o) => o >= 0);
+      if (t > acts) finale = Math.max(finale, on.length);
+      else if (t % 5.3 > 0.05 && t % 5.3 < 4.1) {
+        on.forEach((o) => performed.add(o));
+        if (on.length > 1) crowded++;
+      }
+    });
+    expect(performed.size).toBe(objects.length);
+    expect(crowded).toBe(0);
+    expect(finale).toBe(objects.length);
+  });
+});
