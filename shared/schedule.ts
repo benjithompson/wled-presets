@@ -1,3 +1,4 @@
+import { isSwitchable } from './homeAssistant.ts';
 import { sunTimes } from './sun.ts';
 
 /**
@@ -40,7 +41,26 @@ export interface SchedulePeriod {
   days: number[];
   on: ScheduleTime;
   off: ScheduleTime;
+  /** At its off: Home Assistant lights and switches to set as well (see OffAction). */
+  atOff: OffAction[];
 }
+
+/**
+ * At a period's off, one Home Assistant light or switch: on or off. A light on is in its own
+ * white (HaSettings.white), at this brightness. Home Assistant lights the site switches go off
+ * with the rest, back in their own white (see HaWhite), unless one here keeps them on; any other
+ * light or switch in Home Assistant can be set too, so the night needs no automation of its own.
+ */
+export interface OffAction {
+  /** Its entity id: light.driveway, switch.porch. */
+  entity: string;
+  on: boolean;
+  /** A light on: its brightness, 1 to 100 %. */
+  brightness: number;
+}
+
+/** At most this many lights and switches at one period's off. */
+export const MAX_OFF_ACTIONS = 24;
 
 export interface ScheduleTime {
   at: 'sunrise' | 'sunset' | 'time';
@@ -56,15 +76,19 @@ export interface ScheduleEvent {
   at: number;
   /** The period and time it comes from, in words: "Evening, at sunset". */
   label: string;
+  /** The id of the period it comes from (of a stretch made of several, the one whose time it is). */
+  period: string;
 }
 
 /** A stretch of time with the lights on, from the periods that make it (ms). */
 export interface ScheduleSpan {
   start: number;
   end: number;
-  /** The periods' labels for its on and its off (see ScheduleEvent.label). */
+  /** The periods' labels for its on and its off (see ScheduleEvent.label), and their ids. */
   onLabel: string;
   offLabel: string;
+  onPeriod: string;
+  offPeriod: string;
 }
 
 /** Offsets go this far either side of sunrise or sunset. */
@@ -84,7 +108,8 @@ export const DEFAULT_PERIOD: SchedulePeriod = {
   enabled: true,
   days: ALL_DAYS,
   on: { at: 'sunset', offset: 0, time: '17:00' },
-  off: { at: 'time', offset: 0, time: '23:00' }
+  off: { at: 'time', offset: 0, time: '23:00' },
+  atOff: []
 };
 
 export const DEFAULT_SCHEDULE: LightSchedule = {
@@ -198,7 +223,7 @@ export function scheduleSpans(s: LightSchedule, from: number, to: number): Sched
       let off = timeOn(p.off, s, y, m, d);
       if (off == null || off <= on) off = timeOn(p.off, s, next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate());
       if (off == null || off <= on || off - on > MAX_PERIOD_HOURS * 3_600_000) continue;
-      raw.push({ start: on, end: off, onLabel: label(p, p.on), offLabel: label(p, p.off) });
+      raw.push({ start: on, end: off, onLabel: label(p, p.on), offLabel: label(p, p.off), onPeriod: p.id, offPeriod: p.id });
     }
   }
   raw.sort((a, b) => a.start - b.start);
@@ -206,7 +231,7 @@ export function scheduleSpans(s: LightSchedule, from: number, to: number): Sched
   for (const r of raw) {
     const last = out.at(-1);
     if (last && r.start <= last.end) {
-      if (r.end > last.end) Object.assign(last, { end: r.end, offLabel: r.offLabel });
+      if (r.end > last.end) Object.assign(last, { end: r.end, offLabel: r.offLabel, offPeriod: r.offPeriod });
     } else out.push({ ...r });
   }
   return out.filter((x) => x.end > from && x.start <= to);
@@ -216,8 +241,8 @@ export function scheduleSpans(s: LightSchedule, from: number, to: number): Sched
 export function scheduleEvents(s: LightSchedule, from: number, to: number): ScheduleEvent[] {
   const out: ScheduleEvent[] = [];
   for (const x of scheduleSpans(s, from - 2 * DAY_MS, to)) {
-    if (x.start > from && x.start <= to) out.push({ kind: 'on', at: x.start, label: x.onLabel });
-    if (x.end > from && x.end <= to) out.push({ kind: 'off', at: x.end, label: x.offLabel });
+    if (x.start > from && x.start <= to) out.push({ kind: 'on', at: x.start, label: x.onLabel, period: x.onPeriod });
+    if (x.end > from && x.end <= to) out.push({ kind: 'off', at: x.end, label: x.offLabel, period: x.offPeriod });
   }
   return out;
 }
@@ -271,7 +296,8 @@ export function cleanSchedule(v: unknown): LightSchedule {
       enabled: p.enabled !== false,
       days,
       on: time(p.on, DEFAULT_PERIOD.on),
-      off: time(p.off, DEFAULT_PERIOD.off)
+      off: time(p.off, DEFAULT_PERIOD.off),
+      atOff: cleanActions(p.atOff)
     };
   });
   return {
@@ -283,6 +309,22 @@ export function cleanSchedule(v: unknown): LightSchedule {
     wake: typeof o.wake === 'boolean' ? o.wake : DEFAULT_SCHEDULE.wake,
     idleMinutes: typeof o.idleMinutes === 'number' && Number.isInteger(o.idleMinutes) && o.idleMinutes >= IDLE_MINUTES.min && o.idleMinutes <= IDLE_MINUTES.max ? o.idleMinutes : DEFAULT_SCHEDULE.idleMinutes
   };
+}
+
+/** A period's lights and switches at its off, as kept: each entity once, in range. */
+function cleanActions(v: unknown): OffAction[] {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set<string>();
+  const out: OffAction[] = [];
+  for (const x of v) {
+    const a = x && typeof x === 'object' ? (x as Record<string, unknown>) : {};
+    if (typeof a.entity !== 'string' || !isSwitchable(a.entity) || seen.has(a.entity)) continue;
+    seen.add(a.entity);
+    const b = typeof a.brightness === 'number' && Number.isFinite(a.brightness) ? Math.min(100, Math.max(1, Math.round(a.brightness))) : 100;
+    out.push({ entity: a.entity, on: a.on === true, brightness: b });
+    if (out.length >= MAX_OFF_ACTIONS) break;
+  }
+  return out;
 }
 
 /** A schedule time in words: "sunset", "30 minutes before sunrise", "23:00". */

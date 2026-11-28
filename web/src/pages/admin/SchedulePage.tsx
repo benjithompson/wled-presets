@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, LocateFixed, MapPin, Moon, Plus, Sunrise, Sunset, Trash2 } from 'lucide-react';
+import { CalendarClock, House, LocateFixed, MapPin, Moon, Plus, Sunrise, Sunset, Trash2, X } from 'lucide-react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
@@ -9,6 +9,7 @@ import {
   DAY_NAMES,
   dayBounds,
   IDLE_MINUTES,
+  MAX_OFF_ACTIONS,
   MAX_PERIODS,
   nextEvent,
   OFFSET_MINUTES,
@@ -19,12 +20,16 @@ import {
   sunToday,
   usesSun,
   type LightSchedule,
+  type OffAction,
   type SchedulePeriod,
   type ScheduleTime
 } from '../../../../shared/schedule.ts';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { Tabs, TabPanel, tabLink, useTab } from '../../components/tabs.tsx';
 import { api } from '../../lib/api.ts';
+import type { HaView } from '../../../../shared/homeAssistant.ts';
+import { EntityIcon } from './EntityTable.tsx';
+import { useHomeAssistant } from './HomeAssistantCard.tsx';
 import { cn, errorText, soonTime } from '../../lib/utils.ts';
 
 const SCHEDULE = ['admin', 'lights', 'schedule'];
@@ -48,8 +53,8 @@ const newId = () => Math.random().toString(36).slice(2, 10);
 /** What "Add a schedule" adds: a morning first (06:00 to sunrise), then an evening's hours. */
 function newPeriod(periods: SchedulePeriod[]): SchedulePeriod {
   const clock = (time: string): ScheduleTime => ({ at: 'time', offset: 0, time });
-  if (!periods.some((p) => p.name.toLowerCase() === 'morning')) return { id: newId(), name: 'Morning', enabled: true, days: ALL_DAYS, on: clock('06:00'), off: { at: 'sunrise', offset: 0, time: '07:00' } };
-  return { id: newId(), name: `Schedule ${periods.length + 1}`, enabled: true, days: ALL_DAYS, on: clock('18:00'), off: clock('22:00') };
+  if (!periods.some((p) => p.name.toLowerCase() === 'morning')) return { id: newId(), name: 'Morning', enabled: true, days: ALL_DAYS, on: clock('06:00'), off: { at: 'sunrise', offset: 0, time: '07:00' }, atOff: [] };
+  return { id: newId(), name: `Schedule ${periods.length + 1}`, enabled: true, days: ALL_DAYS, on: clock('18:00'), off: clock('22:00'), atOff: [] };
 }
 
 /**
@@ -62,6 +67,9 @@ function newPeriod(periods: SchedulePeriod[]): SchedulePeriod {
 export function SchedulePage() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: SCHEDULE, queryFn: api.lightSchedule });
+  // Connected to Home Assistant: an on time's off can set its lights and switches too.
+  const { data: haView } = useHomeAssistant();
+  const ha = haView?.url && haView.hasToken ? haView : undefined;
   const [form, setForm] = useState<LightSchedule | null>(null);
   const [locating, setLocating] = useState(false);
   const [tab, setTab] = useTab(TABS);
@@ -197,6 +205,7 @@ export function SchedulePage() {
                         place={live}
                         now={now}
                         zone={zone}
+                        ha={ha}
                         onChange={(patch) => setPeriod(p.id, patch)}
                         onRemove={() => set({ periods: form.periods.filter((x) => x.id !== p.id) })}
                       />
@@ -305,6 +314,7 @@ function PeriodRow({
   place,
   now,
   zone,
+  ha,
   onChange,
   onRemove
 }: {
@@ -312,6 +322,8 @@ function PeriodRow({
   place: LightSchedule;
   now: number;
   zone: string | undefined;
+  /** Home Assistant, when the site is connected to it. */
+  ha: HaView | undefined;
   onChange: (patch: Partial<SchedulePeriod>) => void;
   onRemove: () => void;
 }) {
@@ -333,6 +345,7 @@ function PeriodRow({
         <TimeField label="Switch on" name={name} value={p.on} onChange={(on) => onChange({ on })} />
         <TimeField label="Switch off" name={name} value={p.off} onChange={(off) => onChange({ off })} />
       </div>
+      {ha ? <OffActions ha={ha} name={name} actions={p.atOff} onChange={(atOff) => onChange({ atOff })} /> : null}
       {p.enabled ? (
         <p className="text-xs text-stone-500 dark:text-stone-400">
           {sameTime(p.on, p.off)
@@ -349,6 +362,93 @@ function PeriodRow({
         </p>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * At an on time's off, in Home Assistant: the lights the site switches go off with the rest,
+ * back in their own white; here, any of them kept on instead (in that white), and other lights
+ * and switches set on or off, so the night needs no automation in Home Assistant (see OffAction).
+ */
+function OffActions({ ha, name, actions, onChange }: { ha: HaView; name: string; actions: OffAction[]; onChange: (a: OffAction[]) => void }) {
+  const plugs = new Set(Object.values(ha.plugs));
+  const site = new Set(ha.lights.filter((id) => !ha.disabled.includes(id)));
+  const byId = new Map(ha.entities.map((e) => [e.id, e]));
+  const free = ha.entities.filter((e) => !plugs.has(e.id) && !actions.some((a) => a.entity === e.id));
+  const groups = [
+    { label: 'Lights the site switches', list: free.filter((e) => site.has(e.id)) },
+    { label: 'Other lights', list: free.filter((e) => !site.has(e.id) && e.id.startsWith('light.')) },
+    { label: 'Switches', list: free.filter((e) => !site.has(e.id) && e.id.startsWith('switch.')) }
+  ].filter((g) => g.list.length);
+  const set = (i: number, patch: Partial<OffAction>) => onChange(actions.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  return (
+    <div className="rounded-xl bg-stone-50 px-3 py-2.5 ring-1 ring-stone-200/70 dark:bg-stone-950/40 dark:ring-stone-800">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <p className="min-w-0 flex-1 basis-60 text-xs text-stone-500 dark:text-stone-400">
+          <House className="mr-1 -mt-0.5 inline size-3.5" />
+          At its off, in Home Assistant: {site.size ? 'the lights the site switches go off, back in their own white' : 'nothing'}
+          {actions.length ? '. And:' : '. Add a light to keep it on in its own white, or another light or switch to set.'}
+        </p>
+        {groups.length && actions.length < MAX_OFF_ACTIONS ? (
+          <Select
+            aria-label={`${name}: add a Home Assistant light or switch at its off`}
+            className="!h-8 !w-auto max-w-full text-xs"
+            value=""
+            onChange={(e) => e.target.value && onChange([...actions, { entity: e.target.value, on: site.has(e.target.value) && e.target.value.startsWith('light.'), brightness: ha.white.brightness }])}
+          >
+            <option value="">Add a light or switch…</option>
+            {groups.map((g) => (
+              <optgroup key={g.label} label={g.label}>
+                {g.list.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.name}
+                    {e.area ? ` (${e.area})` : ''}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </Select>
+        ) : null}
+      </div>
+      {actions.length ? (
+        <ul className="mt-2 space-y-1.5">
+          {actions.map((a, i) => {
+            const e = byId.get(a.entity);
+            const light = a.entity.startsWith('light.');
+            return (
+              <li key={a.entity} className="flex flex-wrap items-center gap-2 text-sm">
+                {e ? <EntityIcon e={e} /> : null}
+                <span className="min-w-0 flex-1 basis-32 truncate" title={a.entity}>
+                  {e?.name ?? a.entity}
+                  {!e ? <span className="text-xs text-amber-700 dark:text-amber-300"> (not in Home Assistant)</span> : null}
+                </span>
+                <Select aria-label={`${e?.name ?? a.entity} at the off`} className="!h-8 !w-auto text-xs" value={a.on ? 'on' : 'off'} onChange={(ev) => set(i, { on: ev.target.value === 'on' })}>
+                  <option value="off">{site.has(a.entity) && light ? 'Off, in its own white' : 'Off'}</option>
+                  <option value="on">{light ? 'On, in its own white' : 'On'}</option>
+                </Select>
+                {light && a.on && e?.dimmable !== false ? (
+                  <label className="flex items-center gap-1 text-xs text-stone-500">
+                    <Input
+                      aria-label={`${e?.name ?? a.entity}: brightness at the off`}
+                      type="number"
+                      min={1}
+                      max={100}
+                      className="!h-8 !w-16 text-xs"
+                      value={a.brightness}
+                      onChange={(ev) => set(i, { brightness: Math.min(100, Math.max(1, Math.round(Number(ev.target.value)) || 1)) })}
+                    />
+                    %
+                  </label>
+                ) : null}
+                <Button size="sm" variant="ghost" aria-label={`Leave ${e?.name ?? a.entity} out`} title="Leave out" className="px-2 text-stone-500" onClick={() => onChange(actions.filter((_, j) => j !== i))}>
+                  <X />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 

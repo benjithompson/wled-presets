@@ -520,6 +520,69 @@ describe('home assistant lights that misbehave', () => {
   });
 });
 
+describe('home assistant lights in their own white', () => {
+  const porchCalls = () => ha.calls.filter((c) => c.body.entity_id === 'light.porch').map((c) => ({ service: c.service, ...c.body, entity_id: undefined }));
+
+  it('go back to it when the site switches them off, after it gave them a color or a brightness', async () => {
+    await connect({ white: { kelvin: 3000, brightness: 60 } });
+    expect((await t.call('GET', '/api/admin/ha')).json.white).toEqual({ kelvin: 3000, brightness: 60 });
+    expect((await connect({ white: { kelvin: 9000, brightness: 60 } })).status).toBe(400);
+    await t.lights.refreshStatus();
+
+    // On as they are, and off: nothing of the site's to undo.
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    ha.calls.length = 0;
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    expect(porchCalls()).toEqual([{ service: 'light.turn_off' }]);
+
+    // A brightness of the site's: off goes through the white first (60 % is 153 of 255).
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 30 });
+    ha.calls.length = 0;
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    expect(porchCalls()).toEqual([{ service: 'light.turn_on', brightness: 153, color_temp_kelvin: 3000, transition: 0 }, { service: 'light.turn_off' }]);
+    // The garage dimmer has no white of its own: only its brightness goes back.
+    expect(ha.calls.filter((c) => c.body.entity_id === 'light.garage').map((c) => [c.service, c.body.color_temp_kelvin, c.body.brightness])).toEqual([
+      ['light.turn_on', undefined, 153],
+      ['light.turn_off', undefined, undefined]
+    ]);
+    expect(ha.states.get('light.porch')!.state).toBe('off');
+
+    // Back in it, a light switched off again is only switched off; one already off is not lit to change it.
+    ha.calls.length = 0;
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    expect(porchCalls()).toEqual([{ service: 'light.turn_off' }]);
+  });
+
+  it('are kept on in it, or set, at the schedule off of the period that names them', async () => {
+    await connect();
+    await t.lights.refreshStatus();
+    await t.call('PUT', '/api/admin/lights/power', { on: true });
+    await t.call('PUT', '/api/admin/lights/brightness', { level: 30 });
+    ha.states.get('switch.fan')!.state = 'off';
+    ha.calls.length = 0;
+    await t.lights.scheduleOff(
+      [
+        { entity: 'light.porch', on: true, brightness: 40 },
+        { entity: 'switch.fan', on: true, brightness: 100 },
+        { entity: 'switch.roof_psu', on: true, brightness: 100 }
+      ],
+      'by the schedule (Evening, at 23:00)',
+      true
+    );
+    // The porch stays on, in its own white at 40 % (102 of 255); the garage goes off as the site's lights do.
+    expect(porchCalls()).toEqual([{ service: 'light.turn_on', brightness: 102, color_temp_kelvin: 2700 }]);
+    expect(ha.states.get('light.porch')!.state).toBe('on');
+    expect(ha.states.get('light.garage')!.state).toBe('off');
+    // Any other switch is set too; a controller's plug goes with its device.
+    expect(ha.states.get('switch.fan')!.state).toBe('on');
+    await until(() => ha.states.get('switch.roof_psu')!.state === 'off');
+    expect(t.lights.allOff()).toBe(true);
+    expect(t.db.listLogs(5, null).map((l) => l.message)).toContain('In Home Assistant by the schedule (Evening, at 23:00): "Porch" on in its own white at 40 %, "Fan" on');
+
+  });
+});
+
 describe('home assistant lights in the layout', () => {
   it('get the mix of their LEDs from each frame, as fast as set, one command at a time', async () => {
     const { FramePipeline, meanColor } = await import('../src/framePipeline.ts');

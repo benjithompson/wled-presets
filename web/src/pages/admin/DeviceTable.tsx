@@ -190,7 +190,7 @@ export function DeviceTable({
       { onSuccess: () => toast.success(`${r.name} ${on ? 'enabled' : 'disabled: the site leaves it alone'}`) }
     );
   const speedTest = (r: DeviceRow) =>
-    setTesting(r.ha!.entity ?? { id: r.ha!.id, name: r.ha!.id, state: '', color: true, dimmable: true, outlet: false, area: '', device: '', integration: '' });
+    setTesting(r.ha!.entity ?? { id: r.ha!.id, name: r.ha!.id, state: '', color: true, dimmable: true, temp: true, outlet: false, area: '', device: '', integration: '' });
 
   const sortBy = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'fps' || key === 'leds' ? 'desc' : 'asc' }));

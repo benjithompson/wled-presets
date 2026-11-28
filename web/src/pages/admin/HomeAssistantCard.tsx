@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, KeyRound, Lightbulb, Plug, RefreshCw, X, XCircle } from 'lucide-react';
+import { CheckCircle2, KeyRound, Lightbulb, Plug, RefreshCw, Sun, X, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import type { HaEntity, HaSettings, HaView } from '../../../../shared/homeAssistant.ts';
+import { cleanWhite, HA_KELVIN, type HaEntity, type HaSettings, type HaView } from '../../../../shared/homeAssistant.ts';
 import type { DeviceWithStatus } from '../../../../shared/types.ts';
 import { Badge, Button, Card, CardHeader, Dialog, Field, Input, Spinner } from '../../components/ui.tsx';
 import { EntityIcon, EntityTable, kindOf } from './EntityTable.tsx';
@@ -30,7 +30,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
   const [token, setToken] = useState('');
   const [picking, setPicking] = useState<DeviceWithStatus | null>(null);
   useEffect(() => {
-    if (data && !form) setForm({ url: data.url || 'http://192.168.29.29:8123', plugs: data.plugs, lights: data.lights, disabled: data.disabled });
+    if (data && !form) setForm({ url: data.url || 'http://192.168.29.29:8123', plugs: data.plugs, lights: data.lights, disabled: data.disabled, white: data.white });
   }, [data, form]);
 
   const done = (v: HaView) => {
@@ -39,11 +39,11 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
     void qc.invalidateQueries({ queryKey: ['admin', 'lights'] });
   };
   const save = useMutation({
-    mutationFn: (t: string | null | undefined) => api.saveHomeAssistant({ url: form!.url, plugs: form!.plugs, ...(t !== undefined ? { token: t } : {}) }),
+    mutationFn: (t: string | null | undefined) => api.saveHomeAssistant({ url: form!.url, plugs: form!.plugs, white: cleanWhite(form!.white), ...(t !== undefined ? { token: t } : {}) }),
     onSuccess: (v, t) => {
       done(v);
       setToken('');
-      setForm({ url: v.url, plugs: v.plugs, lights: v.lights, disabled: v.disabled });
+      setForm({ url: v.url, plugs: v.plugs, lights: v.lights, disabled: v.disabled, white: v.white });
       if (t === null) toast.success('Token removed');
       else if (v.status && !v.status.ok) toast.warning(`Saved, but ${v.status.error.charAt(0).toLowerCase()}${v.status.error.slice(1)}`);
       else toast.success('Home Assistant saved');
@@ -60,7 +60,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
     );
   }
 
-  const changed = token.trim() !== '' || JSON.stringify({ url: form.url, plugs: form.plugs }) !== JSON.stringify({ url: data.url, plugs: data.plugs });
+  const changed = token.trim() !== '' || JSON.stringify({ url: form.url, plugs: form.plugs, white: form.white }) !== JSON.stringify({ url: data.url, plugs: data.plugs, white: data.white });
   const usedAsPlug = new Set(Object.values(form.plugs));
   const byId = new Map(data.entities.map((e) => [e.id, e]));
   const missing = [...Object.values(form.plugs), ...form.lights].filter((id) => data.entities.length && !data.entities.some((e) => e.id === id));
@@ -180,6 +180,44 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
                     })}
                   </tbody>
                 </table>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="flex items-center gap-1.5 text-sm font-medium">
+                <Sun className="size-4 text-stone-400" /> Their own white
+              </h3>
+              <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">
+                How Home Assistant normally has the lights. When the site switches off a light it gave colors, the light goes back to this white first (on in it for a moment), so it comes on in it the next time Home Assistant or its own switch turns it
+                on. A light the schedule leaves on at its off is in it too.
+              </p>
+              <div className="mt-3 grid gap-5 sm:grid-cols-2">
+                <Field label="Color temperature (kelvin)" hint={`${HA_KELVIN.min} (warm) to ${HA_KELVIN.max} (cool). A warm white is about 2700.`}>
+                  {(id) => (
+                    <Input
+                      id={id}
+                      type="number"
+                      min={HA_KELVIN.min}
+                      max={HA_KELVIN.max}
+                      step={100}
+                      value={Number.isFinite(form.white.kelvin) ? form.white.kelvin : ''}
+                      onChange={(e) => setForm({ ...form, white: { ...form.white, kelvin: e.target.value === '' ? NaN : Number(e.target.value) } })}
+                    />
+                  )}
+                </Field>
+                <Field label="Brightness (%)" hint="1 to 100.">
+                  {(id) => (
+                    <Input
+                      id={id}
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={Number.isFinite(form.white.brightness) ? form.white.brightness : ''}
+                      onChange={(e) => setForm({ ...form, white: { ...form.white, brightness: e.target.value === '' ? NaN : Number(e.target.value) } })}
+                    />
+                  )}
+                </Field>
               </div>
             </section>
 

@@ -15,6 +15,7 @@ import { WledPeek } from './wledPeek.ts';
 import { visitorLabel } from './visitor.ts';
 import type { HomeAssistant } from './homeAssistant.ts';
 import { entityOf, haId, isHaId, type HaEntity } from '../../shared/homeAssistant.ts';
+import type { OffAction } from '../../shared/schedule.ts';
 
 /**
  * A change a device reports this soon after this app told it something may be that request
@@ -841,7 +842,7 @@ export class Lights {
    * Switches one device, or every device, on or off. Off holds: scenes, colors, effects and
    * games leave the device dark until an admin switches it on again.
    */
-  async setPower(on: boolean, deviceId: string | readonly string[] | null, actor?: Actor, why?: string): Promise<ApplyResult> {
+  async setPower(on: boolean, deviceId: string | readonly string[] | null, actor?: Actor, why?: string, opts: { haStay?: ReadonlyMap<string, number> } = {}): Promise<ApplyResult> {
     const all = this.db.listDevices();
     const ha = this.haLights();
     const picked = deviceId == null ? null : new Set(typeof deviceId === 'string' ? [deviceId] : deviceId);
@@ -861,7 +862,7 @@ export class Lights {
     // A device that was getting frames is given back on the next frame, switched off (after any
     // frame still on its way: see LightSender.giveBack).
     this.noteMissed(result);
-    merge(result, await this.haSwitch(haTarget, on));
+    merge(result, await this.haSwitch(haTarget, on, 'switch', 0, opts.haStay));
     const what = !picked ? 'All lights' : ids.size === 1 ? `"${this.nameOf([...ids][0])}"` : `${ids.size} lights`;
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}${why ? ` ${why}` : ''}${this.failedText(result)}`, result, actor);
     this.bus.emit('devices');
@@ -921,24 +922,34 @@ export class Lights {
    * HomeAssistant.set): an off goes after any effects color still on its way, which would
    * otherwise come on again after it. A command that failed goes again (see haRetryMs), once
    * Home Assistant's late answer, if one comes, says it did fail.
+   *
+   * Off, a light the site gave colors goes back to its own white first (see HaWhite); one in
+   * `stay` (entity id -> brightness %, from the schedule's off: see OffAction) stays on in it.
    */
-  private async haSwitch(ids: string[], on: boolean, what: 'switch' | 'brightness' = 'switch', attempt = 0): Promise<ApplyResult> {
+  private async haSwitch(ids: string[], on: boolean, what: 'switch' | 'brightness' = 'switch', attempt = 0, stay?: ReadonlyMap<string, number>): Promise<ApplyResult> {
     const out: ApplyResult = { applied: [], skipped: [], failed: [] };
     const ha = this.ha;
     if (!ha || !ids.length) return out;
-    const results = await Promise.all(ids.map((id) => ha.set(entityOf(id), on, { bri: this.levelOf(id) })));
+    const white = ha.settings().white;
+    const send = (id: string) => {
+      const e = entityOf(id);
+      if (on) return ha.set(e, true, { bri: this.levelOf(id) });
+      const pct = stay?.get(e);
+      return pct != null ? ha.set(e, true, { white: { ...white, brightness: pct } }) : ha.set(e, false, { white });
+    };
+    const results = await Promise.all(ids.map(send));
     const failed: { id: string; answer: Promise<{ ok: boolean }> }[] = [];
     results.forEach((r, i) => {
       if (r.ok) return void out.applied.push(ids[i]);
       out.failed.push({ deviceId: ids[i], error: r.error });
       failed.push({ id: ids[i], answer: r.late ?? Promise.resolve(r) });
     });
-    if (failed.length && this.haRetryMs[attempt] != null) void this.haRetry(failed, on, what, attempt);
+    if (failed.length && this.haRetryMs[attempt] != null) void this.haRetry(failed, on, what, attempt, stay);
     return out;
   }
 
   /** Sends the commands that failed again (see haSwitch), haRetryMs[attempt] after. */
-  private async haRetry(failed: { id: string; answer: Promise<{ ok: boolean }> }[], on: boolean, what: 'switch' | 'brightness', attempt: number) {
+  private async haRetry(failed: { id: string; answer: Promise<{ ok: boolean }> }[], on: boolean, what: 'switch' | 'brightness', attempt: number, stay?: ReadonlyMap<string, number>) {
     const answers = await Promise.all(failed.map((f) => f.answer));
     const still = failed.filter((_, i) => !answers[i].ok).map((f) => f.id);
     if (!still.length || this.stopped) return;
@@ -947,7 +958,7 @@ export class Lights {
     // Only the lights whose switch is still as it was, and that the site still switches.
     const again = still.filter((id) => this.isOff(id) === !on && this.haEnabled(id));
     if (!again.length) return;
-    const r = await this.haSwitch(again, on, what, attempt + 1);
+    const r = await this.haSwitch(again, on, what, attempt + 1, stay);
     const names = again.map((id) => `"${this.nameOf(id)}"`).join(', ');
     this.log(r.failed.length ? 'warn' : 'info', 'power', `${names}${what === 'brightness' ? ': brightness sent again' : ` switched ${on ? 'on' : 'off'} again`}, as it failed before${this.failedText(r)}`, r);
   }
@@ -990,6 +1001,32 @@ export class Lights {
     await this.haShow(colors, new Set(), new Set(on));
     this.bus.emit('devices');
     this.bus.emit('state');
+  }
+
+  /**
+   * The schedule's off: every light off (see setPower; `all` false: they are off already), and
+   * the Home Assistant lights and switches the period names set as it says (see OffAction). One
+   * the site switches that it keeps on stays on, in its own white, instead of going off; any
+   * other is switched on (a light in its own white) or off. A controller's plug is left alone:
+   * it goes with its device.
+   */
+  async scheduleOff(actions: readonly OffAction[], why: string, all: boolean): Promise<void> {
+    const ha = this.ha?.connected() ? this.ha : null;
+    const plugs = new Set(Object.values(ha?.settings().plugs ?? {}));
+    const wanted = ha ? actions.filter((a) => !plugs.has(a.entity)) : [];
+    const site = new Set(this.haLights().map(entityOf));
+    const stay = new Map(wanted.filter((a) => a.on && site.has(a.entity)).map((a) => [a.entity, a.brightness]));
+    if (all) await this.setPower(false, null, undefined, why, { haStay: stay });
+    // Switched off with the rest, the site's own lights are done.
+    const rest = all ? wanted.filter((a) => !site.has(a.entity)) : wanted;
+    if (!ha || !wanted.length) return;
+    const out: ApplyResult = { applied: [], skipped: [], failed: [] };
+    const white = ha.settings().white;
+    const results = await Promise.all(rest.map((a) => ha.set(a.entity, a.on, { white: a.on ? { ...white, brightness: a.brightness } : white })));
+    results.forEach((r, i) => (r.ok ? out.applied.push(haId(rest[i].entity)) : out.failed.push({ deviceId: haId(rest[i].entity), error: r.error })));
+    const said = wanted.map((a) => `"${this.nameOf(haId(a.entity))}" ${a.on ? (a.entity.startsWith('light.') ? `on in its own white at ${a.brightness} %` : 'on') : 'off'}`);
+    this.log(out.failed.length ? 'warn' : 'info', 'schedule', `In Home Assistant ${why}: ${said.join(', ')}${this.failedText(out)}`, out);
+    this.bus.emit('devices');
   }
 
   /** A device that booted (its plug came on) shows what plays now: the color, or its preset. */

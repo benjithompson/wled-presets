@@ -11,6 +11,8 @@ export interface HaEntity {
   color: boolean;
   /** It takes a brightness. */
   dimmable: boolean;
+  /** It takes a white by its color temperature (color_temp, or a color, which Home Assistant turns one into). */
+  temp: boolean;
   /** A switch that says it is a plug (device class outlet). */
   outlet: boolean;
   /** A ZHA light: a color can go straight to it as a Zigbee command (see HomeAssistant.set). */
@@ -25,7 +27,8 @@ export interface HaEntity {
  * What the site does with Home Assistant. `plugs`: WLED device id -> the plug (a switch or a
  * light) that powers it, controller and all: switched on before the device, off after it.
  * `lights`: other lights, switched with the lights' power (all and each), the schedule, and
- * scenes and colors, unless they are in `disabled`.
+ * scenes and colors, unless they are in `disabled`. `white`: what those lights go back to when
+ * the site lets them go (see HaWhite).
  */
 export interface HaSettings {
   /** Its address, such as http://192.168.29.29:8123. Empty: not connected. */
@@ -34,7 +37,34 @@ export interface HaSettings {
   lights: string[];
   /** Lights added but disabled: kept, with their place in the layout, but the site leaves them alone. */
   disabled: string[];
+  white: HaWhite;
 }
+
+/**
+ * A Home Assistant light's own white, as Home Assistant normally has it (a warm white): when the
+ * site switches off a light it gave colors or a brightness of its own, the light goes back to it
+ * first, so the next time Home Assistant (or the light's own switch) turns it on, it is in it,
+ * not in the site's last color. Also what a light the schedule leaves on is in (see OffAction).
+ */
+export interface HaWhite {
+  /** Color temperature, kelvin. */
+  kelvin: number;
+  /** Brightness, 1 to 100 %. */
+  brightness: number;
+}
+
+export const HA_KELVIN = { min: 2000, max: 6500 };
+export const DEFAULT_WHITE: HaWhite = { kelvin: 2700, brightness: 100 };
+
+/** A white as kept: anything missing or out of range back to the default. */
+export function cleanWhite(v: unknown): HaWhite {
+  const o = v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+  const int = (x: unknown, min: number, max: number, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(max, Math.max(min, Math.round(x))) : fallback);
+  return { kelvin: int(o.kelvin, HA_KELVIN.min, HA_KELVIN.max, DEFAULT_WHITE.kelvin), brightness: int(o.brightness, 1, 100, DEFAULT_WHITE.brightness) };
+}
+
+/** A brightness in % (1 to 100) as Home Assistant takes it (1 to 255). */
+export const pctToBri = (pct: number) => Math.max(1, Math.min(255, Math.round((pct / 100) * 255)));
 
 /** For the console: the settings, whether a token is kept (never the token), and what HA has. */
 export interface HaView extends HaSettings {

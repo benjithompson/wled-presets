@@ -1,4 +1,4 @@
-import { describePeriod, nextEvent, scheduleEvents, scheduleRuns, type LightSchedule, type ScheduleEvent } from '../../shared/schedule.ts';
+import { describePeriod, nextEvent, scheduleEvents, scheduleRuns, type LightSchedule, type OffAction, type ScheduleEvent } from '../../shared/schedule.ts';
 import type { Bus } from './events.ts';
 import type { Db } from './db.ts';
 import type { ApplyResult } from '../../shared/types.ts';
@@ -29,7 +29,8 @@ export interface SchedulerOptions {
  * on again if they are off for its night and it is no longer the night.
  *
  * Off switches every light off, and remembers the lights that were off already; on switches
- * the rest on again, so a light an admin switched off on its own stays off.
+ * the rest on again, so a light an admin switched off on its own stays off. Its period's Home
+ * Assistant lights and switches are set as it says, too (see OffAction).
  *
  * In between (the night), a visitor's scene, color or game wakes the lights (`wake`): the ones
  * the schedule switched off come on again, and go off again after the schedule's idle minutes
@@ -175,7 +176,11 @@ export class LightScheduler {
     this.sawOff = false;
     if (now - this.lastUsed < s.idleMinutes * 60_000) return;
     this.db.setSetting(KEY.scheduleHeld, JSON.stringify(this.lights.controls().off));
-    await this.lights.setPower(false, null, undefined, `after ${s.idleMinutes} minute${s.idleMinutes === 1 ? '' : 's'} with nobody using them, in the schedule's night (${this.untilText()})`);
+    // As the night's off left them: its Home Assistant lights and switches too.
+    const last = scheduleEvents(s, now - LOOK_BACK_MS, now)
+      .filter((e) => e.kind === 'off')
+      .at(-1);
+    await this.lights.scheduleOff(this.actionsAt(last?.period), `after ${s.idleMinutes} minute${s.idleMinutes === 1 ? '' : 's'} with nobody using them, in the schedule's night (${this.untilText()})`, true);
     this.sawOff = true;
     this.opts.afterOff?.();
   }
@@ -190,6 +195,11 @@ export class LightScheduler {
   private untilText(): string {
     const next = nextEvent(this.get(), this.now(), 'on');
     return next ? `off until ${next.label}` : 'off';
+  }
+
+  /** A period's Home Assistant lights and switches at its off (see OffAction). */
+  private actionsAt(period: string | undefined): OffAction[] {
+    return this.get().periods.find((p) => p.id === period)?.atOff ?? [];
   }
 
   private setNight(on: boolean) {
@@ -242,16 +252,18 @@ export class LightScheduler {
     const why = fresh ? `by the schedule (${e.kind} since ${e.label})` : `by the schedule (${e.label})`;
     const off = this.lights.controls().off;
     if (e.kind === 'off') {
-      // Already off (an admin's switch): nothing to do, and on switches every light on.
+      const actions = this.actionsAt(e.period);
+      // Already off (an admin's switch): only Home Assistant's lights and switches to set, and on switches every light on.
       if (this.lights.allOff()) {
         this.setNight(false);
-        return void this.db.setSetting(KEY.scheduleHeld, '[]');
+        this.db.setSetting(KEY.scheduleHeld, '[]');
+        return this.lights.scheduleOff(actions, why, false);
       }
       this.db.setSetting(KEY.scheduleHeld, JSON.stringify(off));
       this.setNight(true);
       this.sawOff = true;
       this.armIdle();
-      await this.lights.setPower(false, null, undefined, why);
+      await this.lights.scheduleOff(actions, why, true);
       this.opts.afterOff?.();
       return;
     }

@@ -29,8 +29,8 @@ import type { RoofView } from './roofView.ts';
 import type { LightScheduler } from './lightSchedule.ts';
 import { cleanHaUrl, HA_FPS, HA_INFLIGHT_MAX, type HomeAssistant } from './homeAssistant.ts';
 import { haSpeedTest } from './haSpeedTest.ts';
-import { haId, isSwitchable } from '../../shared/homeAssistant.ts';
-import { activePeriods, IDLE_MINUTES, isClockTime, isTimeZone, MAX_PERIODS, OFFSET_MINUTES, PERIOD_NAME_MAX, sameTime, scheduleRuns } from '../../shared/schedule.ts';
+import { HA_KELVIN, haId, isSwitchable } from '../../shared/homeAssistant.ts';
+import { activePeriods, IDLE_MINUTES, isClockTime, isTimeZone, MAX_OFF_ACTIONS, MAX_PERIODS, OFFSET_MINUTES, PERIOD_NAME_MAX, sameTime, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -114,7 +114,19 @@ const schedulePeriod = z.object({
   enabled: z.boolean(),
   days: z.array(z.number().int().min(0).max(6)).max(7),
   on: scheduleTime,
-  off: scheduleTime
+  off: scheduleTime,
+  /** Left out (an older page): none. */
+  atOff: z
+    .array(
+      z.object({
+        entity: z.string().max(255).refine(isSwitchable, 'Pick a light or a switch'),
+        on: z.boolean(),
+        brightness: z.number().int().min(1).max(100)
+      })
+    )
+    .max(MAX_OFF_ACTIONS, `At most ${MAX_OFF_ACTIONS} lights and switches at one off`)
+    .refine((list) => new Set(list.map((a) => a.entity)).size === list.length, 'A light or switch is in the list twice')
+    .default([])
 });
 const scheduleInput = z
   .object({
@@ -620,7 +632,9 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     token: z.string().trim().min(20, 'That is too short for a long-lived access token').max(2000).regex(/^\S+$/, 'A token has no spaces').nullable().optional(),
     plugs: z.record(z.string().max(64), entityId).default({}),
     /** Left out: the lights in use stay (they are added on the Devices page). */
-    lights: z.array(entityId).max(64).optional()
+    lights: z.array(entityId).max(64).optional(),
+    /** The lights' own white (see HaWhite). Left out: kept. */
+    white: z.object({ kelvin: z.number().int().min(HA_KELVIN.min).max(HA_KELVIN.max), brightness: z.number().int().min(1).max(100) }).optional()
   });
   const needHa = () => {
     if (!ha) throw new HttpError(404, 'No Home Assistant here');
@@ -639,7 +653,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     const before = h.settings();
     // A plug is not also a light.
     const plugs = new Set(Object.values(input.plugs));
-    h.save({ url: input.url, plugs: input.plugs, lights: (input.lights ?? before.lights).filter((id) => !plugs.has(id)), disabled: before.disabled }, input.token);
+    h.save({ url: input.url, plugs: input.plugs, lights: (input.lights ?? before.lights).filter((id) => !plugs.has(id)), disabled: before.disabled, white: input.white ?? before.white }, input.token);
     const token = input.token === undefined ? '' : input.token === null ? ', token removed' : ', new token';
     lights.log('info', 'settings', `Home Assistant settings changed${token}`, { before, after: h.settings() }, actor(c));
     if (h.connected()) await h.test();
@@ -736,7 +750,11 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   admin.put('/lights/schedule', async (c) => {
     if (!schedule) throw new HttpError(404, 'No schedule here');
-    await schedule.save({ ...schedule.get(), ...(await body(c, scheduleInput)) }, actor(c));
+    const input = await body(c, scheduleInput);
+    // A controller's plug goes with its device: not set by itself.
+    const plugs = new Set(Object.values(ha?.settings().plugs ?? {}));
+    if (input.periods.some((p) => p.atOff.some((a) => plugs.has(a.entity)))) throw new HttpError(400, 'That one is the power plug of a controller: it goes off with its device');
+    await schedule.save({ ...schedule.get(), ...input }, actor(c));
     return c.json(schedule.get());
   });
 
