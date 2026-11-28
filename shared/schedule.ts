@@ -1,4 +1,4 @@
-import { isSwitchable } from './homeAssistant.ts';
+import { HA_KELVIN, HA_PREFIX, isSwitchable } from './homeAssistant.ts';
 import { sunTimes } from './sun.ts';
 
 /**
@@ -41,26 +41,44 @@ export interface SchedulePeriod {
   days: number[];
   on: ScheduleTime;
   off: ScheduleTime;
-  /** At its off: Home Assistant lights and switches to set as well (see OffAction). */
-  atOff: OffAction[];
+  /** At its off: lights set to something else than off (see ScheduleAction). */
+  atOff: ScheduleAction[];
 }
 
 /**
- * At a period's off, one Home Assistant light or switch: on or off. A light on is in its own
- * white (HaSettings.white), at this brightness. Home Assistant lights the site switches go off
- * with the rest, back in their own white (see HaWhite), unless one here keeps them on; any other
- * light or switch in Home Assistant can be set too, so the night needs no automation of its own.
+ * At a period's off, what one light does instead of going off with the rest: any WLED device,
+ * and any Home Assistant light or switch (the site's own, or any other, so the night needs no
+ * automation in Home Assistant). One the site switches is held in it until the lights come on
+ * again (see Lights.scheduleOff): the site counts it as off, and plays nothing on it.
  */
-export interface OffAction {
-  /** Its entity id: light.driveway, switch.porch. */
-  entity: string;
-  on: boolean;
-  /** A light on: its brightness, 1 to 100 %. */
+export interface ScheduleAction {
+  /** A WLED device's id, or "ha:" and a Home Assistant light's or switch's entity id. */
+  target: string;
+  /**
+   * off: off (a Home Assistant light the site gave colors back in its own white first, see
+   * HaWhite); on: on, at the brightness (a switch, or a light that takes no color); white: a
+   * white of `kelvin`; color: `color`.
+   */
+  mode: ActionMode;
+  /** For color: #rrggbb. */
+  color: string;
+  /** For white: the color temperature, kelvin. */
+  kelvin: number;
+  /** On, white and color: 1 to 100 %. */
   brightness: number;
 }
 
-/** At most this many lights and switches at one period's off. */
-export const MAX_OFF_ACTIONS = 24;
+export type ActionMode = 'off' | 'on' | 'white' | 'color';
+export const ACTION_MODES: readonly ActionMode[] = ['off', 'on', 'white', 'color'];
+export const KELVIN = HA_KELVIN;
+/** What a light added to the list starts as. */
+export const NEW_ACTION: Omit<ScheduleAction, 'target'> = { mode: 'off', color: '#ffb46b', kelvin: 2700, brightness: 100 };
+
+/** At most this many lights at one period's off. */
+export const MAX_ACTIONS = 32;
+
+/** True when an action's target is one the schedule can set: a device id, or "ha:" and a light or switch. */
+export const isActionTarget = (t: string) => (t.startsWith(HA_PREFIX) ? isSwitchable(t.slice(HA_PREFIX.length)) : /^[\w-]{1,64}$/.test(t));
 
 export interface ScheduleTime {
   at: 'sunrise' | 'sunset' | 'time';
@@ -311,20 +329,34 @@ export function cleanSchedule(v: unknown): LightSchedule {
   };
 }
 
-/** A period's lights and switches at its off, as kept: each entity once, in range. */
-function cleanActions(v: unknown): OffAction[] {
+/** A period's lights at its off, as kept: each one once, in range. */
+function cleanActions(v: unknown): ScheduleAction[] {
   if (!Array.isArray(v)) return [];
   const seen = new Set<string>();
-  const out: OffAction[] = [];
+  const out: ScheduleAction[] = [];
+  const int = (x: unknown, min: number, max: number, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(max, Math.max(min, Math.round(x))) : fallback);
   for (const x of v) {
     const a = x && typeof x === 'object' ? (x as Record<string, unknown>) : {};
-    if (typeof a.entity !== 'string' || !isSwitchable(a.entity) || seen.has(a.entity)) continue;
-    seen.add(a.entity);
-    const b = typeof a.brightness === 'number' && Number.isFinite(a.brightness) ? Math.min(100, Math.max(1, Math.round(a.brightness))) : 100;
-    out.push({ entity: a.entity, on: a.on === true, brightness: b });
-    if (out.length >= MAX_OFF_ACTIONS) break;
+    if (typeof a.target !== 'string' || !isActionTarget(a.target) || seen.has(a.target)) continue;
+    seen.add(a.target);
+    out.push({
+      target: a.target,
+      mode: ACTION_MODES.includes(a.mode as ActionMode) ? (a.mode as ActionMode) : 'off',
+      color: typeof a.color === 'string' && /^#[0-9a-f]{6}$/i.test(a.color) ? a.color.toLowerCase() : NEW_ACTION.color,
+      kelvin: int(a.kelvin, KELVIN.min, KELVIN.max, NEW_ACTION.kelvin),
+      brightness: int(a.brightness, 1, 100, NEW_ACTION.brightness)
+    });
+    if (out.length >= MAX_ACTIONS) break;
   }
   return out;
+}
+
+/** An action in words: "off", "on" (a switch), "on at 40 %", "white 2700 K at 40 %", "#ff8800 at 40 %". */
+export function describeAction(a: ScheduleAction): string {
+  if (a.mode === 'off') return 'off';
+  const at = `at ${a.brightness} %`;
+  if (a.mode === 'on') return a.target.startsWith(`${HA_PREFIX}switch.`) ? 'on' : `on ${at}`;
+  return a.mode === 'white' ? `white ${a.kelvin} K ${at}` : `${a.color} ${at}`;
 }
 
 /** A schedule time in words: "sunset", "30 minutes before sunrise", "23:00". */

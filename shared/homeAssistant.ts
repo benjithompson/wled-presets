@@ -28,7 +28,7 @@ export interface HaEntity {
  * light) that powers it, controller and all: switched on before the device, off after it.
  * `lights`: other lights, switched with the lights' power (all and each), the schedule, and
  * scenes and colors, unless they are in `disabled`. `white`: what those lights go back to when
- * the site lets them go (see HaWhite).
+ * the site switches them off (see HaWhite).
  */
 export interface HaSettings {
   /** Its address, such as http://192.168.29.29:8123. Empty: not connected. */
@@ -44,7 +44,7 @@ export interface HaSettings {
  * A Home Assistant light's own white, as Home Assistant normally has it (a warm white): when the
  * site switches off a light it gave colors or a brightness of its own, the light goes back to it
  * first, so the next time Home Assistant (or the light's own switch) turns it on, it is in it,
- * not in the site's last color. Also what a light the schedule leaves on is in (see OffAction).
+ * not in the site's last color.
  */
 export interface HaWhite {
   /** Color temperature, kelvin. */

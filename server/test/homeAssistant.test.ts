@@ -80,6 +80,8 @@ beforeEach(async () => {
   ha.timing.serviceMs = 0;
   roof.behave.quiet = false;
   for (const [id, s] of [['switch.roof_psu', 'on'], ['switch.tree_psu', 'on'], ['light.porch', 'off'], ['light.garage', 'off']]) ha.states.get(id)!.state = s;
+  // Each test starts with the lights at full (a light that is sent no level keeps the last).
+  for (const id of ['light.porch', 'light.garage']) ha.states.get(id)!.attributes.brightness = 255;
   t = await setup();
   expect((await t.call('POST', '/api/auth/login', { username: 'admin', password: 'correct horse battery' })).status).toBe(200);
   ids = [];
@@ -554,32 +556,47 @@ describe('home assistant lights in their own white', () => {
     expect(porchCalls()).toEqual([{ service: 'light.turn_off' }]);
   });
 
-  it('are kept on in it, or set, at the schedule off of the period that names them', async () => {
+  it('take the look their period gives them at the schedule off, held until the lights are switched again', async () => {
     await connect();
     await t.lights.refreshStatus();
     await t.call('PUT', '/api/admin/lights/power', { on: true });
     await t.call('PUT', '/api/admin/lights/brightness', { level: 30 });
     ha.states.get('switch.fan')!.state = 'off';
     ha.calls.length = 0;
+    tree.requests.length = 0;
+    const look = { color: '#ffffff', kelvin: 2700, brightness: 100 };
     await t.lights.scheduleOff(
       [
-        { entity: 'light.porch', on: true, brightness: 40 },
-        { entity: 'switch.fan', on: true, brightness: 100 },
-        { entity: 'switch.roof_psu', on: true, brightness: 100 }
+        { ...look, target: 'ha:light.porch', mode: 'white', kelvin: 3000, brightness: 40 },
+        { ...look, target: 'ha:switch.fan', mode: 'on' },
+        { ...look, target: 'ha:switch.roof_psu', mode: 'on' },
+        { ...look, target: ids[1], mode: 'color', color: '#ff8800', brightness: 50 }
       ],
       'by the schedule (Evening, at 23:00)',
       true
     );
-    // The porch stays on, in its own white at 40 % (102 of 255); the garage goes off as the site's lights do.
-    expect(porchCalls()).toEqual([{ service: 'light.turn_on', brightness: 102, color_temp_kelvin: 2700 }]);
+    // The porch stays on in a white of 3000 K at 40 % (102 of 255); the garage goes off as the site's lights do.
+    expect(porchCalls()).toEqual([{ service: 'light.turn_on', brightness: 102, color_temp_kelvin: 3000 }]);
     expect(ha.states.get('light.porch')!.state).toBe('on');
     expect(ha.states.get('light.garage')!.state).toBe('off');
-    // Any other switch is set too; a controller's plug goes with its device.
+    // A WLED device takes a color the same way; any other switch is set too; a controller's plug goes with its device.
+    expect(tree.state.on).toBe(true);
+    const sent = tree.requests.map((r) => r.body as { on?: boolean; bri?: number; seg?: { col: number[][] }[] }).find((b) => b?.seg);
+    expect(sent).toMatchObject({ on: true, bri: 128 });
+    expect(sent?.seg?.[0].col).toEqual([[255, 136, 0]]);
     expect(ha.states.get('switch.fan')!.state).toBe('on');
     await until(() => ha.states.get('switch.roof_psu')!.state === 'off');
+    // Held: off for the site (the night is the night), showing the look.
     expect(t.lights.allOff()).toBe(true);
-    expect(t.db.listLogs(5, null).map((l) => l.message)).toContain('In Home Assistant by the schedule (Evening, at 23:00): "Porch" on in its own white at 40 %, "Fan" on');
+    expect([t.lights.isHeld('ha:light.porch'), t.lights.isHeld(ids[1]), t.lights.isHeld('ha:light.garage')]).toEqual([true, true, false]);
+    expect(t.db.listLogs(5, null).map((l) => l.message)).toContain('At the off by the schedule (Evening, at 23:00): "Porch" white 3000 K at 40 %, "Fan" on, "Tree" #ff8800 at 50 %');
 
+    // The schedule's on: the porch comes on with the rest, the tree (switched off by an admin before) goes off.
+    await t.lights.endHold(new Set(['ha:light.porch']));
+    expect(tree.state.on).toBe(false);
+    expect(t.lights.isHeld(ids[1])).toBe(false);
+    await t.call('PUT', '/api/admin/lights/power', { on: true, deviceId: 'ha:light.porch' });
+    expect(t.lights.isHeld('ha:light.porch')).toBe(false);
   });
 });
 

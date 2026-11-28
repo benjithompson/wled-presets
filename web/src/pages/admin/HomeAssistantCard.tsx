@@ -189,7 +189,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
               </h3>
               <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">
                 How Home Assistant normally has the lights. When the site switches off a light it gave colors, the light goes back to this white first (on in it for a moment), so it comes on in it the next time Home Assistant or its own switch turns it
-                on. A light the schedule leaves on at its off is in it too.
+                on.
               </p>
               <div className="mt-3 grid gap-5 sm:grid-cols-2">
                 <Field label="Color temperature (kelvin)" hint={`${HA_KELVIN.min} (warm) to ${HA_KELVIN.max} (cool). A warm white is about 2700.`}>

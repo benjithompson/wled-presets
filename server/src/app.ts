@@ -29,8 +29,8 @@ import type { RoofView } from './roofView.ts';
 import type { LightScheduler } from './lightSchedule.ts';
 import { cleanHaUrl, HA_FPS, HA_INFLIGHT_MAX, type HomeAssistant } from './homeAssistant.ts';
 import { haSpeedTest } from './haSpeedTest.ts';
-import { HA_KELVIN, haId, isSwitchable } from '../../shared/homeAssistant.ts';
-import { activePeriods, IDLE_MINUTES, isClockTime, isTimeZone, MAX_OFF_ACTIONS, MAX_PERIODS, OFFSET_MINUTES, PERIOD_NAME_MAX, sameTime, scheduleRuns } from '../../shared/schedule.ts';
+import { HA_KELVIN, haId, isHaId, isSwitchable } from '../../shared/homeAssistant.ts';
+import { activePeriods, IDLE_MINUTES, isClockTime, isTimeZone, ACTION_MODES, isActionTarget, KELVIN, MAX_ACTIONS, MAX_PERIODS, OFFSET_MINUTES, PERIOD_NAME_MAX, sameTime, scheduleRuns } from '../../shared/schedule.ts';
 import type { LayoutPreview, SequencePreviewRequest } from './layoutPreview.ts';
 import { deleteBackground, effectsSchema, layoutSchema, layoutShape, readBackground, readLayout, saveBackground, writeLayout } from './layoutStore.ts';
 import { normalizeHost, wled } from './wled.ts';
@@ -119,13 +119,15 @@ const schedulePeriod = z.object({
   atOff: z
     .array(
       z.object({
-        entity: z.string().max(255).refine(isSwitchable, 'Pick a light or a switch'),
-        on: z.boolean(),
+        target: z.string().max(260).refine(isActionTarget, 'Pick a device, or a light or switch in Home Assistant'),
+        mode: z.enum(ACTION_MODES as [string, ...string[]]).transform((m) => m as (typeof ACTION_MODES)[number]),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a color such as #ff8800').transform((c) => c.toLowerCase()),
+        kelvin: z.number().int().min(KELVIN.min).max(KELVIN.max),
         brightness: z.number().int().min(1).max(100)
       })
     )
-    .max(MAX_OFF_ACTIONS, `At most ${MAX_OFF_ACTIONS} lights and switches at one off`)
-    .refine((list) => new Set(list.map((a) => a.entity)).size === list.length, 'A light or switch is in the list twice')
+    .max(MAX_ACTIONS, `At most ${MAX_ACTIONS} lights at one off`)
+    .refine((list) => new Set(list.map((a) => a.target)).size === list.length, 'A light is in the list twice')
     .default([])
 });
 const scheduleInput = z
@@ -752,8 +754,9 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
     if (!schedule) throw new HttpError(404, 'No schedule here');
     const input = await body(c, scheduleInput);
     // A controller's plug goes with its device: not set by itself.
-    const plugs = new Set(Object.values(ha?.settings().plugs ?? {}));
-    if (input.periods.some((p) => p.atOff.some((a) => plugs.has(a.entity)))) throw new HttpError(400, 'That one is the power plug of a controller: it goes off with its device');
+    const plugs = new Set(Object.values(ha?.settings().plugs ?? {}).map(haId));
+    if (input.periods.some((p) => p.atOff.some((a) => plugs.has(a.target)))) throw new HttpError(400, 'That one is the power plug of a controller: it goes off with its device');
+    if (input.periods.some((p) => p.atOff.some((a) => !isHaId(a.target) && !db.getDevice(a.target)))) throw new HttpError(400, 'Unknown device');
     await schedule.save({ ...schedule.get(), ...input }, actor(c));
     return c.json(schedule.get());
   });

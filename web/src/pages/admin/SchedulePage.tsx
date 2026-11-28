@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, House, LocateFixed, MapPin, Moon, Plus, Sunrise, Sunset, Trash2, X } from 'lucide-react';
+import { CalendarClock, LocateFixed, MapPin, Moon, Plus, Router as RouterIcon, Sunrise, Sunset, Trash2, X } from 'lucide-react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
@@ -9,7 +9,10 @@ import {
   DAY_NAMES,
   dayBounds,
   IDLE_MINUTES,
-  MAX_OFF_ACTIONS,
+  ACTION_MODES,
+  KELVIN,
+  MAX_ACTIONS,
+  NEW_ACTION,
   MAX_PERIODS,
   nextEvent,
   OFFSET_MINUTES,
@@ -20,14 +23,18 @@ import {
   sunToday,
   usesSun,
   type LightSchedule,
-  type OffAction,
+  type ActionMode,
+  type ScheduleAction,
   type SchedulePeriod,
   type ScheduleTime
 } from '../../../../shared/schedule.ts';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { Tabs, TabPanel, tabLink, useTab } from '../../components/tabs.tsx';
 import { api } from '../../lib/api.ts';
-import type { HaView } from '../../../../shared/homeAssistant.ts';
+import { haId, type HaEntity, type HaView } from '../../../../shared/homeAssistant.ts';
+import { kelvinRgb } from '../../../../shared/color.ts';
+import type { DeviceWithStatus } from '../../../../shared/types.ts';
+import { useOverview } from './AdminLayout.tsx';
 import { EntityIcon } from './EntityTable.tsx';
 import { useHomeAssistant } from './HomeAssistantCard.tsx';
 import { cn, errorText, soonTime } from '../../lib/utils.ts';
@@ -68,8 +75,10 @@ export function SchedulePage() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: SCHEDULE, queryFn: api.lightSchedule });
   // Connected to Home Assistant: an on time's off can set its lights and switches too.
+  // The lights an on time's off can set (see ScheduleAction): the devices, and Home Assistant's when connected.
   const { data: haView } = useHomeAssistant();
-  const ha = haView?.url && haView.hasToken ? haView : undefined;
+  const { data: overview } = useOverview();
+  const targets = useMemo(() => actionTargets(overview?.devices ?? [], haView?.url && haView.hasToken ? haView : undefined), [overview?.devices, haView]);
   const [form, setForm] = useState<LightSchedule | null>(null);
   const [locating, setLocating] = useState(false);
   const [tab, setTab] = useTab(TABS);
@@ -205,7 +214,7 @@ export function SchedulePage() {
                         place={live}
                         now={now}
                         zone={zone}
-                        ha={ha}
+                        targets={targets}
                         onChange={(patch) => setPeriod(p.id, patch)}
                         onRemove={() => set({ periods: form.periods.filter((x) => x.id !== p.id) })}
                       />
@@ -314,7 +323,7 @@ function PeriodRow({
   place,
   now,
   zone,
-  ha,
+  targets,
   onChange,
   onRemove
 }: {
@@ -322,8 +331,8 @@ function PeriodRow({
   place: LightSchedule;
   now: number;
   zone: string | undefined;
-  /** Home Assistant, when the site is connected to it. */
-  ha: HaView | undefined;
+  /** The lights its off can set. */
+  targets: Target[];
   onChange: (patch: Partial<SchedulePeriod>) => void;
   onRemove: () => void;
 }) {
@@ -345,7 +354,7 @@ function PeriodRow({
         <TimeField label="Switch on" name={name} value={p.on} onChange={(on) => onChange({ on })} />
         <TimeField label="Switch off" name={name} value={p.off} onChange={(off) => onChange({ off })} />
       </div>
-      {ha ? <OffActions ha={ha} name={name} actions={p.atOff} onChange={(atOff) => onChange({ atOff })} /> : null}
+      {targets.length ? <OffActions targets={targets} name={name} actions={p.atOff} onChange={(atOff) => onChange({ atOff })} /> : null}
       {p.enabled ? (
         <p className="text-xs text-stone-500 dark:text-stone-400">
           {sameTime(p.on, p.off)
@@ -365,44 +374,68 @@ function PeriodRow({
   );
 }
 
+/** A light an action can set (see ScheduleAction): its id, name and group, and what it can do. */
+type Target = { id: string; name: string; group: string; modes: ActionMode[]; dimmable: boolean; entity?: HaEntity; wled?: boolean };
+
+const MODE_NAMES: Record<ActionMode, string> = { off: 'Off', on: 'On', white: 'White', color: 'Color' };
+
 /**
- * At an on time's off, in Home Assistant: the lights the site switches go off with the rest,
- * back in their own white; here, any of them kept on instead (in that white), and other lights
- * and switches set on or off, so the night needs no automation in Home Assistant (see OffAction).
+ * Every light an action can set: the WLED devices, and with Home Assistant connected its lights
+ * the site switches, its other lights and its switches (not a controller's plug: it goes with
+ * its device). What each can do follows what it takes: a WLED device or a color light a white
+ * or a color; a white light a white; a dimmer or a switch on.
  */
-function OffActions({ ha, name, actions, onChange }: { ha: HaView; name: string; actions: OffAction[]; onChange: (a: OffAction[]) => void }) {
+function actionTargets(devices: DeviceWithStatus[], ha: HaView | undefined): Target[] {
+  const out: Target[] = devices.filter((d) => d.enabled).map((d) => ({ id: d.id, name: d.name, group: 'WLED devices', modes: ['off', 'white', 'color'], dimmable: true, wled: true }));
+  if (!ha) return out;
   const plugs = new Set(Object.values(ha.plugs));
   const site = new Set(ha.lights.filter((id) => !ha.disabled.includes(id)));
-  const byId = new Map(ha.entities.map((e) => [e.id, e]));
-  const free = ha.entities.filter((e) => !plugs.has(e.id) && !actions.some((a) => a.entity === e.id));
-  const groups = [
-    { label: 'Lights the site switches', list: free.filter((e) => site.has(e.id)) },
-    { label: 'Other lights', list: free.filter((e) => !site.has(e.id) && e.id.startsWith('light.')) },
-    { label: 'Switches', list: free.filter((e) => !site.has(e.id) && e.id.startsWith('switch.')) }
-  ].filter((g) => g.list.length);
-  const set = (i: number, patch: Partial<OffAction>) => onChange(actions.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  for (const e of ha.entities) {
+    if (plugs.has(e.id)) continue;
+    const light = e.id.startsWith('light.');
+    const modes: ActionMode[] = !light ? ['off', 'on'] : e.color ? ['off', 'white', 'color'] : e.temp ? ['off', 'white'] : ['off', 'on'];
+    const group = site.has(e.id) ? 'Home Assistant lights the site switches' : light ? 'Other Home Assistant lights' : 'Home Assistant switches';
+    out.push({ id: haId(e.id), name: e.name, group, modes, dimmable: light && e.dimmable, entity: e });
+  }
+  return out;
+}
+
+/**
+ * At an on time's off, every light goes off with the rest; here, lights that do something else
+ * instead (see ScheduleAction): a WLED device or a Home Assistant light in a color or a white
+ * at a brightness, a switch on, or any other light or switch in Home Assistant set too, so the
+ * night needs no automation of its own. The same choices for every kind of light.
+ */
+function OffActions({ targets, name, actions, onChange }: { targets: Target[]; name: string; actions: ScheduleAction[]; onChange: (a: ScheduleAction[]) => void }) {
+  const byId = new Map(targets.map((t) => [t.id, t]));
+  const free = targets.filter((t) => !actions.some((a) => a.target === t.id));
+  const groups = [...new Set(free.map((t) => t.group))].map((g) => ({ label: g, list: free.filter((t) => t.group === g) }));
+  const set = (i: number, patch: Partial<ScheduleAction>) => onChange(actions.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  const add = (id: string) => {
+    const t = byId.get(id);
+    if (!t) return;
+    // What it most likely should do instead of going off: a white, or on.
+    const mode = t.modes.includes('white') ? 'white' : 'on';
+    onChange([...actions, { ...NEW_ACTION, target: id, mode }]);
+  };
   return (
     <div className="rounded-xl bg-stone-50 px-3 py-2.5 ring-1 ring-stone-200/70 dark:bg-stone-950/40 dark:ring-stone-800">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <p className="min-w-0 flex-1 basis-60 text-xs text-stone-500 dark:text-stone-400">
-          <House className="mr-1 -mt-0.5 inline size-3.5" />
-          At its off, in Home Assistant: {site.size ? 'the lights the site switches go off, back in their own white' : 'nothing'}
-          {actions.length ? '. And:' : '. Add a light to keep it on in its own white, or another light or switch to set.'}
+          <Moon className="mr-1 -mt-0.5 inline size-3.5" />
+          At its off, every light goes off
+          {targets.some((t) => t.entity) ? ' (Home Assistant lights back in their own white)' : ''}
+          {actions.length ? '. Instead:' : '. Set a light to a color or a white instead, or a switch on.'}
         </p>
-        {groups.length && actions.length < MAX_OFF_ACTIONS ? (
-          <Select
-            aria-label={`${name}: add a Home Assistant light or switch at its off`}
-            className="!h-8 !w-auto max-w-full text-xs"
-            value=""
-            onChange={(e) => e.target.value && onChange([...actions, { entity: e.target.value, on: site.has(e.target.value) && e.target.value.startsWith('light.'), brightness: ha.white.brightness }])}
-          >
-            <option value="">Add a light or switch…</option>
+        {groups.length && actions.length < MAX_ACTIONS ? (
+          <Select aria-label={`${name}: set a light at its off`} className="!h-8 !w-auto max-w-full text-xs" value="" onChange={(e) => add(e.target.value)}>
+            <option value="">Set a light…</option>
             {groups.map((g) => (
               <optgroup key={g.label} label={g.label}>
-                {g.list.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                    {e.area ? ` (${e.area})` : ''}
+                {g.list.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                    {t.entity?.area ? ` (${t.entity.area})` : ''}
                   </option>
                 ))}
               </optgroup>
@@ -413,34 +446,63 @@ function OffActions({ ha, name, actions, onChange }: { ha: HaView; name: string;
       {actions.length ? (
         <ul className="mt-2 space-y-1.5">
           {actions.map((a, i) => {
-            const e = byId.get(a.entity);
-            const light = a.entity.startsWith('light.');
+            const t = byId.get(a.target);
+            const label = t?.name ?? a.target;
+            const modes = t?.modes ?? ACTION_MODES;
             return (
-              <li key={a.entity} className="flex flex-wrap items-center gap-2 text-sm">
-                {e ? <EntityIcon e={e} /> : null}
-                <span className="min-w-0 flex-1 basis-32 truncate" title={a.entity}>
-                  {e?.name ?? a.entity}
-                  {!e ? <span className="text-xs text-amber-700 dark:text-amber-300"> (not in Home Assistant)</span> : null}
+              <li key={a.target} className="flex flex-wrap items-center gap-2 text-sm">
+                {t?.entity ? <EntityIcon e={t.entity} /> : <RouterIcon className="size-4 shrink-0 text-stone-400" />}
+                <span className="min-w-0 flex-1 basis-32 truncate" title={t?.entity ? t.entity.id : undefined}>
+                  {label}
+                  {!t ? <span className="text-xs text-amber-700 dark:text-amber-300"> (gone)</span> : null}
                 </span>
-                <Select aria-label={`${e?.name ?? a.entity} at the off`} className="!h-8 !w-auto text-xs" value={a.on ? 'on' : 'off'} onChange={(ev) => set(i, { on: ev.target.value === 'on' })}>
-                  <option value="off">{site.has(a.entity) && light ? 'Off, in its own white' : 'Off'}</option>
-                  <option value="on">{light ? 'On, in its own white' : 'On'}</option>
+                <Select aria-label={`${label} at the off`} className="!h-8 !w-auto text-xs" value={a.mode} onChange={(ev) => set(i, { mode: ev.target.value as ActionMode })}>
+                  {(modes.includes(a.mode) ? modes : [...modes, a.mode]).map((m) => (
+                    <option key={m} value={m}>
+                      {MODE_NAMES[m]}
+                    </option>
+                  ))}
                 </Select>
-                {light && a.on && e?.dimmable !== false ? (
+                {a.mode === 'white' ? (
+                  <label className="flex items-center gap-1 text-xs text-stone-500">
+                    <span className="size-4 rounded-full ring-1 ring-stone-300 dark:ring-stone-700" style={{ background: `rgb(${kelvinRgb(a.kelvin).join(',')})` }} />
+                    <Input
+                      aria-label={`${label}: color temperature, kelvin`}
+                      type="number"
+                      min={KELVIN.min}
+                      max={KELVIN.max}
+                      step={100}
+                      className="!h-8 !w-20 text-xs text-stone-900 dark:text-stone-100"
+                      value={a.kelvin}
+                      onChange={(ev) => set(i, { kelvin: Math.round(Number(ev.target.value)) || NEW_ACTION.kelvin })}
+                      onBlur={() => set(i, { kelvin: Math.min(KELVIN.max, Math.max(KELVIN.min, a.kelvin)) })}
+                    />
+                    K
+                  </label>
+                ) : a.mode === 'color' ? (
+                  <input
+                    type="color"
+                    aria-label={`${label}: color`}
+                    className="h-8 w-10 cursor-pointer rounded-lg bg-transparent"
+                    value={a.color}
+                    onChange={(ev) => set(i, { color: ev.target.value.toLowerCase() })}
+                  />
+                ) : null}
+                {a.mode !== 'off' && (t?.dimmable ?? true) ? (
                   <label className="flex items-center gap-1 text-xs text-stone-500">
                     <Input
-                      aria-label={`${e?.name ?? a.entity}: brightness at the off`}
+                      aria-label={`${label}: brightness at the off`}
                       type="number"
                       min={1}
                       max={100}
-                      className="!h-8 !w-16 text-xs"
+                      className="!h-8 !w-16 text-xs text-stone-900 dark:text-stone-100"
                       value={a.brightness}
                       onChange={(ev) => set(i, { brightness: Math.min(100, Math.max(1, Math.round(Number(ev.target.value)) || 1)) })}
                     />
                     %
                   </label>
                 ) : null}
-                <Button size="sm" variant="ghost" aria-label={`Leave ${e?.name ?? a.entity} out`} title="Leave out" className="px-2 text-stone-500" onClick={() => onChange(actions.filter((_, j) => j !== i))}>
+                <Button size="sm" variant="ghost" aria-label={`Leave ${label} out`} title="Leave out: off with the rest" className="px-2 text-stone-500" onClick={() => onChange(actions.filter((_, j) => j !== i))}>
                   <X />
                 </Button>
               </li>
