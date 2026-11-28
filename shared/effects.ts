@@ -7,7 +7,7 @@
 // Unlike the effects built into WLED, these run on a full computer: float color, physics,
 // noise fields and hundreds of particles. Keep this file free of Node and DOM APIs.
 
-import { clamp, clamp01, fract, fromHex, mix, seededRandom, smooth, toBytes, WHITE, type Rgb } from './color.ts';
+import { clamp, clamp01, ease, fract, fromHex, mix, seededRandom, smooth, toBytes, WHITE, type Rgb } from './color.ts';
 import { activeLeds, isLine, segmentLeds, type Fixture, type FixtureKind, type Layout, type Stage, type StageFixture } from './layout.ts';
 
 export type Direction = 'right' | 'left' | 'up' | 'down' | 'toward' | 'away' | 'out' | 'in';
@@ -219,6 +219,56 @@ const EFFECT_INFO = {
     energy: 0.6,
     space: '3d',
     view: false
+  },
+  carillon: {
+    name: 'Carillon',
+    description: 'The yard plays carols like a keyboard: every object is a key (the roof is a run of them), low notes on the left and high on the right. Each note strikes its key on the side the last one came from, rings out in its own color and shimmers; on the strong beats, a chord rings with it.',
+    palette: 'rainbow',
+    intensity: 'Chords',
+    size: 'Ring time',
+    energy: 0.5,
+    space: '3d',
+    reverse: 'High notes on the left',
+    view: false
+  },
+  coaster: {
+    name: 'Roller coaster',
+    description: 'One track runs through every object, end to end, and a train rides it with real gravity: it crawls up the chain lift, races down, throws sparks, jumps from object to object and leaves each one lit in its color. Then it brakes into the station and the yard cheers.',
+    palette: 'neon',
+    intensity: 'Cars',
+    size: 'Car size',
+    energy: 0.6,
+    space: '3d',
+    view: false
+  },
+  wheel: {
+    name: 'Prize wheel',
+    description: 'The objects are the slots of a prize wheel round the yard, each in its own color. The light spins from slot to slot and clicks slower and slower to a stop; the winner flashes, its color floods the yard, and confetti falls.',
+    palette: 'party',
+    intensity: 'Spin time',
+    energy: 0.55,
+    space: '3d',
+    reverse: 'Spin the other way',
+    view: false
+  },
+  clockwork: {
+    name: 'Clockwork',
+    description: 'Every object is a gear and every line a chain, meshed into one machine. The drive reaches one object after another with a clunk; meshed gears turn opposite ways, small ones faster, trees on their trunks, with sparks where the teeth meet. It shifts up, stops with a chime and runs back.',
+    palette: 'brass',
+    intensity: 'Sparks',
+    size: 'Tooth size',
+    energy: 0.45,
+    space: '3d',
+    reverse: 'Start the other way',
+    view: false
+  },
+  talent: {
+    name: 'Talent show',
+    description: 'The objects take turns on stage while the rest wait as the audience, and each does an act of its kind: a tree climbs to a star, a bush beats like a heart, a line bounces comets, a sunrise opens like a fan, your own shape is drawn by a pen of light, a bulb plays disco. Applause after each, and a finale all at once.',
+    palette: 'christmas',
+    energy: 0.5,
+    space: '3d',
+    view: false
   }
 } satisfies Record<string, Omit<EffectInfo, 'id'>>;
 
@@ -263,6 +313,7 @@ const PALETTE_INFO = {
   matrix: { name: 'Code green', colors: ['#002a08', '#00a028', '#30ff60', '#c8ffd0'] },
   plasma: { name: 'Plasma', colors: ['#7a2cff', '#ff40ff', '#40b0ff', '#c070ff'], cyclic: true },
   lava: { name: 'Lava', colors: ['#ff1a00', '#ff7a00', '#ff0060', '#ffc400'], cyclic: true },
+  brass: { name: 'Brass and copper', colors: ['#ffa000', '#ff4a10', '#18c8a8', '#c86010'], cyclic: true },
   lamps: { name: 'Red, green, blue', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true },
   custom: { name: 'My colors', colors: ['#ff0000', '#00ff00', '#0000ff'], cyclic: true }
 } satisfies Record<string, Omit<PaletteInfo, 'id'>>;
@@ -3593,6 +3644,947 @@ const paintfight: Factory = (_n, rand) => {
   };
 };
 
+// ---------- Effects that play the yard object by object ----------
+//
+// Carillon, Roller coaster, Prize wheel, Clockwork and Talent show treat each object as a thing
+// with a part to play: a key, a stretch of track, a slot of a wheel, a gear, an act. What one
+// object does sets off the next, so you see the yard run as one program.
+
+const isLineKind = (k: FixtureKind) => k === 'roof' || k === 'line';
+
+/** For each LED of a run (space indexes, in string order): how far along the string it is. */
+function arcOf(sp: Space, leds: ArrayLike<number>): Float32Array {
+  const a = new Float32Array(leds.length);
+  for (let j = 1; j < leds.length; j++) {
+    const i = leds[j];
+    const h = leds[j - 1];
+    a[j] = a[j - 1] + Math.hypot(sp.x[i] - sp.x[h], sp.y[i] - sp.y[h], sp.z[i] - sp.z[h]);
+  }
+  return a;
+}
+
+/** A stretch of the yard that plays as one: an object, or a piece of a roof or other long line. */
+interface Slot {
+  part: number;
+  kind: FixtureKind;
+  /** Space indexes, in string order. */
+  leds: Int32Array;
+  /** The middle of its LEDs. */
+  cx: number;
+  cy: number;
+  cz: number;
+}
+
+const SLOTS = new WeakMap<Space, Map<number, Slot[]>>();
+
+/**
+ * The yard as about `want` things to play: every object on its own, and the roof and the other
+ * lines cut into stretches of equal length (each at least 4 LEDs), shared out by how long they
+ * are. A roof holds a run of keys; a bush is one.
+ */
+function slotsOf(sp: Space, want: number): Slot[] {
+  let known = SLOTS.get(sp);
+  if (!known) SLOTS.set(sp, (known = new Map()));
+  const had = known.get(want);
+  if (had) return had;
+  const { list } = partsOf(sp);
+  const lines = list.filter((p) => p.leds.length && isLineKind(p.kind));
+  const others = list.filter((p) => p.leds.length && !isLineKind(p.kind)).length;
+  const arcs = new Map(lines.map((p) => [p, arcOf(sp, p.leds)]));
+  const total = lines.reduce((s, p) => s + arcs.get(p)![p.leds.length - 1], 0);
+  const spare = Math.max(lines.length, want - others);
+  const out: Slot[] = [];
+  const add = (part: number, kind: FixtureKind, leds: Int32Array) => {
+    if (!leds.length) return;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (const i of leds) {
+      cx += sp.x[i];
+      cy += sp.y[i];
+      cz += sp.z[i];
+    }
+    out.push({ part, kind, leds, cx: cx / leds.length, cy: cy / leds.length, cz: cz / leds.length });
+  };
+  list.forEach((p, pi) => {
+    if (!p.leds.length) return;
+    const arc = arcs.get(p);
+    if (!arc) return add(pi, p.kind, p.leds);
+    const len = arc[arc.length - 1];
+    const m = Math.max(1, Math.min(Math.floor(p.leds.length / 4), Math.round(total > 0 ? (spare * len) / total : 1)));
+    let from = 0;
+    for (let c = 1; c <= m; c++) {
+      let to = from;
+      const end = (len * c) / m;
+      while (to < p.leds.length && (c === m || arc[to] < end)) to++;
+      add(pi, p.kind, p.leds.slice(from, to));
+      from = to;
+    }
+  });
+  known.set(want, out);
+  return out;
+}
+
+/**
+ * A tune, written like ABC: C D E F G A B from middle C, c d e f g a b the octave above; a ','
+ * after a note takes it an octave down and a "'" up; ^ before it is sharp, _ flat. A number after
+ * a note is how many beats it lasts (1 when left out; / is a half, 3/2 one and a half); z is a
+ * rest, and bars (|) are only for reading.
+ */
+interface Tune {
+  bpm: number;
+  meter: number;
+  /** Pitch in semitones from middle C, start and length in beats. */
+  notes: { p: number; at: number; d: number }[];
+  beats: number;
+  /** Its pitches, low to high. */
+  pitches: number[];
+}
+
+function tune(bpm: number, meter: number, src: string): Tune {
+  const notes: Tune['notes'] = [];
+  let at = 0;
+  const steps: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  for (const [, acc, letter, octave, num, slash, den] of src.matchAll(/([_^]?)([A-Ga-gz])([,']*)(\d*)(\/?)(\d*)/g)) {
+    let d = num ? Number(num) : 1;
+    if (slash) d /= den ? Number(den) : 2;
+    if (letter !== 'z') {
+      let p = steps[letter.toUpperCase()] + (letter === letter.toLowerCase() ? 12 : 0) + (acc === '^' ? 1 : acc === '_' ? -1 : 0);
+      for (const o of octave) p += o === ',' ? -12 : 12;
+      notes.push({ p, at, d });
+    }
+    at += d;
+  }
+  return { bpm, meter, notes, beats: at, pitches: [...new Set(notes.map((n) => n.p))].sort((a, b) => a - b) };
+}
+
+/** Carols and songs old enough to be anyone's. */
+const TUNES: Tune[] = [
+  // Joy to the World (Lowell Mason, 1839, after Handel).
+  tune(150, 4, "c2 B3/2 A/ | G3 F | E2 D2 | C3 G | A3 A | B3 B | c3 c | c B A G | G3/2 F/ E c | c B A G | G3/2 F/ E E | E E E E/ F/ | G3 F/ E/ | D D D D/ E/ | F3 E/ D/ | C c2 A | G3/2 F/ E F | E2 D2 | C4"),
+  // Jingle Bells (James Lord Pierpont, 1857).
+  tune(168, 4, 'E E E2 | E E E2 | E G C3/2 D/ | E4 | F F F3/2 F/ | F E E E/ E/ | E D D E | D2 G2 | E E E2 | E E E2 | E G C3/2 D/ | E4 | F F F F | F E E E/ E/ | G G F D | C4'),
+  // Carol of the Bells (Mykola Leontovych, Shchedryk, 1916).
+  tune(150, 3, '_B A/ _B/ G | _B A/ _B/ G | _B A/ _B/ G | _B A/ _B/ G | d c/ d/ _B | d c/ d/ _B | d c/ d/ _B | d c/ d/ _B | g f/ _e/ d | c/ _B/ c/ d/ _B | A/ _B/ c/ A/ G | D/ E/ ^F/ G/ A/ _B/ | c _B A | G3'),
+  // Ode to Joy (Beethoven, 1824).
+  tune(144, 4, 'E E F G | G F E D | C C D E | E3/2 D/ D2 | E E F G | G F E D | C C D E | D3/2 C/ C2 | D D E C | D E/ F/ E C | D E/ F/ E D | C D G,2 | E E F G | G F E D | C C D E | D3/2 C/ C2'),
+  // Deck the Halls (Welsh, 18th century).
+  tune(150, 4, 'c3/2 _B/ A G | F G A F | G/ A/ _B/ G/ A3/2 G/ | F E F2 | c3/2 _B/ A G | F G A F | G/ A/ _B/ G/ A3/2 G/ | F E F2 | G3/2 A/ _B G | A3/2 _B/ c G | A/ B/ c d/ e/ f/ e/ | d2 c2 | c3/2 _B/ A G | F G A F | _B/ _B/ _B/ _B/ A3/2 G/ | F E F2'),
+  // We Wish You a Merry Christmas (English, 16th century).
+  tune(160, 3, 'z2 D | G G/ A/ G/ ^F/ | E C E | A A/ B/ A/ G/ | ^F D D | B B/ c/ B/ A/ | G E D/ D/ | E A ^F | G2 D | G G G | ^F2 ^F | G ^F E | D2 A | B A G | d D D/ D/ | E A ^F | G3')
+];
+
+/**
+ * Carillon: the yard is a keyboard, low notes on the left and high on the right; every object is
+ * a key, and the roof and long lines are runs of keys. It plays carols: each note strikes its
+ * key on the side the last note came from, a white flash rolls through it, and it rings in the
+ * note's own color (the same note, the same color), shimmering faster the higher it is. On the
+ * strong beats, notes a third and a fifth below ring with it.
+ */
+const carillon: Factory = (_n, rand) => {
+  let sp: Space | null = null;
+  let slots: Slot[] = [];
+  /** Slot indexes from left to right: the keys. */
+  let keys: number[] = [];
+  let slotOf = new Int32Array(0);
+  /** For each LED: how far it is from where its key was last struck. */
+  let dist = new Float32Array(0);
+  let struck = new Float64Array(0);
+  let level = new Float32Array(0);
+  let pitchOf = new Int32Array(0);
+  let height = new Float32Array(0);
+  let song = Math.floor(rand() * TUNES.length);
+  let note = 0;
+  let songAt = 0;
+  let last = -1;
+  const colors: Rgb[] = [];
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    slots = slotsOf(space, 12);
+    const n = space.x.length;
+    slotOf = new Int32Array(n);
+    slots.forEach((s, k) => s.leds.forEach((i) => (slotOf[i] = k)));
+    keys = slots.map((_, k) => k).sort((a, b) => slots[a].cx - slots[b].cx || slots[a].cy - slots[b].cy);
+    dist = new Float32Array(n);
+    struck = new Float64Array(slots.length).fill(-1e9);
+    level = new Float32Array(slots.length);
+    pitchOf = new Int32Array(slots.length);
+    height = new Float32Array(slots.length);
+    // Before its first note, each key glows in the color of where it is on the keyboard.
+    keys.forEach((s, k) => {
+      pitchOf[s] = Math.round((k * 12) / Math.max(1, keys.length));
+      height[s] = k / Math.max(1, keys.length - 1);
+    });
+    note = 0;
+    songAt = t;
+    last = -1;
+  };
+
+  /** The key (an index into `keys`) for the pitch of rank r in a tune of P pitches. */
+  const keyFor = (r: number, P: number, flip: boolean) => {
+    const K = keys.length;
+    const k = P <= 1 ? Math.floor((K - 1) / 2) : K >= P ? Math.round((r * (K - 1)) / (P - 1)) : Math.min(K - 1, Math.floor((r * K) / P));
+    return flip ? K - 1 - k : k;
+  };
+
+  const strike = (s: number, p: number, h: number, amp: number, at: number) => {
+    const space = sp!;
+    const slot = slots[s];
+    // Struck on the side the last note came from: the tune moves from key to key.
+    const from = last >= 0 && last !== s ? slots[last] : slot;
+    let o = slot.leds[0];
+    let best = Infinity;
+    for (const i of slot.leds) {
+      const d = (space.x[i] - from.cx) ** 2 + (space.y[i] - from.cy) ** 2 + (space.z[i] - from.cz) ** 2;
+      if (d < best) [best, o] = [d, i];
+    }
+    for (const i of slot.leds) dist[i] = Math.hypot(space.x[i] - space.x[o], space.y[i] - space.y[o], space.z[i] - space.z[o]);
+    struck[s] = at;
+    level[s] = amp;
+    pitchOf[s] = p;
+    height[s] = h;
+  };
+
+  return (out, { t, intensity, size, pal, space, reverse }) => {
+    if (space !== sp) setup(space, t);
+    if (!keys.length) return;
+    let tn = TUNES[song];
+    let beat = 60 / tn.bpm;
+    // A pause of two beats between songs, then the next.
+    if (note >= tn.notes.length && t >= songAt + (tn.beats + 2) * beat) {
+      song = (song + 1) % TUNES.length;
+      tn = TUNES[song];
+      beat = 60 / tn.bpm;
+      songAt = t;
+      note = 0;
+    }
+    const P = tn.pitches.length;
+    while (note < tn.notes.length && songAt + tn.notes[note].at * beat <= t) {
+      const { p, at } = tn.notes[note++];
+      const when = songAt + at * beat;
+      const r = tn.pitches.indexOf(p);
+      const s = keys[keyFor(r, P, reverse)];
+      // The chord: a third and a fifth below (or above, at the bottom), on the strong beats.
+      if (Math.abs(at / tn.meter - Math.round(at / tn.meter)) < 1e-6)
+        for (const [step, from] of [
+          [2, 0.3],
+          [4, 0.7]
+        ])
+          if (intensity > from) {
+            const rh = r - step >= 0 ? r - step : r + step;
+            if (rh >= P) continue;
+            const sh = keys[keyFor(rh, P, reverse)];
+            if (sh !== s) strike(sh, tn.pitches[rh], rh / Math.max(1, P - 1), 0.6, when);
+          }
+      strike(s, p, r / Math.max(1, P - 1), 1, when);
+      last = s;
+    }
+    for (let c = 0; c < 12; c++) colors[c] = pal.at(c / 12);
+    const ring = 0.4 * size + 0.15;
+    const n = space.x.length;
+    for (let i = 0; i < n; i++) {
+      const s = slotOf[i];
+      const j = i * 3;
+      // The keyboard is always faintly lit.
+      let k = 0.035;
+      const b = t - struck[s] - dist[i] / 1.4;
+      if (b >= 0 && b < 12) {
+        const shimmer = 2.5 + 6 * height[s];
+        k += level[s] * Math.exp(-b / ring) * (0.82 + 0.18 * Math.sin(6.283 * shimmer * b - dist[i] * 60));
+        const w = level[s] * 1.3 * Math.exp(-b / 0.05);
+        if (w > 0.003) addRgb(out, j, WHITE, w);
+      }
+      addRgb(out, j, colors[((pitchOf[s] % 12) + 12) % 12], k);
+    }
+  };
+};
+
+/**
+ * Roller coaster: one track runs through every object, end to end along its string, from the
+ * nearest end of one object to the next (the train jumps the gaps). A train of cars rides it with
+ * real gravity: it crawls up on the chain lift (the chain clicks ahead of it), races down and
+ * slows on the climbs, throws sparks when it is fast, and leaves the objects it passed lit in its
+ * color. At the end it brakes into the station, the yard cheers, and it rides back (or round
+ * again, when the track ends near where it starts) in the next color.
+ */
+const coaster: Factory = (_n, rand) => {
+  const G = 3;
+  const LIFT = 0.36;
+  const LAUNCH = 1.1;
+  const DRAG = 0.35;
+  const BRAKE = 2.5;
+  let sp: Space | null = null;
+  /** The track: LEDs in the order the train rides them, and how far along it each one is. */
+  let pt = new Int32Array(0);
+  let ps = new Float64Array(0);
+  /** 1: from this point to the next the train flies, over a gap between objects. */
+  let jump = new Uint8Array(0);
+  let end = 0;
+  let loop = false;
+  let passed = new Float64Array(0);
+  let passedLap = new Int32Array(0);
+  let passedFast = new Float32Array(0);
+  let s = 0;
+  let k = 0;
+  let v = 0;
+  let dir = 1;
+  let lap = 0;
+  let stoppedAt = 0;
+  let leaveAt = 0;
+  let lifting = false;
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    const runs = partsOf(space)
+      .list.map((p) => p.leds)
+      .filter((l) => l.length);
+    const X = (i: number) => space.x[i];
+    const Y = (i: number) => space.y[i];
+    const d = (a: number, b: number) => Math.hypot(space.x[a] - space.x[b], space.y[a] - space.y[b], space.z[a] - space.z[b]);
+    // The station: the lowest end of a string, toward the left.
+    let first = 0;
+    let firstFlip = false;
+    let best = Infinity;
+    runs.forEach((r, ri) => {
+      for (const flip of [false, true]) {
+        const i = flip ? r[r.length - 1] : r[0];
+        const score = X(i) + 0.6 * Y(i);
+        if (score < best) [best, first, firstFlip] = [score, ri, flip];
+      }
+    });
+    const order: number[] = [];
+    /** Where each object's string starts in `order` (after the first). */
+    const joins = new Set<number>();
+    const used = new Uint8Array(runs.length);
+    let at = -1;
+    const take = (ri: number, flip: boolean) => {
+      used[ri] = 1;
+      if (order.length) joins.add(order.length);
+      const r = runs[ri];
+      for (let j = 0; j < r.length; j++) order.push(r[flip ? r.length - 1 - j : j]);
+      at = order[order.length - 1];
+    };
+    if (runs.length) take(first, firstFlip);
+    for (let left = runs.length - 1; left > 0; left--) {
+      // On to the nearest end of an object it has not been through.
+      let bd = Infinity;
+      let bi = -1;
+      let bf = false;
+      runs.forEach((r, ri) => {
+        if (used[ri]) return;
+        for (const flip of [false, true]) {
+          const dd = d(at, flip ? r[r.length - 1] : r[0]);
+          if (dd < bd) [bd, bi, bf] = [dd, ri, flip];
+        }
+      });
+      take(bi, bf);
+    }
+    const m = order.length;
+    // Back round to the station when the track ends near it.
+    loop = m > 2 && d(order[m - 1], order[0]) < 0.3 && runs.length > 1;
+    const count = loop ? m + 1 : m;
+    if (loop) joins.add(m);
+    pt = new Int32Array(count);
+    ps = new Float64Array(count);
+    jump = new Uint8Array(count);
+    // Along a string, a step counts as at most a few LEDs apart: a bush whose string zigzags
+    // through it, or a shape whose wire jumps, rides as long as its LEDs, not its wire.
+    const most = 3 * space.pitch;
+    for (let j = 0; j < count; j++) {
+      pt[j] = order[j % m];
+      if (!j) continue;
+      const gap = d(pt[j - 1], pt[j]);
+      // From one object to the next, the train flies over the gap.
+      jump[j - 1] = joins.has(j) && gap > 2 * space.pitch ? 1 : 0;
+      ps[j] = ps[j - 1] + (joins.has(j) ? gap : Math.min(gap, most));
+    }
+    end = count ? ps[count - 1] : 0;
+    passed = new Float64Array(space.x.length).fill(-1e9);
+    passedLap = new Int32Array(space.x.length).fill(-1);
+    passedFast = new Float32Array(space.x.length);
+    s = 0;
+    k = 0;
+    v = 0;
+    dir = 1;
+    lap = 0;
+    stoppedAt = t - 10;
+    leaveAt = t + 0.6;
+  };
+
+  /** The point the track is at, at distance x (from a hint, searching both ways). */
+  const seek = (x: number, from: number) => {
+    let j = Math.max(0, Math.min(ps.length - 2, from));
+    while (j > 0 && ps[j] > x) j--;
+    while (j < ps.length - 2 && ps[j + 1] <= x) j++;
+    return j;
+  };
+
+  return (out, { t, dt, intensity, size, pal, space }) => {
+    if (space !== sp) setup(space, t);
+    const n = space.x.length;
+    if (!n) return;
+    const color = stopAt(pal, lap);
+    const cars = 2 + Math.round(intensity * 5);
+    const carLen = 0.014 + 0.01 * size;
+    // The ride.
+    if (end > 1e-6 && t >= leaveAt) {
+      if (v === 0) v = LAUNCH;
+      const steps = Math.max(1, Math.ceil(dt / (1 / 240)));
+      const h = dt / steps;
+      for (let q = 0; q < steps && t >= leaveAt; q++) {
+        k = seek(s, k);
+        const len = ps[k + 1] - ps[k];
+        const slope = jump[k] || len < 1e-6 ? 0 : clamp((space.y[pt[k + 1]] - space.y[pt[k]]) / len, -1.5, 1.5);
+        const up = dir * slope;
+        v += (-G * up - DRAG * v * v - 0.02) * h;
+        lifting = v < LIFT && up > 0.05;
+        if (v < LIFT) v = LIFT;
+        // The brakes before the station.
+        const left = dir > 0 ? end - s : s;
+        v = Math.min(v, Math.sqrt(2 * BRAKE * Math.max(0, left)) + 0.04);
+        const before = s;
+        s = Math.max(0, Math.min(end, s + dir * v * h));
+        // Mark the LEDs the front car went past.
+        const a = seek(Math.min(before, s), k);
+        const b = seek(Math.max(before, s), k) + 1;
+        for (let j = a; j <= b && j < pt.length; j++) {
+          if (ps[j] < Math.min(before, s) - 1e-9 || ps[j] > Math.max(before, s) + 1e-9) continue;
+          const i = pt[j];
+          passed[i] = t;
+          passedLap[i] = lap;
+          passedFast[i] = clamp01((v - LIFT) / 1.2);
+        }
+        if ((dir > 0 && s >= end) || (dir < 0 && s <= 0)) {
+          // Into the station: the yard cheers, and the next train leaves in a new color.
+          stoppedAt = t;
+          leaveAt = t + 1.6;
+          lap++;
+          v = 0;
+          lifting = false;
+          if (loop) s = 0;
+          else dir = -dir;
+          break;
+        }
+      }
+    }
+    const cheer = Math.exp(-(t - stoppedAt) / 0.35);
+    for (let i = 0; i < n; i++) {
+      const j = i * 3;
+      const a = t - passed[i];
+      const fast = passedFast[i];
+      // The track glows faintly; what this train passed stays lit in its color.
+      let kk = 0.03;
+      if (passedLap[i] === lap) kk += 0.1;
+      else if (passedLap[i] === lap - 1) kk += 0.1 * (1 - smooth(1.2, 1.6, t - stoppedAt));
+      kk += (0.25 + 0.75 * fast) * Math.exp(-a / (0.1 + 0.35 * fast));
+      if (passedLap[i] === lap - 1) kk += 0.7 * cheer;
+      addRgb(out, j, color, kk);
+    }
+    if (end <= 1e-6) {
+      // All in one place (a bulb): it pulses as if trains go by.
+      for (let i = 0; i < n; i++) addRgb(out, i * 3, color, 0.5 + 0.5 * Math.sin(t * 3));
+      return;
+    }
+    // The chain lift clicks ahead of the train.
+    if (lifting && t >= leaveAt)
+      for (let j = seek(s, k); j >= 0 && j < pt.length && Math.abs(ps[j] - s) < 0.08; j += dir) {
+        const ahead = Math.abs(ps[j] - s);
+        if (fract(ahead / 0.02 - t * 5) < 0.3) addRgb(out, pt[j] * 3, WHITE, 0.3 * (1 - ahead / 0.08));
+      }
+    // The cars: the front one with a white headlight.
+    const w = carLen * 0.45;
+    for (let c = 0; c < cars; c++) {
+      const sc = s - dir * c * carLen * 1.25;
+      if (sc < -1e-9 || sc > end + 1e-9) continue;
+      const kc = seek(sc, k);
+      const cc = c === 0 ? mix(color, WHITE, 0.6) : stopAt(pal, lap + c);
+      for (let j = kc; j >= 0 && sc - ps[j] < 2.5 * w; j--) if (!jump[j] || j === kc) addRgb(out, pt[j] * 3, cc, 1.3 * Math.exp(-(((ps[j] - sc) / w) ** 2)));
+      for (let j = kc + 1; j < pt.length && ps[j] - sc < 2.5 * w; j++) if (!jump[j - 1]) addRgb(out, pt[j] * 3, cc, 1.3 * Math.exp(-(((ps[j] - sc) / w) ** 2)));
+    }
+    // Sparks fly off the wheels when it is fast.
+    if (v > 1.15 && t >= leaveAt)
+      for (let q = 0; q < 3; q++) {
+        const j = Math.max(0, Math.min(pt.length - 1, k + Math.round((rand() - 0.5) * 16)));
+        addRgb(out, pt[j] * 3, WHITE, 0.9 * rand());
+      }
+  };
+};
+
+/**
+ * Prize wheel: the objects (and stretches of the roof) are the slots of a wheel, round the middle
+ * of the yard, each in its own color. The light spins round them from slot to slot, fast at
+ * first with a blur behind it, and clicks to a stop; the winning slot flashes, its color floods
+ * out over the yard, and confetti falls. Then it spins again.
+ */
+const wheel: Factory = (_n, rand) => {
+  const WIN = 3.4;
+  let sp: Space | null = null;
+  let slots: Slot[] = [];
+  let ring: number[] = [];
+  let slotOf = new Int32Array(0);
+  let shade = new Int32Array(0);
+  let leftAt = new Float64Array(0);
+  /** Distance of each slot from the winner, 0..1. */
+  let far = new Float32Array(0);
+  let spinAt = 0;
+  let spinFor = 4;
+  let from = 0;
+  let steps = 0;
+  let at = -1;
+  let tickAt = 0;
+  let winAt = -1;
+  let winner = 0;
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    slots = slotsOf(space, 14);
+    slotOf = new Int32Array(space.x.length);
+    slots.forEach((s, k) => s.leds.forEach((i) => (slotOf[i] = k)));
+    let mx = 0;
+    let my = 0;
+    for (const s of slots) {
+      mx += s.cx / slots.length;
+      my += s.cy / slots.length;
+    }
+    // Clockwise round the middle, as seen from the street, from the top.
+    const angle = (s: Slot) => (Math.atan2(s.cx - mx, s.cy - my) + 2 * Math.PI) % (2 * Math.PI);
+    ring = slots.map((_, k) => k).sort((a, b) => angle(slots[a]) - angle(slots[b]));
+    shade = new Int32Array(slots.length);
+    ring.forEach((s, k) => (shade[s] = k));
+    leftAt = new Float64Array(slots.length).fill(-1e9);
+    far = new Float32Array(slots.length);
+    from = 0;
+    at = -1;
+    winAt = -1;
+    spinAt = t;
+    steps = 0;
+  };
+
+  const spin = (t: number, intensity: number) => {
+    const S = ring.length;
+    spinAt = t;
+    spinFor = 3.5 + 3 * intensity;
+    steps = S * (2 + Math.floor(rand() * 2)) + Math.floor(rand() * S) + 1;
+    winAt = -1;
+  };
+
+  return (out, { t, intensity, pal, space, reverse }) => {
+    if (space !== sp) setup(space, t);
+    const S = ring.length;
+    if (!S) return;
+    if (!steps) spin(t, intensity);
+    const u = clamp01((t - spinAt) / spinFor);
+    // Fast at first, then slower and slower: the last clicks keep you waiting.
+    const pos = from + steps * (1 - (1 - u) ** 3);
+    const idx = ((Math.floor(pos + 1e-9) % S) + S) % S;
+    const cur = ring[reverse ? (S - idx) % S : idx];
+    if (cur !== at) {
+      if (at >= 0) leftAt[at] = t;
+      at = cur;
+      tickAt = t;
+    }
+    if (u >= 1 && winAt < 0) {
+      winAt = t;
+      winner = cur;
+      const w = slots[winner];
+      let most = 1e-6;
+      slots.forEach((s, k) => {
+        far[k] = Math.hypot(s.cx - w.cx, s.cy - w.cy, s.cz - w.cz);
+        most = Math.max(most, far[k]);
+      });
+      for (let k = 0; k < S; k++) far[k] /= most;
+    }
+    if (winAt >= 0 && t - winAt > WIN) {
+      from = Math.round(pos);
+      spin(t, intensity);
+    }
+    const won = winAt >= 0 ? t - winAt : -1;
+    const prize = stopAt(pal, shade[winner]);
+    const n = space.x.length;
+    for (let i = 0; i < n; i++) {
+      const s = slotOf[i];
+      const j = i * 3;
+      const own = stopAt(pal, shade[s]);
+      // The wheel: every slot faintly in its color.
+      let k = 0.05;
+      if (s === at && won < 0) {
+        k = 1;
+        addRgb(out, j, WHITE, 0.9 * Math.exp(-(t - tickAt) / 0.05));
+      } else k += 0.85 * Math.exp(-(t - leftAt[s]) / 0.16);
+      if (won >= 0) {
+        if (s === winner) {
+          // The winner flashes, then holds.
+          k = won < 1.3 ? (fract(won * 5) < 0.55 ? 1.3 : 0.15) : 1;
+          if (won < 0.12) addRgb(out, j, WHITE, 1.2);
+        } else {
+          const arrive = 0.5 + far[s] * 0.9;
+          if (won >= arrive) {
+            const flood = Math.exp(-(won - arrive) / 1.1);
+            addRgb(out, j, prize, 0.8 * flood);
+            k *= 1 - flood;
+          }
+        }
+        // Confetti.
+        if (won > 0.5 && won < WIN - 0.3) {
+          const step = Math.floor(won * 9);
+          if (hash01(i, step) > 0.94) addRgb(out, j, stopAt(pal, Math.floor(hash01(i, step + 99) * 12)), 0.8);
+        }
+      }
+      addRgb(out, j, own, k);
+    }
+  };
+};
+
+/**
+ * Clockwork: every object is a gear, the roof and the other lines are chains, all meshed into
+ * one train by which object is near which. A motor turns the biggest gear; the drive reaches the
+ * next object with a clunk, then the next. Meshed gears turn opposite ways, small ones faster, and
+ * their teeth all move at one speed, as real ones do; trees turn on their trunks, a bulb ticks
+ * like an escapement, sparks flick where the teeth meet. It shifts up a gear, slows, stops with a
+ * chime, and starts again the other way.
+ */
+const clockwork: Factory = () => {
+  const CYCLE = 11;
+  let sp: Space | null = null;
+  let parts: Parts;
+  /** For each object: 0 a gear seen from the street, 1 a gear on its trunk (a tree), 2 a chain (a line), 3 a ticker (a bulb). */
+  let type = new Uint8Array(0);
+  let radius = new Float32Array(0);
+  let sign = new Float32Array(0);
+  let depth = new Int32Array(0);
+  let shade = new Int32Array(0);
+  let turned = new Float64Array(0);
+  let engagedAt = new Float64Array(0);
+  let theta = new Float32Array(0);
+  let rho = new Float32Array(0);
+  let arc = new Float32Array(0);
+  let meshes: { a: number; b: number; pa: number; pb: number }[] = [];
+  let cycleAt = 0;
+  let cycle = 0;
+  let spokes = new Int32Array(0);
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    parts = partsOf(space);
+    const { list } = parts;
+    const P = list.length;
+    const n = space.x.length;
+    type = new Uint8Array(P);
+    radius = new Float32Array(P);
+    theta = new Float32Array(n);
+    rho = new Float32Array(n);
+    arc = new Float32Array(n);
+    spokes = new Int32Array(P);
+    list.forEach((p, pi) => {
+      const ty = isLineKind(p.kind) ? 2 : p.kind === 'bulb' || Math.max(p.rx, p.ry, p.rz) < 2 * space.pitch ? 3 : p.kind === 'tree' ? 1 : 0;
+      type[pi] = ty;
+      // A sunrise turns about the middle of its straight edge.
+      const gy = p.kind === 'semicircle' ? p.cy - p.ry : p.cy;
+      const r = ty === 1 ? Math.max(p.rx, p.rz) : p.kind === 'semicircle' ? Math.max(p.rx, 2 * p.ry) : Math.max(p.rx, p.ry);
+      radius[pi] = Math.max(r, 0.01);
+      spokes[pi] = 3 + (pi % 3);
+      const a = arcOf(space, p.leds);
+      p.leds.forEach((i, j) => {
+        arc[i] = a[j];
+        if (ty === 1) {
+          theta[i] = Math.atan2(space.x[i] - p.cx, space.z[i] - p.cz);
+          rho[i] = 1;
+        } else {
+          theta[i] = Math.atan2(space.y[i] - gy, space.x[i] - p.cx);
+          rho[i] = Math.hypot(space.x[i] - p.cx, space.y[i] - gy) / radius[pi];
+        }
+      });
+    });
+    // The gear train: the objects joined up by their nearest neighbours (a spanning tree).
+    const pairs = nearestPairs(space, parts).sort((a, b) => a.gap - b.gap);
+    const root = Array.from({ length: P }, (_, i) => i);
+    const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])));
+    const next: number[][] = Array.from({ length: P }, () => []);
+    meshes = [];
+    for (const p of pairs) {
+      const [ra, rb] = [find(p.pa), find(p.pb)];
+      if (ra === rb) continue;
+      root[ra] = rb;
+      next[p.pa].push(p.pb);
+      next[p.pb].push(p.pa);
+      meshes.push(p);
+    }
+    // The motor turns the biggest gear; the drive spreads from there.
+    let motor = 0;
+    let most = -1;
+    list.forEach((p, pi) => {
+      const size = p.leds.length * (type[pi] <= 1 ? 4 : 1);
+      if (size > most) [most, motor] = [size, pi];
+    });
+    depth = new Int32Array(P).fill(-1);
+    sign = new Float32Array(P).fill(1);
+    shade = new Int32Array(P);
+    const queue = [motor];
+    depth[motor] = 0;
+    let order = 0;
+    while (queue.length) {
+      const a = queue.shift()!;
+      shade[a] = order++;
+      for (const b of next[a]) {
+        if (depth[b] >= 0) continue;
+        depth[b] = depth[a] + 1;
+        // Meshed gears turn opposite ways; a chain runs the way its gear's rim does.
+        sign[b] = type[a] === 2 || type[b] === 2 ? sign[a] : -sign[a];
+        queue.push(b);
+      }
+    }
+    for (let p = 0; p < P; p++) if (depth[p] < 0) depth[p] = 0;
+    turned = new Float64Array(P);
+    engagedAt = new Float64Array(P).fill(Infinity);
+    cycleAt = t;
+    cycle = 0;
+  };
+
+  const tooth = (f: number) => smooth(0.12, 0.28, f) * (1 - smooth(0.55, 0.71, f));
+
+  return (out, { t, dt, intensity, size, pal, space, reverse }) => {
+    if (space !== sp) setup(space, t);
+    const { list, of } = parts;
+    const P = list.length;
+    if (!P) return;
+    let c = t - cycleAt;
+    if (c >= CYCLE) {
+      cycleAt = t;
+      cycle++;
+      c = 0;
+      engagedAt.fill(Infinity);
+    }
+    const way = (cycle % 2 ? -1 : 1) * (reverse ? -1 : 1);
+    // Wind up, shift up a gear, slow down, stop.
+    const shift = smooth(4.8, 5.4, c) * (1 - smooth(6.4, 7, c));
+    const V = 0.09 * way * smooth(0, 1.2, c) * (1 - smooth(8.4, 9.8, c)) * (1 + 1.2 * shift);
+    for (let p = 0; p < P; p++) {
+      if (engagedAt[p] === Infinity && c >= depth[p] * 0.45 && c < 9) engagedAt[p] = t;
+      if (engagedAt[p] <= t) turned[p] += V * dt;
+    }
+    const pitch = 0.028 * size;
+    const chime = c > 9.9 ? Math.exp(-(c - 9.9) / 0.35) : 0;
+    const n = space.x.length;
+    for (let i = 0; i < n; i++) {
+      const p = of[i];
+      const j = i * 3;
+      const ty = type[p];
+      const r = radius[p];
+      let k: number;
+      if (ty === 2) k = 0.1 + 0.85 * tooth(fract((arc[i] - sign[p] * turned[p]) / pitch));
+      else if (ty === 3) k = 0.15 + 0.85 * tooth(fract(turned[p] / pitch));
+      else {
+        const teeth = Math.max(4, Math.round((2 * Math.PI * r) / pitch));
+        const angle = theta[i] + (sign[p] * turned[p]) / r;
+        const rim = tooth(fract((angle * teeth) / (2 * Math.PI)));
+        if (ty === 1 || rho[i] > 0.62) k = 0.1 + 0.85 * rim;
+        else if (rho[i] < 0.22) k = 0.55;
+        else {
+          // Spokes inside a big gear seen from the street.
+          const f = fract((angle * spokes[p]) / (2 * Math.PI));
+          k = 0.08 + 0.7 * smooth(0.06, 0, Math.min(f, 1 - f));
+        }
+      }
+      const e = t - engagedAt[p];
+      const col = stopAt(pal, shade[p]);
+      addRgb(out, j, col, k * (e >= 0 ? 1 : 0.45) + chime * 0.6);
+      // The clunk as the drive reaches it.
+      if (e >= 0 && e < 1) addRgb(out, j, WHITE, 0.7 * Math.exp(-e / 0.12));
+    }
+    // Sparks where the teeth meet, one per tooth.
+    if (intensity > 0)
+      for (const m of meshes) {
+        if (!(engagedAt[m.pa] <= t && engagedAt[m.pb] <= t) || Math.abs(V) < 0.01) continue;
+        const flick = intensity * 0.9 * Math.exp(-fract(turned[m.pa] / pitch) * 8);
+        for (const led of [m.a, m.b])
+          parts.grid.each(space.x[led], space.y[led], space.z[led], Math.max(2 * parts.near[led], 1.5 * space.pitch), (q) => addRgb(out, q * 3, WHITE, flick));
+      }
+  };
+};
+
+/**
+ * Talent show: the objects take turns on stage, left to right with the roof last, while the rest
+ * wait as a dim audience. Each does an act of its own kind: a tree climbs in a spiral and lights
+ * a star that sheds glitter, a bush beats like a heart that speeds up and bursts, a line runs a
+ * comet that bounces back as three, a sunrise opens like a fan and turns its rays, a shape of your
+ * own is drawn by a pen of light and pulses, and a bulb plays disco. The audience applauds after
+ * each act, and in the finale they all perform at once.
+ */
+const talent: Factory = () => {
+  const ACT = 4.2;
+  const BOW = 1.1;
+  const FINALE = 5;
+  let sp: Space | null = null;
+  let parts: Parts;
+  let acts: number[] = [];
+  let cue = new Int32Array(0);
+  let h = new Float32Array(0);
+  let u = new Float32Array(0);
+  let a = new Float32Array(0);
+  let r = new Float32Array(0);
+  let count = new Int32Array(0);
+  let startAt = 0;
+
+  const setup = (space: Space, t: number) => {
+    sp = space;
+    parts = partsOf(space);
+    const n = space.x.length;
+    h = new Float32Array(n);
+    u = new Float32Array(n);
+    a = new Float32Array(n);
+    r = new Float32Array(n);
+    const { list } = parts;
+    count = new Int32Array(list.length);
+    list.forEach((p, pi) => {
+      count[pi] = p.leds.length;
+      const base = p.cy - p.ry;
+      let far = 1e-6;
+      p.leds.forEach((i, j) => {
+        h[i] = p.ry > 1e-4 ? (space.y[i] - base) / (2 * p.ry) : 0.5;
+        u[i] = p.leds.length > 1 ? j / (p.leds.length - 1) : 0;
+        if (p.kind === 'tree') a[i] = Math.atan2(space.x[i] - p.cx, space.z[i] - p.cz);
+        // A sunrise: from its left end (0) round to its right (1).
+        else if (p.kind === 'semicircle') a[i] = 1 - clamp01(Math.atan2(space.y[i] - base, space.x[i] - p.cx) / Math.PI);
+        const m = 0.2 * Math.max(p.rx, p.ry, p.rz, 1e-4);
+        r[i] = p.kind === 'semicircle' ? Math.hypot(space.x[i] - p.cx, space.y[i] - base) : Math.hypot((space.x[i] - p.cx) / Math.max(p.rx, m), (space.y[i] - p.cy) / Math.max(p.ry, m), (space.z[i] - p.cz) / Math.max(p.rz, m));
+        far = Math.max(far, r[i]);
+      });
+      for (const i of p.leds) r[i] /= far;
+    });
+    // Left to right; the roof tops the bill.
+    acts = list
+      .map((p, pi) => ({ p, pi }))
+      .filter(({ p }) => p.leds.length)
+      .sort((x, y) => Number(x.p.kind === 'roof') - Number(y.p.kind === 'roof') || x.p.cx - y.p.cx)
+      .map(({ pi }) => pi);
+    cue = new Int32Array(list.length);
+    acts.forEach((p, k) => (cue[p] = k));
+    startAt = t;
+  };
+
+  /** One LED of an act, `tau` seconds into it: adds its light. */
+  const perform = (out: Float32Array, i: number, kind: FixtureKind, tau: number, pal: Pal, k0: number, len: number) => {
+    const j = i * 3;
+    const A = stopAt(pal, k0);
+    const B = stopAt(pal, k0 + 1);
+    const C = stopAt(pal, k0 + 2);
+    switch (kind) {
+      case 'tree': {
+        // A ring climbs, turning spiral stripes below it; a star at the top, then glitter falls.
+        const front = 1.15 * smooth(0, 1.8, tau);
+        const ring = Math.exp(-(((h[i] - front) / 0.07) ** 2));
+        const stripes = h[i] < front ? 0.2 + 0.3 * (0.5 + 0.5 * Math.sin(a[i] * 3 + h[i] * 14 - tau * 7)) : 0;
+        addRgb(out, j, A, 1.1 * ring + stripes);
+        if (tau > 1.8) {
+          if (h[i] > 0.82) addRgb(out, j, mix(WHITE, [1, 0.75, 0.2], 0.4), 1.6 * Math.exp(-(tau - 1.8) / 0.35) + 0.3);
+          const fall = 1 - (tau - 1.8) / 1.8;
+          if (h[i] > fall && hash01(i, Math.floor(tau * 14)) > 0.78) addRgb(out, j, mix(B, WHITE, 0.5), 0.9);
+        }
+        return;
+      }
+      case 'bush': {
+        // A heartbeat that speeds up (each beat two pulses out from the middle), then a burst.
+        let k = 0.12;
+        for (const b of [0.15, 1.05, 1.75, 2.3, 2.75, 3.1, 3.4])
+          for (const [d, amp] of [
+            [0, 1],
+            [0.17, 0.7]
+          ]) {
+            const age = tau - b - d;
+            if (age >= 0 && age < 1.2) k += amp * Math.exp(-(((r[i] - age * 2.2) / 0.25) ** 2)) * Math.exp(-age / 0.5);
+          }
+        addRgb(out, j, mix(A, B, smooth(1, 3.4, tau)), k);
+        if (tau > 3.7) {
+          addRgb(out, j, WHITE, 1.3 * Math.exp(-(tau - 3.7) / 0.12));
+          if (hash01(i, Math.floor(tau * 16)) > 0.7) addRgb(out, j, stopAt(pal, k0 + (i % 3)), 0.9);
+        }
+        return;
+      }
+      case 'semicircle': {
+        // A fan opens from left to right, then its rays turn.
+        const open = smooth(0, 1.6, tau);
+        const f = a[i];
+        if (f <= open) {
+          const rays = tau < 1.6 ? 0.55 : 0.25 + 0.75 * (0.5 + 0.5 * Math.cos(f * Math.PI * 9 - (tau - 1.6) * 6)) ** 3;
+          addRgb(out, j, mix(A, B, r[i]), rays);
+        }
+        if (tau < 1.7) addRgb(out, j, WHITE, 1.1 * Math.exp(-(((f - open) / 0.04) ** 2)));
+        return;
+      }
+      case 'custom': {
+        // A pen of light draws the shape, then it pulses.
+        const pen = clamp01(tau / 2.4);
+        if (u[i] <= pen) addRgb(out, j, A, 0.45);
+        addRgb(out, j, WHITE, 1.4 * Math.exp(-((((u[i] - pen) * len) / 2.5) ** 2)) * (tau < 2.5 ? 1 : 0));
+        if (tau > 2.4) {
+          const beat = (tau - 2.4) * 1.6;
+          addRgb(out, j, Math.floor(beat) % 2 ? B : C, 0.7 * (0.5 - 0.5 * Math.cos(beat * 2 * Math.PI)));
+        }
+        return;
+      }
+      case 'bulb': {
+        // Disco: a new color five times a second, and a strobe to finish.
+        const c = stopAt(pal, k0 + Math.floor(tau * 5));
+        addRgb(out, j, c, tau > 3.4 ? (fract(tau * 12) < 0.4 ? 1.4 : 0) : 1);
+        return;
+      }
+      default: {
+        // A comet runs to the end, bounces back as three, and the line becomes a moving rainbow.
+        const x = u[i];
+        const tail = 0.1;
+        if (tau < 1.3) {
+          const head = ease(tau / 1.3);
+          if (x <= head) addRgb(out, j, A, 1.2 * Math.exp(-(head - x) / tail));
+          addRgb(out, j, WHITE, 1.2 * Math.exp(-((((x - head) * len) / 2) ** 2)));
+        } else if (tau < 2.6) {
+          const back = ease((tau - 1.3) / 1.3);
+          [A, B, C].forEach((col, q) => {
+            const head = 1 - back * 1.15 + q * 0.07;
+            if (x >= head) addRgb(out, j, col, 1.1 * Math.exp(-(x - head) / tail));
+          });
+        } else {
+          addRgb(out, j, pal.at(pal.wave(x * 1.5 - tau * 0.8)), 0.6 * smooth(2.6, 3, tau));
+          addRgb(out, j, WHITE, 0.8 * Math.exp(-(((x - (tau - 2.6) / 1.4) / 0.04) ** 2)));
+        }
+      }
+    }
+  };
+
+  return (out, { t, pal, space }) => {
+    if (space !== sp) setup(space, t);
+    const { list, of } = parts;
+    const N = acts.length;
+    if (!N) return;
+    const slot = ACT + BOW;
+    const finale = N >= 3 ? FINALE : 0;
+    const c = (t - startAt) % (N * slot + finale);
+    const inFinale = c >= N * slot;
+    const act = inFinale ? -1 : Math.floor(c / slot);
+    const tau = inFinale ? c - N * slot : c - act * slot;
+    const bowing = !inFinale && tau >= ACT;
+    const n = space.x.length;
+    for (let i = 0; i < n; i++) {
+      const p = of[i];
+      const j = i * 3;
+      const k0 = cue[p];
+      const kind = list[p].kind;
+      const onStage = inFinale || p === acts[act];
+      // The audience, dim in its colors.
+      addRgb(out, j, stopAt(pal, k0), 0.05);
+      if (onStage && !bowing) {
+        if (!inFinale || tau < FINALE - 0.8) perform(out, i, kind, inFinale ? tau * (ACT / (FINALE - 0.8)) : tau, pal, k0, count[p]);
+        else addRgb(out, j, mix(stopAt(pal, k0), WHITE, 0.5), 1.4 * Math.exp(-(tau - (FINALE - 0.8)) / 0.25));
+      } else if (bowing) {
+        const b = tau - ACT;
+        if (p === acts[act]) addRgb(out, j, stopAt(pal, k0), 0.35 * Math.exp(-b / 0.6));
+        // Applause: the audience twinkles.
+        else if (hash01(i, Math.floor(t * 12)) > 0.86) addRgb(out, j, mix(stopAt(pal, k0), WHITE, 0.5), 0.75 * (1 - b / BOW));
+      }
+    }
+  };
+};
+
 const FACTORIES: Record<EffectId, Factory> = {
   solid,
   gradient,
@@ -3641,7 +4633,12 @@ const FACTORIES: Record<EffectId, Factory> = {
   murmuration,
   ripples,
   shadows,
-  paint: paintfight
+  paint: paintfight,
+  carillon,
+  coaster,
+  wheel,
+  clockwork,
+  talent
 };
 
 /** One running effect on `n` LEDs: along a string (1-D), or at the places in `space` (3-D). */
