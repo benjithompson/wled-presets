@@ -12,7 +12,8 @@ import type { Game, GameInput, GameStatusFields } from './types.ts';
 // burst of color: the bush swirls through the rainbow, a firework bursts over it, a shockwave runs
 // through the house and sparks fly along the roof. A mole that gets away flashes red three times
 // and is gone. A round lasts 45 seconds and speeds up as it goes; whacks in a row raise the
-// multiplier, and now and then a golden mole is worth five times as much. A whack at an empty hole
+// multiplier, and now and then a golden mole is worth five times as much. As the round speeds up,
+// moles come up two, three or four at once (more, and sooner, on harder levels). A whack at an empty hole
 // (a slip: mashing, or a finger off target) costs seconds off the clock, and the hole and the
 // roof's clock flash red, so it pays to aim.
 //
@@ -56,12 +57,20 @@ export const SLIP_COST: Record<Level, number> = { easy: 1, normal: 2, hard: 3 };
 const SLIP_TIME = 0.5;
 const SLIP_NEWS = 1.2;
 
-/** How the round goes on each level: from its start to its end (it speeds up). */
-const PACE: Record<Level, { stay: [number, number]; gap: [number, number]; up: [number, number]; gold: number }> = {
-  easy: { stay: [2.4, 1.5], gap: [1.25, 0.75], up: [1, 2], gold: 0.08 },
-  normal: { stay: [1.7, 0.95], gap: [0.95, 0.45], up: [2, 3], gold: 0.08 },
-  hard: { stay: [1.15, 0.62], gap: [0.65, 0.3], up: [2, 4], gold: 0.1 }
+/**
+ * How the round goes on each level, from its start to its end (it speeds up): how long a mole
+ * stays up, the seconds between moles, the most up at once, the most that pop up together, and
+ * the chance of a golden one.
+ */
+const PACE: Record<Level, { stay: [number, number]; gap: [number, number]; up: [number, number]; pack: [number, number]; gold: number }> = {
+  easy: { stay: [2.4, 1.5], gap: [1.25, 0.75], up: [1, 2], pack: [1, 2], gold: 0.08 },
+  normal: { stay: [1.7, 0.95], gap: [0.95, 0.45], up: [2, 3], pack: [1, 3], gold: 0.08 },
+  hard: { stay: [1.15, 0.62], gap: [0.65, 0.3], up: [2, 4], pack: [2, 4], gold: 0.1 }
 };
+/** Each extra mole in a pack stays up this much longer (a share of its time), so there is time to whack them all. */
+const PACK_STAY = 0.35;
+/** Seconds a pack waits, at most, for enough holes to be free (the last whacks still bursting). */
+const PACK_WAIT = 0.7;
 
 const POINTS = 10;
 const GOLD_POINTS = 50;
@@ -193,6 +202,9 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   let bestStreak = 0;
   let newBest = false;
   let nextMole = 0;
+  /** The pack due next (0 until its time comes), and how long it has waited for holes to be free. */
+  let pack = 0;
+  let packWait = 0;
   let lastHole = -1;
   /** Seconds since the last whack of any kind, for the roof's flash. */
   let sinceWhack = 9;
@@ -202,6 +214,8 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
   const timeLeftExact = () => (round.phase === 'running' ? Math.max(0, ROUND - round.time - lost) : round.phase === 'over' ? 0 : ROUND);
   const mult = () => 1 + MULT_AT.filter((m) => streak >= m).length;
   const upCount = () => holes.filter((h) => h.state === 'up').length;
+  const isFree = (h: Hole) => h.state === 'empty' && h.t >= REST;
+  const freeCount = () => holes.filter(isFree).length;
 
   function clearHoles() {
     for (const h of holes) {
@@ -217,26 +231,41 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     sinceSlip = 9;
     newBest = false;
     lastCount = -1;
+    pack = 0;
     clearHoles();
     fx.clear();
     round.to('countdown');
   }
 
-  /** A mole pops up in an empty hole (not the last one, when there is a choice). */
-  function popMole(demo = false) {
-    const free = holes.map((h, i) => ({ h, i })).filter(({ h }) => h.state === 'empty' && h.t >= REST);
-    const choice = free.length > 1 ? free.filter(({ i }) => i !== lastHole) : free;
-    if (!choice.length) return false;
-    const { h, i } = choice[Math.floor(Math.random() * choice.length)];
+  /**
+   * Moles pop up together in `count` empty holes (not the last one, when there is a choice), at
+   * most one of them golden. Returns how many came up.
+   */
+  function popMoles(count: number, demo = false) {
+    const free = holes.map((h, i) => ({ h, i })).filter(({ h }) => isFree(h));
+    const choice = free.length > count ? free.filter(({ i }) => i !== lastHole) : free;
+    const pack = Math.min(count, choice.length);
     const pace = PACE[level];
     const p = elapsed() / ROUND;
-    h.state = 'up';
-    h.t = 0;
-    h.gold = !demo && Math.random() < pace.gold && p > 0.1;
-    h.stay = demo ? 1.6 : lerp(pace.stay[0], pace.stay[1], p) * (h.gold ? 0.75 : 1) * (0.85 + Math.random() * 0.3);
-    h.n++;
-    lastHole = i;
-    return true;
+    let gold = !demo && Math.random() < pace.gold && p > 0.1;
+    for (let j = 0; j < pack; j++) {
+      const { h, i } = choice.splice(Math.floor(Math.random() * choice.length), 1)[0];
+      h.state = 'up';
+      h.t = 0;
+      h.gold = gold;
+      gold = false;
+      h.stay = demo ? 1.6 : lerp(pace.stay[0], pace.stay[1], p) * (h.gold ? 0.75 : 1) * (1 + PACK_STAY * (pack - 1)) * (0.85 + Math.random() * 0.3);
+      h.n++;
+      lastHole = i;
+    }
+    return pack;
+  }
+
+  /** How many moles pop up together now: one at first, packs as the round speeds up, the biggest more often than not. */
+  function packSize() {
+    const pace = PACE[level];
+    const most = Math.max(1, Math.round(lerp(pace.pack[0], pace.pack[1], elapsed() / ROUND)));
+    return Math.min(most, 1 + Math.floor(Math.random() * (most + 1)));
   }
 
   /** The colors of a whack's explosion: the hole's own, its opposite, gold and two more. */
@@ -389,16 +418,33 @@ export function whackGame(stage: Stage): Game & { peek(): WhackPeek } {
     } else if (round.phase === 'running') {
       const pace = PACE[level];
       const p = elapsed() / ROUND;
-      const most = Math.max(1, Math.min(holes.length - 1, Math.round(lerp(pace.up[0], pace.up[1], p))));
+      const most = Math.max(1, Math.min(holes.length - 1, Math.round(Math.max(lerp(pace.up[0], pace.up[1], p), lerp(pace.pack[0], pace.pack[1], p)))));
       nextMole -= dt;
-      // Never a dull moment: with no mole up, the next one comes sooner.
-      if (upCount() === 0) nextMole = Math.min(nextMole, 0.25);
-      if (nextMole <= 0 && upCount() < most && popMole()) nextMole = lerp(pace.gap[0], pace.gap[1], p) * (0.7 + Math.random() * 0.6);
+      // Never a dull moment: with no mole up, the next ones come sooner.
+      const up = upCount();
+      if (up === 0) nextMole = Math.min(nextMole, 0.25);
+      if (nextMole <= 0 && up < most) {
+        if (!pack) {
+          pack = packSize();
+          packWait = 0;
+        }
+        // Holes still bursting from the last whacks: a pack waits a moment for them, then comes as big as it can.
+        const want = Math.min(pack, most - up);
+        packWait += dt;
+        if (freeCount() >= want || packWait >= PACK_WAIT) {
+          const popped = popMoles(want);
+          // A pack takes longer to whack: the next comes a little later.
+          if (popped) {
+            nextMole = lerp(pace.gap[0], pace.gap[1], p) * (1 + 0.25 * (popped - 1)) * (0.7 + Math.random() * 0.6);
+            pack = 0;
+          }
+        }
+      }
       if (timeLeftExact() <= 0) endRound();
     } else if (round.phase === 'ready') {
       // A demo: moles pop up slowly in the yard to draw a crowd.
       nextMole -= dt;
-      if (nextMole <= 0 && upCount() < 1 && popMole(true)) nextMole = 1.2 + Math.random();
+      if (nextMole <= 0 && upCount() < 1 && popMoles(1, true)) nextMole = 1.2 + Math.random();
       if (Math.random() < dt * 0.3) show.rocket([hsv(Math.random()), hsv(Math.random())], { size: 0.8 });
     } else if (round.phase === 'over') {
       if (round.time < 6 && Math.random() < dt * (newBest ? 3 : 1.5)) show.rocket([hsv(Math.random()), hsv(Math.random()), COLORS.gold], { size: 1 });

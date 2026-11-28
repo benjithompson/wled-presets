@@ -218,6 +218,43 @@ describe('Whack-a-Mole', () => {
     expect(game.status().moles!.hits).toBeGreaterThan(50);
   });
 
+  it('pops moles up one at a time at first, then packs of two and three at once as the round speeds up', () => {
+    const { game, run, press, begin } = setup();
+    game.setting!('level', 'hard');
+    begin();
+    let early = 0;
+    let late = 0;
+    let state = new Map(game.peek().holes.map((h) => [h.id, h.state]));
+    run(ROUND - 1, () => {
+      const now = game.peek();
+      // How many came up in this frame.
+      const popped = now.holes.filter((h) => h.state === 'up' && state.get(h.id) !== 'up').length;
+      const t = ROUND - now.timeLeft;
+      if (t < 8) early = Math.max(early, popped);
+      else if (t > ROUND * 0.7) late = Math.max(late, popped);
+      state = new Map(now.holes.map((h) => [h.id, h.state]));
+      // A good player: every mole whacked half a second after it shows.
+      for (const h of now.holes) if (h.state === 'up' && h.t >= 0.5) press(h.id);
+    });
+    expect(early).toBeLessThanOrEqual(2);
+    expect(late).toBeGreaterThanOrEqual(3);
+    // A pack stays up longer than one mole alone: there is time to whack them all.
+    expect(game.status().moles!.missed).toBe(0);
+  });
+
+  it('pops moles up one at a time at the start of a round on Normal', () => {
+    const { game, run, begin } = setup();
+    begin();
+    let most = 0;
+    let state = new Map(game.peek().holes.map((h) => [h.id, h.state]));
+    run(8, () => {
+      const now = game.peek();
+      most = Math.max(most, now.holes.filter((h) => h.state === 'up' && state.get(h.id) !== 'up').length);
+      state = new Map(now.holes.map((h) => [h.id, h.state]));
+    });
+    expect(most).toBe(1);
+  });
+
   it('plays on stretches of the roof when the yard has fewer than three bushes and trees', () => {
     const base = sampleLayout();
     const { game, press, nextMole, begin } = setup({ ...base, fixtures: base.fixtures.filter((f) => f.kind === 'roof') });
