@@ -1,4 +1,4 @@
-import { describeTime, nextEvent, scheduleEvents, scheduleRuns, type LightSchedule, type ScheduleEvent } from '../../shared/schedule.ts';
+import { describePeriod, nextEvent, scheduleEvents, scheduleRuns, type LightSchedule, type ScheduleEvent } from '../../shared/schedule.ts';
 import type { Bus } from './events.ts';
 import type { Db } from './db.ts';
 import type { ApplyResult } from '../../shared/types.ts';
@@ -6,7 +6,7 @@ import type { Actor, Lights } from './lights.ts';
 import { KEY, readSchedule, writeSchedule } from './settings.ts';
 
 const HOUR_MS = 3_600_000;
-/** How far back to look for the schedule's latest time (it has one a day, unless the sun does not rise or set). */
+/** How far back to look for the schedule's latest time (a period runs at least one day a week, unless the sun does not rise or set). */
 const LOOK_BACK_MS = 8 * 24 * HOUR_MS;
 /** How often the lights, woken in the night, are checked for nobody using them. */
 const IDLE_CHECK_MS = 20_000;
@@ -25,8 +25,8 @@ export interface SchedulerOptions {
  * while the server was down happens when it starts (only the latest one): which one acted
  * last is kept (KEY.scheduleApplied), so a restart neither skips one nor does one again.
  *
- * Saving the schedule puts the lights as it says for now: off if it is between its off and its
- * on, and on again if they are off for its night and it is no longer the night.
+ * Saving the schedule puts the lights as it says for now: off if it is between its periods, and
+ * on again if they are off for its night and it is no longer the night.
  *
  * Off switches every light off, and remembers the lights that were off already; on switches
  * the rest on again, so a light an admin switched off on its own stays off.
@@ -73,7 +73,8 @@ export class LightScheduler {
     this.db.setSetting(KEY.scheduleApplied, '');
     const after = this.get();
     if (JSON.stringify(before) !== JSON.stringify(after)) {
-      const what = after.enabled ? `on at ${describeTime(after.on)}, off at ${describeTime(after.off)}${after.wake ? `, visitors wake them for ${after.idleMinutes} min at a time` : ''}` : 'off';
+      const periods = after.periods.filter((p) => p.enabled).map(describePeriod);
+      const what = after.enabled ? `on: ${periods.join('; ') || 'no periods'}${after.wake ? `; visitors wake them for ${after.idleMinutes} min at a time` : ''}` : 'off';
       this.lights.log('info', 'schedule', `Schedule ${what}`, { before, after }, actor);
     }
     // Switched off, it has no night; woken lights get the new idle minutes from now.
@@ -119,7 +120,7 @@ export class LightScheduler {
 
   // ---------- The night ----------
 
-  /** True between the schedule's off and its on, unless an admin switched the lights since. */
+  /** True between the schedule's periods (from an off to the next on), unless an admin switched the lights since. */
   night(): boolean {
     return scheduleRuns(this.get()) && this.db.getSetting(KEY.scheduleNight) === '1';
   }
@@ -144,7 +145,7 @@ export class LightScheduler {
     if (!this.canWake()) return null;
     this.lastUsed = this.now();
     this.sawOff = false;
-    const done = this.lights.setPower(true, this.toWake(), undefined, `for ${what}, in the schedule's night (off until ${describeTime(this.get().on)})`);
+    const done = this.lights.setPower(true, this.toWake(), undefined, `for ${what}, in the schedule's night (${this.untilText()})`);
     this.armIdle();
     return done;
   }
@@ -174,7 +175,7 @@ export class LightScheduler {
     this.sawOff = false;
     if (now - this.lastUsed < s.idleMinutes * 60_000) return;
     this.db.setSetting(KEY.scheduleHeld, JSON.stringify(this.lights.controls().off));
-    await this.lights.setPower(false, null, undefined, `after ${s.idleMinutes} minute${s.idleMinutes === 1 ? '' : 's'} with nobody using them, in the schedule's night (off until ${describeTime(s.on)})`);
+    await this.lights.setPower(false, null, undefined, `after ${s.idleMinutes} minute${s.idleMinutes === 1 ? '' : 's'} with nobody using them, in the schedule's night (${this.untilText()})`);
     this.sawOff = true;
     this.opts.afterOff?.();
   }
@@ -183,6 +184,12 @@ export class LightScheduler {
   private toWake(): string[] {
     const held = new Set(this.held());
     return this.lights.controls().off.filter((id) => !held.has(id));
+  }
+
+  /** "off until Morning, at 06:00": the schedule's next on, in words. */
+  private untilText(): string {
+    const next = nextEvent(this.get(), this.now(), 'on');
+    return next ? `off until ${next.label}` : 'off';
   }
 
   private setNight(on: boolean) {
@@ -214,7 +221,7 @@ export class LightScheduler {
     const mark = Date.parse(this.db.getSetting(KEY.scheduleApplied) ?? '');
     if (last && !(mark >= last.at)) {
       this.db.setSetting(KEY.scheduleApplied, new Date(last.at).toISOString());
-      await this.apply(last, s, !Number.isFinite(mark));
+      await this.apply(last, !Number.isFinite(mark));
     }
     // A timer at most an hour long: the clock may change (summer time, the server's clock set).
     const next = nextEvent(s, now);
@@ -230,9 +237,9 @@ export class LightScheduler {
    * record of what it did): the lights go as it says for now, unless they are already. Off
    * when they are not off for its night, and on when they are.
    */
-  private async apply(e: ScheduleEvent, s: LightSchedule, fresh = false) {
+  private async apply(e: ScheduleEvent, fresh = false) {
     if (fresh && (e.kind === 'off') === this.night()) return;
-    const why = fresh ? `by the schedule (${e.kind} since ${describeTime(s[e.kind])})` : `by the schedule (${describeTime(s[e.kind])})`;
+    const why = fresh ? `by the schedule (${e.kind} since ${e.label})` : `by the schedule (${e.label})`;
     const off = this.lights.controls().off;
     if (e.kind === 'off') {
       // Already off (an admin's switch): nothing to do, and on switches every light on.

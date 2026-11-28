@@ -40,7 +40,7 @@ export interface DeviceRow {
   device?: DeviceWithStatus;
   /**
    * A Home Assistant light: its entity id, what Home Assistant says of it (none: gone from it),
-   * and how it takes the site's commands (only with Settings → Debug on).
+   * and how it takes the site's commands (only with Devices → Sending to devices: Show Home Assistant command times).
    */
   ha?: { id: string; entity: HaEntity | undefined; commands?: HaCommandStats };
 }
@@ -69,7 +69,7 @@ export interface RowSources {
   ha: HaView | undefined;
   off: ReadonlySet<string>;
   fixtures: { name: string; deviceId: string | null }[];
-  /** How each Home Assistant light takes its commands, by entity id (only with Settings → Debug on). */
+  /** How each Home Assistant light takes its commands, by entity id (only with Devices → Sending to devices: Show Home Assistant command times). */
   commands?: Record<string, HaCommandStats>;
 }
 

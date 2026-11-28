@@ -15,6 +15,7 @@ import { scenePath } from '../../../../shared/links.ts';
 import { cleanPlaylist, newPlaylist, PLAYLIST_SECONDS, playlistSteps, playsSomething, type Playlist } from '../../../../shared/playlist.ts';
 import { SCENE_TRANSITION_SECONDS, TRANSITION_CHOICES, transitionInfo } from '../../../../shared/transitions.ts';
 import { OVERVIEW, useOverview } from './AdminLayout.tsx';
+import { ScenePlaybackCard } from './ScenePlaybackCard.tsx';
 import { EFFECT_GROUPS, EffectProps, PaletteSwatch } from './effectProps.tsx';
 
 /**
@@ -337,6 +338,8 @@ export function ScenesPage() {
           </ul>
         )}
       </Card>
+
+      <ScenePlaybackCard />
 
       {data && (editing === 'playlist' || (editing && editing !== 'new' && editing.playlist)) ? (
         <PlaylistEditor key={editing === 'playlist' ? 'playlist' : editing.id} scene={editing === 'playlist' ? null : editing} scenes={data.scenes} onClose={() => setEditing(null)} />

@@ -10,6 +10,7 @@ import { ActivityPage } from './pages/admin/ActivityPage.tsx';
 import { SettingsPage } from './pages/admin/SettingsPage.tsx';
 import { LayoutPage } from './pages/admin/LayoutPage.tsx';
 import { GamesPage } from './pages/admin/GamesPage.tsx';
+import { SchedulePage } from './pages/admin/SchedulePage.tsx';
 import { PlayPage } from './pages/PlayPage.tsx';
 import { YardLivePage } from './pages/YardLivePage.tsx';
 import { SequencePage } from './pages/admin/sequence/SequencePage.tsx';
@@ -29,6 +30,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="scenes" replace /> },
       { path: 'scenes', element: <ScenesPage /> },
+      { path: 'schedule', element: <SchedulePage /> },
       { path: 'devices', element: <DevicesPage /> },
       { path: 'layout', element: <LayoutPage /> },
       { path: 'sequences', element: <SequencePage /> },

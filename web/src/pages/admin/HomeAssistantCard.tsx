@@ -54,7 +54,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
 
   if (!data || !form) {
     return (
-      <Card className="mt-10 grid place-items-center py-10">
+      <Card className="mt-6 grid place-items-center py-10">
         <Spinner />
       </Card>
     );
@@ -72,7 +72,7 @@ export function HomeAssistantCard({ devices }: { devices: DeviceWithStatus[] }) 
   };
 
   return (
-    <Card className="mt-10">
+    <Card className="mt-6">
       <CardHeader
         title="Home Assistant"
         description="Smart plugs that power the WLED controllers, and other lights to switch with them."

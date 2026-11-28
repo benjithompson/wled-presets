@@ -10,10 +10,13 @@ import { Bus } from '../src/events.ts';
 import { Lights } from '../src/lights.ts';
 import { LightScheduler } from '../src/lightSchedule.ts';
 import { sunTimes } from '../../shared/sun.ts';
-import { cleanSchedule, DEFAULT_SCHEDULE, describeTime, nextEvent, scheduleEvents, wallTime, type LightSchedule } from '../../shared/schedule.ts';
+import { cleanSchedule, DEFAULT_PERIOD, DEFAULT_SCHEDULE, describeDays, describeTime, nextEvent, scheduleEvents, scheduledOn, wallTime, type LightSchedule, type SchedulePeriod } from '../../shared/schedule.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
 const NY: LightSchedule = { ...DEFAULT_SCHEDULE, enabled: true, latitude: 40.7128, longitude: -74.006, timeZone: 'America/New_York' };
+/** The schedule with its one period (the evening) changed. */
+const evening = (s: LightSchedule, patch: Partial<SchedulePeriod>): LightSchedule => ({ ...s, periods: [{ ...s.periods[0], ...patch }] });
+const period = (patch: Partial<SchedulePeriod>): SchedulePeriod => ({ ...DEFAULT_PERIOD, ...patch });
 const at = (iso: string) => Date.parse(iso);
 const minutes = (a: number, b: number) => Math.abs(a - b) / 60_000;
 
@@ -57,9 +60,9 @@ describe('schedule times', () => {
 
   it('moves sunrise and sunset by the offset', () => {
     const plain = nextEvent(NY, at('2026-11-25T12:00:00Z'), 'on')!;
-    const early = nextEvent({ ...NY, on: { at: 'sunset', offset: -30, time: '00:00' } }, at('2026-11-25T12:00:00Z'), 'on')!;
+    const early = nextEvent(evening(NY, { on: { at: 'sunset', offset: -30, time: '00:00' } }), at('2026-11-25T12:00:00Z'), 'on')!;
     expect(plain.at - early.at).toBe(30 * 60_000);
-    const morning = nextEvent({ ...NY, off: { at: 'sunrise', offset: 15, time: '00:00' } }, at('2026-11-25T15:00:00Z'), 'off')!;
+    const morning = nextEvent(evening(NY, { off: { at: 'sunrise', offset: 15, time: '00:00' } }), at('2026-11-25T15:00:00Z'), 'off')!;
     expect(new Date(morning.at).toISOString().slice(0, 10)).toBe('2026-11-26');
   });
 
@@ -67,7 +70,7 @@ describe('schedule times', () => {
     expect(scheduleEvents({ ...NY, enabled: false }, 0, at('2030-01-01T00:00:00Z'))).toEqual([]);
     expect(scheduleEvents({ ...NY, latitude: null }, at('2026-11-25T00:00:00Z'), at('2026-11-27T00:00:00Z'))).toEqual([]);
     // Clock times need no place.
-    const clock = { ...NY, latitude: null, longitude: null, on: { at: 'time' as const, offset: 0, time: '17:00' } };
+    const clock = { ...evening(NY, { on: { at: 'time', offset: 0, time: '17:00' } }), latitude: null, longitude: null };
     expect(scheduleEvents(clock, at('2026-11-25T00:00:00Z'), at('2026-11-26T00:00:00Z')).map((e) => e.kind)).toEqual(['off', 'on']);
   });
 
@@ -76,7 +79,60 @@ describe('schedule times', () => {
     expect(describeTime({ at: 'sunset', offset: -30, time: '' })).toBe('30 minutes before sunset');
     expect(describeTime({ at: 'sunrise', offset: 60, time: '' })).toBe('1 hour after sunrise');
     expect(describeTime({ at: 'time', offset: 0, time: '23:00' })).toBe('23:00');
-    expect(cleanSchedule({ enabled: true, latitude: 200, timeZone: 'Mars/Base', on: { at: 'noon', time: '25:00' } })).toEqual({ ...DEFAULT_SCHEDULE, enabled: true });
+    expect(cleanSchedule({ enabled: true, latitude: 200, timeZone: 'Mars/Base', periods: [{ id: 'evening', name: 'Evening', on: { at: 'noon', time: '25:00' } }] })).toEqual({ ...DEFAULT_SCHEDULE, enabled: true });
+    expect(describeDays([1, 2, 3, 4, 5])).toBe('weekdays');
+    expect(describeDays([5, 6])).toBe('Fri, Sat');
+  });
+
+  it('keeps a schedule from before there were periods as its evening', () => {
+    const old = { enabled: true, latitude: 40.7, longitude: -74, timeZone: 'America/New_York', on: { at: 'time', offset: 0, time: '18:00' }, off: { at: 'sunrise', offset: 0, time: '23:00' }, wake: false, idleMinutes: 30 };
+    expect(cleanSchedule(old)).toEqual({ ...old, on: undefined, off: undefined, periods: [{ ...DEFAULT_PERIOD, on: old.on, off: old.off }] });
+  });
+});
+
+describe('schedule periods', () => {
+  // An evening, sunset to 23:00, and a morning, 06:00 to sunrise (7:00 in late November in New York).
+  const MORNING = period({ id: 'morning', name: 'Morning', on: { at: 'time', offset: 0, time: '06:00' }, off: { at: 'sunrise', offset: 0, time: '00:00' } });
+  const TWO = { ...NY, periods: [DEFAULT_PERIOD, MORNING] };
+
+  it('switches on and off for each one, in order', () => {
+    const events = scheduleEvents(TWO, at('2026-11-25T12:00:00Z'), at('2026-11-26T20:00:00Z'));
+    expect(events.map((e) => `${e.kind} ${e.label}`)).toEqual(['on Evening, sunset', 'off Evening, at 23:00', 'on Morning, at 06:00', 'off Morning, sunrise']);
+    expect(new Date(events[2].at).toISOString()).toBe('2026-11-26T11:00:00.000Z');
+    expect(scheduledOn(TWO, at('2026-11-26T11:30:00Z'))).toBe(true);
+    expect(scheduledOn(TWO, at('2026-11-26T09:00:00Z'))).toBe(false);
+  });
+
+  it('leaves out a morning the sun is already up for', () => {
+    // Midsummer: sunrise is 5:25, before 06:00. No morning, not 23 hours on.
+    const events = scheduleEvents({ ...TWO, periods: [MORNING] }, at('2026-06-20T12:00:00Z'), at('2026-06-23T12:00:00Z'));
+    expect(events).toEqual([]);
+  });
+
+  it('runs one past midnight, and makes ones that overlap or touch one stretch', () => {
+    const late = { ...NY, periods: [period({ off: { at: 'time', offset: 0, time: '01:00' } })] };
+    const e = scheduleEvents(late, at('2026-11-25T12:00:00Z'), at('2026-11-26T12:00:00Z'));
+    expect(e.map((x) => x.kind)).toEqual(['on', 'off']);
+    expect(new Date(e[1].at).toISOString()).toBe('2026-11-26T06:00:00.000Z');
+    // 17:00 to 21:00 and 21:00 to 23:30, and 20:00 to 22:00 inside: on at 17:00, off at 23:30, once.
+    const clock = (on: string, off: string) => ({ on: { at: 'time' as const, offset: 0, time: on }, off: { at: 'time' as const, offset: 0, time: off } });
+    const many = { ...NY, periods: [period({ id: 'a', ...clock('17:00', '21:00') }), period({ id: 'b', ...clock('21:00', '23:30') }), period({ id: 'c', name: 'Party', ...clock('20:00', '22:00') })] };
+    const m = scheduleEvents(many, at('2026-11-25T12:00:00Z'), at('2026-11-26T12:00:00Z'));
+    expect(m.map((x) => [x.kind, new Date(x.at).toISOString()])).toEqual([
+      ['on', '2026-11-25T22:00:00.000Z'],
+      ['off', '2026-11-26T04:30:00.000Z']
+    ]);
+  });
+
+  it('runs on its days only, and not at all when switched off', () => {
+    // Fridays and Saturdays: Friday 27 and Saturday 28 November.
+    const weekend = { ...NY, periods: [period({ days: [5, 6] })] };
+    const days = scheduleEvents(weekend, at('2026-11-23T12:00:00Z'), at('2026-11-30T12:00:00Z'))
+      .filter((e) => e.kind === 'on')
+      .map((e) => new Date(e.at).toISOString().slice(0, 10));
+    expect(days).toEqual(['2026-11-27', '2026-11-28']);
+    expect(scheduleEvents({ ...NY, periods: [period({ enabled: false })] }, at('2026-11-23T12:00:00Z'), at('2026-11-30T12:00:00Z'))).toEqual([]);
+    expect(scheduleEvents({ ...NY, periods: [period({ days: [] })] }, at('2026-11-23T12:00:00Z'), at('2026-11-30T12:00:00Z'))).toEqual([]);
   });
 });
 
@@ -141,7 +197,9 @@ describe('scheduler', () => {
     expect((await t.call('GET', '/api/admin/lights/schedule')).json).toEqual(DEFAULT_SCHEDULE);
     expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, latitude: null })).status).toBe(400);
     expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, timeZone: 'Nowhere/Here' })).status).toBe(400);
-    expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, off: NY.on })).status).toBe(400);
+    expect((await t.call('PUT', '/api/admin/lights/schedule', evening(NY, { off: DEFAULT_PERIOD.on }))).status).toBe(400);
+    expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, periods: [] })).status).toBe(400);
+    expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, periods: [DEFAULT_PERIOD, DEFAULT_PERIOD] })).status).toBe(400);
     expect((await t.call('PUT', '/api/admin/lights/schedule', NY)).json).toEqual(NY);
     t.signOut();
     expect((await t.call('PUT', '/api/admin/lights/schedule', DEFAULT_SCHEDULE)).status).toBe(401);
@@ -172,6 +230,24 @@ describe('scheduler', () => {
     expect((await t.call('GET', '/api/state')).json.lightsOnAt).toBeNull();
   });
 
+  it('switches on again for a morning, and off at sunrise', async () => {
+    const morning = period({ id: 'morning', name: 'Morning', on: { at: 'time', offset: 0, time: '06:00' }, off: { at: 'sunrise', offset: 0, time: '00:00' } });
+    await t.call('PUT', '/api/admin/lights/schedule', { ...NY, periods: [DEFAULT_PERIOD, morning] });
+    clock = at('2026-11-26T04:00:30Z'); // 23:00: off for the night
+    await t.schedule.check();
+    expect(t.lights.allOff()).toBe(true);
+    const state = (await t.call('GET', '/api/state')).json;
+    expect(state.lightsOnAt).toBe('2026-11-26T11:00:00.000Z');
+    clock = at('2026-11-26T11:00:30Z'); // 06:00
+    await t.schedule.check();
+    expect(t.lights.allOff()).toBe(false);
+    expect(mocks.every((m) => m.state.on === true)).toBe(true);
+    clock = at('2026-11-26T12:30:00Z'); // after sunrise
+    await t.schedule.check();
+    expect(t.lights.allOff()).toBe(true);
+    expect(minutes(Date.parse((await t.call('GET', '/api/state')).json.lightsOnAt), at('2026-11-26T21:33:00Z'))).toBeLessThan(2);
+  });
+
   it('leaves a light an admin switched off on its own off', async () => {
     await t.call('PUT', '/api/admin/lights/schedule', NY);
     await t.call('PUT', '/api/admin/lights/power', { on: false, deviceId: ids[1] });
@@ -194,12 +270,12 @@ describe('scheduler', () => {
     await t.call('PUT', '/api/admin/lights/schedule', { ...NY, idleMinutes: 20 });
     expect(ended).toBe(1);
     // On from 09:00 now: it is no longer the night, and they come on.
-    await t.call('PUT', '/api/admin/lights/schedule', { ...NY, on: { at: 'time', offset: 0, time: '09:00' } });
+    await t.call('PUT', '/api/admin/lights/schedule', evening(NY, { on: { at: 'time', offset: 0, time: '09:00' } }));
     expect(t.lights.allOff()).toBe(false);
     expect(mocks.every((m) => m.state.on === true)).toBe(true);
     // Switched off by hand in the day, they stay off through a save that keeps it the day.
     await t.call('PUT', '/api/admin/lights/power', { on: false });
-    await t.call('PUT', '/api/admin/lights/schedule', { ...NY, on: { at: 'time', offset: 0, time: '08:00' } });
+    await t.call('PUT', '/api/admin/lights/schedule', evening(NY, { on: { at: 'time', offset: 0, time: '08:00' } }));
     expect(t.lights.allOff()).toBe(true);
   });
 

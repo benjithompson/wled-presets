@@ -9,7 +9,7 @@ import { errorText } from '../../lib/utils.ts';
 
 const KEY = ['admin', 'line'];
 
-// Admin → Games: the line for the lights. People on the public page and the play page take
+// Admin → Settings: the line for the lights. People on the public page and the play page take
 // turns: who waits, how long a turn is, and taking someone out of the line.
 export function LineCard() {
   const qc = useQueryClient();
