@@ -18,7 +18,6 @@ import { gamePath } from '../../../../shared/links.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { YardView } from '../../yard/YardView.tsx';
-import { LineCard } from './LineCard.tsx';
 
 const AREA = ['admin', 'game-area'];
 const HIDDEN = ['admin', 'hidden-games'];
@@ -147,7 +146,7 @@ export function GamesPage() {
     <>
       <PageHeader
         title="Games"
-        description="Choose which games visitors can pick, and the lights that games play on. Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light."
+        description="Choose which games visitors can pick, and the lights that games play on. Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light. How long a game turn lasts is in Settings, under Taking turns."
         more={[
           game
             ? { label: 'Same lights as all games', icon: Undo2, run: () => resetOwn(game), disabled: !ownCount(area, game, fixtures) }
@@ -175,8 +174,6 @@ export function GamesPage() {
           </>
         }
       />
-
-      <LineCard />
 
       <GameList hidden={hidden} onHide={(ids) => setHidden.mutate(ids)} area={area} fixtures={fixtures} game={game} onChoose={chooseFor} />
 

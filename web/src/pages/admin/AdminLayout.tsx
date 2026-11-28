@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
-import { Activity, ChevronDown, Clapperboard, ExternalLink, Gamepad2, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Menu, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
+import { Activity, CalendarClock, ChevronDown, Clapperboard, ExternalLink, Gamepad2, Layers, Lightbulb, Loader2, LogOut, Map as MapIcon, Menu, Router, Settings as SettingsIcon, UserRound } from 'lucide-react';
 import { ThemeSwitcher } from '../../components/ThemeToggle.tsx';
 import { api } from '../../lib/api.ts';
 import { useEvents } from '../../lib/useEvents.ts';
@@ -18,6 +18,7 @@ export function useOverview(refetchInterval?: number) {
 
 const NAV = [
   { to: 'scenes', label: 'Scenes', icon: Layers },
+  { to: 'schedule', label: 'Schedule', icon: CalendarClock },
   { to: 'devices', label: 'Devices', icon: Router },
   { to: 'layout', label: 'Layout', icon: MapIcon },
   { to: 'sequences', label: 'Sequences', icon: Clapperboard },
@@ -70,20 +71,20 @@ export function AdminLayout() {
             <span className="grid size-8 place-items-center rounded-xl bg-stone-900 text-accent-400 dark:bg-accent-400 dark:text-stone-950">
               <Lightbulb className="size-[18px]" />
             </span>
-            <span className="hidden whitespace-nowrap sm:inline">WLED Presets</span>
+            <span className="hidden whitespace-nowrap sm:inline lg:hidden xl:inline">WLED Presets</span>
           </NavLink>
           <NavMenu />
-          <nav className="hidden items-center gap-1 lg:flex">
+          <nav className="hidden items-center gap-0.5 lg:flex xl:gap-1">
             <a
               href="/"
               target="_blank"
               rel="noreferrer"
               title="Public page (opens in a new tab)"
-              className="inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800/70 dark:hover:text-white"
+              className="inline-flex shrink-0 items-center gap-2 rounded-xl px-2.5 py-2 xl:px-3 text-sm font-medium text-stone-500 transition hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800/70 dark:hover:text-white"
             >
               <ExternalLink className="size-4" />
               {/* Only the icon until the bar has room for every page and this. */}
-              <span className="max-xl:sr-only">Public page</span>
+              <span className="max-2xl:sr-only">Public page</span>
             </a>
             <span aria-hidden className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-800" />
             {NAV.map((n) => (
@@ -108,7 +109,7 @@ function NavItem({ to, label, icon: Icon }: (typeof NAV)[number]) {
       to={to}
       className={({ isActive }) =>
         cn(
-          'inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition',
+          'inline-flex shrink-0 items-center gap-2 rounded-xl px-2.5 py-2 text-sm font-medium transition xl:px-3',
           isActive
             ? 'bg-white text-stone-900 shadow-sm ring-1 ring-stone-200 dark:bg-stone-800 dark:text-white dark:ring-stone-700'
             : 'text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800/70 dark:hover:text-white'
