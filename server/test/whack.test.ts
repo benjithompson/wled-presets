@@ -218,28 +218,56 @@ describe('Whack-a-Mole', () => {
     expect(game.status().moles!.hits).toBeGreaterThan(50);
   });
 
-  it('pops moles up one at a time at first, then packs of two and three at once as the round speeds up', () => {
+  it('pops moles up one at a time at first, then packs of two and three as the round speeds up', () => {
     const { game, run, press, begin } = setup();
     game.setting!('level', 'hard');
     begin();
-    let early = 0;
+    // A pack: moles that come up within moments of each other.
     let late = 0;
+    let burst = 0;
+    let since = 9;
     let state = new Map(game.peek().holes.map((h) => [h.id, h.state]));
     run(ROUND - 1, () => {
       const now = game.peek();
-      // How many came up in this frame.
       const popped = now.holes.filter((h) => h.state === 'up' && state.get(h.id) !== 'up').length;
-      const t = ROUND - now.timeLeft;
-      if (t < 8) early = Math.max(early, popped);
-      else if (t > ROUND * 0.7) late = Math.max(late, popped);
+      since += 1 / 60;
+      if (popped) {
+        burst = since < 0.4 ? burst + popped : popped;
+        since = 0;
+        if (ROUND - now.timeLeft > ROUND * 0.7) late = Math.max(late, burst);
+      }
       state = new Map(now.holes.map((h) => [h.id, h.state]));
       // A good player: every mole whacked half a second after it shows.
       for (const h of now.holes) if (h.state === 'up' && h.t >= 0.5) press(h.id);
     });
-    expect(early).toBeLessThanOrEqual(2);
     expect(late).toBeGreaterThanOrEqual(3);
     // A pack stays up longer than one mole alone: there is time to whack them all.
     expect(game.status().moles!.missed).toBe(0);
+  });
+
+  it('never pops moles up to a beat: the waits between them are all over the place', () => {
+    const { game, run, press, begin } = setup();
+    begin();
+    const waits: number[] = [];
+    let since = 0;
+    let state = new Map(game.peek().holes.map((h) => [h.id, h.state]));
+    run(ROUND - 1, () => {
+      const now = game.peek();
+      since += 1 / 60;
+      if (now.holes.some((h) => h.state === 'up' && state.get(h.id) !== 'up')) {
+        waits.push(since);
+        since = 0;
+      }
+      state = new Map(now.holes.map((h) => [h.id, h.state]));
+      // A quick player, the same every time: only the game's timing can vary.
+      for (const h of now.holes) if (h.state === 'up' && h.t >= 0.4) press(h.id);
+    });
+    const mean = waits.reduce((a, b) => a + b, 0) / waits.length;
+    const sd = Math.sqrt(waits.reduce((a, b) => a + (b - mean) ** 2, 0) / waits.length);
+    expect(waits.length).toBeGreaterThan(30);
+    expect(sd / mean).toBeGreaterThan(0.45);
+    expect(Math.min(...waits)).toBeLessThan(0.2);
+    expect(Math.max(...waits)).toBeGreaterThan(1);
   });
 
   it('pops moles up one at a time at the start of a round on Normal', () => {
