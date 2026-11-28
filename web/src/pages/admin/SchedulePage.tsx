@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, LocateFixed, Moon, Plus, Sunrise, Sunset, Trash2 } from 'lucide-react';
+import { CalendarClock, LocateFixed, MapPin, Moon, Plus, Sunrise, Sunset, Trash2 } from 'lucide-react';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 import {
   activePeriods,
@@ -22,10 +23,16 @@ import {
   type ScheduleTime
 } from '../../../../shared/schedule.ts';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
+import { Tabs, TabPanel, tabLink, useTab } from '../../components/tabs.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, errorText, soonTime } from '../../lib/utils.ts';
 
 const SCHEDULE = ['admin', 'lights', 'schedule'];
+const TABS = [
+  { id: 'times', label: 'On times', icon: CalendarClock },
+  { id: 'off', label: 'While off', icon: Moon },
+  { id: 'place', label: 'Location', icon: MapPin }
+] as const;
 const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const zones = (() => {
   try {
@@ -57,6 +64,7 @@ export function SchedulePage() {
   const { data } = useQuery({ queryKey: SCHEDULE, queryFn: api.lightSchedule });
   const [form, setForm] = useState<LightSchedule | null>(null);
   const [locating, setLocating] = useState(false);
+  const [tab, setTab] = useTab(TABS);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60_000);
@@ -101,6 +109,8 @@ export function SchedulePage() {
   const when = (ms: number | null | undefined) => (ms == null ? 'not this week' : soonTime(ms, { timeZone: zone, now }));
   const canLocate = typeof navigator !== 'undefined' && 'geolocation' in navigator && window.isSecureContext;
   const runs = scheduleRuns(live);
+  // The number of on times, and a mark on the place while sunrise and sunset need it.
+  const tabs = TABS.map((t) => ({ ...t, badge: t.id === 'times' ? form.periods.length || undefined : t.id === 'place' && missingPlace ? '!' : undefined }));
   const nextOn = runs ? nextEvent(live, now, 'on') : null;
   const nextOff = runs ? nextEvent(live, now, 'off') : null;
 
@@ -124,7 +134,7 @@ export function SchedulePage() {
     <>
       <PageHeader
         title="Schedule"
-        description="Switch every light on and off by itself each day: an evening, a morning, as many as you like. Saving puts the lights as it says for now; switching all of them by hand in between holds until the next time."
+        description="Switch every light on and off by itself each day: an evening, a morning, as many as you like. Saving puts the lights as it says for now; switching them by hand holds until the next time."
         actions={
           <label className="flex items-center gap-2 text-sm font-medium">
             <span className="max-sm:sr-only">{form.enabled ? 'On' : 'Off'}</span>
@@ -143,14 +153,20 @@ export function SchedulePage() {
           <div className="space-y-3 p-5">
             <div className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-sm text-stone-600 dark:text-stone-300">
               {missingPlace ? (
-                <span>Set where the lights are (below) to work out sunrise and sunset.</span>
+                <span>
+                  Set{' '}
+                  <Link to="?tab=place" className={tabLink}>
+                    where the lights are
+                  </Link>{' '}
+                  to work out sunrise and sunset.
+                </span>
               ) : runs ? (
                 <span className="inline-flex items-center gap-1.5">
                   <Moon className="size-4 text-stone-400" />
                   {`${form.enabled ? 'Next' : 'Off for now. It would be'}: on ${when(nextOn?.at)}${nextOn ? ` (${nextOn.label.split(',')[0]})` : ''}, off ${when(nextOff?.at)}`}
                 </span>
               ) : (
-                <span>Switch on a schedule below.</span>
+                <span>Switch on one of the on times.</span>
               )}
               {zone ? <span className="text-stone-500">Times in {zone.replaceAll('_', ' ')}</span> : null}
             </div>
@@ -158,102 +174,109 @@ export function SchedulePage() {
           </div>
         </Card>
 
-        <Card>
-          <CardHeader
-            title="On times"
-            description="Each one switches the lights on, then off again, on the days you pick. Ones that overlap join up. An off before its on runs past midnight; one the sun gets ahead of (off at sunrise, after the sun is up) skips that day."
-            actions={
-              <Button size="sm" onClick={() => set({ periods: [...form.periods, newPeriod(form.periods)] })} disabled={form.periods.length >= MAX_PERIODS}>
-                <Plus /> Add
-              </Button>
-            }
-          />
-          {form.periods.length ? (
-            <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-              {form.periods.map((p) => (
-                <PeriodRow
-                  key={p.id}
-                  period={p}
-                  place={live}
-                  now={now}
-                  zone={zone}
-                  onChange={(patch) => setPeriod(p.id, patch)}
-                  onRemove={() => set({ periods: form.periods.filter((x) => x.id !== p.id) })}
+        <div>
+          <Tabs tabs={tabs} value={tab} onChange={setTab} label="Schedule" />
+          <TabPanel id={tab}>
+            {tab === 'times' ? (
+              <Card>
+                <CardHeader
+                  title="On times"
+                  description="Each one switches the lights on, then off again, on the days you pick. Ones that overlap join up. An off before its on runs past midnight; one the sun gets ahead of (off at sunrise, after the sun is up) skips that day."
+                  actions={
+                    <Button size="sm" onClick={() => set({ periods: [...form.periods, newPeriod(form.periods)] })} disabled={form.periods.length >= MAX_PERIODS}>
+                      <Plus /> Add
+                    </Button>
+                  }
                 />
-              ))}
-            </ul>
-          ) : (
-            <div className="flex flex-col items-center gap-3 px-5 py-10 text-center text-sm text-stone-500">
-              <CalendarClock className="size-6 text-stone-400" />
-              No on times yet: the lights stay as they are.
-              <Button size="sm" variant="primary" onClick={() => set({ periods: [{ ...newPeriod([]), name: 'Evening', on: { at: 'sunset', offset: 0, time: '17:00' }, off: { at: 'time', offset: 0, time: '23:00' } }] })}>
-                <Plus /> Add an evening
-              </Button>
-            </div>
-          )}
-        </Card>
-
-        <Card>
-          <CardHeader title="While they're off" description="Between the on times, visitors see when the lights come back on." />
-          <div className="flex flex-wrap items-start gap-x-6 gap-y-3 p-5">
-            <div className="flex min-w-0 flex-1 basis-64 items-start gap-3">
-              <Switch label="Visitors can switch them on while they're off" checked={form.wake} onChange={(wake) => set({ wake })} />
-              <div className="min-w-0 text-sm">
-                <p className="font-medium text-stone-700 dark:text-stone-300">Visitors can switch them on</p>
-                <p className="text-xs text-stone-500 dark:text-stone-400">Picking a scene, a color or a game switches the lights back on. They go off again once nobody has used them for a while.</p>
-              </div>
-            </div>
-            {form.wake ? (
-              <label className="flex items-center gap-2 text-sm text-stone-600 dark:text-stone-300">
-                Off again after
-                <Input
-                  type="number"
-                  className="!w-20"
-                  min={IDLE_MINUTES.min}
-                  max={IDLE_MINUTES.max}
-                  value={form.idleMinutes}
-                  onChange={(e) => set({ idleMinutes: Math.min(IDLE_MINUTES.max, Math.max(IDLE_MINUTES.min, Math.round(Number(e.target.value) || IDLE_MINUTES.min))) })}
-                />
-                min unused
-              </label>
-            ) : null}
-          </div>
-        </Card>
-
-        <Card>
-          <CardHeader title="Where the lights are" description="For sunrise and sunset, and the time zone the clock times are in." />
-          <div className="space-y-4 p-5">
-            <div className="grid gap-5 sm:grid-cols-[1fr_1fr_1.4fr]">
-              <Field label="Latitude" hint={sun ? 'North is positive.' : 'Only sunrise and sunset need it.'}>
-                {(id) => <CoordInput id={id} value={form.latitude} limit={90} placeholder="40.71" onChange={(latitude) => set({ latitude })} />}
-              </Field>
-              <Field label="Longitude" hint="East is positive, west negative.">
-                {(id) => <CoordInput id={id} value={form.longitude} limit={180} placeholder="-74.01" onChange={(longitude) => set({ longitude })} />}
-              </Field>
-              <Field label="Time zone" hint="The clock times are in it.">
-                {(id) => (
-                  <Select id={id} value={form.timeZone} onChange={(e) => set({ timeZone: e.target.value })}>
-                    {(zones.includes(form.timeZone) ? zones : [form.timeZone, ...zones]).map((z) => (
-                      <option key={z} value={z}>
-                        {z.replaceAll('_', ' ')}
-                      </option>
+                {form.periods.length ? (
+                  <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+                    {form.periods.map((p) => (
+                      <PeriodRow
+                        key={p.id}
+                        period={p}
+                        place={live}
+                        now={now}
+                        zone={zone}
+                        onChange={(patch) => setPeriod(p.id, patch)}
+                        onRemove={() => set({ periods: form.periods.filter((x) => x.id !== p.id) })}
+                      />
                     ))}
-                  </Select>
+                  </ul>
+                ) : (
+                  <div className="flex flex-col items-center gap-3 px-5 py-10 text-center text-sm text-stone-500">
+                    <CalendarClock className="size-6 text-stone-400" />
+                    No on times yet: the lights stay as they are.
+                    <Button size="sm" variant="primary" onClick={() => set({ periods: [{ ...newPeriod([]), name: 'Evening', on: { at: 'sunset', offset: 0, time: '17:00' }, off: { at: 'time', offset: 0, time: '23:00' } }] })}>
+                      <Plus /> Add an evening
+                    </Button>
+                  </div>
                 )}
-              </Field>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-stone-600 dark:text-stone-300">
-              {canLocate ? (
-                <Button size="sm" onClick={locate} loading={locating}>
-                  <LocateFixed /> Use this device's location
-                </Button>
-              ) : (
-                <span className="text-xs text-stone-500 dark:text-stone-400">Finding the location needs the site's HTTPS address; type it in here instead.</span>
-              )}
-              <SunToday schedule={live} now={now} zone={zone} />
-            </div>
-          </div>
-        </Card>
+              </Card>
+            ) : tab === 'off' ? (
+              <Card>
+                <CardHeader title="While they're off" description="Between the on times, visitors see when the lights come back on." />
+                <div className="flex flex-wrap items-start gap-x-6 gap-y-3 p-5">
+                  <div className="flex min-w-0 flex-1 basis-64 items-start gap-3">
+                    <Switch label="Visitors can switch them on while they're off" checked={form.wake} onChange={(wake) => set({ wake })} />
+                    <div className="min-w-0 text-sm">
+                      <p className="font-medium text-stone-700 dark:text-stone-300">Visitors can switch them on</p>
+                      <p className="text-xs text-stone-500 dark:text-stone-400">Picking a scene, a color or a game switches the lights back on. They go off again once nobody has used them for a while.</p>
+                    </div>
+                  </div>
+                  {form.wake ? (
+                    <label className="flex items-center gap-2 text-sm text-stone-600 dark:text-stone-300">
+                      Off again after
+                      <Input
+                        type="number"
+                        className="!w-20"
+                        min={IDLE_MINUTES.min}
+                        max={IDLE_MINUTES.max}
+                        value={form.idleMinutes}
+                        onChange={(e) => set({ idleMinutes: Math.min(IDLE_MINUTES.max, Math.max(IDLE_MINUTES.min, Math.round(Number(e.target.value) || IDLE_MINUTES.min))) })}
+                      />
+                      min unused
+                    </label>
+                  ) : null}
+                </div>
+              </Card>
+            ) : (
+              <Card>
+                <CardHeader title="Where the lights are" description="For sunrise and sunset, and the time zone the clock times are in." />
+                <div className="space-y-4 p-5">
+                  <div className="grid gap-5 sm:grid-cols-[1fr_1fr_1.4fr]">
+                    <Field label="Latitude" hint={sun ? 'North is positive.' : 'Only sunrise and sunset need it.'}>
+                      {(id) => <CoordInput id={id} value={form.latitude} limit={90} placeholder="40.71" onChange={(latitude) => set({ latitude })} />}
+                    </Field>
+                    <Field label="Longitude" hint="East is positive, west negative.">
+                      {(id) => <CoordInput id={id} value={form.longitude} limit={180} placeholder="-74.01" onChange={(longitude) => set({ longitude })} />}
+                    </Field>
+                    <Field label="Time zone" hint="The clock times are in it.">
+                      {(id) => (
+                        <Select id={id} value={form.timeZone} onChange={(e) => set({ timeZone: e.target.value })}>
+                          {(zones.includes(form.timeZone) ? zones : [form.timeZone, ...zones]).map((z) => (
+                            <option key={z} value={z}>
+                              {z.replaceAll('_', ' ')}
+                            </option>
+                          ))}
+                        </Select>
+                      )}
+                    </Field>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-stone-600 dark:text-stone-300">
+                    {canLocate ? (
+                      <Button size="sm" onClick={locate} loading={locating}>
+                        <LocateFixed /> Use this device's location
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-stone-500 dark:text-stone-400">Finding the location needs the site's HTTPS address; type it in here instead.</span>
+                    )}
+                    <SunToday schedule={live} now={now} zone={zone} />
+                  </div>
+                </div>
+              </Card>
+            )}
+          </TabPanel>
+        </div>
 
         {/* On a phone the button stays at the bottom of the screen. */}
         <div className="flex flex-wrap items-center justify-end gap-2 max-md:sticky max-md:bottom-0 max-md:z-20 max-md:-mx-4 max-md:border-t max-md:border-stone-200 max-md:bg-stone-50/90 max-md:px-4 max-md:pt-3 max-md:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] max-md:backdrop-blur-lg dark:max-md:border-stone-800 dark:max-md:bg-stone-950/90">
@@ -322,7 +345,7 @@ function PeriodRow({
                   : `Next: on ${when(span.start)}, off ${when(span.end)}.`
                 : scheduleRuns(alone)
                   ? 'Not this week: the sun gets there first.'
-                  : 'Set where the lights are, below.'}
+                  : 'Set where the lights are first.'}
         </p>
       ) : null}
     </li>

@@ -26,7 +26,7 @@ export function ScenePlaybackCard() {
   const revertAt = s.data.state.revertAt;
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader
         title="Playing scenes"
         description="Where the lights go back to after a visitor's pick, and how one scene gives way to the next."

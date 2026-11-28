@@ -15,6 +15,7 @@ import { GameScreen, GameWindow } from './GameWindow.tsx';
 import { PaintStudio } from './PaintStudio.tsx';
 import { MoleBoard, WhackWindow } from './WhackArcade.tsx';
 import { cn } from '../lib/utils.ts';
+import { AdminHeader } from './admin/AdminHeader.tsx';
 import { gamePath } from '../../../shared/links.ts';
 
 /** Kid-friendly game screen: the yard as it looks right now, and one huge button (or a row of them). */
@@ -172,206 +173,210 @@ export function PlayPage() {
   const teamButton = you && tone === 'go';
 
   return (
-    <div
-      className="dark min-h-dvh bg-[radial-gradient(ellipse_at_top,var(--play-glow)_0%,#0c0a09_60%)] text-white transition-[background] duration-700"
-      style={{ '--play-glow': you ? `color-mix(in srgb, ${you.color} 35%, #0c0a09)` : '#1e1b4b' } as React.CSSProperties}
-    >
-      {/* Playing, the game fits on one screen: the game window takes all the room the controls leave. The high scores are below it. */}
+    <>
+      {/* Signed in: the admin pages' header, except while a game plays (it fits on one screen). */}
+      {isAdmin && !playing ? <AdminHeader /> : null}
       <div
-        className={cn(
-          'mx-auto flex flex-col',
-          playing
-            ? 'min-h-dvh max-w-6xl px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6'
-            : 'min-h-dvh max-w-4xl px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6'
-        )}
+        className="dark min-h-dvh bg-[radial-gradient(ellipse_at_top,var(--play-glow)_0%,#0c0a09_60%)] text-white transition-[background] duration-700"
+        style={{ '--play-glow': you ? `color-mix(in srgb, ${you.color} 35%, #0c0a09)` : '#1e1b4b' } as React.CSSProperties}
       >
-        <header className={cn('flex shrink-0 items-center justify-between', playing ? 'py-0.5' : 'py-2')}>
-          <a href="/" className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white">
-            <ArrowLeft className="size-4" /> Lights
-          </a>
-          <div className="flex items-center gap-1">
-          {realLights.length ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300" title={`Also on the real lights: ${realLights.join(', ')}`}>
-              <Radio className="size-3.5" /> Real lights
-            </span>
-          ) : null}
-          {isAdmin ? (
-            <button
-              type="button"
-              onClick={() => setDebugOpen((o) => !o)}
-              aria-expanded={debugOpen}
-              className={cn('inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm hover:bg-white/10 hover:text-white', debugOpen ? 'bg-white/10 text-white' : 'text-white/70')}
-            >
-              <Bug className="size-4" /> Debug
-            </button>
-          ) : null}
-          {playing && (!lined || line?.now?.you) ? (
-            <button
-              type="button"
-              onClick={() => send({ type: 'stop' })}
-              className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white"
-            >
-              <Square className="size-3.5" /> End game
-            </button>
-          ) : null}
-          </div>
-        </header>
-        {isAdmin && debugOpen ? <DebugPanel onClose={() => setDebugOpen(false)} /> : null}
-
-        {!connected && !layout ? (
-          <div className="grid flex-1 place-items-center">
-            <Loader2 className="size-8 animate-spin text-white/50" />
-          </div>
-        ) : (
-          <>
-            {!connected ? (
-              <p className="mb-3 inline-flex shrink-0 items-center gap-2 self-center rounded-full bg-red-500/15 px-3 py-1 text-sm text-red-300">
-                <WifiOff className="size-4" /> Reconnecting…
-              </p>
+        {/* Playing, the game fits on one screen: the game window takes all the room the controls leave. The high scores are below it. */}
+        <div
+          className={cn(
+            'mx-auto flex flex-col',
+            playing
+              ? 'min-h-dvh max-w-6xl px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6'
+              : 'min-h-dvh max-w-4xl px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6'
+          )}
+        >
+          <header className={cn('flex shrink-0 items-center justify-between', playing ? 'py-0.5' : 'py-2')}>
+            <a href="/" className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white">
+              <ArrowLeft className="size-4" /> Lights
+            </a>
+            <div className="flex items-center gap-1">
+            {realLights.length ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300" title={`Also on the real lights: ${realLights.join(', ')}`}>
+                <Radio className="size-3.5" /> Real lights
+              </span>
             ) : null}
-
-            {layout && playing && status?.paint ? (
-              <PaintStudio layout={layout} getFrame={() => frame.current} status={status} send={send} banner={line ? <TurnBanner line={line} /> : null} />
-            ) : layout && playing && status ? (
-              <div className="flex min-h-52 flex-1 flex-col">
-                {arcade ? (
-                  <ArcadeWindow hud={arcade} health={status.progress}>
-                    <GameScreen layout={layout} getFrame={() => frame.current} />
-                  </ArcadeWindow>
-                ) : moles ? (
-                  <WhackWindow board={moles} score={status.score} phase={phase}>
-                    <GameScreen layout={layout} getFrame={() => frame.current} />
-                  </WhackWindow>
-                ) : (
-                  <GameWindow status={status}>
-                    <GameScreen layout={layout} getFrame={() => frame.current} />
-                  </GameWindow>
-                )}
-              </div>
-            ) : layout ? (
-              <YardView layout={layout} getFrame={() => frame.current} maxHeight="60dvh" className="shadow-2xl shadow-black/60" />
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => setDebugOpen((o) => !o)}
+                aria-expanded={debugOpen}
+                className={cn('inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm hover:bg-white/10 hover:text-white', debugOpen ? 'bg-white/10 text-white' : 'text-white/70')}
+              >
+                <Bug className="size-4" /> Debug
+              </button>
             ) : null}
+            {playing && (!lined || line?.now?.you) ? (
+              <button
+                type="button"
+                onClick={() => send({ type: 'stop' })}
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-sm text-white/70 hover:bg-white/10 hover:text-white"
+              >
+                <Square className="size-3.5" /> End game
+              </button>
+            ) : null}
+            </div>
+          </header>
+          {isAdmin && debugOpen ? <DebugPanel onClose={() => setDebugOpen(false)} /> : null}
 
-            {shownNotice ? <p className="mt-3 shrink-0 self-center rounded-full bg-amber-400/15 px-4 py-1.5 text-sm text-amber-200">{shownNotice}</p> : null}
+          {!connected && !layout ? (
+            <div className="grid flex-1 place-items-center">
+              <Loader2 className="size-8 animate-spin text-white/50" />
+            </div>
+          ) : (
+            <>
+              {!connected ? (
+                <p className="mb-3 inline-flex shrink-0 items-center gap-2 self-center rounded-full bg-red-500/15 px-3 py-1 text-sm text-red-300">
+                  <WifiOff className="size-4" /> Reconnecting…
+                </p>
+              ) : null}
 
-            {offer ? (
-              <OfferCard offer={offer} onPlay={() => send({ type: 'accept' })} onPass={() => send({ type: 'leaveLine' })} />
-            ) : playing && status?.paint ? null : playing ? (
-              <section className="flex shrink-0 flex-col items-center justify-center gap-2 pt-2">
-                {line ? <TurnBanner line={line} /> : null}
-                {you ? (
-                  <p className="-mb-2 rounded-full px-4 py-1 text-sm font-bold tracking-widest uppercase" style={{ backgroundColor: `color-mix(in srgb, ${you.color} 25%, transparent)`, color: you.color }}>
-                    You're {you.name}
+              {layout && playing && status?.paint ? (
+                <PaintStudio layout={layout} getFrame={() => frame.current} status={status} send={send} banner={line ? <TurnBanner line={line} /> : null} />
+              ) : layout && playing && status ? (
+                <div className="flex min-h-52 flex-1 flex-col">
+                  {arcade ? (
+                    <ArcadeWindow hud={arcade} health={status.progress}>
+                      <GameScreen layout={layout} getFrame={() => frame.current} />
+                    </ArcadeWindow>
+                  ) : moles ? (
+                    <WhackWindow board={moles} score={status.score} phase={phase}>
+                      <GameScreen layout={layout} getFrame={() => frame.current} />
+                    </WhackWindow>
+                  ) : (
+                    <GameWindow status={status}>
+                      <GameScreen layout={layout} getFrame={() => frame.current} />
+                    </GameWindow>
+                  )}
+                </div>
+              ) : layout ? (
+                <YardView layout={layout} getFrame={() => frame.current} maxHeight="60dvh" className="shadow-2xl shadow-black/60" />
+              ) : null}
+
+              {shownNotice ? <p className="mt-3 shrink-0 self-center rounded-full bg-amber-400/15 px-4 py-1.5 text-sm text-amber-200">{shownNotice}</p> : null}
+
+              {offer ? (
+                <OfferCard offer={offer} onPlay={() => send({ type: 'accept' })} onPass={() => send({ type: 'leaveLine' })} />
+              ) : playing && status?.paint ? null : playing ? (
+                <section className="flex shrink-0 flex-col items-center justify-center gap-2 pt-2">
+                  {line ? <TurnBanner line={line} /> : null}
+                  {you ? (
+                    <p className="-mb-2 rounded-full px-4 py-1 text-sm font-bold tracking-widest uppercase" style={{ backgroundColor: `color-mix(in srgb, ${you.color} 25%, transparent)`, color: you.color }}>
+                      You're {you.name}
+                    </p>
+                  ) : null}
+                  {/* Room for two lines kept while playing, so the game window does not jump when a message comes and goes. */}
+                  <p className="grid min-h-14 place-items-center text-center text-lg leading-snug font-bold tracking-tight text-balance sm:text-2xl" aria-live="polite">
+                    {status?.message}
                   </p>
-                ) : null}
-                {/* Room for two lines kept while playing, so the game window does not jump when a message comes and goes. */}
-                <p className="grid min-h-14 place-items-center text-center text-lg leading-snug font-bold tracking-tight text-balance sm:text-2xl" aria-live="polite">
-                  {status?.message}
-                </p>
-                {status?.enterInitials ? <InitialsEntry entry={status.enterInitials} onSave={(initials) => send({ type: 'initials', id: status.enterInitials!.id, initials })} /> : null}
-                {status?.settings?.length ? <Settings settings={status.settings} onPick={(id, value) => send({ type: 'setting', id, value })} /> : null}
-                {moles ? (
-                  <MoleBoard board={moles} phase={phase} button={buttonLabel} tone={tone} pressed={pressed} onPress={press} onRelease={release} />
-                ) : controls?.length ? (
-                  <ControlRow controls={controls} pressed={pressed} tone={tone} disabled={phase === 'setup'} onPress={press} onRelease={release} />
-                ) : (
-                  <button
-                    type="button"
-                    onPointerDown={(e) => {
-                      e.preventDefault();
-                      // Keep getting this finger's events even if it slides off the button.
-                      e.currentTarget.setPointerCapture?.(e.pointerId);
-                      press();
-                    }}
-                    onPointerUp={() => release()}
-                    onPointerCancel={() => release()}
-                    onLostPointerCapture={() => release()}
-                    onContextMenu={(e) => e.preventDefault()}
-                    onKeyDown={(e) => e.key === ' ' && e.preventDefault()}
-                    disabled={phase === 'setup'}
-                    style={teamButton ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${you.color} 70%, white), ${you.color})`, boxShadow: `0 25px 50px -12px ${you.color}` } : undefined}
-                    className={cn(
-                      // A finger-sized round button on a touch screen; a regular button for a mouse.
-                      'grid size-28 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none]',
-                      'pointer-fine:h-12 pointer-fine:w-auto pointer-fine:min-w-40 pointer-fine:px-8 pointer-fine:text-xl pointer-fine:shadow-lg pointer-fine:ring-2',
-                      buttonLabel.length <= 4 ? 'text-3xl' : buttonLabel.length <= 6 ? 'text-xl' : 'text-lg',
-                      TONES[tone],
-                      pressed.has('main') ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
-                      'disabled:opacity-40'
-                    )}
-                  >
-                    {buttonLabel}
-                  </button>
-                )}
-                <p className="hidden text-sm text-white/40 pointer-fine:block">
-                  {controls?.length || moles ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
-                </p>
-              </section>
-            ) : (
-              <section className="flex-1 py-6">
-                {watching ? <WatchBanner game={games.find((g) => g.id === status?.game)?.name ?? 'the game'} score={status?.score} elsewhere={status?.elsewhere} /> : null}
-                {line ? <LineCard line={line} onLeave={() => send({ type: 'leaveLine' })} className="mb-6" /> : null}
-                <h1 className="mb-1 text-2xl font-bold tracking-tight">{joins ? 'Join the line' : 'Pick a game'}</h1>
-                <p className="mb-5 text-white/60">{joins ? 'The lights are busy. Pick a game to wait for your turn.' : 'The lights on the house become the game.'}</p>
-                {gameList && !games.length ? <p className="rounded-2xl bg-white/5 p-5 text-white/70 ring-1 ring-white/10">No games are on right now. Come back later!</p> : null}
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {games.map((g) => {
-                    const look = gameLook(g.id);
-                    const Icon = look.icon;
-                    return (
-                      <button
-                        key={g.id}
-                        type="button"
-                        onClick={() => {
-                          setSuggested(null);
-                          send({ type: 'start', game: g.id });
-                        }}
-                        aria-pressed={line?.you?.kind === 'game' && line.you.label === g.name}
-                        className={cn(
-                          'group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]',
-                          suggested === g.id && !line?.you && 'ring-2 ring-amber-300/70'
-                        )}
-                      >
-                        <span className={cn('grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white shadow-lg', look.className)}>
-                          <Icon className="size-6" />
-                        </span>
-                        <span>
-                          <span className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-                            {g.name}
-                            {g.hidden ? (
-                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-white/60" title="Hidden from visitors: only admins see it">
-                                <EyeOff className="mr-1 inline size-3" />
-                                Hidden
+                  {status?.enterInitials ? <InitialsEntry entry={status.enterInitials} onSave={(initials) => send({ type: 'initials', id: status.enterInitials!.id, initials })} /> : null}
+                  {status?.settings?.length ? <Settings settings={status.settings} onPick={(id, value) => send({ type: 'setting', id, value })} /> : null}
+                  {moles ? (
+                    <MoleBoard board={moles} phase={phase} button={buttonLabel} tone={tone} pressed={pressed} onPress={press} onRelease={release} />
+                  ) : controls?.length ? (
+                    <ControlRow controls={controls} pressed={pressed} tone={tone} disabled={phase === 'setup'} onPress={press} onRelease={release} />
+                  ) : (
+                    <button
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        // Keep getting this finger's events even if it slides off the button.
+                        e.currentTarget.setPointerCapture?.(e.pointerId);
+                        press();
+                      }}
+                      onPointerUp={() => release()}
+                      onPointerCancel={() => release()}
+                      onLostPointerCapture={() => release()}
+                      onContextMenu={(e) => e.preventDefault()}
+                      onKeyDown={(e) => e.key === ' ' && e.preventDefault()}
+                      disabled={phase === 'setup'}
+                      style={teamButton ? { backgroundImage: `linear-gradient(to bottom, color-mix(in srgb, ${you.color} 70%, white), ${you.color})`, boxShadow: `0 25px 50px -12px ${you.color}` } : undefined}
+                      className={cn(
+                        // A finger-sized round button on a touch screen; a regular button for a mouse.
+                        'grid size-28 touch-manipulation place-items-center rounded-full bg-gradient-to-b px-3 text-center font-black tracking-wider text-white shadow-2xl ring-4 ring-white/20 transition select-none [-webkit-touch-callout:none]',
+                        'pointer-fine:h-12 pointer-fine:w-auto pointer-fine:min-w-40 pointer-fine:px-8 pointer-fine:text-xl pointer-fine:shadow-lg pointer-fine:ring-2',
+                        buttonLabel.length <= 4 ? 'text-3xl' : buttonLabel.length <= 6 ? 'text-xl' : 'text-lg',
+                        TONES[tone],
+                        pressed.has('main') ? 'scale-90 brightness-125' : 'hover:scale-[1.03]',
+                        'disabled:opacity-40'
+                      )}
+                    >
+                      {buttonLabel}
+                    </button>
+                  )}
+                  <p className="hidden text-sm text-white/40 pointer-fine:block">
+                    {controls?.length || moles ? status?.keysHint : `or press the space bar${status?.button === 'HOLD' || status?.button === 'LET GO' ? ' (hold it down)' : ''}`}
+                  </p>
+                </section>
+              ) : (
+                <section className="flex-1 py-6">
+                  {watching ? <WatchBanner game={games.find((g) => g.id === status?.game)?.name ?? 'the game'} score={status?.score} elsewhere={status?.elsewhere} /> : null}
+                  {line ? <LineCard line={line} onLeave={() => send({ type: 'leaveLine' })} className="mb-6" /> : null}
+                  <h1 className="mb-1 text-2xl font-bold tracking-tight">{joins ? 'Join the line' : 'Pick a game'}</h1>
+                  <p className="mb-5 text-white/60">{joins ? 'The lights are busy. Pick a game to wait for your turn.' : 'The lights on the house become the game.'}</p>
+                  {gameList && !games.length ? <p className="rounded-2xl bg-white/5 p-5 text-white/70 ring-1 ring-white/10">No games are on right now. Come back later!</p> : null}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {games.map((g) => {
+                      const look = gameLook(g.id);
+                      const Icon = look.icon;
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => {
+                            setSuggested(null);
+                            send({ type: 'start', game: g.id });
+                          }}
+                          aria-pressed={line?.you?.kind === 'game' && line.you.label === g.name}
+                          className={cn(
+                            'group flex items-start gap-4 rounded-2xl bg-white/5 p-5 text-left ring-1 ring-white/10 transition hover:bg-white/10 active:scale-[0.98]',
+                            suggested === g.id && !line?.you && 'ring-2 ring-amber-300/70'
+                          )}
+                        >
+                          <span className={cn('grid size-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white shadow-lg', look.className)}>
+                            <Icon className="size-6" />
+                          </span>
+                          <span>
+                            <span className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+                              {g.name}
+                              {g.hidden ? (
+                                <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-white/60" title="Hidden from visitors: only admins see it">
+                                  <EyeOff className="mr-1 inline size-3" />
+                                  Hidden
+                                </span>
+                              ) : null}
+                              {line?.you?.kind === 'game' && line.you.label === g.name ? (
+                                <span className="rounded-full bg-amber-300/15 px-2 py-0.5 text-xs font-semibold text-amber-200">In line · {line.you.place}</span>
+                              ) : joins ? (
+                                <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-white/60">Join the line</span>
+                              ) : null}
+                            </span>
+                            <span className="mt-0.5 block text-sm text-white/60">{g.description}</span>
+                            {g.players ? (
+                              <span className="mt-2 inline-flex items-center gap-1 text-xs text-white/45">
+                                <Users className="size-3.5" /> {g.players}
                               </span>
                             ) : null}
-                            {line?.you?.kind === 'game' && line.you.label === g.name ? (
-                              <span className="rounded-full bg-amber-300/15 px-2 py-0.5 text-xs font-semibold text-amber-200">In line · {line.you.place}</span>
-                            ) : joins ? (
-                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium text-white/60">Join the line</span>
-                            ) : null}
                           </span>
-                          <span className="mt-0.5 block text-sm text-white/60">{g.description}</span>
-                          {g.players ? (
-                            <span className="mt-2 inline-flex items-center gap-1 text-xs text-white/45">
-                              <Users className="size-3.5" /> {g.players}
-                            </span>
-                          ) : null}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-          </>
-        )}
-      </div>
-      {playing && !offer && status?.scoreboard ? (
-        <div className="mx-auto flex max-w-4xl justify-center px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
-          <Scoreboard board={status.scoreboard} onRemove={isAdmin ? (id) => void api.removeScore(id).catch(() => {}) : undefined} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+            </>
+          )}
         </div>
-      ) : null}
-    </div>
+        {playing && !offer && status?.scoreboard ? (
+          <div className="mx-auto flex max-w-4xl justify-center px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-6">
+            <Scoreboard board={status.scoreboard} onRemove={isAdmin ? (id) => void api.removeScore(id).catch(() => {}) : undefined} />
+          </div>
+        ) : null}
+      </div>
+    </>
   );
 }
 

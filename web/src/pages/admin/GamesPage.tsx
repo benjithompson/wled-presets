@@ -3,13 +3,15 @@
 // line, or LEDs at its ends; and one game can have its own choice of objects. Scenes and
 // effects still use every light.
 import { useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Eye, EyeOff, Gamepad2, Link2, Radio, RotateCcw, Save, SlidersHorizontal, Undo2 } from 'lucide-react';
+import { ChevronDown, Eye, EyeOff, Gamepad2, Lightbulb, Link2, Radio, RotateCcw, Save, SlidersHorizontal, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { framePut } from '../../../../shared/editorView.ts';
 import { activeLeds, buildStage, editorPulse, gameAreaFor, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofHidden, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
 import { Badge, Button, Card, CardHeader, Empty, Input, PageHeader, Select, Spinner, Switch } from '../../components/ui.tsx';
 import { PhoneActionBar } from '../../components/mobile.tsx';
+import { Tabs, TabPanel, tabLink, useTab } from '../../components/tabs.tsx';
 import { api } from '../../lib/api.ts';
 import { cn, copyLink, errorText } from '../../lib/utils.ts';
 import { gameLook } from '../../lib/gameLooks.ts';
@@ -48,8 +50,14 @@ function tidy(a: GameArea | null): GameArea {
 /** How many objects a game has its own choice for (see GameArea.games), counting only objects in the layout. */
 const ownCount = (area: GameArea, game: string, fixtures: Fixture[]) => fixtures.filter((f) => area.games?.[game]?.[f.id] !== undefined).length;
 
+const TABS = [
+  { id: 'games', label: 'Games', icon: Gamepad2 },
+  { id: 'lights', label: 'Lights they play on', icon: Lightbulb }
+] as const;
+
 export function GamesPage() {
   const qc = useQueryClient();
+  const [tab, setTab] = useTab(TABS);
   const { data: layout, isLoading } = useQuery({ queryKey: ['layout'], queryFn: api.layout });
   const { data: saved } = useQuery({ queryKey: AREA, queryFn: api.gameArea });
   const [draft, setDraft] = useState<GameArea | null>(null);
@@ -59,7 +67,6 @@ export function GamesPage() {
   /** The game whose own lights are being chosen; null: the lights for all games. */
   const [game, setGame] = useState<string | null>(null);
   const gameName = GAME_CATALOG.find((g) => g.id === game)?.name ?? null;
-  const yardRef = useRef<HTMLDivElement>(null);
 
   const base = useMemo(() => tidy(saved?.area ?? null), [saved]);
   const area = draft ?? base;
@@ -79,7 +86,8 @@ export function GamesPage() {
   const resetOwn = (g: string) => edit((x) => ({ ...x, games: { ...x.games, [g]: {} } }));
   const chooseFor = (g: string | null) => {
     setGame(g);
-    yardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTab('lights');
+    window.scrollTo({ top: 0 });
   };
 
   // Games visitors can pick: a switch saves at once.
@@ -124,8 +132,9 @@ export function GamesPage() {
 
   // Show on the lights: the same picture on the real lights, kept alive while the page is open.
   const inFront = useInFront();
-  useLightsPreview(onLights && inFront && layout ? { layout, selected: focus?.id ?? null, corner: null, segment: focus?.segment ?? null, area: view } : null, {
-    active: onLights && inFront,
+  const showing = onLights && inFront && tab === 'lights';
+  useLightsPreview(showing && layout ? { layout, selected: focus?.id ?? null, corner: null, segment: focus?.segment ?? null, area: view } : null, {
+    active: showing,
     onDevices: setLightNames,
     onError: (e) => (setLightNames([]), toast.error(errorText(e)))
   });
@@ -146,28 +155,42 @@ export function GamesPage() {
     <>
       <PageHeader
         title="Games"
-        description="Choose which games visitors can pick, and the lights that games play on. Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light. How long a game turn lasts is in Settings, under Taking turns."
-        more={[
-          game
-            ? { label: 'Same lights as all games', icon: Undo2, run: () => resetOwn(game), disabled: !ownCount(area, game, fixtures) }
-            : {
-                label: 'Use every light',
-                icon: RotateCcw,
-                run: () => setDraft({}),
-                disabled: !fixtures.length || (!area.exclude?.length && !Object.keys(area.skip ?? {}).length && !Object.keys(area.trim ?? {}).length && !area.games)
-              }
-        ]}
+        description={
+          <>
+            Which games visitors can pick, and the lights games play on. How long a game turn lasts is in{' '}
+            <Link to="/admin/settings?tab=turns" className={tabLink}>
+              Settings → Taking turns
+            </Link>
+            .
+          </>
+        }
+        more={
+          tab !== 'lights'
+            ? undefined
+            : [
+                game
+                  ? { label: 'Same lights as all games', icon: Undo2, run: () => resetOwn(game), disabled: !ownCount(area, game, fixtures) }
+                  : {
+                      label: 'Use every light',
+                      icon: RotateCcw,
+                      run: () => setDraft({}),
+                      disabled: !fixtures.length || (!area.exclude?.length && !Object.keys(area.skip ?? {}).length && !Object.keys(area.trim ?? {}).length && !area.games)
+                    }
+              ]
+        }
         actions={
           <>
-            <Button
-              onClick={() => setOnLights((v) => !v)}
-              title="Show this picture on the real lights, so you can see which lights are in"
-              aria-label={onLights ? 'Showing on the lights' : 'Show on the lights'}
-              aria-pressed={onLights}
-            >
-              <Radio className={onLights ? 'text-emerald-500' : undefined} /> <span className="sm:hidden">Lights</span>
-              <span className="max-sm:hidden">{onLights ? 'Showing on the lights' : 'Show on the lights'}</span>
-            </Button>
+            {tab === 'lights' ? (
+              <Button
+                onClick={() => setOnLights((v) => !v)}
+                title="Show this picture on the real lights, so you can see which lights are in"
+                aria-label={onLights ? 'Showing on the lights' : 'Show on the lights'}
+                aria-pressed={onLights}
+              >
+                <Radio className={onLights ? 'text-emerald-500' : undefined} /> <span className="sm:hidden">Lights</span>
+                <span className="max-sm:hidden">{onLights ? 'Showing on the lights' : 'Show on the lights'}</span>
+              </Button>
+            ) : null}
             <Button variant="primary" onClick={() => save.mutate()} disabled={!dirty} loading={save.isPending} className="max-md:hidden">
               <Save /> Save
             </Button>
@@ -175,9 +198,13 @@ export function GamesPage() {
         }
       />
 
-      <GameList hidden={hidden} onHide={(ids) => setHidden.mutate(ids)} area={area} fixtures={fixtures} game={game} onChoose={chooseFor} />
+      <Tabs tabs={TABS} value={tab} onChange={setTab} label="Games" />
 
-      {isLoading ? (
+      {tab === 'games' ? (
+        <TabPanel id={tab}>
+          <GameList hidden={hidden} onHide={(ids) => setHidden.mutate(ids)} area={area} fixtures={fixtures} game={game} onChoose={chooseFor} />
+        </TabPanel>
+      ) : isLoading ? (
         <Card className="grid place-items-center py-16">
           <Spinner />
         </Card>
@@ -188,71 +215,79 @@ export function GamesPage() {
           </Empty>
         </Card>
       ) : (
-        <div className="space-y-5">
-          <Card className="scroll-mt-4 overflow-hidden">
-            <div ref={yardRef} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-stone-100 px-5 py-3 dark:border-stone-800">
-              <label htmlFor="lights-for" className="text-sm font-medium">
-                Lights for
-              </label>
-              <div className="w-56 max-sm:flex-1">
-                <Select id="lights-for" className="h-9" value={game ?? ''} onChange={(e) => setGame(e.target.value || null)}>
-                  <option value="">All games</option>
-                  {GAME_CATALOG.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                      {ownCount(area, g.id, fixtures) ? ' (its own)' : ''}
-                    </option>
-                  ))}
-                </Select>
+        <TabPanel id={tab} className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] lg:items-start">
+          {/* On a laptop the picture stays in view beside the objects. */}
+          <div className="space-y-3 lg:sticky lg:top-20">
+            <p className="max-w-prose text-sm text-stone-500 dark:text-stone-400">
+              Games follow the roof as it looks from the street, so things move evenly across the front: where the roof runs back along the side of the house or behind another part of it, they still pass through it, very quickly. Leave out
+              other lights that cannot be seen here: a whole object, segments of a line, or LEDs at its ends. Scenes and effects still use every light.
+            </p>
+            <Card className="overflow-hidden">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-stone-100 px-5 py-3 dark:border-stone-800">
+                <label htmlFor="lights-for" className="text-sm font-medium">
+                  Lights for
+                </label>
+                <div className="w-56 max-sm:flex-1">
+                  <Select id="lights-for" className="h-9" value={game ?? ''} onChange={(e) => setGame(e.target.value || null)}>
+                    <option value="">All games</option>
+                    {GAME_CATALOG.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                        {ownCount(area, g.id, fixtures) ? ' (its own)' : ''}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <p className="min-w-0 flex-1 text-xs text-stone-500 dark:text-stone-400">
+                  {game
+                    ? `Switch objects on or off for ${gameName} only. Segments and ends are the same for every game.`
+                    : 'What every game uses, unless a game has its own choice of objects.'}
+                </p>
               </div>
-              <p className="min-w-0 flex-1 text-xs text-stone-500 dark:text-stone-400">
-                {game
-                  ? `Switch objects on or off for ${gameName} only. Segments and ends are the same for every game.`
-                  : 'What every game uses, unless a game has its own choice of objects.'}
-              </p>
-            </div>
-            <div className="bg-stone-950 p-3 sm:p-4">
-              <YardView layout={layout} getFrame={getFrame} maxHeight="46dvh" highlight={focus?.id ?? null} onPick={(id) => setFocus(id ? { id, segment: null } : null)} />
-            </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 text-xs text-stone-600 dark:text-stone-400">
-              {ROLES.map((r) => (
-                <span key={r.label} className="inline-flex items-center gap-1.5">
-                  <span className="size-2.5 rounded-full" style={{ background: css(GAME_ROLE_RGB[r.kind[0]]) }} />
-                  <b className="font-medium text-stone-800 dark:text-stone-200">{r.label}</b> {r.role}
+              <div className="bg-stone-950 p-3 sm:p-4">
+                <YardView layout={layout} getFrame={getFrame} maxHeight="46dvh" highlight={focus?.id ?? null} onPick={(id) => setFocus(id ? { id, segment: null } : null)} />
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 text-xs text-stone-600 dark:text-stone-400">
+                {ROLES.map((r) => (
+                  <span key={r.label} className="inline-flex items-center gap-1.5">
+                    <span className="size-2.5 rounded-full" style={{ background: css(GAME_ROLE_RGB[r.kind[0]]) }} />
+                    <b className="font-medium text-stone-800 dark:text-stone-200">{r.label}</b> {r.role}
+                  </span>
+                ))}
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2.5 rounded-full" style={{ background: css(GAME_OUT_RGB.map((v) => v * 2.5) as [number, number, number]) }} />
+                  <b className="font-medium text-stone-800 dark:text-stone-200">Left out</b> stays dark in games
                 </span>
-              ))}
-              <span className="inline-flex items-center gap-1.5">
-                <span className="size-2.5 rounded-full" style={{ background: css(GAME_OUT_RGB.map((v) => v * 2.5) as [number, number, number]) }} />
-                <b className="font-medium text-stone-800 dark:text-stone-200">Left out</b> stays dark in games
-              </span>
-              {unseen > 0 && (
-                <span className="inline-flex items-center gap-1.5" title="Found from the layout's 3-D positions: roof LEDs that run away from the street, or sit behind other roof LEDs as seen from the front">
-                  <span className="size-2.5 rounded-full" style={{ background: css(GAME_UNSEEN_RGB.map((v) => v * 2.5) as [number, number, number]) }} />
-                  <b className="font-medium text-stone-800 dark:text-stone-200">Not seen from the street</b> {unseen} roof lights games hurry through
+                {unseen > 0 && (
+                  <span className="inline-flex items-center gap-1.5" title="Found from the layout's 3-D positions: roof LEDs that run away from the street, or sit behind other roof LEDs as seen from the front">
+                    <span className="size-2.5 rounded-full" style={{ background: css(GAME_UNSEEN_RGB.map((v) => v * 2.5) as [number, number, number]) }} />
+                    <b className="font-medium text-stone-800 dark:text-stone-200">Not seen from the street</b> {unseen} roof lights games hurry through
+                  </span>
+                )}
+                <span className="ml-auto tabular-nums">
+                  {used} of {total} lights in {gameName ?? 'games'}
+                  {onLights ? ` · on ${lightNames.length ? lightNames.join(', ') : 'no device (give objects a device in the layout)'}` : ''}
                 </span>
-              )}
-              <span className="ml-auto tabular-nums">
-                {used} of {total} lights in {gameName ?? 'games'}
-                {onLights ? ` · on ${lightNames.length ? lightNames.join(', ') : 'no device (give objects a device in the layout)'}` : ''}
-              </span>
-            </div>
-          </Card>
-
-          {ROLES.map((r) => {
-            const list = fixtures.filter((f) => r.kind.includes(f.kind));
-            if (!list.length) return null;
-            return (
-              <Card key={r.label}>
-                <CardHeader title={r.label} description={`In games: ${r.role}.`} />
-                <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-                  {list.map((f) => (
-                    <ObjectRow key={f.id} f={f} area={area} view={view} game={game ? { id: game, name: gameName ?? game } : null} edit={edit} setOwn={setOwn} focus={focus} setFocus={setFocus} inGame={inGame(f)} />
-                  ))}
-                </ul>
-              </Card>
-            );
-          })}
-        </div>
+              </div>
+            </Card>
+          </div>
+          <div className="space-y-5">
+            {ROLES.map((r) => {
+              const list = fixtures.filter((f) => r.kind.includes(f.kind));
+              if (!list.length) return null;
+              return (
+                <Card key={r.label}>
+                  <CardHeader title={r.label} description={`In games: ${r.role}.`} />
+                  <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+                    {list.map((f) => (
+                      <ObjectRow key={f.id} f={f} area={area} view={view} game={game ? { id: game, name: gameName ?? game } : null} edit={edit} setOwn={setOwn} focus={focus} setFocus={setFocus} inGame={inGame(f)} />
+                    ))}
+                  </ul>
+                </Card>
+              );
+            })}
+          </div>
+        </TabPanel>
       )}
 
       <PhoneActionBar show={dirty}>

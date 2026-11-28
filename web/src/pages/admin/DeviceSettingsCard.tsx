@@ -26,7 +26,7 @@ export function DeviceSettingsCard() {
   const v = s.value;
 
   return (
-    <Card className="mt-6">
+    <Card>
       <CardHeader
         title="Sending to devices"
         description="How the server talks to the lights."

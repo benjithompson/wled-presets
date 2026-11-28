@@ -629,7 +629,7 @@ export function createApp({ config, db, bus, lights, discover = discoverWled, ho
 
   admin.get('/ha', (c) => c.json(needHa().view()));
 
-  /** How each Home Assistant light takes its commands (Settings → Debug shows them on the Devices page). */
+  /** How each Home Assistant light takes its commands (Devices → Settings → Show Home Assistant command times shows them in the table). */
   admin.get('/ha/commands', (c) => c.json(needHa().commandStats()));
 
   admin.put('/ha', async (c) => {

@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Settings2 } from 'lucide-react';
 import { api } from '../lib/api.ts';
+import { cn } from '../lib/utils.ts';
 import { LiveYard } from '../yard/LiveYard.tsx';
+import { AdminHeader } from './admin/AdminHeader.tsx';
 
 /**
  * The whole yard as the lights show it now, full screen (the home page's Live tab, bigger). An
@@ -12,7 +14,8 @@ export function YardLivePage() {
   const admin = !!session?.user;
   return (
     <div className="flex h-dvh flex-col bg-stone-950 text-stone-100">
-      <header className="flex flex-wrap items-center gap-3 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-1 sm:px-6">
+      {admin ? <AdminHeader /> : null}
+      <header className={cn('flex flex-wrap items-center gap-3 px-4 pb-1 sm:px-6', admin ? 'pt-3' : 'pt-[max(0.75rem,env(safe-area-inset-top))]')}>
         <a href="/" className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-stone-300 ring-1 ring-white/10 hover:bg-white/10">
           <ArrowLeft className="size-4" /> Home
         </a>

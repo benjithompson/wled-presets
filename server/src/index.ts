@@ -52,7 +52,7 @@ if (db.countUsers() === 0) {
 }
 
 const sender = new LightSender((level, msg) => lights.log(level, 'lights', msg));
-// The admin's frame rate limit (Settings → Frame rate), now and whenever it changes: the clock follows it (see frameClock).
+// The admin's frame rate limit (Devices → Settings → Frame rate), now and whenever it changes: the clock follows it (see frameClock).
 const applyFrameRate = () => {
   const limit = readSettings(db).maxFps;
   sender.maxFps = limit;

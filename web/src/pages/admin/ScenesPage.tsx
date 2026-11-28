@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
-import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Layers, Link2, ListMusic, Pencil, Play, Plus, RefreshCw, Sparkles, Star, Trash2, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Layers, Link2, ListMusic, Pencil, Play, Plus, RefreshCw, SlidersHorizontal, Sparkles, Star, Trash2, Upload } from 'lucide-react';
 import { defaultSettings, deviceKey, effectInfo, effectObjects, effectTarget, keyDevice, paletteColors, YARD, type EffectId, type EffectSettings } from '../../../../shared/effects.ts';
 import type { SequenceSummary } from '../../../../shared/sequence.ts';
 import type { Layout } from '../../../../shared/layout.ts';
 import { toast } from 'sonner';
 import type { DeviceWithStatus, Scene } from '../../../../shared/types.ts';
+import { Tabs, TabPanel, useTab } from '../../components/tabs.tsx';
 import { Badge, Button, Card, ConfirmDialog, Dialog, Empty, Field, Input, PageHeader, Select, Spinner, StatusDot } from '../../components/ui.tsx';
 import { MoreButton } from '../../components/mobile.tsx';
 import { api, type Overview, isQueued } from '../../lib/api.ts';
@@ -67,8 +68,14 @@ function sceneEffects(scene: Scene, layout: Layout | undefined, devices: { id: s
 
 const SEQUENCES = ['admin', 'sequences'];
 
+const TABS = [
+  { id: 'scenes', label: 'Scenes', icon: Layers },
+  { id: 'playback', label: 'Playing scenes', icon: SlidersHorizontal }
+] as const;
+
 export function ScenesPage() {
   const qc = useQueryClient();
+  const [tab, setTab] = useTab(TABS);
   const { data, isLoading } = useOverview();
   const [editing, setEditing] = useState<Scene | 'new' | 'playlist' | null>(null);
   const [deleting, setDeleting] = useState<Scene | null>(null);
@@ -151,195 +158,208 @@ export function ScenesPage() {
       <PageHeader
         title="Scenes"
         description="A scene is one button on the public page. Each device plays one of its WLED presets or a built-in effect drawn by the server, all at the same time. For an effect on single objects, use the layout editor."
-        more={[
-          { label: 'Effects per object', icon: Sparkles, run: () => navigate('/admin/layout') },
-          { label: 'Export', icon: Download, run: () => void exportScenes(), disabled: !data?.scenes.length },
-          { label: 'Import', icon: Upload, run: () => fileInput.current?.click() }
-        ]}
+        more={
+          tab === 'scenes'
+            ? [
+                { label: 'Effects per object', icon: Sparkles, run: () => navigate('/admin/layout') },
+                { label: 'Export', icon: Download, run: () => void exportScenes(), disabled: !data?.scenes.length },
+                { label: 'Import', icon: Upload, run: () => fileInput.current?.click() }
+              ]
+            : undefined
+        }
         actions={
-          <>
-            <Button onClick={() => setEditing('playlist')} disabled={!data?.scenes.some(playsSomething)} title="A scene that plays other scenes one after another">
-              <ListMusic /> New playlist
-            </Button>
-            <Button variant="primary" onClick={() => setEditing('new')} disabled={!enabledDevices.length}>
-              <Plus /> New scene
-            </Button>
-          </>
+          tab === 'scenes' ? (
+            <>
+              <Button onClick={() => setEditing('playlist')} disabled={!data?.scenes.some(playsSomething)} title="A scene that plays other scenes one after another">
+                <ListMusic /> New playlist
+              </Button>
+              <Button variant="primary" onClick={() => setEditing('new')} disabled={!enabledDevices.length}>
+                <Plus /> New scene
+              </Button>
+            </>
+          ) : null
         }
       />
       <input ref={fileInput} type="file" accept="application/json,.json" hidden onChange={(e) => (pickFile(e.target.files?.[0]), (e.target.value = ''))} />
 
-      <Card>
-        {isLoading ? (
-          <div className="grid place-items-center py-16">
-            <Spinner />
-          </div>
-        ) : !data?.scenes.length ? (
-          <Empty
-            icon={<Layers />}
-            title="No scenes yet"
-            action={
-              enabledDevices.length ? (
-                <Button variant="primary" onClick={() => setEditing('new')}>
-                  <Plus /> Create the first scene
-                </Button>
-              ) : (
-                <Button variant="primary" onClick={() => navigate('/admin/devices')}>
-                  Add a device first
-                </Button>
-              )
-            }
-          >
-            {enabledDevices.length ? 'Create a scene, then choose which WLED preset each device plays for it.' : 'Scenes control devices. Add a WLED device before you create a scene.'}
-          </Empty>
-        ) : (
-          <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-            {data.scenes.map((s, i) => {
-              const seq = s.sequenceId ? seqById.get(s.sequenceId) : undefined;
-              const fx = sceneEffects(s, layout, data.devices, seq);
-              const mapped = enabledDevices.filter((d) => s.devicePresets[d.id] || fx.devices.has(d.id)).length;
-              const steps = s.playlist ? playlistSteps(s.playlist, data.scenes) : null;
-              const playable = steps ? steps.length > 0 : mapped > 0 || fx.objects.length > 0;
-              const nowIn = data.state.currentSceneId === s.id ? data.state.playlistSceneId : null;
-              const isDefault = data.settings.defaultSceneId === s.id;
-              // The playlist that plays, and the scene of it on the lights now.
-              const isCurrent = data.state.currentSceneId === s.id || data.state.playlistSceneId === s.id;
-              return (
-                <li key={s.id} className="flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5">
-                  <div className="flex flex-col max-md:hidden">
-                    <button
-                      type="button"
-                      aria-label={`Move ${s.name} up`}
-                      disabled={i === 0}
-                      onClick={() => move(i, -1)}
-                      className="rounded p-0.5 text-stone-400 hover:text-stone-900 disabled:opacity-25 dark:hover:text-white"
-                    >
-                      <ArrowUp className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Move ${s.name} down`}
-                      disabled={i === data.scenes.length - 1}
-                      onClick={() => move(i, 1)}
-                      className="rounded p-0.5 text-stone-400 hover:text-stone-900 disabled:opacity-25 dark:hover:text-white"
-                    >
-                      <ArrowDown className="size-3.5" />
-                    </button>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate font-medium">{s.name}</span>
-                      {isCurrent ? <Badge tone="green">Playing</Badge> : null}
-                      {isDefault ? (
-                        <Badge tone="amber">
-                          <Star className="size-3" /> Default
-                        </Badge>
-                      ) : null}
-                    </div>
-                    {s.playlist && steps ? (
-                      <>
+      <Tabs tabs={TABS} value={tab} onChange={setTab} label="Scenes" />
+      {tab === 'playback' ? (
+        <TabPanel id={tab}>
+          <ScenePlaybackCard />
+        </TabPanel>
+      ) : (
+        <TabPanel id={tab}>
+          <Card>
+            {isLoading ? (
+              <div className="grid place-items-center py-16">
+                <Spinner />
+              </div>
+            ) : !data?.scenes.length ? (
+              <Empty
+                icon={<Layers />}
+                title="No scenes yet"
+                action={
+                  enabledDevices.length ? (
+                    <Button variant="primary" onClick={() => setEditing('new')}>
+                      <Plus /> Create the first scene
+                    </Button>
+                  ) : (
+                    <Button variant="primary" onClick={() => navigate('/admin/devices')}>
+                      Add a device first
+                    </Button>
+                  )
+                }
+              >
+                {enabledDevices.length ? 'Create a scene, then choose which WLED preset each device plays for it.' : 'Scenes control devices. Add a WLED device before you create a scene.'}
+              </Empty>
+            ) : (
+              <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+                {data.scenes.map((s, i) => {
+                  const seq = s.sequenceId ? seqById.get(s.sequenceId) : undefined;
+                  const fx = sceneEffects(s, layout, data.devices, seq);
+                  const mapped = enabledDevices.filter((d) => s.devicePresets[d.id] || fx.devices.has(d.id)).length;
+                  const steps = s.playlist ? playlistSteps(s.playlist, data.scenes) : null;
+                  const playable = steps ? steps.length > 0 : mapped > 0 || fx.objects.length > 0;
+                  const nowIn = data.state.currentSceneId === s.id ? data.state.playlistSceneId : null;
+                  const isDefault = data.settings.defaultSceneId === s.id;
+                  // The playlist that plays, and the scene of it on the lights now.
+                  const isCurrent = data.state.currentSceneId === s.id || data.state.playlistSceneId === s.id;
+                  return (
+                    <li key={s.id} className="flex items-center gap-3 py-3 pr-2 pl-4 sm:px-5">
+                      <div className="flex flex-col max-md:hidden">
+                        <button
+                          type="button"
+                          aria-label={`Move ${s.name} up`}
+                          disabled={i === 0}
+                          onClick={() => move(i, -1)}
+                          className="rounded p-0.5 text-stone-400 hover:text-stone-900 disabled:opacity-25 dark:hover:text-white"
+                        >
+                          <ArrowUp className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Move ${s.name} down`}
+                          disabled={i === data.scenes.length - 1}
+                          onClick={() => move(i, 1)}
+                          className="rounded p-0.5 text-stone-400 hover:text-stone-900 disabled:opacity-25 dark:hover:text-white"
+                        >
+                          <ArrowDown className="size-3.5" />
+                        </button>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="truncate font-medium">{s.name}</span>
+                          {isCurrent ? <Badge tone="green">Playing</Badge> : null}
+                          {isDefault ? (
+                            <Badge tone="amber">
+                              <Star className="size-3" /> Default
+                            </Badge>
+                          ) : null}
+                        </div>
+                        {s.playlist && steps ? (
+                          <>
+                            <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">
+                              <ListMusic className="mr-1 inline size-3.5 align-[-2px]" />
+                              {playlistSummary(s.playlist, steps)}
+                              {nowIn ? ` · now: ${data.scenes.find((x) => x.id === nowIn)?.name ?? '…'}` : ''}
+                              {!playable ? ' — no scene to play yet' : ''}
+                            </p>
+                            {steps.length ? (
+                              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                {steps.map((st) => (
+                                  <span
+                                    key={st.scene.id}
+                                    className={
+                                      st.scene.id === nowIn
+                                        ? 'rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                        : 'rounded-full bg-stone-100 px-2 py-0.5 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300'
+                                    }
+                                  >
+                                    <span className="inline-block max-w-40 truncate align-bottom">{st.scene.name}</span>
+                                    {st.seconds !== s.playlist!.seconds ? <span className="ml-1 text-stone-400">{duration(st.seconds)}</span> : null}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </>
+                        ) : (
                         <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">
-                          <ListMusic className="mr-1 inline size-3.5 align-[-2px]" />
-                          {playlistSummary(s.playlist, steps)}
-                          {nowIn ? ` · now: ${data.scenes.find((x) => x.id === nowIn)?.name ?? '…'}` : ''}
-                          {!playable ? ' — no scene to play yet' : ''}
+                          {mapped === enabledDevices.length ? `All ${mapped} device(s)` : `${mapped} of ${enabledDevices.length} device(s)`}
+                          {seq ? ` · plays the sequence “${seq.name}”` : fx.objects.length ? ` · effects on ${fx.objects.length} object(s)` : ''}
+                          {!playable ? ' — this scene does nothing yet' : ''}
                         </p>
-                        {steps.length ? (
+                        )}
+                        {!s.playlist && fx.objects.length ? (
                           <div className="mt-1.5 flex flex-wrap gap-1.5">
-                            {steps.map((st) => (
+                            {fx.items.map((it) => (
                               <span
-                                key={st.scene.id}
-                                className={
-                                  st.scene.id === nowIn
-                                    ? 'rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
-                                    : 'rounded-full bg-stone-100 px-2 py-0.5 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300'
-                                }
+                                key={it.key}
+                                className="inline-flex items-center gap-1.5 rounded-full bg-stone-100 py-0.5 pr-2 pl-1 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300"
+                                title={it.name}
                               >
-                                <span className="inline-block max-w-40 truncate align-bottom">{st.scene.name}</span>
-                                {st.seconds !== s.playlist!.seconds ? <span className="ml-1 text-stone-400">{duration(st.seconds)}</span> : null}
+                                <PaletteSwatch colors={paletteColors(it.effect)} className="block h-3 w-5 rounded-full" />
+                                <span className="max-w-40 truncate">{it.name}</span>
+                                <span className="text-stone-400">{effectInfo(it.effect.effect).name}</span>
                               </span>
                             ))}
                           </div>
                         ) : null}
-                      </>
-                    ) : (
-                    <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">
-                      {mapped === enabledDevices.length ? `All ${mapped} device(s)` : `${mapped} of ${enabledDevices.length} device(s)`}
-                      {seq ? ` · plays the sequence “${seq.name}”` : fx.objects.length ? ` · effects on ${fx.objects.length} object(s)` : ''}
-                      {!playable ? ' — this scene does nothing yet' : ''}
-                    </p>
-                    )}
-                    {!s.playlist && fx.objects.length ? (
-                      <div className="mt-1.5 flex flex-wrap gap-1.5">
-                        {fx.items.map((it) => (
-                          <span
-                            key={it.key}
-                            className="inline-flex items-center gap-1.5 rounded-full bg-stone-100 py-0.5 pr-2 pl-1 text-xs text-stone-600 dark:bg-stone-800 dark:text-stone-300"
-                            title={it.name}
-                          >
-                            <PaletteSwatch colors={paletteColors(it.effect)} className="block h-3 w-5 rounded-full" />
-                            <span className="max-w-40 truncate">{it.name}</span>
-                            <span className="text-stone-400">{effectInfo(it.effect.effect).name}</span>
-                          </span>
-                        ))}
                       </div>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => apply.mutate(s.id)} loading={apply.isPending && apply.variables === s.id} disabled={!playable} className="max-md:h-10">
-                      <Play /> Try
-                    </Button>
-                    {seq ? (
-                      <Button size="sm" variant="ghost" onClick={() => openSequence(seq.id)} title="Open the sequence in the sequence editor" className="max-md:hidden">
-                        <Clapperboard /> Sequence
-                      </Button>
-                    ) : fx.layoutItems ? (
-                      <Button size="sm" variant="ghost" onClick={() => openEffects(s.id)} title="Change the effects in the layout editor" className="max-md:hidden">
-                        <Sparkles /> Effects
-                      </Button>
-                    ) : null}
-                    <Button size="sm" variant="ghost" onClick={() => setEditing(s)} className="max-md:hidden">
-                      <Pencil /> Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label={`Copy a link to ${s.name}`}
-                      title="Copy a link that plays this scene"
-                      onClick={() => void copyLink(scenePath(s, data.scenes), `Link to ${s.name}`)}
-                      className="max-md:hidden"
-                    >
-                      <Link2 />
-                    </Button>
-                    <Button size="sm" variant="ghost" aria-label={`Delete ${s.name}`} onClick={() => setDeleting(s)} className="hover:text-red-600 max-md:hidden dark:hover:text-red-400">
-                      <Trash2 />
-                    </Button>
-                    <MoreButton
-                      className="md:hidden"
-                      label={`More for ${s.name}`}
-                      title={s.name}
-                      items={[
-                        { label: 'Edit', icon: Pencil, run: () => setEditing(s) },
-                        { label: 'Copy link', icon: Link2, run: () => void copyLink(scenePath(s, data.scenes), `Link to ${s.name}`) },
-                        ...(seq
-                          ? [{ label: 'Open the sequence', icon: Clapperboard, run: () => openSequence(seq.id) }]
-                          : fx.layoutItems
-                            ? [{ label: 'Effects in the layout editor', icon: Sparkles, run: () => openEffects(s.id) }]
-                            : []),
-                        { label: 'Move up', icon: ArrowUp, disabled: i === 0, run: () => move(i, -1) },
-                        { label: 'Move down', icon: ArrowDown, disabled: i === data.scenes.length - 1, run: () => move(i, 1) },
-                        { label: 'Delete', icon: Trash2, danger: true, run: () => setDeleting(s) }
-                      ]}
-                    />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Card>
-
-      <ScenePlaybackCard />
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => apply.mutate(s.id)} loading={apply.isPending && apply.variables === s.id} disabled={!playable} className="max-md:h-10">
+                          <Play /> Try
+                        </Button>
+                        {seq ? (
+                          <Button size="sm" variant="ghost" onClick={() => openSequence(seq.id)} title="Open the sequence in the sequence editor" className="max-md:hidden">
+                            <Clapperboard /> Sequence
+                          </Button>
+                        ) : fx.layoutItems ? (
+                          <Button size="sm" variant="ghost" onClick={() => openEffects(s.id)} title="Change the effects in the layout editor" className="max-md:hidden">
+                            <Sparkles /> Effects
+                          </Button>
+                        ) : null}
+                        <Button size="sm" variant="ghost" onClick={() => setEditing(s)} className="max-md:hidden">
+                          <Pencil /> Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Copy a link to ${s.name}`}
+                          title="Copy a link that plays this scene"
+                          onClick={() => void copyLink(scenePath(s, data.scenes), `Link to ${s.name}`)}
+                          className="max-md:hidden"
+                        >
+                          <Link2 />
+                        </Button>
+                        <Button size="sm" variant="ghost" aria-label={`Delete ${s.name}`} onClick={() => setDeleting(s)} className="hover:text-red-600 max-md:hidden dark:hover:text-red-400">
+                          <Trash2 />
+                        </Button>
+                        <MoreButton
+                          className="md:hidden"
+                          label={`More for ${s.name}`}
+                          title={s.name}
+                          items={[
+                            { label: 'Edit', icon: Pencil, run: () => setEditing(s) },
+                            { label: 'Copy link', icon: Link2, run: () => void copyLink(scenePath(s, data.scenes), `Link to ${s.name}`) },
+                            ...(seq
+                              ? [{ label: 'Open the sequence', icon: Clapperboard, run: () => openSequence(seq.id) }]
+                              : fx.layoutItems
+                                ? [{ label: 'Effects in the layout editor', icon: Sparkles, run: () => openEffects(s.id) }]
+                                : []),
+                            { label: 'Move up', icon: ArrowUp, disabled: i === 0, run: () => move(i, -1) },
+                            { label: 'Move down', icon: ArrowDown, disabled: i === data.scenes.length - 1, run: () => move(i, 1) },
+                            { label: 'Delete', icon: Trash2, danger: true, run: () => setDeleting(s) }
+                          ]}
+                        />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+        </TabPanel>
+      )}
 
       {data && (editing === 'playlist' || (editing && editing !== 'new' && editing.playlist)) ? (
         <PlaylistEditor key={editing === 'playlist' ? 'playlist' : editing.id} scene={editing === 'playlist' ? null : editing} scenes={data.scenes} onClose={() => setEditing(null)} />
