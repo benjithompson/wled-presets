@@ -9,6 +9,7 @@ import { databaseScores } from './scoreStore.ts';
 import { discoverWled } from './discovery.ts';
 import { Bus } from './events.ts';
 import { Lights } from './lights.ts';
+import { addReadyScenes } from './readyScenes.ts';
 import { migrateV1Settings, readGameArea, readHiddenGames, readLineSettings, readSettings } from './settings.ts';
 import { admitUpgrade, upgradeVisitor, visitorLabel, visitorTag } from './visitor.ts';
 import type { Server } from 'node:http';
@@ -32,6 +33,9 @@ const ha = new HomeAssistant(db);
 lights.ha = ha;
 
 migrateV1Settings(db);
+// Scenes that come with the site (one per new whole-yard effect), each added once.
+const ready = addReadyScenes(db);
+if (ready.length) lights.log('info', 'config', `Added ready-made scene(s): ${ready.join(', ')}`);
 
 // First admin account from the environment.
 if (db.countUsers() === 0) {
