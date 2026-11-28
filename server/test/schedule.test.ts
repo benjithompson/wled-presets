@@ -10,7 +10,7 @@ import { Bus } from '../src/events.ts';
 import { Lights } from '../src/lights.ts';
 import { LightScheduler } from '../src/lightSchedule.ts';
 import { sunTimes } from '../../shared/sun.ts';
-import { cleanSchedule, DEFAULT_PERIOD, DEFAULT_SCHEDULE, describeDays, describeTime, nextEvent, scheduleEvents, scheduledOn, wallTime, type LightSchedule, type SchedulePeriod } from '../../shared/schedule.ts';
+import { cleanSchedule, DEFAULT_PERIOD, describeAction, DEFAULT_SCHEDULE, describeDays, describeTime, nextEvent, scheduleEvents, scheduledOn, wallTime, type LightSchedule, type SchedulePeriod } from '../../shared/schedule.ts';
 import { startMockWled } from '../../scripts/mock-wled.ts';
 
 const NY: LightSchedule = { ...DEFAULT_SCHEDULE, enabled: true, latitude: 40.7128, longitude: -74.006, timeZone: 'America/New_York' };
@@ -122,6 +122,8 @@ describe('schedule periods', () => {
       ['on', '2026-11-25T22:00:00.000Z'],
       ['off', '2026-11-26T04:30:00.000Z']
     ]);
+    // Each time says the period it is: its off is the one that ends last.
+    expect(m.map((x) => x.period)).toEqual(['a', 'b']);
   });
 
   it('runs on its days only, and not at all when switched off', () => {
@@ -246,6 +248,50 @@ describe('scheduler', () => {
     await t.schedule.check();
     expect(t.lights.allOff()).toBe(true);
     expect(minutes(Date.parse((await t.call('GET', '/api/state')).json.lightsOnAt), at('2026-11-26T21:33:00Z'))).toBeLessThan(2);
+  });
+
+  it("sets each period's Home Assistant lights and switches at its off, and again when woken lights go off", async () => {
+    const offs: [string[], string, boolean][] = [];
+    const real = t.lights.scheduleOff.bind(t.lights);
+    t.lights.scheduleOff = (actions, why, all) => (offs.push([actions.map((a) => `${a.target} ${describeAction(a)}`), why, all]), real(actions, why, all));
+    const look = { color: '#ffffff', kelvin: 2700, brightness: 40 };
+    const evening = { ...DEFAULT_PERIOD, atOff: [{ ...look, target: 'ha:light.driveway', mode: 'white' }, { ...look, target: 'ha:switch.porch', mode: 'off' }] };
+    const morning = period({ id: 'morning', name: 'Morning', on: { at: 'time', offset: 0, time: '06:00' }, off: { at: 'sunrise', offset: 0, time: '00:00' }, atOff: [{ ...look, target: 'ha:light.driveway', mode: 'off' }] });
+    expect((await t.call('PUT', '/api/admin/lights/schedule', { ...NY, periods: [evening, morning] })).status).toBe(200);
+    clock = at('2026-11-26T04:00:30Z'); // 23:00
+    await t.schedule.check();
+    expect(offs.at(-1)).toEqual([['ha:light.driveway white 2700 K at 40 %', 'ha:switch.porch off'], 'by the schedule (Evening, at 23:00)', true]);
+
+    // Woken in the night and left: off again, and the evening's off again too.
+    expect((await t.call('POST', '/api/color', { color: '#ff8800' })).status).toBe(200);
+    clock = at('2026-11-26T04:20:00Z');
+    await t.schedule.checkIdle();
+    expect(t.lights.allOff()).toBe(true);
+    expect(offs.at(-1)?.[0]).toEqual(['ha:light.driveway white 2700 K at 40 %', 'ha:switch.porch off']);
+
+    // The morning's off, at sunrise, has its own.
+    clock = at('2026-11-26T11:00:30Z');
+    await t.schedule.check();
+    clock = at('2026-11-26T12:30:00Z');
+    await t.schedule.check();
+    expect(offs.at(-1)?.slice(0, 2)).toEqual([['ha:light.driveway off'], 'by the schedule (Morning, sunrise)']);
+
+    // Switched off already by an admin: the off's Home Assistant part still happens.
+    clock = at('2026-11-26T22:00:00Z');
+    await t.schedule.check();
+    await t.call('PUT', '/api/admin/lights/power', { on: false });
+    clock = at('2026-11-27T04:00:30Z');
+    await t.schedule.check();
+    expect(offs.at(-1)).toEqual([['ha:light.driveway white 2700 K at 40 %', 'ha:switch.porch off'], 'by the schedule (Evening, at 23:00)', false]);
+
+    // Checked: lights and switches only, each once.
+    const put = (atOff: object[]) => t.call('PUT', '/api/admin/lights/schedule', { ...NY, periods: [{ ...DEFAULT_PERIOD, atOff: atOff.map((x) => ({ ...look, mode: 'on', ...x })) }] });
+    expect((await put([{ target: 'ha:sensor.outside' }])).status).toBe(400);
+    expect((await put([{ target: 'ha:light.a' }, { target: 'ha:light.a', mode: 'off' }])).status).toBe(400);
+    expect((await put([{ target: 'ha:light.a', brightness: 0 }])).status).toBe(400);
+    expect((await put([{ target: 'ha:light.a', mode: 'color', color: 'red' }])).status).toBe(400);
+    expect((await put([{ target: 'no-such-device', mode: 'color' }])).status).toBe(400);
+    expect((await put([{ target: ids[0], mode: 'color', color: '#FF8800' }])).status).toBe(200);
   });
 
   it('leaves a light an admin switched off on its own off', async () => {

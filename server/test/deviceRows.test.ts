@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildRows, commandsText, filterRows, groupRows, NO_FILTER, sortRows, type RowSources } from '../../web/src/pages/admin/deviceRows.ts';
 import type { DeviceWithStatus } from '../../shared/types.ts';
-import { NO_COMMANDS, type HaEntity, type HaView } from '../../shared/homeAssistant.ts';
+import { DEFAULT_WHITE, NO_COMMANDS, type HaEntity, type HaView } from '../../shared/homeAssistant.ts';
 
 const device = (id: string, over: Partial<DeviceWithStatus> = {}): DeviceWithStatus => ({
   id,
@@ -15,11 +15,12 @@ const device = (id: string, over: Partial<DeviceWithStatus> = {}): DeviceWithSta
   power: { on: true, bri: 255 },
   ...over
 });
-const entity = (id: string, over: Partial<HaEntity> = {}): HaEntity => ({ id, name: id, state: 'on', color: true, dimmable: true, outlet: false, area: '', device: '', integration: 'zha', ...over });
+const entity = (id: string, over: Partial<HaEntity> = {}): HaEntity => ({ id, name: id, state: 'on', color: true, dimmable: true, temp: true, outlet: false, area: '', device: '', integration: 'zha', ...over });
 const view = (entities: HaEntity[], lights: string[], disabled: string[] = []): HaView => ({
   url: 'http://ha',
   hasToken: true,
   plugs: {},
+  white: DEFAULT_WHITE,
   lights,
   disabled,
   status: null,

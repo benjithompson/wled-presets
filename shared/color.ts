@@ -111,3 +111,15 @@ export function rgbToXy([r, g, b]: Rgb8): [number, number] {
   const sum = X + Y + Z;
   return sum > 0 ? [X / sum, Y / sum] : [0.3127, 0.329];
 }
+
+/**
+ * The color of a white of this temperature (kelvin), as RGB bytes: for a light that takes no
+ * temperature of its own (a WLED strip). Tanner Helland's fit of the black-body colors.
+ */
+export function kelvinRgb(kelvin: number): Rgb8 {
+  const t = clamp(kelvin, 1000, 40000) / 100;
+  const r = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+  const g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+  const b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  return [r, g, b].map((v) => Math.round(clamp(v, 0, 255))) as Rgb8;
+}

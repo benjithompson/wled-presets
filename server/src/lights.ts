@@ -7,7 +7,7 @@ import type { Db } from './db.ts';
 import type { Bus } from './events.ts';
 import { KEY, readHiddenGames, readLightControls, readSettings, sceneTransitionOf, writeLightControls } from './settings.ts';
 import type { SceneTransition } from '../../shared/transitions.ts';
-import { parseHex } from '../../shared/color.ts';
+import { kelvinRgb, parseHex } from '../../shared/color.ts';
 import { baseUrl, lastWrite, wled, type FetchResult, type PowerState } from './wled.ts';
 import { mergeLooks, type PresetLook } from './presetLook.ts';
 import type { Peek } from './roofView.ts';
@@ -15,6 +15,7 @@ import { WledPeek } from './wledPeek.ts';
 import { visitorLabel } from './visitor.ts';
 import type { HomeAssistant } from './homeAssistant.ts';
 import { entityOf, haId, isHaId, type HaEntity } from '../../shared/homeAssistant.ts';
+import { describeAction, type ScheduleAction } from '../../shared/schedule.ts';
 
 /**
  * A change a device reports this soon after this app told it something may be that request
@@ -579,9 +580,10 @@ export class Lights {
     }
   }
 
-  /** Sends the device what the switches say: off, or on at its level. */
+  /** Sends the device what the switches say: off, or on at its level; or the look the schedule holds it in. */
   private sendSwitches(d: Device) {
-    return this.switchWled(d, !this.isOff(d.id));
+    const look = this.held()[d.id];
+    return look ? this.showLook(d.id, look) : this.switchWled(d, !this.isOff(d.id));
   }
 
   /** Devices that did not get a switch get it when they answer again (see observe). */
@@ -841,7 +843,7 @@ export class Lights {
    * Switches one device, or every device, on or off. Off holds: scenes, colors, effects and
    * games leave the device dark until an admin switches it on again.
    */
-  async setPower(on: boolean, deviceId: string | readonly string[] | null, actor?: Actor, why?: string): Promise<ApplyResult> {
+  async setPower(on: boolean, deviceId: string | readonly string[] | null, actor?: Actor, why?: string, opts: { hold?: ReadonlyMap<string, ScheduleAction> } = {}): Promise<ApplyResult> {
     const all = this.db.listDevices();
     const ha = this.haLights();
     const picked = deviceId == null ? null : new Set(typeof deviceId === 'string' ? [deviceId] : deviceId);
@@ -856,12 +858,20 @@ export class Lights {
     const off = on ? c.off.filter((id) => !ids.has(id)) : [...new Set([...c.off, ...ids])];
     this.saveControls({ ...c, off: off.filter((id) => known.has(id)) });
     if (!on && this.allOff()) this.cancelRevert();
-    const devices = target.filter((d) => d.enabled);
+    // Lights the schedule held in a look of their own (see ScheduleAction): switched now, they
+    // are not any more; switched on, they show what plays again. `hold`: ones that take a look
+    // instead of going off.
+    const hold = opts.hold ?? new Map<string, ScheduleAction>();
+    const wasHeld = new Set(Object.keys(this.held()).filter((id) => ids.has(id)));
+    this.setHeld(Object.fromEntries(Object.entries(this.held()).filter(([id]) => !ids.has(id))));
+    const devices = target.filter((d) => d.enabled && !hold.has(d.id));
     const result = await this.fanOut(devices.map((device) => ({ device, run: () => this.powerDevice(device, on) })));
     // A device that was getting frames is given back on the next frame, switched off (after any
     // frame still on its way: see LightSender.giveBack).
     this.noteMissed(result);
-    merge(result, await this.haSwitch(haTarget, on));
+    merge(result, await this.haSwitch(haTarget.filter((id) => !hold.has(id)), on));
+    if (hold.size) merge(result, await this.hold(hold));
+    if (on && wasHeld.size) await this.showWhatPlays(wasHeld);
     const what = !picked ? 'All lights' : ids.size === 1 ? `"${this.nameOf([...ids][0])}"` : `${ids.size} lights`;
     this.log(result.failed.length ? 'warn' : 'info', 'power', `${what} switched ${on ? 'on' : 'off'}${why ? ` ${why}` : ''}${this.failedText(result)}`, result, actor);
     this.bus.emit('devices');
@@ -921,12 +931,15 @@ export class Lights {
    * HomeAssistant.set): an off goes after any effects color still on its way, which would
    * otherwise come on again after it. A command that failed goes again (see haRetryMs), once
    * Home Assistant's late answer, if one comes, says it did fail.
+   *
+   * Off, a light the site gave colors goes back to its own white first (see HaWhite).
    */
   private async haSwitch(ids: string[], on: boolean, what: 'switch' | 'brightness' = 'switch', attempt = 0): Promise<ApplyResult> {
     const out: ApplyResult = { applied: [], skipped: [], failed: [] };
     const ha = this.ha;
     if (!ha || !ids.length) return out;
-    const results = await Promise.all(ids.map((id) => ha.set(entityOf(id), on, { bri: this.levelOf(id) })));
+    const white = ha.settings().white;
+    const results = await Promise.all(ids.map((id) => (on ? ha.set(entityOf(id), true, { bri: this.levelOf(id) }) : ha.set(entityOf(id), false, { white }))));
     const failed: { id: string; answer: Promise<{ ok: boolean }> }[] = [];
     results.forEach((r, i) => {
       if (r.ok) return void out.applied.push(ids[i]);
@@ -992,8 +1005,137 @@ export class Lights {
     this.bus.emit('state');
   }
 
+  /**
+   * The schedule's off: every light off (see setPower; `all` false: they are off already), but
+   * the period's lights with an action of their own (see ScheduleAction) set to it. One the site
+   * switches is held in its look: off in the switches (nothing plays on it, and the night is
+   * the night), but showing the look until it is switched again or the schedule's on (see
+   * endHold). A Home Assistant light or switch the site does not switch is only set. A
+   * controller's plug is left out: it goes with its device.
+   */
+  async scheduleOff(actions: readonly ScheduleAction[], why: string, all: boolean): Promise<void> {
+    const ha = this.ha?.connected() ? this.ha : null;
+    const plugs = new Set(Object.values(ha?.settings().plugs ?? {}).map(haId));
+    const devices = new Set(this.enabledDevices().map((d) => d.id));
+    const site = new Set([...devices, ...this.haLights()]);
+    const wanted = actions.filter((a) => !plugs.has(a.target) && (isHaId(a.target) ? !!ha : devices.has(a.target)));
+    const hold = new Map(wanted.filter((a) => a.mode !== 'off' && site.has(a.target)).map((a) => [a.target, a]));
+    const out: ApplyResult = { applied: [], skipped: [], failed: [] };
+    if (all) await this.setPower(false, null, undefined, why, { hold });
+    else if (hold.size) merge(out, await this.hold(hold));
+    // The site's own lights are done: off with the rest, or held.
+    const rest = wanted.filter((a) => !site.has(a.target));
+    const results = await Promise.all(rest.map((a) => this.showLook(a.target, a)));
+    results.forEach((r, i) => (r.ok ? out.applied.push(rest[i].target) : out.failed.push({ deviceId: rest[i].target, error: r.error })));
+    if (!wanted.length) return;
+    const said = wanted.map((a) => `"${this.nameOf(a.target)}" ${describeAction(a)}`);
+    this.log(out.failed.length ? 'warn' : 'info', 'schedule', `At the off ${why}: ${said.join(', ')}${this.failedText(out)}`, out);
+    this.bus.emit('devices');
+  }
+
+  /**
+   * The schedule's on: the lights it held in a look (see scheduleOff) are not any more. The ones
+   * in `on` are about to be switched on (and show what plays); the rest go off.
+   */
+  async endHold(on: ReadonlySet<string>): Promise<void> {
+    const held = Object.keys(this.held()).filter((id) => !on.has(id));
+    this.setHeld(Object.fromEntries(Object.entries(this.held()).filter(([id]) => on.has(id))));
+    if (!held.length) return;
+    const ha = this.ha;
+    const white = ha?.settings().white;
+    await Promise.all(
+      held.map((id) => {
+        if (isHaId(id)) return ha?.set(entityOf(id), false, { white });
+        const d = this.db.getDevice(id);
+        return d?.enabled ? this.powerDevice(d, false) : null;
+      })
+    );
+  }
+
+  // ---------- Held by the schedule ----------
+
+  private heldCache: Record<string, ScheduleAction> | null = null;
+
+  /** Lights the schedule's off set to a look of their own, by id (see scheduleOff). Off in the switches. */
+  private held(): Record<string, ScheduleAction> {
+    if (this.heldCache) return this.heldCache;
+    let v: unknown = {};
+    try {
+      v = JSON.parse(this.db.getSetting(KEY.scheduleLooks) || '{}');
+    } catch {}
+    return (this.heldCache = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, ScheduleAction>) : {});
+  }
+
+  private setHeld(next: Record<string, ScheduleAction>) {
+    if (JSON.stringify(next) === JSON.stringify(this.held())) return;
+    this.heldCache = next;
+    this.db.setSetting(KEY.scheduleLooks, JSON.stringify(next));
+  }
+
+  /** True while the schedule holds this light in a look of its own (see scheduleOff). */
+  isHeld(id: string): boolean {
+    return id in this.held();
+  }
+
+  /** Holds lights in their looks (see scheduleOff), and shows them. */
+  private async hold(looks: ReadonlyMap<string, ScheduleAction>): Promise<ApplyResult> {
+    this.setHeld({ ...this.held(), ...Object.fromEntries(looks) });
+    const ids = [...looks.keys()];
+    const results = await Promise.all(ids.map((id) => this.showLook(id, looks.get(id)!)));
+    const out: ApplyResult = { applied: [], skipped: [], failed: [] };
+    results.forEach((r, i) => (r.ok ? out.applied.push(ids[i]) : out.failed.push({ deviceId: ids[i], error: r.error })));
+    this.noteMissed({ ...out, applied: out.applied.filter((id) => !isHaId(id)), failed: out.failed.filter((f) => !isHaId(f.deviceId)) });
+    return out;
+  }
+
+  /**
+   * Shows a schedule action's look on one light: a WLED device (a solid color, or a white as a
+   * color), or a Home Assistant light or switch. A device on a plug that is off gets its plug
+   * on first, and the look once it has started (see restoreLook).
+   */
+  private async showLook(id: string, a: ScheduleAction): Promise<FetchResult<unknown>> {
+    const bri = Math.max(1, Math.min(255, Math.round((a.brightness / 100) * 255)));
+    if (isHaId(id)) {
+      const ha = this.ha;
+      if (!ha) return { ok: false, status: 0, error: 'No Home Assistant' };
+      const e = entityOf(id);
+      if (a.mode === 'off') return ha.set(e, false, { white: ha.settings().white });
+      if (a.mode === 'white') return ha.set(e, true, { white: { kelvin: a.kelvin, brightness: a.brightness } });
+      if (a.mode === 'color') return ha.set(e, true, { rgb: parseHex(a.color) as [number, number, number] | null, bri });
+      return ha.set(e, true, { bri });
+    }
+    const d = this.db.getDevice(id);
+    if (!d?.enabled) return { ok: false, status: 0, error: 'Unknown device' };
+    if (a.mode === 'off') return this.powerDevice(d, false);
+    const plug = this.plugOf(d.id);
+    if (plug && this.ha && this.ha.entity(plug)?.state !== 'on') {
+      const p = await this.ha.set(plug, true);
+      if (!p.ok) return { ok: false, status: p.status, error: `Power plug: ${p.error}` };
+      this.booting.add(d.id);
+      return { ok: true, status: 200, data: null };
+    }
+    const rgb = a.mode === 'white' ? kelvinRgb(a.kelvin) : a.mode === 'color' ? parseHex(a.color) : null;
+    return rgb ? wled.applyColor(d, rgb as [number, number, number], bri) : wled.power(d, true, bri);
+  }
+
+  /**
+   * Lights that were held in a look and are switched on now: they show what plays again (the
+   * color, or the scene's presets and colors; effects reach them as frames by themselves).
+   */
+  private async showWhatPlays(ids: ReadonlySet<string>) {
+    for (const id of ids) {
+      if (isHaId(id)) continue;
+      const d = this.db.getDevice(id);
+      if (d?.enabled) await this.restoreLook(d);
+    }
+    const ha = [...ids].filter((id) => isHaId(id) && !this.isOff(id));
+    if (ha.length) await this.haEnabledAgain(ha);
+  }
+
   /** A device that booted (its plug came on) shows what plays now: the color, or its preset. */
   private async restoreLook(d: Device) {
+    const look = this.held()[d.id];
+    if (look) return void (await this.showLook(d.id, look));
     if (this.isOff(d.id)) return;
     const color = parseHex(this.db.getSetting(KEY.currentColor) || '');
     if (color) return void (await wled.applyColor(d, color as [number, number, number], this.levelOf(d.id)));

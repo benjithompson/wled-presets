@@ -1,10 +1,10 @@
-import { isSwitchable, NO_COMMANDS, type HaCommandStats, type HaEntity, type HaSettings, type HaView } from '../../shared/homeAssistant.ts';
+import { cleanWhite, isSwitchable, NO_COMMANDS, pctToBri, type HaCommandStats, type HaEntity, type HaSettings, type HaView, type HaWhite } from '../../shared/homeAssistant.ts';
 import { rgbToXy } from '../../shared/color.ts';
 import type { Db } from './db.ts';
 import type { FetchResult } from './wled.ts';
 import { HaSocket } from './haSocket.ts';
 
-const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights', disabled: 'haDisabled', fps: 'haFps', inflight: 'haInflight', fade: 'haFade', direct: 'haDirect' } as const;
+const KEY = { url: 'haUrl', token: 'haToken', plugs: 'haPlugs', lights: 'haLights', disabled: 'haDisabled', white: 'haWhite', tinted: 'haTinted', fps: 'haFps', inflight: 'haInflight', fade: 'haFade', direct: 'haDirect' } as const;
 
 /** Zigbee clusters and commands for a color sent straight to a ZHA light (see HomeAssistant.set). */
 const ZCL = { level: 0x0008, color: 0x0300, moveToLevel: 0x00, moveToColor: 0x07 } as const;
@@ -27,6 +27,11 @@ type HaSetOpts = {
   direct?: boolean;
   /** Commands on their way to the light at once (the speed test's own); else HomeAssistant.inflight. */
   width?: number;
+  /**
+   * A light's own white (see HaWhite). On: it comes on in it. Off: one the site gave colors
+   * goes back to it first, then off, so it comes on in it next time.
+   */
+  white?: HaWhite;
 };
 /** A command's answer. Not answered in time, it also has the answer to come (`late`): Home Assistant may still do it. */
 type HaResult = FetchResult<unknown> & { late?: Promise<FetchResult<unknown>> };
@@ -38,10 +43,15 @@ type Queued = { on: boolean; opts: HaSetOpts; done: ((r: FetchResult<unknown>) =
 /**
  * A command asked while another waits: the newer (b) wins, and those who asked for the older
  * get its answer. Coming on after coming on, it keeps the color and level asked before that it
- * does not give itself.
+ * does not give itself; off after off, the white to go back to first (see HaSetOpts.white).
  */
 function join(a: Queued, b: Queued): Queued {
-  const opts = a.on && b.on ? { ...b.opts, rgb: b.opts.rgb ?? a.opts.rgb, bri: b.opts.bri ?? a.opts.bri, direct: !!a.opts.direct && !!b.opts.direct } : b.opts;
+  const opts =
+    a.on && b.on
+      ? { ...b.opts, rgb: b.opts.rgb ?? a.opts.rgb, bri: b.opts.bri ?? a.opts.bri, direct: !!a.opts.direct && !!b.opts.direct }
+      : !a.on && !b.on
+        ? { ...b.opts, white: b.opts.white ?? a.opts.white }
+        : b.opts;
   return { on: b.on, opts, done: [...a.done, ...b.done] };
 }
 
@@ -71,6 +81,7 @@ function entityOf(s: HaState, place: Place = NOWHERE): HaEntity {
     state: s.state,
     color: modes.some((m) => COLOR_MODES.has(m)),
     dimmable: modes.some((m) => m !== 'onoff'),
+    temp: modes.some((m) => m === 'color_temp' || COLOR_MODES.has(m)),
     outlet: s.attributes?.device_class === 'outlet',
     ...place
   };
@@ -153,7 +164,8 @@ export class HomeAssistant {
     const plugs = Object.fromEntries(Object.entries(parse(KEY.plugs, {}, record)).filter(([, e]) => typeof e === 'string' && isSwitchable(e)));
     const lights = parse(KEY.lights, [] as string[], Array.isArray).filter((e) => typeof e === 'string' && isSwitchable(e));
     const disabled = parse(KEY.disabled, [] as string[], Array.isArray).filter((e) => lights.includes(e));
-    return { url: this.db.getSetting(KEY.url) || '', plugs, lights, disabled };
+    const white = cleanWhite(parse<unknown>(KEY.white, null, (v): v is unknown => true));
+    return { url: this.db.getSetting(KEY.url) || '', plugs, lights, disabled, white };
   }
 
   hasToken(): boolean {
@@ -172,6 +184,7 @@ export class HomeAssistant {
     const lights = [...new Set(s.lights)];
     this.db.setSetting(KEY.lights, JSON.stringify(lights));
     this.db.setSetting(KEY.disabled, JSON.stringify([...new Set(s.disabled)].filter((id) => lights.includes(id))));
+    this.db.setSetting(KEY.white, JSON.stringify(cleanWhite(s.white)));
     if (token !== undefined) this.db.setSetting(KEY.token, token ?? '');
     this.cache = null;
     // A new address or token: a new connection.
@@ -496,21 +509,61 @@ export class HomeAssistant {
       });
   }
 
+  private tintedCache: Set<string> | null = null;
+
+  /**
+   * The lights the site has given a color or a brightness of its own since they were last in
+   * their own white: an off sends them back to it first (see HaSetOpts.white). Kept, so a
+   * restart in between does not forget them.
+   */
+  private tinted(): Set<string> {
+    if (this.tintedCache) return this.tintedCache;
+    let v: unknown = [];
+    try {
+      v = JSON.parse(this.db.getSetting(KEY.tinted) || '[]');
+    } catch {}
+    return (this.tintedCache = new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []));
+  }
+
+  private tint(id: string, on: boolean) {
+    const set = this.tinted();
+    if (set.has(id) === on) return;
+    if (on) set.add(id);
+    else set.delete(id);
+    this.db.setSetting(KEY.tinted, JSON.stringify([...set]));
+  }
+
+  /** True when the site has given the light a color or brightness of its own since its own white (see tinted). */
+  isTinted(id: string): boolean {
+    return this.tinted().has(id);
+  }
+
   /** One command, sent: done when Home Assistant answers (or LATE_MS passes). */
   private async send(id: string, on: boolean, opts: HaSetOpts): Promise<FetchResult<unknown>> {
     // A light that is on, a color, and Zigbee commands asked for: straight to the light.
     if (opts.direct && on && opts.via !== 'rest' && this.zha.has(id) && this.states.get(id)?.state === 'on' && (opts.rgb || opts.bri != null)) {
       this.writes.set(id, Date.now());
+      this.tint(id, true);
       const r = await this.zigbee(id, opts.rgb ?? null, opts.bri ?? null, opts.transition ?? 0);
       this.writes.set(id, Date.now());
       return r;
     }
     const [domain] = id.split('.');
     const e = this.states.get(id);
+    // Off, back in its own white first: on in it for a moment (Home Assistant cannot change an
+    // off light), then off. Only a light that is on, and that the site gave colors.
+    if (!on && opts.white && domain === 'light' && e?.state === 'on' && (e.temp || e.dimmable) && this.isTinted(id)) {
+      await this.send(id, true, { white: opts.white, transition: 0, via: opts.via });
+    }
     const body: Record<string, unknown> = { entity_id: id };
     if (on && domain === 'light') {
-      if (opts.bri != null && e?.dimmable !== false) body.brightness = Math.max(1, Math.min(255, Math.round(opts.bri)));
-      if (opts.rgb && e?.color) body.rgb_color = opts.rgb;
+      if (opts.white) {
+        if (e?.dimmable !== false) body.brightness = pctToBri(opts.white.brightness);
+        if (e?.temp) body.color_temp_kelvin = opts.white.kelvin;
+      } else {
+        if (opts.bri != null && e?.dimmable !== false) body.brightness = Math.max(1, Math.min(255, Math.round(opts.bri)));
+        if (opts.rgb && e?.color) body.rgb_color = opts.rgb;
+      }
     }
     if (domain === 'light' && opts.transition != null) body.transition = opts.transition;
     this.writes.set(id, Date.now());
@@ -519,6 +572,10 @@ export class HomeAssistant {
     const viaWs = opts.via === 'rest' ? null : await this.ws()?.call(domain, `turn_${on ? 'on' : 'off'}`, id, data, LATE_MS);
     const r: FetchResult<unknown> = viaWs ? (viaWs.ok ? { ok: true, status: 200, data: null } : { ok: false, status: 0, error: viaWs.error }) : await this.request(`/api/services/${domain}/turn_${on ? 'on' : 'off'}`, body, LATE_MS);
     this.writes.set(id, Date.now());
+    if (r.ok && on && domain === 'light') {
+      if (opts.white) this.tint(id, false);
+      else if (body.brightness != null || body.rgb_color) this.tint(id, true);
+    }
     if (r.ok && e) {
       const now = this.states.get(id) ?? e;
       const next = { ...now, state: on ? 'on' : 'off' };

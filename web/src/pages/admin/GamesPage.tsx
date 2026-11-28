@@ -5,7 +5,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Eye, EyeOff, Gamepad2, Lightbulb, Link2, Radio, RotateCcw, Save, SlidersHorizontal, Undo2 } from 'lucide-react';
+import { ChevronDown, Eye, EyeOff, Gamepad2, Lightbulb, Link2, Radio, RotateCcw, Save, SlidersHorizontal, Undo2, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { framePut } from '../../../../shared/editorView.ts';
 import { activeLeds, buildStage, editorPulse, gameAreaFor, gameLeds, GAME_OUT_RGB, GAME_ROLE_RGB, GAME_UNSEEN_RGB, isLine, paintGameArea, roofHidden, segmentLeds, type Fixture, type FixtureKind, type GameArea } from '../../../../shared/layout.ts';
@@ -20,6 +20,7 @@ import { gamePath } from '../../../../shared/links.ts';
 import { useInFront } from '../../lib/useInFront.ts';
 import { useLightsPreview } from '../../lib/useLightsPreview.ts';
 import { YardView } from '../../yard/YardView.tsx';
+import { LineCard } from './LineCard.tsx';
 
 const AREA = ['admin', 'game-area'];
 const HIDDEN = ['admin', 'hidden-games'];
@@ -52,7 +53,8 @@ const ownCount = (area: GameArea, game: string, fixtures: Fixture[]) => fixtures
 
 const TABS = [
   { id: 'games', label: 'Games', icon: Gamepad2 },
-  { id: 'lights', label: 'Lights they play on', icon: Lightbulb }
+  { id: 'lights', label: 'Lights they play on', icon: Lightbulb },
+  { id: 'turns', label: 'Taking turns', icon: Users }
 ] as const;
 
 export function GamesPage() {
@@ -157,11 +159,11 @@ export function GamesPage() {
         title="Games"
         description={
           <>
-            Which games visitors can pick, and the lights games play on. How long a game turn lasts is in{' '}
-            <Link to="/admin/settings?tab=turns" className={tabLink}>
-              Settings → Taking turns
-            </Link>
-            .
+            Which games visitors can pick, the lights games play on, and{' '}
+            <Link to="?tab=turns" className={tabLink}>
+              how people take turns
+            </Link>{' '}
+            with the lights.
           </>
         }
         more={
@@ -191,16 +193,23 @@ export function GamesPage() {
                 <span className="max-sm:hidden">{onLights ? 'Showing on the lights' : 'Show on the lights'}</span>
               </Button>
             ) : null}
-            <Button variant="primary" onClick={() => save.mutate()} disabled={!dirty} loading={save.isPending} className="max-md:hidden">
-              <Save /> Save
-            </Button>
+            {/* The lights' choice; taking turns has its own Save. */}
+            {tab !== 'turns' || dirty ? (
+              <Button variant="primary" onClick={() => save.mutate()} disabled={!dirty} loading={save.isPending} className="max-md:hidden">
+                <Save /> Save
+              </Button>
+            ) : null}
           </>
         }
       />
 
       <Tabs tabs={TABS} value={tab} onChange={setTab} label="Games" />
 
-      {tab === 'games' ? (
+      {tab === 'turns' ? (
+        <TabPanel id={tab}>
+          <LineCard />
+        </TabPanel>
+      ) : tab === 'games' ? (
         <TabPanel id={tab}>
           <GameList hidden={hidden} onHide={(ids) => setHidden.mutate(ids)} area={area} fixtures={fixtures} game={game} onChoose={chooseFor} />
         </TabPanel>

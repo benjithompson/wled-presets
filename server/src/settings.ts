@@ -30,7 +30,9 @@ export const KEY = {
   scheduleApplied: 'lightScheduleApplied',
   scheduleHeld: 'lightScheduleHeld',
   /** '1' from the schedule's off until its on (or an admin's switch): visitors can wake the lights. */
-  scheduleNight: 'lightScheduleNight'
+  scheduleNight: 'lightScheduleNight',
+  /** The lights the schedule's off holds in a look of their own (see Lights.scheduleOff): id -> ScheduleAction. */
+  scheduleLooks: 'lightScheduleLooks'
 } as const;
 
 /** What a new install does between scenes: a short crossfade. */

@@ -1,37 +1,33 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Globe, KeyRound, Users } from 'lucide-react';
+import { Globe, KeyRound } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button, Card, CardHeader, Field, Input, PageHeader, Spinner, Switch } from '../../components/ui.tsx';
 import { Tabs, TabPanel, useTab } from '../../components/tabs.tsx';
 import { api } from '../../lib/api.ts';
 import { errorText } from '../../lib/utils.ts';
 import { PasskeysCard } from './PasskeysCard.tsx';
-import { LineCard } from './LineCard.tsx';
 import { useSettingsDraft } from './settingsDraft.ts';
 
 const TABS = [
   { id: 'public', label: 'Public page', icon: Globe },
-  { id: 'turns', label: 'Taking turns', icon: Users },
   { id: 'account', label: 'Your account', icon: KeyRound }
 ] as const;
 
 /**
- * Admin → Settings: the site itself. What visitors see and how they share the lights, and the
- * admin's own account, a tab each. Settings for one part of the site are on its page: scenes'
- * playback on Scenes, the schedule on Schedule, the frame rate and Home Assistant on Devices.
+ * Admin → Settings: the site itself. What visitors see, and the admin's own account, a tab each.
+ * Settings for one part of the site are on its page: scenes' playback on Scenes, the schedule on
+ * Schedule, the frame rate and Home Assistant on Devices, taking turns on Games.
  */
 export function SettingsPage() {
   const [tab, setTab] = useTab(TABS);
   return (
     <>
-      <PageHeader title="Settings" description="What visitors see, how they take turns with the lights, and your account. Settings for one part of the site are on its own page." />
+      <PageHeader title="Settings" description="What visitors see, and your account. Settings for one part of the site are on its own page: taking turns is on Games." />
       <Tabs tabs={TABS} value={tab} onChange={setTab} label="Settings" />
       <TabPanel id={tab}>
         {tab === 'public' ? (
           <PublicPageCard />
-        ) : tab === 'turns' ? (
-          <LineCard />
         ) : (
           <>
             <PasswordCard />
